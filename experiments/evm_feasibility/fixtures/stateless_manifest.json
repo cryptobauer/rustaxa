@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Direct Californicum addresses 1..4 RequiredGas/Run primitives; no EVM admission or routing claim",
+  "exporter_sha256": "4ba7a31dccbe2bc2fc5353c415a8e1fb03233f3ee680ed97253a7f12aff9e39e",
+  "sha256": {
+    "public": "0c1a682811abf1e5bb84cb8283c9b2e9a7d1958eba6197ae91423b0cce375525",
+    "local": "0c1a682811abf1e5bb84cb8283c9b2e9a7d1958eba6197ae91423b0cce375525"
+  }
+}
