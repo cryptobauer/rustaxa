@@ -15,6 +15,12 @@ The local admission temporarily changes REVM's opcode guard only for the
 instruction call, then restores Istanbul; it does not globally enable Shanghai
 or Cancun semantics.
 
+REVM's generic instruction table retains handlers for later Ethereum opcodes.
+Callers must pair the table with `TaraxaProfile::configure_interpreter`, which
+sets the interpreter runtime to Istanbul. The profile test verifies that
+BASEFEE and MCOPY remain unavailable and that a transient alias restores that
+base after both stack-underflow and static-call errors.
+
 The focused integration test consumes each Go row's bytecode, Cacti flag,
 error, gas used, refund, ordinary slot value, and transient value. It proves
 the six direct single-frame cases: PUSH0, SLOAD, set-and-clear SSTORE, legacy

@@ -12,7 +12,7 @@ use revm::{
         cfg::{GasId, GasParams},
     },
     interpreter::{
-        Instruction, InstructionContext, InstructionExecResult, InstructionTable,
+        Instruction, InstructionContext, InstructionExecResult, InstructionTable, Interpreter,
         instructions::{self, gas_table_spec},
         interpreter::EthInterpreter,
     },
@@ -65,13 +65,28 @@ impl TaraxaProfile {
         gas
     }
 
+    /// Configures an interpreter to use this profile's Istanbul runtime base.
+    ///
+    /// The input is the interpreter that will run a table from
+    /// [`Self::instruction_table`]. On return, its runtime spec is Istanbul, so
+    /// REVM's later Ethereum opcodes and rule changes remain unavailable unless a
+    /// future, separately reviewed Taraxa profile explicitly enables them. This
+    /// helper does not alter bytecode, gas, host state, or frame state and cannot
+    /// validate that the supplied interpreter will subsequently use this profile's
+    /// table; callers must use both APIs together.
+    pub fn configure_interpreter(&self, interpreter: &mut Interpreter<EthInterpreter>) {
+        interpreter.runtime_flag.spec_id = SpecId::ISTANBUL;
+    }
+
     /// Builds a host-generic REVM instruction table and its static opcode costs.
     ///
     /// The table is parameterized by the caller's existing [`Host`] type and
     /// invokes its normal storage and transient methods. It installs the bounded
     /// aliases documented on [`TaraxaProfile`], while all other instructions and
-    /// costs come from Istanbul. This function does not activate Shanghai, Cancun,
-    /// or any other newer Ethereum behavior globally.
+    /// costs come from Istanbul. Call [`Self::configure_interpreter`] before
+    /// execution: REVM tables contain later opcode handlers whose guards consult
+    /// the interpreter runtime spec. This function does not activate Shanghai,
+    /// Cancun, or any other newer Ethereum behavior globally.
     #[must_use]
     pub fn instruction_table<H: Host>(&self) -> (InstructionTable<EthInterpreter, H>, [u16; 256]) {
         let mut table = instructions::instruction_table::<EthInterpreter, H>();
