@@ -1,4 +1,5 @@
 pub mod codec;
+pub mod concrete_lifecycle;
 pub mod concrete_state;
 pub mod dag;
 pub mod final_chain;

@@ -9,45 +9,28 @@
 
 use anyhow::ensure;
 use rlp::{Rlp, RlpStream};
-use tiny_keccak::{Hasher, Keccak};
+
+use rustaxa_types::codec::rlp::concrete_lifecycle::{
+    append_identity, append_state, decode_identity, decode_state,
+};
+pub use rustaxa_types::codec::rlp::concrete_lifecycle::{
+    concrete_state_bytes_digest, decode_concrete_execution_marker,
+    decode_concrete_state_provenance, encode_concrete_execution_marker,
+    encode_concrete_state_provenance,
+};
+pub use rustaxa_types::concrete_lifecycle::{
+    FINAL_CHAIN_CONCRETE_PROJECTION_VERSION, FinalChainConcreteExecutionMarker,
+    FinalChainConcreteIdentity, FinalChainConcreteState, FinalChainConcreteStateProvenance,
+};
 
 use crate::{FinalChainEvmLog, FinalChainEvmLogTopic};
 
-/// Concrete-root policy and projection codec version accepted by Rust.
-pub const FINAL_CHAIN_CONCRETE_PROJECTION_VERSION: u64 = 1;
 /// Invocation completed without a reverted containing frame.
 pub const FINAL_CHAIN_CONCRETE_INVOCATION_NORMAL: u8 = 0;
 /// Invocation's own frame reverted, while legacy precompile writes survived.
 pub const FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED: u8 = 1;
 /// An enclosing frame reverted, while legacy precompile writes survived.
 pub const FINAL_CHAIN_CONCRETE_INVOCATION_PARENT_FRAME_REVERTED: u8 = 2;
-
-/// Stable identity of the concrete state database paired with one chain.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FinalChainConcreteIdentity {
-    pub policy_version: u64,
-    pub database_id: [u8; 32],
-    pub chain_id: [u8; 32],
-}
-
-/// Concrete committed or staged state descriptor encoded in StateAPI bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FinalChainConcreteState {
-    pub period: u64,
-    pub root: [u8; 32],
-}
-
-/// Durable exact staged-execution marker owned by StateAPI.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FinalChainConcreteExecutionMarker {
-    pub identity: FinalChainConcreteIdentity,
-    pub generation: u64,
-    pub plan_hash: [u8; 32],
-    pub period: u64,
-    pub prior_state: FinalChainConcreteState,
-    pub transactions_hash: [u8; 32],
-    pub rewards_hash: [u8; 32],
-}
 
 /// One exact account value at the projection's post-rewards root.
 ///
@@ -120,28 +103,6 @@ pub struct FinalChainConcreteStateProjection {
     pub invocations: Vec<FinalChainConcreteInvocation>,
     pub rewards_input: Vec<u8>,
     pub catalog_hash: [u8; 32],
-}
-
-/// Concrete StateAPI provenance for one exact staged or committed plan.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FinalChainConcreteStateProvenance {
-    pub identity: FinalChainConcreteIdentity,
-    pub generation: u64,
-    pub plan_hash: [u8; 32],
-    pub committed_state: FinalChainConcreteState,
-    pub transactions_hash: [u8; 32],
-    pub rewards_hash: [u8; 32],
-    pub projection_hash: [u8; 32],
-    pub catalog_hash: [u8; 32],
-}
-
-/// Computes Keccak-256 over canonical projection, provenance, or marker bytes.
-pub fn concrete_state_bytes_digest(bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = Keccak::v256();
-    hasher.update(bytes);
-    let mut digest = [0; 32];
-    hasher.finalize(&mut digest);
-    digest
 }
 
 /// Decodes a canonical projection and rejects unknown versions, malformed
@@ -247,62 +208,6 @@ pub fn decode_concrete_state_projection(
         "concrete projection is not canonical RLP"
     );
     Ok(projection)
-}
-
-/// Decodes canonical StateAPI provenance and rejects an unknown policy version
-/// or noncanonical RLP.
-pub fn decode_concrete_state_provenance(
-    bytes: &[u8],
-) -> anyhow::Result<FinalChainConcreteStateProvenance> {
-    let rlp = Rlp::new(bytes);
-    ensure!(
-        rlp.item_count()? == 8,
-        "concrete provenance must contain eight fields"
-    );
-    let provenance = FinalChainConcreteStateProvenance {
-        identity: decode_identity(&rlp.at(0)?)?,
-        generation: rlp.val_at(1)?,
-        plan_hash: fixed::<32>(&rlp.at(2)?, "provenance plan hash")?,
-        committed_state: decode_state(&rlp.at(3)?)?,
-        transactions_hash: fixed::<32>(&rlp.at(4)?, "provenance transactions hash")?,
-        rewards_hash: fixed::<32>(&rlp.at(5)?, "provenance rewards hash")?,
-        projection_hash: fixed::<32>(&rlp.at(6)?, "provenance projection hash")?,
-        catalog_hash: fixed::<32>(&rlp.at(7)?, "provenance catalog hash")?,
-    };
-    ensure!(
-        encode_concrete_state_provenance(&provenance) == bytes,
-        "concrete provenance is not canonical RLP"
-    );
-    Ok(provenance)
-}
-
-/// Decodes an exact canonical StateAPI staged-execution marker.
-pub fn decode_concrete_execution_marker(
-    bytes: &[u8],
-) -> anyhow::Result<FinalChainConcreteExecutionMarker> {
-    let rlp = Rlp::new(bytes);
-    ensure!(
-        rlp.item_count()? == 7,
-        "concrete execution marker must contain seven fields"
-    );
-    let marker = FinalChainConcreteExecutionMarker {
-        identity: decode_identity(&rlp.at(0)?)?,
-        generation: rlp.val_at(1)?,
-        plan_hash: fixed::<32>(&rlp.at(2)?, "marker plan hash")?,
-        period: rlp.val_at(3)?,
-        prior_state: decode_state(&rlp.at(4)?)?,
-        transactions_hash: fixed::<32>(&rlp.at(5)?, "marker transactions hash")?,
-        rewards_hash: fixed::<32>(&rlp.at(6)?, "marker rewards hash")?,
-    };
-    ensure!(
-        marker.prior_state.period.checked_add(1) == Some(marker.period),
-        "concrete marker period lineage mismatch"
-    );
-    ensure!(
-        encode_concrete_execution_marker(&marker) == bytes,
-        "concrete execution marker is not canonical RLP"
-    );
-    Ok(marker)
 }
 
 /// Validates a projection/provenance pair against expected execution facts.
@@ -462,33 +367,6 @@ fn append_invocations(stream: &mut RlpStream, invocations: &[FinalChainConcreteI
     }
 }
 
-/// Canonically encodes StateAPI provenance for fake-port/differential tests.
-pub fn encode_concrete_state_provenance(provenance: &FinalChainConcreteStateProvenance) -> Vec<u8> {
-    let mut stream = RlpStream::new_list(8);
-    append_identity(&mut stream, provenance.identity);
-    stream.append(&provenance.generation);
-    stream.append(&provenance.plan_hash.as_slice());
-    append_state(&mut stream, provenance.committed_state);
-    stream.append(&provenance.transactions_hash.as_slice());
-    stream.append(&provenance.rewards_hash.as_slice());
-    stream.append(&provenance.projection_hash.as_slice());
-    stream.append(&provenance.catalog_hash.as_slice());
-    stream.out().to_vec()
-}
-
-/// Canonically encodes a StateAPI staged marker for lifecycle requests/tests.
-pub fn encode_concrete_execution_marker(marker: &FinalChainConcreteExecutionMarker) -> Vec<u8> {
-    let mut stream = RlpStream::new_list(7);
-    append_identity(&mut stream, marker.identity);
-    stream.append(&marker.generation);
-    stream.append(&marker.plan_hash.as_slice());
-    stream.append(&marker.period);
-    append_state(&mut stream, marker.prior_state);
-    stream.append(&marker.transactions_hash.as_slice());
-    stream.append(&marker.rewards_hash.as_slice());
-    stream.out().to_vec()
-}
-
 /// Derives the catalog hash from sorted `(address,key)` identities exactly as
 /// StateAPI does; values are intentionally excluded from this inventory hash.
 pub fn concrete_storage_catalog_hash(storage: &[FinalChainConcreteStorageProjection]) -> [u8; 32] {
@@ -616,52 +494,6 @@ fn decode_invocations(rlp: &Rlp<'_>) -> anyhow::Result<Vec<FinalChainConcreteInv
         invocations.push(invocation);
     }
     Ok(invocations)
-}
-
-fn decode_identity(rlp: &Rlp<'_>) -> anyhow::Result<FinalChainConcreteIdentity> {
-    ensure!(
-        rlp.item_count()? == 3,
-        "concrete identity must contain three fields"
-    );
-    let identity = FinalChainConcreteIdentity {
-        policy_version: rlp.val_at(0)?,
-        database_id: fixed::<32>(&rlp.at(1)?, "concrete database identity")?,
-        chain_id: fixed::<32>(&rlp.at(2)?, "concrete chain identity")?,
-    };
-    ensure!(
-        identity.policy_version == FINAL_CHAIN_CONCRETE_PROJECTION_VERSION,
-        "unsupported concrete policy version {}",
-        identity.policy_version
-    );
-    ensure!(
-        identity.database_id != [0; 32] && identity.chain_id != [0; 32],
-        "concrete identity is missing"
-    );
-    Ok(identity)
-}
-
-fn decode_state(rlp: &Rlp<'_>) -> anyhow::Result<FinalChainConcreteState> {
-    ensure!(
-        rlp.item_count()? == 2,
-        "concrete state must contain two fields"
-    );
-    Ok(FinalChainConcreteState {
-        period: rlp.val_at(0)?,
-        root: fixed::<32>(&rlp.at(1)?, "concrete state root")?,
-    })
-}
-
-fn append_identity(stream: &mut RlpStream, identity: FinalChainConcreteIdentity) {
-    stream.begin_list(3);
-    stream.append(&identity.policy_version);
-    stream.append(&identity.database_id.as_slice());
-    stream.append(&identity.chain_id.as_slice());
-}
-
-fn append_state(stream: &mut RlpStream, state: FinalChainConcreteState) {
-    stream.begin_list(2);
-    stream.append(&state.period);
-    stream.append(&state.root.as_slice());
 }
 
 fn fixed<const N: usize>(rlp: &Rlp<'_>, field: &str) -> anyhow::Result<[u8; N]> {
