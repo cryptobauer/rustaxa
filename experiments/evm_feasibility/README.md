@@ -121,3 +121,11 @@ Earlier phase entries describe their historical scope. The
 research and recommends interpreter/host integration plus compatible Rust concrete state.
 General execution, incremental persistence, historical replay and operational acceptance
 remain implementation work. The prototypes are not reusable production implementations.
+
+## Implementation contract corpus
+
+`python3 experiments/evm_feasibility/journal_reference.py` reproduces ten
+additive journal/TrieSink cases against both pinned references. It captures
+ordinary/raw overlap, rollback, new-account deletion, transaction-local resets,
+exact physical rows and memory reopen. See the [contract evidence](../../doc/evm_research/journal_contract_evidence.md)
+for scope and validation limits; existing research fixtures are unchanged.
