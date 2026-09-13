@@ -395,8 +395,11 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         .collect(),
                 })?;
         ensure!(
-            report.state_api_epoch == request.state_api_epoch
-                && report.results.len() == request.transactions.len(),
+            report.state_api_epoch == request.state_api_epoch,
+            "FINAL_CHAIN_EXECUTION_STATE_API_EPOCH_MISMATCH"
+        );
+        ensure!(
+            report.results.len() == request.transactions.len(),
             "FINAL_CHAIN_EXECUTION_RESULT_COUNT_MISMATCH"
         );
         Ok(rustaxa_consensus::FinalChainEvmExecutionReport {

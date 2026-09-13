@@ -77,6 +77,8 @@ class ExternalEvmStateOwner final {
   StateAPI state_api_;
   /** Opaque process-local identity of the current StateAPI transition instance. */
   uint64_t state_api_epoch_;
+  /** False after an ambiguous discard error until process-level reconstruction. */
+  bool state_api_epoch_valid_{true};
   addr_t bridge_contract_address_;
 };
 

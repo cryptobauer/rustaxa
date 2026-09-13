@@ -200,6 +200,7 @@ std::shared_ptr<ConsensusApplication> ExternalEvmStateOwner::application() const
 }
 
 void ExternalEvmStateOwner::ensureReadableLocked() const {
+  if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
   if (state_api_.get_pending_concrete_execution()) throw DbException("FINAL_CHAIN_CONCRETE_STATE_STAGED");
 }
 
@@ -214,6 +215,7 @@ rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::loadCommittedState
   report.request_id = request.request_id;
   try {
     const std::scoped_lock lock(mutex_);
+    if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
     report.state_api_epoch = state_api_epoch_;
     report.concrete_provenance_rlp = toRustBytes(state_api_.activate_concrete_root_policy(
         h256(request.concrete_chain_identity.data(), h256::ConstructFromPointer)));
@@ -340,6 +342,7 @@ rustaxa::HostFinalChainRewardsReport ExternalEvmStateOwner::distributeRewards(
     rewards_stats.push_back(util::rlp_dec<rewards::BlockStats>(dev::RLP(value)));
   }
   const std::scoped_lock lock(mutex_);
+  if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
   if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
     throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
   }
@@ -363,6 +366,7 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmStateOwner::commitState(
   report.status = kFinalChainEvmLifecycleStatusCommitted;
   try {
     const std::scoped_lock lock(mutex_);
+    if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
     if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
       throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
     }
@@ -389,11 +393,16 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmStateOwner::commitState(
 rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::discardState(
     const rustaxa::HostFinalChainDiscardRequest& request) {
   rustaxa::HostFinalChainPreflightReport report{};
+  const std::scoped_lock lock(mutex_);
   try {
-    const std::scoped_lock lock(mutex_);
+    if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
     if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
       throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
     }
+    // From this point any exception is ambiguous: Go may already have closed
+    // and reconstructed its StateTransition. Keep the owner poisoned until
+    // every descriptor/provenance/pending check below succeeds.
+    state_api_epoch_valid_ = false;
     state_api_.discard_concrete_execution(fromRustBytes(request.concrete_marker_rlp));
     state_api_epoch_ = nextStateApiEpoch();
     report.state_api_epoch = state_api_epoch_;
@@ -406,7 +415,9 @@ rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::discardState(
     }
     report.succeeded = report.pending_concrete_marker_rlp.empty();
     if (!report.succeeded) report.error_code = rust::String("FINAL_CHAIN_CONCRETE_DISCARD_REOPEN_MISMATCH");
+    state_api_epoch_valid_ = report.succeeded;
   } catch (const std::exception& error) {
+    report.state_api_epoch = 0;
     report.error_code = rust::String(std::string("FINAL_CHAIN_CONCRETE_DISCARD_FAILED: ") + error.what());
   }
   return report;

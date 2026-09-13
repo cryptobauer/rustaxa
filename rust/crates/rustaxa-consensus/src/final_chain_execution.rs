@@ -2607,6 +2607,42 @@ fn committed_application_report(
     })
 }
 
+fn validate_state_api_epoch_observation(
+    expected_state_api_epoch: u64,
+    observed_state_api_epoch: u64,
+) -> Result<(), anyhow::Error> {
+    ensure!(
+        expected_state_api_epoch != 0 && observed_state_api_epoch == expected_state_api_epoch,
+        "FINAL_CHAIN_STATE_API_EPOCH_OBSERVATION_MISMATCH"
+    );
+    Ok(())
+}
+
+fn validate_discard_epoch_transition(
+    request: &FinalChainExternalEvmDiscardRequest,
+    report: &FinalChainExternalEvmDiscardReport,
+) -> Result<(), anyhow::Error> {
+    ensure!(
+        request.expected_state_api_epoch != 0
+            && report.previous_state_api_epoch == request.expected_state_api_epoch
+            && report.state_api_epoch != 0
+            && report.state_api_epoch != report.previous_state_api_epoch,
+        "FINAL_CHAIN_STATE_API_DISCARD_EPOCH_MISMATCH"
+    );
+    Ok(())
+}
+
+fn validate_reopened_state_api_epoch(
+    discard: &FinalChainExternalEvmDiscardReport,
+    reopened: &FinalChainExternalEvmPreflightReport,
+) -> Result<(), anyhow::Error> {
+    ensure!(
+        discard.state_api_epoch != 0 && reopened.state_api_epoch == discard.state_api_epoch,
+        "FINAL_CHAIN_STATE_API_REOPEN_EPOCH_MISMATCH"
+    );
+    Ok(())
+}
+
 fn discard_concrete_after_failure<E: FinalChainExecutionLeaf>(
     final_chain: &FinalChain,
     leaf: &E,
@@ -2635,6 +2671,9 @@ fn discard_concrete_after_failure<E: FinalChainExecutionLeaf>(
             );
         }
     };
+    if let Err(epoch_error) = validate_discard_epoch_transition(&discard_request, &discard) {
+        return anyhow::anyhow!("{cause:#}; {epoch_error:#}");
+    }
     if !discard.succeeded
         || discard.request_id != discard_request.request_id
         || discard.period != discard_request.period
@@ -2683,6 +2722,8 @@ fn classify_ambiguous_concrete_commit<E: FinalChainExecutionLeaf>(
         "{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_IDENTITY_MISMATCH: {}",
         observed.error_code
     );
+    validate_state_api_epoch_observation(request.state_api_epoch, observed.state_api_epoch)
+        .with_context(|| format!("{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN"))?;
     let observed_provenance = decode_concrete_state_provenance(&observed.concrete_provenance_rlp)
         .context("FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_PROVENANCE_INVALID")?;
     final_chain.verify_or_initialize_concrete_state_pairing(observed_provenance.identity)?;
@@ -2832,7 +2873,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
     };
     let mut observed = load()?;
     ensure!(
-        observed.succeeded && observed.request_id == request_id,
+        observed.succeeded && observed.request_id == request_id && observed.state_api_epoch != 0,
         "FINAL_CHAIN_CONCRETE_RECOVERY_PREFLIGHT_FAILED: {}",
         observed.error_code
     );
@@ -2859,6 +2900,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
                 observed.state_api_epoch,
             )?;
             let discarded = leaf.discard_staged_state(&discard)?;
+            validate_discard_epoch_transition(&discard, &discarded)?;
             ensure!(
                 discarded.succeeded
                     && discarded.request_id == discard.request_id
@@ -2871,6 +2913,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
                 discarded.error_code
             );
             let reopened = load()?;
+            validate_reopened_state_api_epoch(&discarded, &reopened)?;
             ensure!(
                 reopened.succeeded
                     && reopened.request_id == request_id
@@ -2917,6 +2960,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
         prior_state: report.recovery_prior_state,
     };
     let discarded = leaf.discard_staged_state(&discard)?;
+    validate_discard_epoch_transition(&discard, &discarded)?;
     ensure!(
         discarded.succeeded
             && discarded.request_id == discard.request_id
@@ -2929,6 +2973,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
         discarded.error_code
     );
     let reopened = load()?;
+    validate_reopened_state_api_epoch(&discarded, &reopened)?;
     ensure!(
         reopened.succeeded
             && reopened.request_id == request_id
@@ -6280,6 +6325,56 @@ mod tests {
             error
                 .to_string()
                 .contains("FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_STATE_API_EPOCH_MISSING")
+        );
+    }
+
+    #[test]
+    fn state_api_epoch_validators_reject_foreign_discard_and_reopen_instances() {
+        assert!(validate_state_api_epoch_observation(17, 17).is_ok());
+        assert!(validate_state_api_epoch_observation(17, 18).is_err());
+        assert!(validate_state_api_epoch_observation(0, 0).is_err());
+
+        let request = FinalChainExternalEvmDiscardRequest {
+            expected_state_api_epoch: 17,
+            ..Default::default()
+        };
+        let valid = FinalChainExternalEvmDiscardReport {
+            previous_state_api_epoch: 17,
+            state_api_epoch: 18,
+            ..Default::default()
+        };
+        assert!(validate_discard_epoch_transition(&request, &valid).is_ok());
+        for invalid in [
+            FinalChainExternalEvmDiscardReport {
+                previous_state_api_epoch: 16,
+                ..valid.clone()
+            },
+            FinalChainExternalEvmDiscardReport {
+                state_api_epoch: 17,
+                ..valid.clone()
+            },
+            FinalChainExternalEvmDiscardReport {
+                state_api_epoch: 0,
+                ..valid.clone()
+            },
+        ] {
+            assert!(validate_discard_epoch_transition(&request, &invalid).is_err());
+        }
+
+        let reopened = FinalChainExternalEvmPreflightReport {
+            state_api_epoch: 18,
+            ..Default::default()
+        };
+        assert!(validate_reopened_state_api_epoch(&valid, &reopened).is_ok());
+        assert!(
+            validate_reopened_state_api_epoch(
+                &valid,
+                &FinalChainExternalEvmPreflightReport {
+                    state_api_epoch: 19,
+                    ..Default::default()
+                }
+            )
+            .is_err()
         );
     }
 
