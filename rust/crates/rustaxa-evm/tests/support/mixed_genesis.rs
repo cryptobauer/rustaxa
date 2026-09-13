@@ -7,7 +7,7 @@
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use ethereum_types::{H256, U256};
 use num_bigint::BigUint;
 use revm::primitives::keccak256;
@@ -20,11 +20,11 @@ use rustaxa_storage::{
     ConcreteStateMutationBatch, ConcreteStorageMutation, Config, Storage,
 };
 use rustaxa_types::{
+    FinalChainAccountBalance, FinalChainBlockNumber, FinalChainNonce, GenesisValidatorMetadata,
     concrete_lifecycle::ConcreteStorageSlot,
     concrete_state::{
         ConcreteAccount, ConcreteAccountBalance, ConcreteAccountRecord, ConcreteStorageKey,
     },
-    FinalChainAccountBalance, FinalChainBlockNumber, FinalChainNonce, GenesisValidatorMetadata,
 };
 use serde_json::Value;
 
@@ -220,7 +220,7 @@ pub(super) fn open_chain(path: &Path, fixture: &Value) -> Result<(Arc<Storage>, 
             .set_genesis_hash_if_empty(&FIXTURE_GENESIS_HASH)?,
         None => anyhow::bail!("existing application database has no genesis metadata"),
     }
-    let chain = FinalChain::new_with_genesis_state_root(
+    let chain = FinalChain::new_with_genesis_state_root_and_ficus_activation(
         storage.clone(),
         number(configuration, "block_gas_limit")?.into(),
         0,
@@ -230,6 +230,7 @@ pub(super) fn open_chain(path: &Path, fixture: &Value) -> Result<(Arc<Storage>, 
         vec![validator],
         genesis_dpos,
         rewards,
+        number(object(hardforks, "ficus")?, "block")?.into(),
     )?;
     Ok((storage, chain))
 }
