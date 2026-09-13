@@ -6,7 +6,7 @@ mod fixture_host;
 use fixture_host::ProbeHost;
 use revm::{
     bytecode::Bytecode,
-    interpreter::{Gas, Interpreter, InterpreterAction},
+    interpreter::{Gas, InstructionResult, Interpreter, InterpreterAction},
     primitives::{U256, hardfork::SpecId},
 };
 use rustaxa_evm::profile::TaraxaProfile;
@@ -117,14 +117,30 @@ fn bounded_profile_keeps_newer_opcodes_unavailable_and_restores_after_errors() {
     let profile = TaraxaProfile::new(true);
     let (table, costs) = profile.instruction_table::<ProbeHost>();
 
-    for (name, code, is_static) in [
-        ("BASEFEE", [0x48, 0x00].as_slice(), false),
-        ("MCOPY", [0x5e, 0x00].as_slice(), false),
-        ("TSTORE stack underflow", [0xb4, 0x00].as_slice(), false),
+    for (name, code, is_static, expected) in [
+        (
+            "BASEFEE",
+            [0x48, 0x00].as_slice(),
+            false,
+            InstructionResult::NotActivated,
+        ),
+        (
+            "MCOPY",
+            [0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x5e, 0x00].as_slice(),
+            false,
+            InstructionResult::NotActivated,
+        ),
+        (
+            "TSTORE stack underflow",
+            [0xb4, 0x00].as_slice(),
+            false,
+            InstructionResult::StackUnderflow,
+        ),
         (
             "TSTORE static violation",
             [0x60, 0x55, 0x60, 0x01, 0xb4, 0x00].as_slice(),
             true,
+            InstructionResult::StateChangeDuringStaticCall,
         ),
     ] {
         let mut host = ProbeHost {
@@ -144,10 +160,7 @@ fn bounded_profile_keeps_newer_opcodes_unavailable_and_restores_after_errors() {
         else {
             panic!("{name} unexpectedly requested a frame");
         };
-        assert!(
-            !result.result.is_ok(),
-            "{name} must fail under the bounded profile"
-        );
+        assert_eq!(result.result, expected, "{name} must fail as expected");
         assert_eq!(
             interpreter.runtime_flag.spec_id,
             SpecId::ISTANBUL,
