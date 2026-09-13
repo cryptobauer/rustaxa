@@ -73,9 +73,12 @@ discarding the pending execution, never publishing a partial journal.
   transient revert, static SSTORE rejection, CALLCODE/DELEGATECALL context,
   signed refunds through enclosing rollback, exactly 1,025 active bytecode
   entries at the depth boundary, stipend return after pre-entry funds rejection,
-  and prefix-only return-memory copying. The current eager CALL code-loading
-  limitation still requires complete code coverage for pre-entry ordering;
-  it is a follow-up boundary, not full failure-order parity.
+  and prefix-only return-memory copying. CALL code loading now follows depth
+  and funds admission: missing target code is not read for rejected frames,
+  while admitted calls and EXTCODE operations retain strict code validation.
+  Targeted tests also distinguish absent accounts from existing semantically
+  empty accounts for the 25,000-gas value-CALL surcharge, including full-width
+  balances.
 - The repository fast gate, affected storage-package tests and required four
   storage bridge tests pass. The explicit independent-snapshot reader gate passes
   at head 25,706,949 and prior period 25,706,948. That gate is read evidence only.
