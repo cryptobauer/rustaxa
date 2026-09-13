@@ -7,8 +7,10 @@
 //! until a separately authorized and validated routing change.
 
 pub mod contracts;
+pub mod driver;
 pub mod envelope;
 pub mod frame;
+pub mod host;
 pub mod input;
 pub mod journal;
 pub mod profile;
