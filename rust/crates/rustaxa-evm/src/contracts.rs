@@ -250,6 +250,8 @@ pub struct ExecutedTransactionResult {
     pub status: CodeExecutionStatus,
     /// Settled gas charged to the transaction.
     pub gas_used: FinalChainGas,
+    /// Gas returned by the settlement refund cap, distinct from the raw journal counter.
+    pub refund_applied: FinalChainGas,
     /// Return or revert bytes retained by the reference settlement rule.
     pub output: Vec<u8>,
     /// Address attempted by top-level creation, including failed creation.

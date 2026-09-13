@@ -262,6 +262,7 @@ pub fn settle<R: ConcreteExecutionRead>(
         ExecutedTransactionResult {
             status,
             gas_used,
+            refund_applied: FinalChainGas::new(refund),
             output: frame.output,
             attempted_contract_address: frame.attempted_contract_address,
             logs: journal.logs().to_vec(),
