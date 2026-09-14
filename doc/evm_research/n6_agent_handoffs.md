@@ -225,3 +225,51 @@ the fast gate found missing epoch fields in three EVM Rust fixture files. Its
 
 Luna must start first in the fresh team. The failed old-session launch did not
 run, and no helper result or billing inference is attributed to Luna.
+
+## Luna-first continuation, 2026-09-14
+
+The fresh session checked capacity with only the lead present, explicitly
+requested `gpt-5.6-luna` at medium reasoning, and confirmed the helper running
+before allocating other workers. The reused `luna_epoch_inventory` thread
+completed read-only epoch-fixture, C++ validation, semantic-port registration and
+bridge-validation maps. The helper's local runtime `turn_context` independently
+records `model: gpt-5.6-luna` and `effort: medium`; this is stronger than merely
+recording the requested assignment. It made no commits. Independent review corrected two
+overbroad bridge-removal suggestions: the pre-zip result-count check must stay,
+and committed-descriptor validation must remain in immediate commit
+classification, not only eventual lifecycle acceptance.
+
+- `epoch_fixtures`: requested `gpt-5.6-sol`, high; ran and completed the fixture
+  lifecycle update. `trace_review`: requested `gpt-6-astra`, high; ran and approved
+  after restoring exact missing-marker coverage and validating epochs before
+  injected failure paths. Lead integration is `7b2c29ac3` after the five saved
+  epoch commits. The same Sol thread subsequently took the bounded shared
+  setCommission kernel slice in its isolated worktree.
+- `trace_review` also independently approved saved TraceRunner `b844c1896`,
+  integrated as `b936558ab`. Eight runner, ten driver and three serializer tests
+  plus both actual-Go trace/refund exporters passed. Acceptance remains default
+  structured traces only.
+- `scheduler_review`: requested `gpt-6-astra`, high; ran, rejected the saved
+  scheduler's incomplete startup/publication/recovery contract, and approved the
+  lead's separate epoch bridge contraction after the missing CXX header include
+  was corrected. `scheduler_completion`: requested `gpt-5.6-sol`, high; ran to
+  address those scheduler findings in its isolated worktree. Saved scheduler WIP
+  is not accepted by these epoch results.
+- `claims_completion`: requested `gpt-5.6-sol`, high; ran and produced
+  `03f3598d3` over saved `f413b296a`. Independent Astra review and both actual-Go
+  pins approved the bounded unpublished semantic-session scope. Integrated
+  commits are `d620a5711` and `12fa2f48f`; the only first-commit conflict retained
+  both the claims and existing checkpoint module declarations. The isolated
+  worktree had no configured hook path; the lead owns integrated fast validation.
+
+Epoch integration passed the full fast gate, 38 execution-domain tests, two
+period-codec byte tests, persisted/mixed fixtures (3/5), and eight rebuilt C++
+leaf/FinalChain tests with `RUSTAXA_ENABLE:BOOL=ON` and CMake `--parallel 12`.
+Targeted C++ formatting passed. All touched C++ paths are main-only; no original
+upstream C++ file was modified. The bridge shrank from 4,621 to 4,619 lines with
+unchanged carrier/function/handle counts. No guard or test expectation was
+weakened to accommodate epoch routing.
+
+Every requested model above started and ran; no startup, capacity or routing
+failure occurred in this fresh team. These observations do not establish billing
+or quota consumption. Milestone 10 remains open.

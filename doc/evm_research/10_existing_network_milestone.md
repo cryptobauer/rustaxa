@@ -100,6 +100,8 @@ or a single snapshot limits the evidence available.
 - N2: in progress; P-256 primitive and frame integration implemented, BLS and
   Ficus MCOPY and Falcon implemented with independent scoped review; remaining
   stateful-native coverage remains under validation. Ordered Aspen2 reward phases implemented.
+  [Staged reward claims](n2_claims_evidence.md) have independently reviewed
+  dual-reference semantic-session coverage; publication/reopen remains open.
 - N3: [gas-search and ordinary simulation evidence](n3_api_parity.md) implemented;
   ordinary persisted historical reads/simulation/reopen now have bounded evidence;
   the disposable native simulation facade is implemented and reviewed; actual
