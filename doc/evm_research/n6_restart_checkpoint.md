@@ -107,7 +107,9 @@ validator identity and insufficient stake remain provenance, not verified
 production facts. No private keys are required for semantic reconstruction.
 
 Current authenticated DPoS inventory has 23,278 live rows. Strict inverse decoding
-plus 290 known validator/owner candidates explains 2,065; 21,213 remain unexplained.
+and delegation probes over 290 known validator/owner candidates explained 2,065.
+The reviewed [seeded undelegation extension](n4_native_seeded_undelegations.md)
+adds 217 exact rows, raising coverage to 2,282; 20,996 remain unexplained.
 These are unresolved reconstruction/qualification inputs, not proof that data is
 unavailable externally. Missing physical rows are never silently promoted to
 absence. Global delegator completeness, historical/deleted-key coverage and

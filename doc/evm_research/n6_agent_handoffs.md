@@ -312,3 +312,18 @@ No required target was skipped. No original upstream C++ changed.
 All reused agents ran without routing/capacity failures; no billing inference.
 The [scheduler evidence](n5_reward_scheduler_evidence.md) states the bounded
 reference and recovery limits. Milestone 10 remains open.
+
+### Bounded N4 undelegation reconstruction
+
+Reused `epoch_fixtures` (requested `gpt-5.6-sol`, high) completed
+`e3e586ed3`, integrated as `87479197e`. Reused `trace_review`
+(requested `gpt-6-astra`, high) approved source, the exact bounded read-only
+operation, and the resulting report. Both ran; no routing failure.
+
+One 23.8-second run on the qualified copy, capped at 300 seconds, added 217
+exact current-live rows using 1,017 derived reads over the same 290 seeds.
+Coverage is now 2,282/23,278; 20,996 remain unexplained. The lead independently
+ran the eight binary tests after integration; the reviewer reconstructed all
+new preimages/values and checked artifact/source hashes without reopening the DB.
+The original snapshot was untouched, and qualified-copy access was released.
+See [the exact evidence and limits](n4_native_seeded_undelegations.md).

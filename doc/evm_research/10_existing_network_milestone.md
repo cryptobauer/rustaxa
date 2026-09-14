@@ -111,7 +111,8 @@ or a single snapshot limits the evidence available.
 - N4: [copied-head transaction preflight](n4_replay_preflight.md) passes for 19
   transactions, exact receipts and transaction-only derivation of the retained
   root; [identity-pinned checkpoint readers](n4_checkpoint_readers.md) are
-  implemented and reviewed. Bootstrap and qualification of terminal
+  implemented and reviewed. [Seeded undelegation reconstruction](n4_native_seeded_undelegations.md)
+  raises authenticated inverse coverage to 2,282 of 23,278 rows. Bootstrap and qualification of terminal
   rewards/system inputs remain open.
 - N5–N6: open; the [reward scheduler lifecycle](n5_reward_scheduler_evidence.md)
   has reviewed bounded startup, discard-retry and publication-ordering coverage.

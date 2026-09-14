@@ -29,7 +29,8 @@ checkpoint and the linked per-slice evidence.
   Zero configured yield skips rewards but flushes deferred end-block state;
   the interrupted worker's implementation was recovered and tested by the lead.
   Multi-entry maps and scoped committed-parent jailed cleanup are now integrated;
-  general scheduler lifecycle and the redelegation correction remain open.
+  bounded scheduler lifecycle is now integrated. Full existing-network
+  publication/reopen, fault recovery and redelegation acceptance remain open.
 - The read-only copied-head preflight executes all 19 real signed transactions,
   matches receipts and cumulative gas, and derives the retained head root from
   20 final account mutations using 116 calculated trie rows. It neither exposes
@@ -38,7 +39,8 @@ checkpoint and the linked per-slice evidence.
 - Seven actual Go TraceRunner scenarios compare five tracer configurations at
   both source pins. Prefix state and supplied nonce differ from DryRunner;
   neither-selected options cause a recorded reference panic. A typed Rust trace
-  collector is now integrated; driver hooks and exact serialization remain open.
+  collector, driver hooks and default structured serialization are integrated.
+  Native/nested/OpenEthereum/RPC trace acceptance remains open.
 
 ## Validation and review
 
@@ -84,13 +86,14 @@ non-UTF-8 reasons and 17 independent decoder witnesses.
    Rust kernels. Scoped committed-parent jailed cleanup is integrated as
    `25c9e41e1`; it rejects unsupported cached-future and decreasing-duration
    cases. V1/V2 cancellation and scoped accrued-reward comparisons are
-   integrated; actual scheduler publication/reopen is still required. General
-   process-lifetime scheduler binding remains active implementation work.
+   integrated. Process-lifetime binding now has bounded reviewed coverage;
+   actual durable StateAPI faults and existing-network adoption remain open.
 2. Add trace facts to the existing iterative frame driver and serializers over
    those facts. The reviewed typed collector is integrated as `7a005eae9` and
    `d21d1769a`. Opcode hooks, default structured serialization and actual single-target
    driver-to-JSON comparisons are integrated. Cumulative refund/empty-code fixes
-   have scoped sequence witnesses; the disposable TraceRunner is being connected. No second VM or
+   have scoped sequence witnesses; the disposable default TraceRunner is integrated
+   as `b936558ab`. Native/nested/OpenEthereum/RPC acceptance remains open. No second VM or
    production route is authorized.
 3. Replace full account-snapshot authority for an explicit offline checkpoint
    with authenticated concrete point reads plus a touched overlay. The reviewed
@@ -102,8 +105,8 @@ non-UTF-8 reasons and 17 independent decoder witnesses.
    adoption. All H-5..H headers/roots/native accounts and sampled paths are
    readable; no sampled dependency is missing. Full head DPoS and slashing live
    inventories are authenticated. Strict inverse decoding plus 290 known
-   validator/owner candidates explains 2,065 of 23,278 live DPoS rows; 21,213
-   remain unexplained. This is partial coverage, not native bootstrap authority.
+   validator/owner candidates, including the reviewed seeded undelegation
+   extension, explain 2,282 of 23,278 live DPoS rows; 20,996 remain unexplained. This is partial coverage, not native bootstrap authority.
    Lite pruning is not established as the cause
    of the gap. Missing logical preimages, inverse decoding, exhaustive historical
    leaf-version checks and deleted-history/catalog policy remain distinct work.
