@@ -7,7 +7,8 @@ the broader implementation plan 08 remains open.
 The fresh Luna-first continuation is recorded in the
 [restart checkpoint](n6_restart_checkpoint.md), the current handoff authority.
 It integrates reviewed epochs, default structured traces, staged claims and the
-shared setCommission kernel; scheduler work is still under review. The detailed
+shared setCommission kernel and the reviewed reward scheduler lifecycle.
+The scheduler evidence is linked from that checkpoint. The detailed
 2026-09-13 task descriptions below are historical and are superseded by that
 checkpoint and the linked per-slice evidence.
 

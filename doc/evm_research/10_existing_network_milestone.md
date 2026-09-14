@@ -113,6 +113,8 @@ or a single snapshot limits the evidence available.
   root; [identity-pinned checkpoint readers](n4_checkpoint_readers.md) are
   implemented and reviewed. Bootstrap and qualification of terminal
   rewards/system inputs remain open.
-- N5–N6: open; no integrated milestone completion claimed. The
+- N5–N6: open; the [reward scheduler lifecycle](n5_reward_scheduler_evidence.md)
+  has reviewed bounded startup, discard-retry and publication-ordering coverage.
+  Full existing-network acceptance remains open. The
   [progress checkpoint](n6_progress_checkpoint.md) records validated chunks,
   interrupted assignments and remaining acceptance work.

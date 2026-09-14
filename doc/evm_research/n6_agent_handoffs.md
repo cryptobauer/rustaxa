@@ -280,3 +280,35 @@ weakened to accommodate epoch routing.
 Every requested model above started and ran; no startup, capacity or routing
 failure occurred in this fresh team. These observations do not establish billing
 or quota consumption. Milestone 10 remains open.
+
+## Scheduler integration and resumed continuation
+
+- Reused `luna_epoch_inventory`, requested `gpt-5.6-luna` medium, ran and
+  acknowledged resumption before other worker reuse. It mapped the bounded N4
+  inverse diagnostic and correctly distinguished unresolved rows from external
+  absence. No edits or database opens.
+- Reused `scheduler_completion`, requested `gpt-5.6-sol` high, completed
+  `e393f542b` over `621241a863e`; integrated as `51c408c20` over
+  `f3f6bb7a8`. Reused `claims_completion`, requested Sol high, authored the
+  joined actual-native/dual-Go scheduler and stale-publication regressions.
+- Reused `scheduler_review`, requested `gpt-6-astra` high, approved completed
+  worker source and integrated intent/descriptor boundaries. The combined gate
+  subsequently caught duplicate epoch fields from automatic fixture merging;
+  the lead removed only duplicates, and the reviewer approved the complete
+  fixture comparison. Mixed/persisted tests passed 5/3.
+- Reused `trace_review`, requested Astra high, approved the native system-fact
+  identity/policy contraction and its two regression tests. The lead implemented
+  it; the bridge budget ratcheted from 4,619 to 4,618.
+- Reused `epoch_fixtures`, requested Sol high, began a bounded N4 undelegation
+  inverse extension using already authenticated address seeds in an isolated
+  worktree. Its earlier claim that the semantic-port normal commit ran the hook
+  was corrected: hook execution was not verified there. Lead explicit gates are
+  authoritative.
+
+The integrated FinalChain Tier 2 gate passed with Rust enabled: workspace fast
+checks including 1,441 consensus tests, C++ consensus 15, StateAPI 3, RPC 50,
+and binary CLI smoke. Storage bridge 4/4 and targeted C++ formatting also passed.
+No required target was skipped. No original upstream C++ changed.
+All reused agents ran without routing/capacity failures; no billing inference.
+The [scheduler evidence](n5_reward_scheduler_evidence.md) states the bounded
+reference and recovery limits. Milestone 10 remains open.

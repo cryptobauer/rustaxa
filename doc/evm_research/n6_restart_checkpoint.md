@@ -3,9 +3,10 @@
 Milestone 10 remains in progress; 08 remains open and 09 remains complete only
 within its declared synthetic scope. The Luna-first continuation integrated and
 pushed the reviewed epoch, default TraceRunner, staged claims and shared
-setCommission slices. Implementation is accepted through `02281c89d`, with
-supporting documentation pushed through `bb2034611`. Scheduler work below remains
-unaccepted. No production backend switch or milestone acceptance is implied.
+setCommission slices. The reviewed scheduler is now integrated through
+`51c408c20`, with reviewed integration corrections in `cb1e133f4`. Combined
+validation passed; the latest handoff follows below. No
+production backend switch or milestone acceptance is implied.
 
 ## Start the next session
 
@@ -35,6 +36,7 @@ billing conclusion. Exact assignments are in [the ledger](n6_agent_handoffs.md).
 | Default structured TraceRunner | `b936558ab` | Independent dual-pin trace/refund reproduction; one disposable journal, supplied nonces, fresh target collectors; native/nested/OpenEthereum/RPC scope remains open |
 | Staged claims | `d620a5711`, `12fa2f48f` | Actual-Go corpus assertions, full-width and typed account errors, exact zero effects; unpublished semantic sessions only, zero-stake commission unsupported |
 | Shared setCommission kernel | `c3f53a0e2`, `02281c89d` | One kernel via complete-snapshot and authenticated checkpoint-row adapters; no sparse-snapshot or publication authority |
+| Reward scheduler lifecycle | `f3f6bb7a8`, `51c408c20` | Joint-startup authority, epoch-bound native sessions, retained marker ordering, verified discard retry and stale duplicate protection; actual-Go constructor witnesses, not durable StateAPI fault acceptance |
 
 The epoch fast gate exposed two additional issues beyond the original three
 fixture files: rejected descriptor-only preflight in `tests/contracts.rs` needed
@@ -46,11 +48,15 @@ The bridge ratchet also exposed added surface. Reviewed contraction now borrows
 discard marker bytes plus an epoch scalar, centralizes epoch/descriptor checks in
 the native owner, preserves the essential pre-zip result-count check, and moves
 raw period-envelope assembly into the existing Rust types codec. Certificate
-bytes and weights move together without cloning. The bridge has 4,619 lines,
-below the previous 4,621, with unchanged carrier/function/handle counts. No
+bytes and weights move together without cloning. The bridge has 4,618 lines,
+below the prior 4,619, with unchanged carrier/function/handle counts. No
 inventory guard or test expectation was weakened to make the integration pass.
 
-The checked-in pre-commit gate passes on the integrated feature branch. Focused
+The full FinalChain Tier 2 gate passes on the integrated feature branch, including
+the exact fast command used by the checked-in pre-commit hook: 1,441 consensus
+unit tests, all workspace tests and structural guards, C++ consensus 15/15,
+StateAPI 3/3, RPC 50/50, and binary CLI smoke. No required target was skipped.
+The storage bridge also passed 4/4; targeted C++ formatting passed. Focused
 lead evidence includes 38 execution-domain tests, two codec byte tests, persisted
 and mixed fixtures (3/5), 64 native-session tests, three commission rule-order
 tests and the six-case dual-pin driver/journal corpus. The epoch boundary rebuilt
@@ -61,28 +67,24 @@ main-only, with no original upstream C++ modification.
 See [trace evidence](n3_api_parity.md), [claims evidence](n2_claims_evidence.md),
 and [commission evidence](n2_commission_semantic_port.md) for exact scope.
 
-## Scheduler work still under review
+## Integrated scheduler
 
-The original saved checkpoint is `checkpoint/evm-reward-scheduler` at
-`621241a863e721b3facba41c02b6dc1295e01818`. Current corrections are in
-`/tmp/rustaxa-evm-current-rewards` on `task/evm-current-rewards`; inspect its dirty
-state before integrating. Do not cherry-pick overlapping older integration
-history. Lead alone owns shared `/build`.
+Saved scheduler `621241a863e` and completion `e393f542b` are integrated.
+Independent Astra review approved both the completed source and the integrated
+pending-intent, marker and committed-descriptor boundaries. Sol's joined tests
+compare actual Rust native serialization and scheduler transitions with both
+Go constructor/reopen witnesses. See [scheduler evidence](n5_reward_scheduler_evidence.md).
 
-Sol is correcting explicit joint-startup epoch authority, actual native-session
-basis wiring, publication-marker retention through runtime installation,
-idempotent recovery and verified-discard transitions. Independent review still
-requires fixes for old-publication cache rewind, rejected-report completion,
-pre-marker discard cleanup, exact live pending-intent binding and same-process
-retry after a successful discard followed by a failed verification read.
+The first combined gate caught duplicate epoch declarations/initializers from
+automatic fixture merging. Removing only those duplicates restored the focused
+mixed/persisted suites (5/3). A separate reviewed contraction validates system-fact
+request identity in the native owner before planning, preserves transport errors
+and binds owner policy; both focused regressions passed.
 
-A second Sol worker owns a new joined runtime/native-serializer test file,
-coordinated with the implementation owner. It must compare actual Rust scheduler
-and ordered slashing writes to both regenerated Go constructor/reopen witnesses;
-fixture self-comparison is not parity. The exporter reconstructs actual Go
-StateTransition over committed in-memory state. It does not prove actual
-StateAPI discard or interrupted durable recovery by itself. Final independent
-review and fresh integrated gates are required before accepting the slice.
+The original scheduler worktree is `/tmp/rustaxa-evm-current-rewards`, clean at
+`e393f542b`. Do not cherry-pick overlapping older integration history. Lead alone
+owns shared `/build`. Constructor witnesses do not establish actual Go StateAPI
+discard durability, a full fault campaign or complete existing-state publication.
 
 ## Other saved worktrees
 
