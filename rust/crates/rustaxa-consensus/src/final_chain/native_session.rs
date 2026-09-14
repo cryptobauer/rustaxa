@@ -20,6 +20,7 @@ pub(super) mod custody;
 mod query;
 pub(super) mod raw;
 pub(super) mod rewards;
+pub(super) mod semantic_port;
 
 #[cfg(test)]
 mod cancel_custody_reference_tests;
@@ -644,8 +645,15 @@ impl FinalChainNativeSession<'_> {
         let validation = (|| {
             let validator_read = state.raw_storage(DPOS_CONTRACT_ADDRESS, &validator_key)?;
             let owner_read = state.raw_storage(DPOS_CONTRACT_ADDRESS, &owner_key)?;
-            self.validate_raw_validator(validator, &validator_read)?;
-            self.validate_raw_owner(validator, &owner_read)?;
+            semantic_port::CheckpointJournalCommissionPort::from_authenticated_reads(
+                &self.dpos_state,
+                validator,
+                &validator_read,
+                &owner_read,
+                &validator_read,
+                &owner_read,
+                self.final_chain.magnolia_active(self.pending_period),
+            )?;
             Ok::<_, FinalChainNativeSessionError>((validator_read, owner_read))
         })();
         let (validator_read, owner_read) = match validation {
@@ -773,22 +781,39 @@ impl FinalChainNativeSession<'_> {
         let current_validator =
             state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.validator_key)?;
         let current_owner = state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.owner_key)?;
-        if current_validator != prepared.validator_read || current_owner != prepared.owner_read {
+        let DposTransaction::SetCommission {
+            owner,
+            validator,
+            commission,
+        } = prepared.transaction
+        else {
+            return Err(FinalChainNativeSessionError::Domain(
+                "setCommission preparation retained another transaction".to_owned(),
+            ));
+        };
+        if validator != prepared.validator {
             return Err(FinalChainNativeSessionError::RawIntegrity(
-                "setCommission raw observations changed after preparation".to_owned(),
+                "setCommission prepared validator identity changed".to_owned(),
             ));
         }
-
-        let mut next_state = self.dpos_state.clone();
-        let outcome = self
-            .final_chain
-            .apply_dpos_mutation_transaction(
-                self.pending_period,
-                prepared.transaction,
-                &mut next_state,
-                &mut HashMap::new(),
-            )
-            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let mut port = semantic_port::CheckpointJournalCommissionPort::from_authenticated_reads(
+            &self.dpos_state,
+            validator,
+            &prepared.validator_read,
+            &prepared.owner_read,
+            &current_validator,
+            &current_owner,
+            self.final_chain.magnolia_active(self.pending_period),
+        )?;
+        let outcome = semantic_port::apply_set_commission(
+            &mut port,
+            owner,
+            commission,
+            self.pending_period,
+            self.final_chain.dpos_commission_change_frequency,
+            self.final_chain.dpos_commission_change_delta,
+        )
+        .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         let status = if outcome.status_code == 1 {
             FinalChainNativeStatus::Success
         } else {
@@ -802,7 +827,16 @@ impl FinalChainNativeSession<'_> {
         };
         let mut raw_mutations = Vec::new();
         if outcome.status_code == 1 {
-            let replacement = self.encode_validator_row(&next_state, prepared.validator)?;
+            let update = port.take_authenticated_update().ok_or_else(|| {
+                FinalChainNativeSessionError::Domain(
+                    "setCommission kernel produced no authenticated update".to_owned(),
+                )
+            })?;
+            let replacement = semantic_port::apply_authenticated_checkpoint_to_snapshot(
+                &mut self.dpos_state,
+                update,
+            )
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
             if replacement.is_empty() {
                 return Err(FinalChainNativeSessionError::Domain(
                     "setCommission serializer produced an empty put".to_owned(),
@@ -817,7 +851,10 @@ impl FinalChainNativeSession<'_> {
                         .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?,
                 ),
             });
-            self.dpos_state = next_state;
+        } else if port.take_authenticated_update().is_some() {
+            return Err(FinalChainNativeSessionError::Domain(
+                "setCommission failed kernel produced an authenticated update".to_owned(),
+            ));
         }
         Ok(FinalChainNativeInvocationResult::Completed(
             FinalChainNativeOutcome {
@@ -866,117 +903,12 @@ impl FinalChainNativeSession<'_> {
         Ok(())
     }
 
-    fn validate_raw_validator(
-        &self,
-        validator: [u8; 20],
-        read: &ConcreteRead<Vec<u8>>,
-    ) -> std::result::Result<(), FinalChainNativeSessionError> {
-        let ConcreteRead::Present(bytes) = read else {
-            return Err(FinalChainNativeSessionError::RawIntegrity(
-                "setCommission validator raw row is not present".to_owned(),
-            ));
-        };
-        let expected = self.validator_facts(&self.dpos_state, validator)?;
-        let rlp = exact_rlp(bytes, "setCommission validator row")?;
-        let observed = if self.final_chain.magnolia_active(self.pending_period) {
-            match rlp
-                .item_count()
-                .map_err(|error| raw_integrity("validator item count", error))?
-            {
-                4 if expected.4 == 0 => decode_legacy_validator(&rlp, 0)?,
-                2 => {
-                    let legacy = rlp
-                        .at(0)
-                        .map_err(|error| raw_integrity("extended validator body", error))?;
-                    let count = rlp
-                        .val_at(1)
-                        .map_err(|error| raw_integrity("extended undelegation count", error))?;
-                    decode_legacy_validator(&legacy, count)?
-                }
-                _ => {
-                    return Err(FinalChainNativeSessionError::RawIntegrity(
-                        "setCommission validator row has the wrong extended shape".to_owned(),
-                    ));
-                }
-            }
-        } else {
-            if rlp
-                .item_count()
-                .map_err(|error| raw_integrity("validator item count", error))?
-                != 4
-            {
-                return Err(FinalChainNativeSessionError::RawIntegrity(
-                    "setCommission validator row has the wrong legacy shape".to_owned(),
-                ));
-            }
-            decode_legacy_validator(&rlp, 0)?
-        };
-        if observed != expected {
-            return Err(FinalChainNativeSessionError::RawIntegrity(
-                "setCommission validator raw/domain facts disagree".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate_raw_owner(
-        &self,
-        validator: [u8; 20],
-        read: &ConcreteRead<Vec<u8>>,
-    ) -> std::result::Result<(), FinalChainNativeSessionError> {
-        let expected = self
-            .dpos_state
-            .validator_metadata
-            .get(&validator)
-            .ok_or_else(|| {
-                FinalChainNativeSessionError::RawIntegrity(
-                    "setCommission validator metadata is absent".to_owned(),
-                )
-            })?
-            .owner;
-        let ConcreteRead::Present(bytes) = read else {
-            return Err(FinalChainNativeSessionError::RawIntegrity(
-                "setCommission owner raw row is not present".to_owned(),
-            ));
-        };
-        if bytes.as_slice() != expected {
-            return Err(FinalChainNativeSessionError::RawIntegrity(
-                "setCommission owner raw/domain facts disagree".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
     fn validator_facts(
         &self,
         snapshot: &DposSnapshot,
         validator: [u8; 20],
     ) -> std::result::Result<(U256, u16, u64, u64, u16), FinalChainNativeSessionError> {
-        let stake = snapshot
-            .total_stakes
-            .get(&validator)
-            .ok_or_else(|| {
-                FinalChainNativeSessionError::RawIntegrity(
-                    "setCommission validator stake is absent".to_owned(),
-                )
-            })?
-            .as_u256();
-        let metadata = snapshot.validator_metadata.get(&validator).ok_or_else(|| {
-            FinalChainNativeSessionError::RawIntegrity(
-                "setCommission validator metadata is absent".to_owned(),
-            )
-        })?;
-        let reward_head = snapshot
-            .reward_reference_graph
-            .read_validator_head(&validator)
-            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        Ok((
-            stake,
-            metadata.commission,
-            metadata.last_commission_change,
-            reward_head,
-            checked_undelegations_count(snapshot, validator)?,
-        ))
+        semantic_port::snapshot_validator_facts(snapshot, validator)
     }
 
     fn encode_validator_row(

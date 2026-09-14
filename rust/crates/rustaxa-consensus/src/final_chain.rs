@@ -7706,55 +7706,16 @@ impl FinalChain {
         commission: u16,
         block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
-        let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
-            return Ok(DposApplyOutcome::mutation_contract_failure(
-                DposContractError::WrongOwnerAcc,
-            ));
-        };
-        if metadata.owner != owner {
-            return Ok(DposApplyOutcome::mutation_contract_failure(
-                DposContractError::WrongOwnerAcc,
-            ));
-        }
-        if commission > DPOS_MAX_COMMISSION {
-            return Ok(DposApplyOutcome::mutation_contract_failure(
-                DposContractError::CommissionOverflow,
-            ));
-        }
-        if metadata.last_commission_change > block_number.as_u64() {
-            anyhow::bail!(
-                "DPoS validator snapshot inconsistency: last commission change is in the future"
-            );
-        }
-        if !snapshot.total_stakes.contains_key(&validator)
-            && Self::dpos_validator_owned_rows_exist(snapshot, validator)
-        {
-            anyhow::bail!(
-                "DPoS validator snapshot inconsistency: orphan rows found without stake row"
-            );
-        }
-        let metadata = snapshot.validator_metadata.get_mut(&validator).unwrap();
-        if self.dpos_commission_change_frequency != 0
-            && block_number.as_u64() - metadata.last_commission_change
-                < u64::from(self.dpos_commission_change_frequency)
-        {
-            return Ok(DposApplyOutcome::mutation_contract_failure(
-                DposContractError::ForbiddenCommissionChange,
-            ));
-        }
-        if self.dpos_commission_change_delta != 0 {
-            let delta = commission.abs_diff(metadata.commission);
-            if delta > self.dpos_commission_change_delta {
-                return Ok(DposApplyOutcome::mutation_contract_failure(
-                    DposContractError::ForbiddenCommissionChange,
-                ));
-            }
-        }
-        metadata.commission = commission;
-        metadata.last_commission_change = block_number.as_u64();
-        Ok(DposApplyOutcome::success(vec![dpos_commission_set_log(
-            validator, commission,
-        )?]))
+        let mut port =
+            native_session::semantic_port::SnapshotCommissionPort::new(snapshot, validator);
+        native_session::semantic_port::apply_set_commission(
+            &mut port,
+            owner,
+            commission,
+            block_number,
+            self.dpos_commission_change_frequency,
+            self.dpos_commission_change_delta,
+        )
     }
 
     fn apply_slashing_transaction(
