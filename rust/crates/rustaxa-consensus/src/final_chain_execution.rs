@@ -2533,6 +2533,23 @@ pub struct FinalChainSystemTransactionFactsRequest {
     pub block_gas_limit: FinalChainGas,
 }
 
+/// Validates leaf response identity before planning and binds owner-selected policy.
+/// StateAPI observations are preserved; a mismatched request or period fails before
+/// any system transaction can be selected or executed.
+fn bind_system_transaction_facts(
+    request: &FinalChainSystemTransactionFactsRequest,
+    mut facts: FinalChainSystemTransactionPlanFact,
+) -> Result<FinalChainSystemTransactionPlanFact, anyhow::Error> {
+    ensure!(
+        facts.request_id == request.request_id && facts.period == request.period,
+        "FINAL_CHAIN_SYSTEM_FACTS_IDENTITY_MISMATCH"
+    );
+    facts.is_pillar_block_period = request.is_pillar_block_period;
+    facts.bridge_contract_address = request.bridge_contract_address;
+    facts.block_gas_limit = request.block_gas_limit;
+    Ok(facts)
+}
+
 /// Terminal result of one application-root FinalChain execution task.
 ///
 /// No session, action cursor, publication plan, or storage handle escapes in
@@ -2563,7 +2580,8 @@ pub trait FinalChainExecutionLeaf {
     ) -> Result<FinalChainExternalEvmPreflightReport, anyhow::Error>;
 
     /// Loads read-only bridge-contract facts for Rust system-transaction
-    /// planning. Implementations must not select or encode transactions.
+    /// planning. Reports must echo request identity; policy fields are rebound by
+    /// the native owner. Implementations must not select or encode transactions.
     fn load_system_transaction_facts(
         &self,
         request: &FinalChainSystemTransactionFactsRequest,
@@ -3210,19 +3228,15 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
 
     if step.action == FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS {
         let system_request = &step.system_transaction_request;
-        let mut facts =
-            leaf.load_system_transaction_facts(&FinalChainSystemTransactionFactsRequest {
-                request_id: system_request.request_id,
-                period: system_request.period,
-                is_pillar_block_period,
-                bridge_contract_address,
-                block_gas_limit: session.request.block_gas_limit,
-            })?;
-        facts.request_id = system_request.request_id;
-        facts.period = system_request.period;
-        facts.is_pillar_block_period = is_pillar_block_period;
-        facts.bridge_contract_address = bridge_contract_address;
-        facts.block_gas_limit = session.request.block_gas_limit;
+        let request = FinalChainSystemTransactionFactsRequest {
+            request_id: system_request.request_id,
+            period: system_request.period,
+            is_pillar_block_period,
+            bridge_contract_address,
+            block_gas_limit: session.request.block_gas_limit,
+        };
+        let facts =
+            bind_system_transaction_facts(&request, leaf.load_system_transaction_facts(&request)?)?;
         let plan = plan_external_evm_system_transactions(facts)?;
         step = final_chain_execution_session_report_system_transactions(
             &mut session,
@@ -5226,6 +5240,58 @@ mod tests {
             system_account_nonce: FinalChainNonce::from_u64(4),
             block_gas_limit: 1_000_000.into(),
         }
+    }
+
+    #[test]
+    fn system_fact_identity_mismatch_prevents_planning() {
+        let valid = system_transaction_plan_fact();
+        let request = FinalChainSystemTransactionFactsRequest {
+            request_id: valid.request_id,
+            period: valid.period,
+            ..Default::default()
+        };
+        for wrong_period in [false, true] {
+            let mut facts = valid.clone();
+            if wrong_period {
+                facts.period = 10.into();
+            } else {
+                facts.request_id = [0x43; 32];
+            }
+            let mut planned = false;
+            let result = bind_system_transaction_facts(&request, facts).and_then(|facts| {
+                planned = true;
+                plan_external_evm_system_transactions(facts)
+            });
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "FINAL_CHAIN_SYSTEM_FACTS_IDENTITY_MISMATCH"
+            );
+            assert!(!planned);
+        }
+    }
+
+    #[test]
+    fn system_fact_policy_is_bound_by_native_owner() {
+        let facts = system_transaction_plan_fact();
+        let request = FinalChainSystemTransactionFactsRequest {
+            request_id: facts.request_id,
+            period: facts.period,
+            is_pillar_block_period: false,
+            bridge_contract_address: [0x88; 20],
+            block_gas_limit: 500_000.into(),
+        };
+        let mut expected = facts.clone();
+        expected.is_pillar_block_period = request.is_pillar_block_period;
+        expected.bridge_contract_address = request.bridge_contract_address;
+        expected.block_gas_limit = request.block_gas_limit;
+        let bound = bind_system_transaction_facts(&request, facts).unwrap();
+        assert_eq!(bound, expected);
+        assert!(
+            plan_external_evm_system_transactions(bound)
+                .unwrap()
+                .transactions
+                .is_empty()
+        );
     }
 
     fn external_evm_state_commit_session() -> (

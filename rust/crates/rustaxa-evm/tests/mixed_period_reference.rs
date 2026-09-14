@@ -232,7 +232,6 @@ struct Adapter<'a> {
     native_context: RefCell<Option<NativeContextParts>>,
     state_api_epoch: StateApiEpoch,
     fixture: &'a Value,
-    state_api_epoch: StateApiEpoch,
 }
 impl ConsensusExecutionPort for Adapter<'_> {
     fn load_final_chain_committed_state(
@@ -1752,7 +1751,6 @@ fn run_period(
         native_context: RefCell::new(None),
         state_api_epoch: StateApiEpoch::new(),
         fixture: period,
-        state_api_epoch: StateApiEpoch::new(),
     };
     initialize_and_recover_final_chain_application_state_at_joint_startup(&chain, &adapter)?;
     let author = fixed(&period["reward_input"]["block_author"]);

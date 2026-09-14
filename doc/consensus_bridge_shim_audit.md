@@ -38,7 +38,7 @@ include a generated bridge header.
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 4619 |
+| `bridge_lines` | 4618 |
 | `shim_lines` | 0 |
 | `cxx_functions` | 74 |
 | `cxx_carriers` | 124 |
@@ -61,7 +61,10 @@ acceptance owns epoch and committed-descriptor validation, while the bridge keep
 the result-count check required before its positional conversion. Finalized-period
 RLP assembly belongs to the native types codec, and certificate bytes/weights are
 moved together without cloning. This keeps the epoch integration below the prior
-bridge-line budget with unchanged carrier/function/handle counts.
+bridge-line budget with unchanged carrier/function/handle counts. System-fact
+request identity is validated by the native owner before planning, which also
+binds pillar/address/gas policy; the bridge carries StateAPI observations and
+transport failure only.
 
 ## CXX Box Factory Inventory
 

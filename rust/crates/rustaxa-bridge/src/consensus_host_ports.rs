@@ -345,25 +345,19 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                     bridge_contract_address: request.bridge_contract_address,
                     block_gas_limit: request.block_gas_limit.as_u64(),
                 })?;
-        ensure!(
-            report.succeeded
-                && report.request_id == request.request_id
-                && report.period == request.period.as_u64(),
-            "FINAL_CHAIN_SYSTEM_FACTS_FAILED: {}",
-            report.error_code
-        );
+        if !report.succeeded {
+            anyhow::bail!("FINAL_CHAIN_SYSTEM_FACTS_FAILED: {}", report.error_code);
+        }
         Ok(rustaxa_consensus::FinalChainSystemTransactionPlanFact {
             request_id: report.request_id,
             period: report.period.into(),
-            is_pillar_block_period: request.is_pillar_block_period,
-            bridge_contract_address: request.bridge_contract_address,
             bridge_contract_found: report.bridge_contract_found,
             bridge_contract_has_code: report.bridge_contract_has_code,
             should_finalize_epoch: report.should_finalize_epoch,
             system_account_nonce: rustaxa_types::FinalChainNonce::from_bytes(
                 &report.system_account_nonce,
             )?,
-            block_gas_limit: request.block_gas_limit,
+            ..Default::default()
         })
     }
 
