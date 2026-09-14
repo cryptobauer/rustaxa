@@ -5,13 +5,13 @@
     "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
   },
   "go_version": "go version go1.24.4 linux/amd64",
-  "scope": "Synthetic Aspen2 activation, disabled-yield EndBlock flush, and two actual multi-entry Go validator-map orders with unnormalized raw traces and complete logical/physical row comparison, plus actual persisted jailed-list retention, equality expiry, empty-list behavior, and a long-lived scheduler witness across decreasing Magnolia-to-Cacti jail duration; no canonical Go map order, snapshot, redelegation fix, general physical-retention, persistence, or production claim",
+  "scope": "Synthetic Aspen2 activation, disabled-yield EndBlock flush, and two actual multi-entry Go validator-map orders with unnormalized raw traces and complete logical/physical row comparison, plus actual persisted jailed-list retention, equality expiry, empty-list behavior, and a long-lived scheduler witness across decreasing Magnolia-to-Cacti jail duration plus a constructor-level committed-state reopen witness that resets the process-local cleanup timer; no canonical Go map order, snapshot, redelegation fix, general physical-retention, persistence, or production claim",
   "public_local_identical": true,
   "sha256": {
-    "public": "1447ffd07e793f8242a99bd3e6b4298a147e99f4926c27bd4d561558fb0f4300",
-    "local": "1447ffd07e793f8242a99bd3e6b4298a147e99f4926c27bd4d561558fb0f4300"
+    "public": "610156d8a69d66e2e10c4e0e7667dbe6e87a6b00126b6a3bff756bac3909ae61",
+    "local": "610156d8a69d66e2e10c4e0e7667dbe6e87a6b00126b6a3bff756bac3909ae61"
   },
-  "exporter_sha256": "d1c16f6a426d015d35e9683b776f3f29b6817605f949465dfd1fd456151d552d",
+  "exporter_sha256": "4385701641d4c58fbaed0dc8ada9cc6d2fc2aa5962d2e571fede0806ff705730",
   "trace_patch": {
     "target": "taraxa/state/state_evm/account.go",
     "sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568"

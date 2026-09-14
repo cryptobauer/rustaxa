@@ -642,6 +642,144 @@
         "period": 6
       }
     ],
+    "reopened_scheduler": {
+      "contract": {
+        "consensus": "the reset is process-local lifecycle state and is absent from the period-2 descriptor, state root, account rows, and storage rows",
+        "go_sources": [
+          "taraxa/state/state_transition/state_transition.go:StateTransition.Init",
+          "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.CleanupJailedValidators"
+        ],
+        "observed": "the long-lived transition caches period 5 at period 2; the reopened transition rewrites the unchanged list at period 3 and caches period 5 again, then skips period 4",
+        "reset": "closing the period-2 transition and constructing a new StateTransition over the same committed state resets nextCleanUpBlock to zero",
+        "scope": "constructor-level committed-state reopen only; this witness does not call API.DiscardConcreteExecution or inject an interruption"
+      },
+      "period_2_live_cleanup": {
+        "after": {
+          "descriptor": {
+            "period": 2,
+            "root": "1f88f48cb362e8a5fdb11ff60e01827faa5acad6e1a868fc4b4c56e1a071ee67"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "05"
+          }
+        ],
+        "ordered_raw_writes": [
+          {
+            "address": "00000000000000000000000000000000000000ee",
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          }
+        ],
+        "period": 2
+      },
+      "period_3_after_reopen": {
+        "after": {
+          "descriptor": {
+            "period": 3,
+            "root": "1f88f48cb362e8a5fdb11ff60e01827faa5acad6e1a868fc4b4c56e1a071ee67"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "05"
+          }
+        ],
+        "ordered_raw_writes": [
+          {
+            "address": "00000000000000000000000000000000000000ee",
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          }
+        ],
+        "period": 3
+      },
+      "period_4_live_cleanup": {
+        "after": {
+          "descriptor": {
+            "period": 4,
+            "root": "1f88f48cb362e8a5fdb11ff60e01827faa5acad6e1a868fc4b4c56e1a071ee67"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "05"
+          }
+        ],
+        "ordered_raw_writes": [],
+        "period": 4
+      }
+    },
     "transaction": {
       "chain_id": 841,
       "consensus_error": "",

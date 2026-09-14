@@ -641,10 +641,11 @@ func runReopenedCleanupSchedulerWitness() map[string]any {
 		"period_3_after_reopen": periodThree,
 		"period_4_live_cleanup": periodFour,
 		"contract": map[string]any{
-			"go_sources": []string{"taraxa/state/api.go:API.Init/API.DiscardConcreteExecution", "taraxa/state/state_transition/state_transition.go:StateTransition.Init", "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.CleanupJailedValidators"},
-			"reset":      "closing the period-2 transition and constructing a new StateTransition over the same committed state resets nextCleanUpBlock to zero, exactly as StateAPI initialization and verified discard/reopen construction do",
+			"go_sources": []string{"taraxa/state/state_transition/state_transition.go:StateTransition.Init", "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.CleanupJailedValidators"},
+			"reset":      "closing the period-2 transition and constructing a new StateTransition over the same committed state resets nextCleanUpBlock to zero",
 			"observed":   "the long-lived transition caches period 5 at period 2; the reopened transition rewrites the unchanged list at period 3 and caches period 5 again, then skips period 4",
 			"consensus":  "the reset is process-local lifecycle state and is absent from the period-2 descriptor, state root, account rows, and storage rows",
+			"scope":      "constructor-level committed-state reopen only; this witness does not call API.DiscardConcreteExecution or inject an interruption",
 		},
 	}
 }

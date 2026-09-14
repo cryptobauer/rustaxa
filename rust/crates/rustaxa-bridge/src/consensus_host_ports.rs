@@ -622,17 +622,22 @@ pub fn consensus_application_finalize(
     })
 }
 
-/// Recovers paired concrete state and native publication without exposing a
-/// chain identity or a C++-driven recovery action loop.
+/// Initializes recovery for the sole fresh application-factory composition.
+///
+/// `createConsensusApplication` is the only caller: it constructs a fresh
+/// `ExternalEvmStateOwner` and `FinalChain`, binds them exclusively, then calls
+/// this private bridge operation before publishing the application handle. It
+/// must not be used as a generic live recovery entry point.
 pub fn consensus_application_recover_final_chain(
     application: &BridgeConsensusApplication,
     external_evm: &ExternalEvmPort,
 ) -> Result<HostFinalChainFinalizeReport> {
     let external_evm = ExternalEvmPortAdapter(external_evm);
-    let report = rustaxa_consensus::recover_final_chain_application_state(
-        application.0.final_chain_for_bridge(),
-        &external_evm,
-    )?;
+    let report =
+        rustaxa_consensus::initialize_and_recover_final_chain_application_state_at_joint_startup(
+            application.0.final_chain_for_bridge(),
+            &external_evm,
+        )?;
     Ok(HostFinalChainFinalizeReport {
         period: report.period.as_u64(),
         block_hash: report.block_hash,

@@ -395,6 +395,34 @@ impl FinalChain {
         self.begin_native_session_inner(Some(request_id), pending_period, expected_parent)
     }
 
+    /// Begins a publication-bound native session from one authenticated live
+    /// StateAPI epoch.
+    ///
+    /// Application execution must use this constructor after the joint-startup
+    /// operation has paired FinalChain with its newly constructed StateAPI.
+    /// The scheduler basis is process-local and authorizes only this exact
+    /// request, parent, period, and runtime generation.
+    pub fn begin_native_session_bound_at_state_api_epoch(
+        &self,
+        request_id: [u8; 32],
+        state_api_epoch: u64,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let basis = self.reward_scheduler_basis(
+            request_id,
+            state_api_epoch,
+            pending_period,
+            expected_parent,
+        )?;
+        self.begin_native_session_bound_with_scheduler_basis(
+            request_id,
+            pending_period,
+            expected_parent,
+            basis,
+        )
+    }
+
     pub(super) fn reward_scheduler_basis(
         &self,
         request_id: [u8; 32],

@@ -416,6 +416,7 @@ fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Resul
             staged: RefCell::new(None),
             native: RefCell::new(None),
             native_context: RefCell::new(None),
+            state_api_epoch: StateApiEpoch::new(),
             fixture: period,
             state_api_epoch: StateApiEpoch::new(),
         },
@@ -425,6 +426,7 @@ fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Resul
         commits: Cell::new(0),
         original_projection_hash: Cell::new(None),
     };
+    initialize_and_recover_final_chain_application_state_at_joint_startup(&chain, &adapter.inner)?;
     let execution_request = request(fixture, period)?;
     chain.ensure_period_data(number.into(), &period_data(&execution_request))?;
     let outcome = execute_final_chain_application_task(
@@ -514,7 +516,8 @@ fn recover_period(root: &Path, fixture: &Value, index: usize, committed: bool) -
         discards: Cell::new(0),
         state_api_epoch: StateApiEpoch::new(),
     };
-    let recovered = recover_final_chain_application_state(&chain, &recovery)?;
+    let recovered =
+        initialize_and_recover_final_chain_application_state_at_joint_startup(&chain, &recovery)?;
     ensure!(recovered.error_code.is_empty());
     ensure!(chain.last_block_number_typed()?.as_u64() == period_number - u64::from(!committed));
     ensure!(recovery.discards.get() == usize::from(!committed));
@@ -705,6 +708,7 @@ fn mixed_invalid_reports_cannot_contaminate_retry_or_publication() -> Result<()>
                 staged: RefCell::new(None),
                 native: RefCell::new(None),
                 native_context: RefCell::new(None),
+                state_api_epoch: StateApiEpoch::new(),
                 fixture: period,
                 state_api_epoch: StateApiEpoch::new(),
             },
@@ -714,6 +718,10 @@ fn mixed_invalid_reports_cannot_contaminate_retry_or_publication() -> Result<()>
             commits: Cell::new(0),
             original_projection_hash: Cell::new(None),
         };
+        initialize_and_recover_final_chain_application_state_at_joint_startup(
+            &chain,
+            &adapter.inner,
+        )?;
         let execution_request = request(&fixture, period)?;
         chain.ensure_period_data(2_u64.into(), &period_data(&execution_request))?;
         let error = execute_final_chain_application_task(

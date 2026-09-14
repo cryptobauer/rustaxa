@@ -2134,11 +2134,9 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
 /// The caller echoes the accepted identity/transition facts and supplies the
 /// observed committed descriptor. Rust compares them with the session-owned
 /// intent and commit plan, then advances only an exactly committed outcome to
-/// publication. An exactly correlated discarded outcome clears the marker;
-/// mismatched or rejected outcomes keep it durable so restart recovery can
-/// arbitrate the ambiguous boundary.
+/// publication. Discarded or rejected outcomes keep the marker durable so
+/// restart recovery can require explicit StateAPI reconstruction evidence.
 pub fn final_chain_execution_session_report_external_evm_state_commit_result(
-    final_chain: &FinalChain,
     session: &mut FinalChainExecutionSession,
     result: FinalChainExternalEvmStateCommitResult,
 ) -> Result<FinalChainExternalEvmCommitDecision, anyhow::Error> {
@@ -2182,7 +2180,6 @@ pub fn final_chain_execution_session_report_external_evm_state_commit_result(
             session.error_code.clone(),
         ));
     }
-    let correlated_discard = status == FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED;
     let decision = final_chain_execution_session_report_external_evm_lifecycle(
         session,
         FinalChainExternalEvmLifecycleReport {
@@ -2199,9 +2196,6 @@ pub fn final_chain_execution_session_report_external_evm_state_commit_result(
             error_code: result.error_code,
         },
     );
-    if correlated_discard && decision.status == FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED {
-        final_chain.clear_external_evm_pending_publication_marker()?;
-    }
     Ok(decision)
 }
 
@@ -2697,11 +2691,14 @@ fn discard_concrete_after_failure<E: FinalChainExecutionLeaf>(
     request: &FinalChainEvmExecutionRequest,
     cause: anyhow::Error,
 ) -> anyhow::Error {
-    if let Err(marker_error) = decode_concrete_execution_marker(&request.concrete_marker_rlp) {
-        return anyhow::anyhow!(
-            "{cause:#}; FINAL_CHAIN_CONCRETE_DISCARD_MARKER_INVALID: {marker_error:#}"
-        );
-    }
+    let marker = match decode_concrete_execution_marker(&request.concrete_marker_rlp) {
+        Ok(marker) => marker,
+        Err(marker_error) => {
+            return anyhow::anyhow!(
+                "{cause:#}; FINAL_CHAIN_CONCRETE_DISCARD_MARKER_INVALID: {marker_error:#}"
+            );
+        }
+    };
     let marker_hash = concrete_state_bytes_digest(&request.concrete_marker_rlp);
     let discard_request = FinalChainExternalEvmDiscardRequest {
         request_id: request.request_id,
@@ -2735,7 +2732,7 @@ fn discard_concrete_after_failure<E: FinalChainExecutionLeaf>(
             discard.error_code
         );
     }
-    if let Err(reset_error) = final_chain.reset_reward_scheduler_after_verified_reopen(
+    if let Err(reset_error) = final_chain.record_reward_scheduler_verified_discard(
         discard.previous_state_api_epoch,
         discard.state_api_epoch,
         discard.prior_state.period,
@@ -2744,7 +2741,55 @@ fn discard_concrete_after_failure<E: FinalChainExecutionLeaf>(
             "{cause:#}; FINAL_CHAIN_REWARD_SCHEDULER_DISCARD_RESET_FAILED: {reset_error:#}"
         );
     }
-    if let Err(clear_error) = final_chain.clear_external_evm_pending_publication_marker() {
+    let reopened =
+        match leaf.load_committed_state_descriptor(&FinalChainExternalEvmPreflightRequest {
+            request_id: request.request_id,
+            next_period: request.period,
+            expected_prior: request.prior_state,
+            concrete_chain_identity: marker.identity.chain_id,
+        }) {
+            Ok(reopened) => reopened,
+            Err(reopen_error) => {
+                return anyhow::anyhow!(
+                    "{cause:#}; FINAL_CHAIN_CONCRETE_DISCARD_REOPEN_FAILED: {reopen_error:#}"
+                );
+            }
+        };
+    let reopened_provenance = match decode_concrete_state_provenance(
+        &reopened.concrete_provenance_rlp,
+    ) {
+        Ok(provenance) => provenance,
+        Err(provenance_error) => {
+            return anyhow::anyhow!(
+                "{cause:#}; FINAL_CHAIN_CONCRETE_DISCARD_REOPEN_PROVENANCE_INVALID: {provenance_error:#}"
+            );
+        }
+    };
+    if !reopened.succeeded
+        || reopened.request_id != request.request_id
+        || reopened.state_api_epoch != discard.state_api_epoch
+        || reopened.committed != request.prior_state
+        || !reopened.pending_concrete_marker_rlp.is_empty()
+        || reopened_provenance.identity != marker.identity
+        || reopened_provenance.committed_state.period != request.prior_state.period.as_u64()
+        || reopened_provenance.committed_state.root != request.prior_state.state_root
+    {
+        return anyhow::anyhow!(
+            "{cause:#}; FINAL_CHAIN_CONCRETE_DISCARD_REOPEN_MISMATCH: {}",
+            reopened.error_code
+        );
+    }
+    if let Err(reset_error) = final_chain
+        .complete_reward_scheduler_verified_reopen(reopened.state_api_epoch, reopened.committed)
+    {
+        return anyhow::anyhow!(
+            "{cause:#}; FINAL_CHAIN_REWARD_SCHEDULER_DISCARD_REOPEN_FAILED: {reset_error:#}"
+        );
+    }
+    if let Err(clear_error) = final_chain.complete_reward_scheduler_verified_discard_cleanup(
+        request.request_id,
+        discard.state_api_epoch,
+    ) {
         return anyhow::anyhow!(
             "{cause:#}; FINAL_CHAIN_CONCRETE_PENDING_PUBLICATION_CLEAR_AFTER_DISCARD_FAILED: {clear_error:#}"
         );
@@ -2830,7 +2875,10 @@ fn classify_ambiguous_concrete_commit<E: FinalChainExecutionLeaf>(
             "{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_PRIOR_WITH_FOREIGN_MARKER"
         );
         final_chain
-            .clear_external_evm_pending_publication_marker()
+            .clear_uncommitted_external_evm_pending_publication_marker(
+                request.request_id,
+                observed.state_api_epoch,
+            )
             .with_context(|| {
                 format!("{cause:#}; FINAL_CHAIN_CONCRETE_PENDING_PUBLICATION_CLEAR_FAILED")
             })?;
@@ -2903,17 +2951,59 @@ fn orphaned_concrete_discard_request(
     })
 }
 
-/// Recovers the paired concrete-state and native FinalChain lifecycle through
-/// one application-owned operation.
+/// Initializes and recovers the paired concrete-state and native FinalChain
+/// lifecycle through the sole joint-startup application composition.
 ///
-/// The concrete leaf only opens state, reports durable facts, and executes an
-/// exact marker discard authorized by Rust. Rust derives the chain identity,
-/// validates every observed descriptor/provenance transition, and owns the
-/// retry and FinalChain publication decision.
+/// The caller must have freshly constructed both the supplied FinalChain and
+/// the leaf's StateAPI, bound them exclusively, and must invoke this operation
+/// before exposing either owner for normal execution. The startup privilege is
+/// one-shot and tied to the first validated nonzero StateAPI epoch. A generic
+/// recovery call cannot manufacture the timer-zero restart fact.
+pub fn initialize_and_recover_final_chain_application_state_at_joint_startup<
+    E: FinalChainExecutionLeaf,
+>(
+    final_chain: &FinalChain,
+    leaf: &E,
+) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
+    let (report, state_api_epoch) =
+        recover_final_chain_application_state_inner(final_chain, leaf, true)?;
+    if recovery_report_completed(&report) {
+        final_chain.complete_reward_scheduler_recovery(state_api_epoch)?;
+    }
+    Ok(report)
+}
+
+/// Retries recovery for an epoch already bound by joint startup or verified
+/// StateAPI reopen.
+///
+/// This operation never grants startup authority to an unbound FinalChain.
 pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
     final_chain: &FinalChain,
     leaf: &E,
 ) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
+    let (report, state_api_epoch) =
+        recover_final_chain_application_state_inner(final_chain, leaf, false)?;
+    if recovery_report_completed(&report) {
+        final_chain.complete_reward_scheduler_recovery(state_api_epoch)?;
+    }
+    Ok(report)
+}
+
+fn recovery_report_completed(report: &FinalChainExternalEvmPublicationReport) -> bool {
+    !report.recovery_discard_required
+        && report.error_code.is_empty()
+        && matches!(
+            report.status,
+            FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+                | FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+        )
+}
+
+fn recover_final_chain_application_state_inner<E: FinalChainExecutionLeaf>(
+    final_chain: &FinalChain,
+    leaf: &E,
+    authorize_joint_startup: bool,
+) -> Result<(FinalChainExternalEvmPublicationReport, u64), anyhow::Error> {
     let expected_prior = final_chain.committed_state_descriptor()?;
     let concrete_chain_identity = final_chain.concrete_chain_identity()?;
     let request_id = [0; 32];
@@ -2943,6 +3033,16 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
             && provenance.committed_state.root == observed.committed.state_root,
         "FINAL_CHAIN_CONCRETE_RECOVERY_PROVENANCE_MISMATCH"
     );
+    if authorize_joint_startup {
+        final_chain.authorize_reward_scheduler_joint_startup(
+            observed.state_api_epoch,
+            expected_prior.period,
+        )?;
+    } else {
+        final_chain.validate_reward_scheduler_recovery_epoch(observed.state_api_epoch)?;
+    }
+    final_chain
+        .complete_reward_scheduler_verified_reopen(observed.state_api_epoch, observed.committed)?;
     let has_pending_publication = final_chain.has_external_evm_pending_publication()?;
     if !has_pending_publication {
         ensure!(
@@ -2969,7 +3069,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
                 "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_DISCARD_MISMATCH: {}",
                 discarded.error_code
             );
-            final_chain.reset_reward_scheduler_after_verified_reopen(
+            final_chain.record_reward_scheduler_verified_discard(
                 discarded.previous_state_api_epoch,
                 discarded.state_api_epoch,
                 discarded.prior_state.period,
@@ -2985,6 +3085,10 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
                 "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_REOPEN_MISMATCH: {}",
                 reopened.error_code
             );
+            final_chain.complete_reward_scheduler_verified_reopen(
+                reopened.state_api_epoch,
+                reopened.committed,
+            )?;
             observed = reopened;
         }
     } else {
@@ -3005,7 +3109,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
         observed.state_api_epoch,
     )?;
     if !report.recovery_discard_required {
-        return Ok(report);
+        return Ok((report, observed.state_api_epoch));
     }
     ensure!(
         report.status == FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED
@@ -3034,7 +3138,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
         "FINAL_CHAIN_CONCRETE_RECOVERY_DISCARD_MISMATCH: {}",
         discarded.error_code
     );
-    final_chain.reset_reward_scheduler_after_verified_reopen(
+    final_chain.record_reward_scheduler_verified_discard(
         discarded.previous_state_api_epoch,
         discarded.state_api_epoch,
         discarded.prior_state.period,
@@ -3049,6 +3153,8 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
         "FINAL_CHAIN_CONCRETE_RECOVERY_REOPEN_MISMATCH: {}",
         reopened.error_code
     );
+    final_chain
+        .complete_reward_scheduler_verified_reopen(reopened.state_api_epoch, reopened.committed)?;
     report = final_chain.recover_external_evm_pending_publication(
         reopened.committed.period.as_u64(),
         reopened.committed.state_root,
@@ -3066,7 +3172,7 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
         "FINAL_CHAIN_CONCRETE_RECOVERY_RETRY_REJECTED: {}",
         report.error_code
     );
-    Ok(report)
+    Ok((report, reopened.state_api_epoch))
 }
 
 /// Executes one complete FinalChain task behind the application root.
@@ -3358,7 +3464,6 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
         )?;
     }
     let decision = final_chain_execution_session_report_external_evm_state_commit_result(
-        final_chain,
         &mut session,
         state_commit,
     )?;
@@ -5207,6 +5312,23 @@ mod tests {
                 147, 237, 60, 96, 145, 90, 126, 38, 159, 89, 33, 125, 225,
             ]
         );
+    }
+
+    #[test]
+    fn recovery_authority_completes_only_for_successful_terminal_reports() {
+        let mut report = FinalChainExternalEvmPublicationReport {
+            status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
+            error_code: "rejected".to_owned(),
+            ..Default::default()
+        };
+        assert!(!recovery_report_completed(&report));
+
+        report.status = FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED;
+        report.error_code.clear();
+        assert!(recovery_report_completed(&report));
+
+        report.recovery_discard_required = true;
+        assert!(!recovery_report_completed(&report));
     }
 
     fn state_commit_request(

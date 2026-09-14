@@ -1226,6 +1226,47 @@ mod tests {
     }
 
     #[test]
+    fn committed_state_reopen_resets_go_cleanup_scheduler() {
+        let public: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../experiments/evm_feasibility/fixtures/current_rewards_public.json"
+        )))
+        .unwrap();
+        let local: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../experiments/evm_feasibility/fixtures/current_rewards_local.json"
+        )))
+        .unwrap();
+        assert_eq!(public, local);
+
+        let witness = &public["jailed_validator_cleanup"]["reopened_scheduler"];
+        assert_eq!(
+            witness["period_2_live_cleanup"]["ordered_raw_writes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            witness["period_3_after_reopen"]["ordered_raw_writes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            witness["period_4_live_cleanup"]["ordered_raw_writes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            witness["period_2_live_cleanup"]["after"]["descriptor"]["root"],
+            witness["period_3_after_reopen"]["after"]["descriptor"]["root"]
+        );
+    }
+
+    #[test]
     fn multi_validator_map_uses_one_observed_go_order_and_same_final_state() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1654,22 +1695,18 @@ mod tests {
         with_current_reward_chain(|chain| {
             seed_committed_jail(chain, 3);
             let reward_plan = plan(Vec::new());
-            let basis = chain
-                .reward_scheduler_basis(
+            chain
+                .authorize_reward_scheduler_joint_startup(17, FinalChainBlockNumber::GENESIS)
+                .unwrap();
+            chain.complete_reward_scheduler_recovery(17).unwrap();
+            let mut session = chain
+                .begin_native_session_bound_at_state_api_epoch(
                     reward_plan.request_id,
                     17,
                     1.into(),
                     FinalChainBlockNumber::GENESIS,
                 )
                 .unwrap();
-            let mut session = chain
-                .begin_native_session_bound(
-                    reward_plan.request_id,
-                    1.into(),
-                    FinalChainBlockNumber::GENESIS,
-                )
-                .unwrap();
-            session.reward_scheduler_basis = Some(basis);
             let state = RewardState::from_snapshot(&session.dpos_state);
 
             let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
@@ -1714,22 +1751,18 @@ mod tests {
         with_reward_chain_and_jail_policy(1, FinalChainBlockNumber::GENESIS, 100, 1, |chain| {
             seed_committed_jail(chain, 1);
             let reward_plan = plan(Vec::new());
-            let basis = chain
-                .reward_scheduler_basis(
+            chain
+                .authorize_reward_scheduler_joint_startup(17, FinalChainBlockNumber::GENESIS)
+                .unwrap();
+            chain.complete_reward_scheduler_recovery(17).unwrap();
+            let mut session = chain
+                .begin_native_session_bound_at_state_api_epoch(
                     reward_plan.request_id,
                     17,
                     1.into(),
                     FinalChainBlockNumber::GENESIS,
                 )
                 .unwrap();
-            let mut session = chain
-                .begin_native_session_bound(
-                    reward_plan.request_id,
-                    1.into(),
-                    FinalChainBlockNumber::GENESIS,
-                )
-                .unwrap();
-            session.reward_scheduler_basis = Some(basis);
             let state = RewardState::from_snapshot(&session.dpos_state);
 
             let outcome = session.finish_rewards(&reward_plan, &state).unwrap();

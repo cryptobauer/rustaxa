@@ -110,7 +110,8 @@ def main() -> None:
             "Synthetic Aspen2 activation, disabled-yield EndBlock flush, and two actual multi-entry Go "
             "validator-map orders with unnormalized raw traces and complete logical/physical row comparison, "
             "plus actual persisted jailed-list retention, equality expiry, empty-list behavior, and a "
-            "long-lived scheduler witness across decreasing Magnolia-to-Cacti jail duration; "
+            "long-lived scheduler witness across decreasing Magnolia-to-Cacti jail duration plus "
+            "a constructor-level committed-state reopen witness that resets the process-local cleanup timer; "
             "no canonical Go map order, snapshot, redelegation fix, general physical-retention, persistence, "
             "or production claim"
         ),

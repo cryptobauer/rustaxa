@@ -1092,7 +1092,7 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
             ordered: false,
             state_api_epoch: StateApiEpoch::new(),
         };
-        recover_final_chain_application_state(&chain, &adapter)?;
+        initialize_and_recover_final_chain_application_state_at_joint_startup(&chain, &adapter)?;
         let error = execute_final_chain_application_task(
             &chain,
             request(first)?,
@@ -1178,7 +1178,9 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
             discards: Cell::new(0),
             state_api_epoch: StateApiEpoch::new(),
         };
-        let report = recover_final_chain_application_state(&chain, &recovery)?;
+        let report = initialize_and_recover_final_chain_application_state_at_joint_startup(
+            &chain, &recovery,
+        )?;
         ensure!(
             report.error_code.is_empty(),
             "recovery rejected: {}",
@@ -1314,7 +1316,9 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
                 ordered: false,
                 state_api_epoch: StateApiEpoch::new(),
             };
-            recover_final_chain_application_state(&chain, &adapter)?;
+            initialize_and_recover_final_chain_application_state_at_joint_startup(
+                &chain, &adapter,
+            )?;
             let report = execute_final_chain_application_task(
                 &chain,
                 request(period)?,
@@ -1466,7 +1470,7 @@ fn run_signed_periods(ordered: bool) -> Result<()> {
             ordered,
             state_api_epoch: StateApiEpoch::new(),
         };
-        recover_final_chain_application_state(&chain, &adapter)?;
+        initialize_and_recover_final_chain_application_state_at_joint_startup(&chain, &adapter)?;
         let missing_intent = FinalChainExternalEvmStateCommitIntent {
             state_api_epoch: adapter.state_api_epoch.current(),
             ..Default::default()

@@ -150,6 +150,7 @@ pub use final_chain_execution::{
     FinalChainExternalEvmTransactionPublication, FinalChainSystemTransactionFactsRequest,
     FinalChainSystemTransactionPlan, FinalChainSystemTransactionPlanFact,
     FinalChainSystemTransactionReport, FinalChainSystemTransactionRequest,
+    initialize_and_recover_final_chain_application_state_at_joint_startup,
     recover_final_chain_application_state,
 };
 pub(crate) use final_chain_execution::{

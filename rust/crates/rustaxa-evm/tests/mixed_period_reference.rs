@@ -230,6 +230,7 @@ struct Adapter<'a> {
     staged: RefCell<Option<Staged>>,
     native: RefCell<Option<MixedNativeExecutionPort<'a>>>,
     native_context: RefCell<Option<NativeContextParts>>,
+    state_api_epoch: StateApiEpoch,
     fixture: &'a Value,
     state_api_epoch: StateApiEpoch,
 }
@@ -309,8 +310,9 @@ impl ConsensusExecutionPort for Adapter<'_> {
             "fixture transaction count"
         );
 
-        let session = self.chain.begin_native_session_bound(
+        let session = self.chain.begin_native_session_bound_at_state_api_epoch(
             request.request_id,
+            request.state_api_epoch,
             request.period,
             request.prior_state.period,
         )?;
@@ -1748,9 +1750,11 @@ fn run_period(
         staged: RefCell::new(None),
         native: RefCell::new(None),
         native_context: RefCell::new(None),
+        state_api_epoch: StateApiEpoch::new(),
         fixture: period,
         state_api_epoch: StateApiEpoch::new(),
     };
+    initialize_and_recover_final_chain_application_state_at_joint_startup(&chain, &adapter)?;
     let author = fixed(&period["reward_input"]["block_author"]);
     let execution_request = request(fixture, period)?;
     chain.ensure_period_data(
