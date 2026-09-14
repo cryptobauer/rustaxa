@@ -2318,7 +2318,7 @@ mod tests {
                 assert_eq!(undelegated.status, FinalChainNativeStatus::Success);
                 assert_eq!(undelegated.output, abi_word_from_u64(1));
                 assert!(undelegated.account_mutations.is_empty());
-                assert_eq!(state.account_reads.get(), 1);
+                assert_eq!(state.account_reads.get(), 0);
                 assert_eq!(undelegated.raw_mutations.len(), 16);
                 assert_eq!(
                     undelegated.raw_mutations[0].key,
@@ -2361,7 +2361,7 @@ mod tests {
                 let confirmed = completed(session.invoke(&confirm, quote, &state).unwrap());
                 assert_eq!(confirmed.status, FinalChainNativeStatus::Success);
                 assert_eq!(confirmed.raw_mutations.len(), 8);
-                assert_eq!(state.account_reads.get(), 3);
+                assert_eq!(state.account_reads.get(), 2);
                 assert_eq!(
                     confirmed.account_mutations,
                     vec![
@@ -2600,7 +2600,7 @@ mod tests {
                 assert!(confirmed.account_mutations.is_empty());
                 assert!(confirmed.raw_mutations.is_empty());
                 assert!(confirmed.logs.is_empty());
-                assert_eq!(state.account_reads.get(), 1);
+                assert_eq!(state.account_reads.get(), 0);
             },
         );
     }
@@ -2672,7 +2672,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_cancellation_preserves_full_width_reads_and_typed_read_errors() {
+    fn selected_cancellation_skips_zero_reward_account_reads() {
         with_chain_ficus(
             "selected-cancel-full-width",
             FinalChainBlockNumber::GENESIS,
@@ -2715,7 +2715,7 @@ mod tests {
                 let canceled = invoke_custody(&mut session, &state, &cancel);
                 assert_eq!(canceled.status, FinalChainNativeStatus::Success);
                 assert!(canceled.account_mutations.is_empty());
-                assert_eq!(state.account_reads.get(), reads_before_cancel + 1);
+                assert_eq!(state.account_reads.get(), reads_before_cancel);
             },
         );
 
@@ -2757,18 +2757,10 @@ mod tests {
                     address_word_input(DPOS_CANCEL_UNDELEGATE_SELECTOR, VALIDATOR),
                     DPOS_UNDELEGATE_GAS,
                 );
-                let quote = session.prepare(&cancel, &missing_account).unwrap();
-                assert_eq!(
-                    session
-                        .invoke(&cancel, quote, &missing_account)
-                        .unwrap_err(),
-                    FinalChainNativeSessionError::StateRead(
-                        FinalChainNativeStateReadError::Invariant(format!(
-                            "fixture account is unavailable: {DPOS_CONTRACT_ADDRESS:?}"
-                        ))
-                    )
-                );
-                assert_eq!(missing_account.account_reads.get(), 1);
+                let canceled = invoke_custody(&mut session, &missing_account, &cancel);
+                assert_eq!(canceled.status, FinalChainNativeStatus::Success);
+                assert!(canceled.account_mutations.is_empty());
+                assert_eq!(missing_account.account_reads.get(), 0);
             },
         );
     }

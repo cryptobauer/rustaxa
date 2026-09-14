@@ -1,7 +1,7 @@
 {
   "exporter_sha256": "4c8d57a2524bca911e037bcd2f2257070aa12b4e01b558956a572c5a7b5513be",
   "go_version": "go version go1.24.4 linux/amd64",
-  "harness_sha256": "f0e08017ae984073c0ac9af8e6fa013cdb0903bbcdec1ff387581c58a06927ae",
+  "harness_sha256": "18e436cf766586b5eb81ea81c06aa6ff5a1c9627ded71e30ad0b1af0891e24bd",
   "instrumentation": {
     "insertion": "synchronous copy-only observer before irreversible raw mutation body",
     "observer_sha256": "739435d3b15fca029de8b92c5bcb07eddbc745801828644358ee6b25e403dad5",

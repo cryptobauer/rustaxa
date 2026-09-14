@@ -7413,16 +7413,13 @@ impl FinalChain {
             }
             Err(error) => return Err(error.into()),
         };
-        // Preserve the legacy HashMap kernel's materializing balance read while
-        // allowing the staged full-width port to treat a zero reward as a true
-        // no-effect path, matching the Go `reward > 0` guard.
-        let dpos_contract_balance = accounts.account(DPOS_CONTRACT_ADDRESS)?.balance;
-        if reward_exact != BigUint::default()
-            && dpos_contract_balance < BigInt::from(reward_exact.clone())
-        {
-            anyhow::bail!(
-                "Rust FinalChain::finalize DPoS contract balance insufficient for reward claim"
-            );
+        if reward_exact != BigUint::default() {
+            let dpos_contract_balance = accounts.account(DPOS_CONTRACT_ADDRESS)?.balance;
+            if dpos_contract_balance < BigInt::from(reward_exact.clone()) {
+                anyhow::bail!(
+                    "Rust FinalChain::finalize DPoS contract balance insufficient for reward claim"
+                );
+            }
         }
         let reward = DposTokenAmount::try_from_be_slice(&reward_exact.to_bytes_be())
             .map_err(|error| anyhow::anyhow!(error))?;

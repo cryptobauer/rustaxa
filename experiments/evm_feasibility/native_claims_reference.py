@@ -59,7 +59,10 @@ def run_reference(revision: str) -> bytes:
             (REWARD_SUPPORT, "func nativeCancelRewardSupportMain() {"),
         )
         for path, replacement in supports:
-            text = path.read_text().replace("func main() {", replacement, 1)
+            text = path.read_text()
+            if text.count("func main() {") != 1:
+                raise RuntimeError(f"claims support main changed: {path.name}")
+            text = text.replace("func main() {", replacement, 1)
             (command / path.name).write_text(text)
         (command / GO_SOURCE.name).write_bytes(GO_SOURCE.read_bytes())
         return subprocess.check_output(
@@ -144,7 +147,7 @@ def main() -> None:
             if data != (FIXTURES / f"{label}.json").read_bytes():
                 raise RuntimeError(f"{label}: claims fixture is stale")
         recorded = json.loads((FIXTURES / "manifest.json").read_text())
-        for key in ("references", "instrumentation", "support_sha256", "sha256", "exporter_sha256"):
+        for key in ("references", "instrumentation", "support_sha256", "sha256", "exporter_sha256", "harness_sha256"):
             if recorded[key] != manifest[key]:
                 raise RuntimeError(f"claims manifest {key} is stale")
 
