@@ -46,7 +46,8 @@ class ExternalEvmStateOwner final {
   rustaxa::HostFinalChainExecutionReport executeTransactions(const rustaxa::HostFinalChainExecutionRequest& request);
   rustaxa::HostFinalChainRewardsReport distributeRewards(const rustaxa::HostFinalChainRewardsRequest& request);
   rustaxa::HostFinalChainStateCommitReport commitState(const rustaxa::HostFinalChainStateCommitRequest& request);
-  rustaxa::HostFinalChainPreflightReport discardState(const rustaxa::HostFinalChainDiscardRequest& request);
+  rustaxa::HostFinalChainPreflightReport discardState(rust::Slice<const uint8_t> concrete_marker_rlp,
+                                                      uint64_t expected_state_api_epoch);
   rustaxa::HostPillarAnchorStateReport loadPillarAnchorState(
       const rustaxa::HostPillarAnchorStateRequest& request) const;
   rustaxa::HostDagGasBatch estimateDagTransactionGas(const rustaxa::HostDagGasBatch& request) const;

@@ -3,11 +3,12 @@
 #include <cstdint>
 #include <memory>
 
+#include "rust/cxx.h"
+
 namespace rustaxa {
 struct CanonicalBytes;
 struct HostFinalChainExecutionReport;
 struct HostFinalChainExecutionRequest;
-struct HostFinalChainDiscardRequest;
 struct HostFinalChainPreflightReport;
 struct HostFinalChainPreflightRequest;
 struct HostFinalChainRewardsReport;
@@ -161,8 +162,8 @@ class ExternalEvmPort final {
   rustaxa::HostFinalChainStateCommitReport consensusCommitFinalChainState(
       const rustaxa::HostFinalChainStateCommitRequest& request) const;
   /** Discards one exact staged StateAPI marker and reports the lock-coherent concrete state after reopening. */
-  rustaxa::HostFinalChainPreflightReport consensusDiscardFinalChainState(
-      const rustaxa::HostFinalChainDiscardRequest& request) const;
+  rustaxa::HostFinalChainPreflightReport consensusDiscardFinalChainState(rust::Slice<const uint8_t> concrete_marker_rlp,
+                                                                         uint64_t expected_state_api_epoch) const;
   /** Loads the exact finalized header/bridge facts needed for pillar restart recovery. */
   rustaxa::HostPillarAnchorStateReport consensusLoadPillarAnchorState(
       const rustaxa::HostPillarAnchorStateRequest& request) const;

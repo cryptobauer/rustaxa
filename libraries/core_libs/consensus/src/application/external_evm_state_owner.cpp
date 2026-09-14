@@ -395,19 +395,19 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmStateOwner::commitState(
 }
 
 rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::discardState(
-    const rustaxa::HostFinalChainDiscardRequest& request) {
+    rust::Slice<const uint8_t> concrete_marker_rlp, uint64_t expected_state_api_epoch) {
   rustaxa::HostFinalChainPreflightReport report{};
   const std::scoped_lock lock(mutex_);
   try {
     if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
-    if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
+    if (!expected_state_api_epoch || expected_state_api_epoch != state_api_epoch_) {
       throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
     }
     // From this point any exception is ambiguous: Go may already have closed
     // and reconstructed its StateTransition. Keep the owner poisoned until
     // every descriptor/provenance/pending check below succeeds.
     state_api_epoch_valid_ = false;
-    state_api_.discard_concrete_execution(fromRustBytes(request.concrete_marker_rlp));
+    state_api_.discard_concrete_execution(bytes(concrete_marker_rlp.begin(), concrete_marker_rlp.end()));
     state_api_epoch_ = nextStateApiEpoch();
     report.state_api_epoch = state_api_epoch_;
     const auto descriptor = state_api_.get_last_committed_state_descriptor();

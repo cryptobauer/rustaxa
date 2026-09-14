@@ -210,6 +210,9 @@ impl ConsensusExecutionPort for FaultAdapter<'_> {
         &self,
         request: &FinalChainExternalEvmStateCommitIntent,
     ) -> Result<FinalChainExternalEvmStateCommitResult> {
+        self.inner
+            .state_api_epoch
+            .validate(request.state_api_epoch)?;
         self.commits.set(self.commits.get() + 1);
         self.inner
             .chain
@@ -262,6 +265,7 @@ struct RecoveryLeaf<'a> {
     path: &'a Path,
     chain_id: [u8; 32],
     discards: Cell<usize>,
+    state_api_epoch: StateApiEpoch,
 }
 impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
     fn load_committed_state_descriptor(
@@ -275,6 +279,7 @@ impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
         let observed = ConcreteStateLifecycle::inspect_existing(self.path, self.chain_id)?;
         Ok(FinalChainExternalEvmPreflightReport {
             request_id: request.request_id,
+            state_api_epoch: self.state_api_epoch.current(),
             committed: FinalChainExternalEvmCommittedStateDescriptor {
                 period: observed.committed.period,
                 state_root: observed.committed.state_root,
@@ -289,6 +294,8 @@ impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
         &self,
         request: &FinalChainExternalEvmDiscardRequest,
     ) -> Result<FinalChainExternalEvmDiscardReport> {
+        self.state_api_epoch
+            .validate(request.expected_state_api_epoch)?;
         let mut concrete = ConcreteStateLifecycle::open(
             self.path,
             self.chain_id,
@@ -307,9 +314,19 @@ impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
             observed.pending_marker_rlp.is_empty(),
             "recovery discard pending marker"
         );
+        ensure!(
+            observed.committed.period == request.prior_state.period
+                && observed.committed.state_root == request.prior_state.state_root,
+            "recovery discard committed descriptor"
+        );
+        let (previous_state_api_epoch, state_api_epoch) = self
+            .state_api_epoch
+            .replace_after_discard(request.expected_state_api_epoch)?;
         self.discards.set(self.discards.get() + 1);
         Ok(FinalChainExternalEvmDiscardReport {
             request_id: request.request_id,
+            previous_state_api_epoch,
+            state_api_epoch,
             period: request.period,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
             marker_hash: request.marker_hash,
@@ -400,6 +417,7 @@ fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Resul
             native: RefCell::new(None),
             native_context: RefCell::new(None),
             fixture: period,
+            state_api_epoch: StateApiEpoch::new(),
         },
         fault,
         executions: Cell::new(0),
@@ -494,6 +512,7 @@ fn recover_period(root: &Path, fixture: &Value, index: usize, committed: bool) -
         path: &state_path,
         chain_id: identity,
         discards: Cell::new(0),
+        state_api_epoch: StateApiEpoch::new(),
     };
     let recovered = recover_final_chain_application_state(&chain, &recovery)?;
     ensure!(recovered.error_code.is_empty());
@@ -687,6 +706,7 @@ fn mixed_invalid_reports_cannot_contaminate_retry_or_publication() -> Result<()>
                 native: RefCell::new(None),
                 native_context: RefCell::new(None),
                 fixture: period,
+                state_api_epoch: StateApiEpoch::new(),
             },
             fault,
             executions: Cell::new(0),

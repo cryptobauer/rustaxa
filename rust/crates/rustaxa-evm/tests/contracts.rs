@@ -95,6 +95,8 @@ impl<R: ConcreteStateRead> ConsensusExecutionPort for PreflightAdapter<'_, R> {
         // claim bootstrap approval for markerless imported state.
         Ok(FinalChainExternalEvmPreflightReport {
             request_id: request.request_id,
+            // This rejected descriptor-only observation has no StateAPI owner.
+            state_api_epoch: 0,
             committed: request.expected_prior,
             concrete_provenance_rlp: vec![],
             pending_concrete_marker_rlp: vec![],
@@ -153,6 +155,7 @@ fn existing_final_chain_port_checks_pair_without_adopting_or_publishing() -> Res
         // Exercise the existing blanket application-port -> leaf composition.
         let report = adapter.load_committed_state_descriptor(&request)?;
         assert_eq!(report.request_id, request.request_id);
+        assert_eq!(report.state_api_epoch, 0);
         assert_eq!(report.committed, request.expected_prior);
         assert!(!report.succeeded);
         assert_eq!(report.error_code, "TEST_COMPOSITION_BOOTSTRAP_UNQUALIFIED");

@@ -395,10 +395,6 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         .collect(),
                 })?;
         ensure!(
-            report.state_api_epoch == request.state_api_epoch,
-            "FINAL_CHAIN_EXECUTION_STATE_API_EPOCH_MISMATCH"
-        );
-        ensure!(
             report.results.len() == request.transactions.len(),
             "FINAL_CHAIN_EXECUTION_RESULT_COUNT_MISMATCH"
         );
@@ -417,8 +413,8 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                 .results
                 .into_iter()
                 .zip(request.transactions.iter())
-                .map(|(result, transaction)| {
-                    Ok(rustaxa_consensus::FinalChainEvmTransactionResult {
+                .map(
+                    |(result, transaction)| rustaxa_consensus::FinalChainEvmTransactionResult {
                         position: transaction.position,
                         hash: transaction.hash,
                         status: result.status,
@@ -446,9 +442,9 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         output: result.output,
                         code_error: result.code_error,
                         consensus_error: result.consensus_error,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
+                    },
+                )
+                .collect(),
         })
     }
 
@@ -470,10 +466,6 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         })
                         .collect(),
                 })?;
-        ensure!(
-            report.state_api_epoch == request.state_api_epoch,
-            "FINAL_CHAIN_REWARDS_STATE_API_EPOCH_MISMATCH"
-        );
         Ok(rustaxa_consensus::FinalChainEvmRewardsReport {
             request_id: request.request_id,
             state_api_epoch: report.state_api_epoch,
@@ -506,16 +498,6 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                     concrete_projection_hash: request.concrete_projection_hash,
                     concrete_provenance_rlp: request.concrete_provenance_rlp.clone(),
                 })?;
-        ensure!(
-            report.state_api_epoch == request.state_api_epoch,
-            "FINAL_CHAIN_STATE_COMMIT_STATE_API_EPOCH_MISMATCH"
-        );
-        ensure!(
-            report.status != rustaxa_consensus::FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED
-                || (report.committed_period == request.period.as_u64()
-                    && report.committed_state_root == request.post_rewards_state_root),
-            "FINAL_CHAIN_STATE_COMMIT_DESCRIPTOR_MISMATCH"
-        );
         Ok(rustaxa_consensus::FinalChainExternalEvmStateCommitResult {
             request_id: request.request_id,
             state_api_epoch: report.state_api_epoch,
@@ -544,17 +526,10 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         &self,
         request: &rustaxa_consensus::FinalChainExternalEvmDiscardRequest,
     ) -> Result<rustaxa_consensus::FinalChainExternalEvmDiscardReport> {
-        let report = self
-            .0
-            .consensus_discard_final_chain_state(&HostFinalChainDiscardRequest {
-                concrete_marker_rlp: request.concrete_marker_rlp.clone(),
-                expected_state_api_epoch: request.expected_state_api_epoch,
-            })?;
-        ensure!(
-            report.state_api_epoch != 0
-                && report.state_api_epoch != request.expected_state_api_epoch,
-            "FINAL_CHAIN_STATE_DISCARD_EPOCH_NOT_REPLACED"
-        );
+        let report = self.0.consensus_discard_final_chain_state(
+            &request.concrete_marker_rlp,
+            request.expected_state_api_epoch,
+        )?;
         Ok(rustaxa_consensus::FinalChainExternalEvmDiscardReport {
             request_id: request.request_id,
             previous_state_api_epoch: request.expected_state_api_epoch,
@@ -608,36 +583,24 @@ pub fn consensus_application_finalize(
     task: HostFinalChainFinalizeTask,
 ) -> Result<HostFinalChainFinalizeReport> {
     let external_evm = ExternalEvmPortAdapter(external_evm);
-    let mut period_data = rlp::RlpStream::new_list(4);
-    period_data.append_raw(&task.pbft_block_rlp, 1);
-    if task.previous_cert_vote_bundle_rlp.is_empty() {
-        period_data.append_empty_data();
-    } else {
-        period_data.append_raw(&task.previous_cert_vote_bundle_rlp, 1);
-    }
-    if task.dag_block_bundle_rlp.is_empty() {
-        period_data.append_empty_data();
-    } else {
-        period_data.append_raw(&task.dag_block_bundle_rlp, 1);
-    }
-    period_data.begin_list(task.transaction_rlps.len());
-    for transaction in &task.transaction_rlps {
-        period_data.append_raw(&transaction.data, 1);
-    }
+    let (previous_cert_vote_rlps, previous_cert_vote_weights) = task
+        .previous_cert_votes
+        .into_iter()
+        .map(|vote| (vote.rlp, vote.weight))
+        .unzip();
     let report = application.0.finalize_with_external_evm(
         EvmFinalizationRequest {
             effect_id: Default::default(),
-            period_data_rlp: period_data.out().to_vec(),
-            previous_cert_vote_rlps: task
-                .previous_cert_votes
-                .iter()
-                .map(|vote| vote.rlp.clone())
-                .collect(),
-            previous_cert_vote_weights: task
-                .previous_cert_votes
-                .into_iter()
-                .map(|vote| vote.weight)
-                .collect(),
+            period_data_rlp: rustaxa_types::codec::rlp::period::encode_period_data(
+                &task.pbft_block_rlp,
+                &task.previous_cert_vote_bundle_rlp,
+                &task.dag_block_bundle_rlp,
+                task.transaction_rlps
+                    .iter()
+                    .map(|transaction| transaction.data.as_slice()),
+            ),
+            previous_cert_vote_rlps,
+            previous_cert_vote_weights,
             finalized_dag_hashes: task
                 .finalized_dag_hashes
                 .into_iter()

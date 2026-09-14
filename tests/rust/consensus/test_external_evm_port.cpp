@@ -246,11 +246,8 @@ TEST_F(ExternalEvmPortTest, PruneFailsClosedWhileConcreteExecutionIsStaged) {
   EXPECT_EQ(dev::bytes(staged.pending_concrete_marker_rlp.begin(), staged.pending_concrete_marker_rlp.end()),
             marker_rlp);
 
-  rustaxa::HostFinalChainDiscardRequest exact_marker{};
-  exact_marker.expected_state_api_epoch = preflight.state_api_epoch;
-  exact_marker.concrete_marker_rlp.reserve(marker_rlp.size());
-  for (const auto byte : marker_rlp) exact_marker.concrete_marker_rlp.push_back(byte);
-  const auto discarded = port.consensusDiscardFinalChainState(exact_marker);
+  const auto discarded = port.consensusDiscardFinalChainState(
+      rust::Slice<const uint8_t>(marker_rlp.data(), marker_rlp.size()), preflight.state_api_epoch);
   ASSERT_TRUE(discarded.succeeded) << std::string(discarded.error_code);
   EXPECT_NE(discarded.state_api_epoch, 0);
   EXPECT_NE(discarded.state_api_epoch, preflight.state_api_epoch);
@@ -310,11 +307,8 @@ TEST_F(ExternalEvmPortTest, ExecutionReportPreservesExactStateApiCodeRetval) {
   const auto expected_output = util::EncodingSolidity::pack(uint64_t{0});
   EXPECT_EQ(dev::bytes(execution.results[0].output.begin(), execution.results[0].output.end()), expected_output);
 
-  rustaxa::HostFinalChainDiscardRequest exact_marker{};
-  exact_marker.expected_state_api_epoch = preflight.state_api_epoch;
-  exact_marker.concrete_marker_rlp.reserve(marker_rlp.size());
-  for (const auto byte : marker_rlp) exact_marker.concrete_marker_rlp.push_back(byte);
-  const auto discarded = port.consensusDiscardFinalChainState(exact_marker);
+  const auto discarded = port.consensusDiscardFinalChainState(
+      rust::Slice<const uint8_t>(marker_rlp.data(), marker_rlp.size()), preflight.state_api_epoch);
   ASSERT_TRUE(discarded.succeeded) << std::string(discarded.error_code);
   EXPECT_NE(discarded.state_api_epoch, 0);
   EXPECT_NE(discarded.state_api_epoch, preflight.state_api_epoch);
@@ -378,17 +372,16 @@ TEST_F(ExternalEvmPortTest, EpochMismatchAndAmbiguousDiscardHaveDistinctLifetime
   ASSERT_TRUE(before.succeeded);
   ASSERT_NE(before.state_api_epoch, 0);
 
-  rustaxa::HostFinalChainDiscardRequest request{};
-  request.concrete_marker_rlp.push_back(0xc0);  // Not a valid execution marker.
-  const auto stale = port.consensusDiscardFinalChainState(request);
+  const std::array<uint8_t, 1> marker{0xc0};  // Not a valid execution marker.
+  const auto marker_view = rust::Slice<const uint8_t>(marker.data(), marker.size());
+  const auto stale = port.consensusDiscardFinalChainState(marker_view, 0);
   EXPECT_FALSE(stale.succeeded);
   EXPECT_NE(std::string(stale.error_code).find("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH"), std::string::npos);
   const auto still_live = port.consensusLoadFinalChainCommittedState(preflight_request);
   ASSERT_TRUE(still_live.succeeded);
   EXPECT_EQ(still_live.state_api_epoch, before.state_api_epoch);
 
-  request.expected_state_api_epoch = before.state_api_epoch;
-  const auto failed = port.consensusDiscardFinalChainState(request);
+  const auto failed = port.consensusDiscardFinalChainState(marker_view, before.state_api_epoch);
   EXPECT_FALSE(failed.succeeded);
   EXPECT_EQ(failed.state_api_epoch, 0);
   const auto poisoned = port.consensusLoadFinalChainCommittedState(preflight_request);

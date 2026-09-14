@@ -240,11 +240,6 @@ pub mod application_host_ffi {
         committed_state_root: [u8; 32],
         error_code: String,
     }
-    /// Exact staged marker plus the live StateAPI instance expected to discard it.
-    struct HostFinalChainDiscardRequest {
-        concrete_marker_rlp: Vec<u8>,
-        expected_state_api_epoch: u64,
-    }
     struct HostFinalChainFinalizeTask {
         pbft_block_rlp: Vec<u8>,
         previous_cert_vote_bundle_rlp: Vec<u8>,
@@ -414,7 +409,8 @@ pub mod application_host_ffi {
         #[cxx_name = "consensusDiscardFinalChainState"]
         fn consensus_discard_final_chain_state(
             self: &ExternalEvmPort,
-            request: &HostFinalChainDiscardRequest,
+            concrete_marker_rlp: &[u8],
+            expected_state_api_epoch: u64,
         ) -> Result<HostFinalChainPreflightReport>;
         #[cxx_name = "consensusLoadPillarAnchorState"]
         fn consensus_load_pillar_anchor_state(

@@ -12,6 +12,8 @@
 mod mixed_genesis;
 #[path = "support/mixed_native.rs"]
 mod mixed_native;
+#[path = "support/state_api_epoch.rs"]
+mod state_api_epoch;
 
 use anyhow::{Context, Result, bail, ensure};
 use ethereum_types::{H160, H256, U256};
@@ -64,6 +66,7 @@ use rustaxa_types::{
     LegacyTransactionEnvelope, StoredFinalChainBlockHeader,
 };
 use serde_json::Value;
+use state_api_epoch::StateApiEpoch;
 use std::{
     cell::RefCell,
     collections::BTreeSet,
@@ -228,6 +231,7 @@ struct Adapter<'a> {
     native: RefCell<Option<MixedNativeExecutionPort<'a>>>,
     native_context: RefCell<Option<NativeContextParts>>,
     fixture: &'a Value,
+    state_api_epoch: StateApiEpoch,
 }
 impl ConsensusExecutionPort for Adapter<'_> {
     fn load_final_chain_committed_state(
@@ -245,6 +249,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         );
         Ok(FinalChainExternalEvmPreflightReport {
             request_id: request.request_id,
+            state_api_epoch: self.state_api_epoch.current(),
             committed: FinalChainExternalEvmCommittedStateDescriptor {
                 period: observed.committed.period,
                 state_root: observed.committed.state_root,
@@ -289,6 +294,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainEvmExecutionRequest,
     ) -> Result<FinalChainEvmExecutionReport> {
+        self.state_api_epoch.validate(request.state_api_epoch)?;
         let mut concrete = self.concrete.borrow_mut();
         let concrete = concrete
             .as_mut()
@@ -641,6 +647,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         });
         Ok(FinalChainEvmExecutionReport {
             request_id: request.request_id,
+            state_api_epoch: request.state_api_epoch,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             prior_state: request.prior_state,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
@@ -664,6 +671,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         request: &FinalChainEvmRewardsRequest,
         plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
     ) -> Result<FinalChainEvmRewardsReport> {
+        self.state_api_epoch.validate(request.state_api_epoch)?;
         let mut concrete = self.concrete.borrow_mut();
         let concrete = concrete
             .as_mut()
@@ -933,6 +941,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         );
         Ok(FinalChainEvmRewardsReport {
             request_id: request.request_id,
+            state_api_epoch: request.state_api_epoch,
             period: request.period,
             status: FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
             prior_state: request.prior_state,
@@ -978,6 +987,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainExternalEvmStateCommitIntent,
     ) -> Result<FinalChainExternalEvmStateCommitResult> {
+        self.state_api_epoch.validate(request.state_api_epoch)?;
         ensure!(
             self.chain.last_block_number_typed()? == request.prior_state.period,
             "application published before concrete commit"
@@ -990,6 +1000,14 @@ impl ConsensusExecutionPort for Adapter<'_> {
             "application intent must be durable first"
         );
         self.chain.validate_pending_external_evm_commit(request)?;
+        let mut missing_epoch = request.clone();
+        missing_epoch.state_api_epoch = 0;
+        ensure!(
+            self.chain
+                .validate_pending_external_evm_commit(&missing_epoch)
+                .is_err(),
+            "zero-epoch intent accepted"
+        );
         let mut foreign = request.clone();
         foreign.concrete_projection_hash[0] ^= 1;
         ensure!(
@@ -1028,6 +1046,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         );
         Ok(FinalChainExternalEvmStateCommitResult {
             request_id: request.request_id,
+            state_api_epoch: request.state_api_epoch,
             plan_id: request.plan_id,
             period: request.period,
             publication_block_hash: request.publication_block_hash,
@@ -1050,19 +1069,40 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainExternalEvmDiscardRequest,
     ) -> Result<FinalChainExternalEvmDiscardReport> {
+        self.state_api_epoch
+            .validate(request.expected_state_api_epoch)?;
         self.staged.borrow_mut().take();
         let mut concrete = self.concrete.borrow_mut();
         let concrete = concrete
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("fixture ambiguous consumed commit"))?;
+        ensure!(
+            concrete_state_bytes_digest(&request.concrete_marker_rlp) == request.marker_hash,
+            "fixture discard marker hash"
+        );
         concrete.discard_execution(&request.concrete_marker_rlp)?;
+        let observed = concrete.observation()?;
+        ensure!(
+            observed.pending_marker_rlp.is_empty()
+                && observed.committed.period == request.prior_state.period
+                && observed.committed.state_root == request.prior_state.state_root,
+            "fixture discard reopened prior descriptor"
+        );
+        let (previous_state_api_epoch, state_api_epoch) = self
+            .state_api_epoch
+            .replace_after_discard(request.expected_state_api_epoch)?;
         Ok(FinalChainExternalEvmDiscardReport {
             request_id: request.request_id,
+            previous_state_api_epoch,
+            state_api_epoch,
             period: request.period,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
             marker_hash: request.marker_hash,
             prior_state: request.prior_state,
-            committed_state: request.prior_state,
+            committed_state: FinalChainExternalEvmCommittedStateDescriptor {
+                period: observed.committed.period,
+                state_root: observed.committed.state_root,
+            },
             succeeded: true,
             error_code: String::new(),
         })
@@ -1709,6 +1749,7 @@ fn run_period(
         native: RefCell::new(None),
         native_context: RefCell::new(None),
         fixture: period,
+        state_api_epoch: StateApiEpoch::new(),
     };
     let author = fixed(&period["reward_input"]["block_author"]);
     let execution_request = request(fixture, period)?;

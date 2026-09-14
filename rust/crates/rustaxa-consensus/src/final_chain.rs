@@ -3360,10 +3360,13 @@ impl FinalChain {
     /// Verifies that an execution leaf's commit intent is the exact durable
     /// pending publication accepted by this FinalChain generation.
     ///
-    /// Reads and validates the existing marker codec, compares every intent
-    /// field, and requires the published descriptor still to equal its prior
-    /// state. Missing/corrupt markers, a foreign intent or an advanced head are
-    /// errors. This read does not prepare an intent, commit concrete state or
+    /// Reads and validates the existing marker codec, compares every durable
+    /// intent field, and requires the published descriptor still to equal its
+    /// prior state. The nonzero process-local epoch is deliberately absent from
+    /// the marker: the execution leaf must separately validate it against its
+    /// live owner before calling this method. Missing/corrupt markers, a zero
+    /// epoch, a foreign durable intent or an advanced head are errors.
+    /// This read does not prepare an intent, commit concrete state or
     /// publish application storage; the application pipeline retains ownership.
     /// The caller must stay inside that owner's serialized lifecycle: this
     /// observation is not an authorization token safe across concurrent writers.
@@ -3371,12 +3374,20 @@ impl FinalChain {
         &self,
         intent: &FinalChainExternalEvmStateCommitIntent,
     ) -> Result<(), anyhow::Error> {
+        anyhow::ensure!(
+            intent.state_api_epoch != 0,
+            "FINAL_CHAIN_STATE_API_EPOCH_MISMATCH"
+        );
         let raw = self
             .storage
             .final_chain()
             .external_evm_pending_publication_raw()?
             .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_PENDING_INTENT_MISSING"))?;
-        let marker = decode_external_evm_pending_publication_marker(&raw)?;
+        let mut marker = decode_external_evm_pending_publication_marker(&raw)?;
+        // Runtime epochs do not survive serialization or restart. Preserve
+        // every durable comparison without treating the decoded zero sentinel
+        // as the identity of the live execution leaf.
+        marker.state_commit_intent.state_api_epoch = intent.state_api_epoch;
         anyhow::ensure!(
             marker.state_commit_intent == *intent,
             "FINAL_CHAIN_CONCRETE_PENDING_INTENT_MISMATCH"

@@ -332,3 +332,26 @@ checks aggregate overflow/underflow rollback. Empty code skips interpreter entry
 matching Go's empty log array instead of observing REVM's padded STOP instruction.
 These are runner prerequisites, not acceptance of native/nested/OpenEthereum
 traces or all cross-target log/suicide behavior.
+
+## Disposable default structured runner
+
+The reviewed `trace_runner` facade now executes prerequisites and targets through
+the existing Rust drivers in one disposable journal. It checks the reader's exact
+preceding period before account access, retains supplied nonces and sequence-local
+state, and creates a fresh collector for each target. Results include the fixed
+authenticated reader identity and structured JSON; no publication authority or
+write set escapes. Infrastructure and unsupported-path errors preserve the
+prefix/target stage and index.
+
+Independent review of `b844c1896` reproduced both pinned Go trace and raw-refund
+corpora and passed eight runner, ten driver and three serializer tests. Persisted
+reopen and unavailable-dependency cases verify unchanged physical rows. Corpus
+comparisons establish JSON values and shape, not serialized object-key ordering.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --test trace_runner_reference --test trace_driver_reference --test trace_structured_reference
+```
+
+This acceptance covers the bounded default structured API. Native calls, nested
+target tracing, OpenEthereum modes, RPC composition and general cross-target
+log/SELFDESTRUCT behavior remain unqualified; N3 is still open.

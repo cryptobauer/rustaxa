@@ -38,7 +38,7 @@ include a generated bridge header.
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 4621 |
+| `bridge_lines` | 4619 |
 | `shim_lines` | 0 |
 | `cxx_functions` | 74 |
 | `cxx_carriers` | 124 |
@@ -54,6 +54,14 @@ One private `ExternalEvmStateOwner` holds StateAPI behind exact operations. Rust
 and EVM execution validation, rewards planning, commit approval, crash recovery, and publication. Public transaction
 submission derives account and finalized-location facts from one native head. No CXX StateAPI handle, execution session,
 action loop, range executor, service locator, general storage handle, or C++ publication authority remains.
+
+StateAPI epochs cross the existing leaf operations as plain scalars; discard
+borrows marker bytes without a new carrier or owned clone. Native execution
+acceptance owns epoch and committed-descriptor validation, while the bridge keeps
+the result-count check required before its positional conversion. Finalized-period
+RLP assembly belongs to the native types codec, and certificate bytes/weights are
+moved together without cloning. This keeps the epoch integration below the prior
+bridge-line budget with unchanged carrier/function/handle counts.
 
 ## CXX Box Factory Inventory
 

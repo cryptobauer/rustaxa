@@ -3871,6 +3871,11 @@ fn validate_external_evm_state_commit_facts(
     Ok(())
 }
 
+/// Validates unmodified leaf result facts before classifying ambiguous commits.
+///
+/// Committed reports must carry the exact expected descriptor; rejected reports
+/// may omit it so the caller can reread durable state. Runtime identity, durable
+/// intent and provenance checks remain independent of later lifecycle acceptance.
 fn validate_external_evm_state_commit_result_facts(
     intent: &FinalChainExternalEvmStateCommitIntent,
     commit_plan: &FinalChainExternalEvmCommitPlan,
@@ -3881,6 +3886,15 @@ fn validate_external_evm_state_commit_result_facts(
     }
     if result.state_api_epoch != intent.state_api_epoch {
         return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_STATE_API_EPOCH_MISMATCH");
+    }
+    if result.status == FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED
+        && result.committed_state
+            != Some(FinalChainExternalEvmCommittedStateDescriptor {
+                period: intent.period,
+                state_root: intent.post_rewards_state_root,
+            })
+    {
+        return Err("FINAL_CHAIN_STATE_COMMIT_DESCRIPTOR_MISMATCH");
     }
     if result.plan_id != intent.plan_id {
         return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_PLAN_ID_MISMATCH");
@@ -6210,6 +6224,56 @@ mod tests {
         assert_eq!(
             decision.error_code,
             "FINAL_CHAIN_EVM_LIFECYCLE_COMMITTED_DESCRIPTOR_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn commit_result_descriptor_is_checked_before_ambiguous_commit_classification() {
+        let (mut session, commit_plan, publication_plan) = external_evm_state_commit_session();
+        let intent = final_chain_execution_session_request_external_evm_state_commit(
+            &mut session,
+            state_commit_request(&commit_plan, &publication_plan),
+        );
+        let result = FinalChainExternalEvmStateCommitResult {
+            request_id: intent.request_id,
+            state_api_epoch: intent.state_api_epoch,
+            plan_id: intent.plan_id,
+            period: intent.period,
+            publication_block_hash: intent.publication_block_hash,
+            prior_state: intent.prior_state,
+            post_transaction_state_root: intent.post_transaction_state_root,
+            post_rewards_state_root: intent.post_rewards_state_root,
+            concrete_marker_rlp: intent.concrete_marker_rlp.clone(),
+            concrete_projection_rlp: intent.concrete_projection_rlp.clone(),
+            concrete_projection_hash: intent.concrete_projection_hash,
+            concrete_provenance_rlp: intent.concrete_provenance_rlp.clone(),
+            committed_state: Some(FinalChainExternalEvmCommittedStateDescriptor {
+                period: intent.period,
+                state_root: intent.post_rewards_state_root,
+            }),
+            status: FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED,
+            error_code: String::new(),
+        };
+        assert_eq!(
+            validate_external_evm_state_commit_result_facts(&intent, &commit_plan, &result),
+            Ok(())
+        );
+        let mut wrong_period = result.clone();
+        wrong_period.committed_state.as_mut().unwrap().period = intent.prior_state.period;
+        let mut wrong_root = result.clone();
+        wrong_root.committed_state.as_mut().unwrap().state_root[0] ^= 1;
+        let mut missing = result.clone();
+        missing.committed_state = None;
+        for invalid in [wrong_period, wrong_root, missing.clone()] {
+            assert_eq!(
+                validate_external_evm_state_commit_result_facts(&intent, &commit_plan, &invalid),
+                Err("FINAL_CHAIN_STATE_COMMIT_DESCRIPTOR_MISMATCH")
+            );
+        }
+        missing.status = FINAL_CHAIN_EVM_LIFECYCLE_STATUS_REJECTED;
+        assert_eq!(
+            validate_external_evm_state_commit_result_facts(&intent, &commit_plan, &missing),
+            Ok(())
         );
     }
 

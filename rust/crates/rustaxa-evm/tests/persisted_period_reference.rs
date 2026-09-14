@@ -9,6 +9,9 @@
 //! This fixture does not exercise native/raw cache behavior or account deletion.
 //! The oracle separately checks batched agreement for these finite inputs.
 
+#[path = "support/state_api_epoch.rs"]
+mod state_api_epoch;
+
 use anyhow::{Result, bail, ensure};
 use ethereum_types::{H256, U256};
 use k256::ecdsa::SigningKey;
@@ -48,6 +51,7 @@ use rustaxa_types::{
     StoredFinalChainBlockHeader,
 };
 use serde_json::Value;
+use state_api_epoch::StateApiEpoch;
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -228,6 +232,7 @@ struct Adapter<'a> {
     fixture: &'a Value,
     interruption: CommitInterruption,
     ordered: bool,
+    state_api_epoch: StateApiEpoch,
 }
 impl ConsensusExecutionPort for Adapter<'_> {
     fn load_final_chain_committed_state(
@@ -245,6 +250,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         );
         Ok(FinalChainExternalEvmPreflightReport {
             request_id: request.request_id,
+            state_api_epoch: self.state_api_epoch.current(),
             committed: FinalChainExternalEvmCommittedStateDescriptor {
                 period: observed.committed.period,
                 state_root: observed.committed.state_root,
@@ -289,6 +295,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainEvmExecutionRequest,
     ) -> Result<FinalChainEvmExecutionReport> {
+        self.state_api_epoch.validate(request.state_api_epoch)?;
         let mut concrete = self.concrete.borrow_mut();
         let concrete = concrete
             .as_mut()
@@ -593,6 +600,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         });
         Ok(FinalChainEvmExecutionReport {
             request_id: request.request_id,
+            state_api_epoch: request.state_api_epoch,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             prior_state: request.prior_state,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
@@ -608,6 +616,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainEvmRewardsRequest,
     ) -> Result<FinalChainEvmRewardsReport> {
+        self.state_api_epoch.validate(request.state_api_epoch)?;
         ensure!(
             request
                 .transaction_fees
@@ -644,6 +653,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         });
         Ok(FinalChainEvmRewardsReport {
             request_id: request.request_id,
+            state_api_epoch: request.state_api_epoch,
             period: request.period,
             status: FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
             prior_state: request.prior_state,
@@ -663,6 +673,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainExternalEvmStateCommitIntent,
     ) -> Result<FinalChainExternalEvmStateCommitResult> {
+        self.state_api_epoch.validate(request.state_api_epoch)?;
         ensure!(
             self.chain.last_block_number_typed()? == request.prior_state.period,
             "application published before concrete commit"
@@ -675,6 +686,14 @@ impl ConsensusExecutionPort for Adapter<'_> {
             "application intent must be durable first"
         );
         self.chain.validate_pending_external_evm_commit(request)?;
+        let mut missing_epoch = request.clone();
+        missing_epoch.state_api_epoch = 0;
+        ensure!(
+            self.chain
+                .validate_pending_external_evm_commit(&missing_epoch)
+                .is_err(),
+            "zero-epoch intent accepted"
+        );
         let mut foreign = request.clone();
         foreign.concrete_projection_hash[0] ^= 1;
         ensure!(
@@ -728,6 +747,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         }
         Ok(FinalChainExternalEvmStateCommitResult {
             request_id: request.request_id,
+            state_api_epoch: request.state_api_epoch,
             plan_id: request.plan_id,
             period: request.period,
             publication_block_hash: request.publication_block_hash,
@@ -750,19 +770,40 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainExternalEvmDiscardRequest,
     ) -> Result<FinalChainExternalEvmDiscardReport> {
+        self.state_api_epoch
+            .validate(request.expected_state_api_epoch)?;
         self.staged.borrow_mut().take();
         let mut concrete = self.concrete.borrow_mut();
         let concrete = concrete
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("fixture ambiguous consumed commit"))?;
+        ensure!(
+            concrete_state_bytes_digest(&request.concrete_marker_rlp) == request.marker_hash,
+            "fixture discard marker hash"
+        );
         concrete.discard_execution(&request.concrete_marker_rlp)?;
+        let observed = concrete.observation()?;
+        ensure!(
+            observed.pending_marker_rlp.is_empty()
+                && observed.committed.period == request.prior_state.period
+                && observed.committed.state_root == request.prior_state.state_root,
+            "fixture discard reopened prior descriptor"
+        );
+        let (previous_state_api_epoch, state_api_epoch) = self
+            .state_api_epoch
+            .replace_after_discard(request.expected_state_api_epoch)?;
         Ok(FinalChainExternalEvmDiscardReport {
             request_id: request.request_id,
+            previous_state_api_epoch,
+            state_api_epoch,
             period: request.period,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
             marker_hash: request.marker_hash,
             prior_state: request.prior_state,
-            committed_state: request.prior_state,
+            committed_state: FinalChainExternalEvmCommittedStateDescriptor {
+                period: observed.committed.period,
+                state_root: observed.committed.state_root,
+            },
             succeeded: true,
             error_code: String::new(),
         })
@@ -889,6 +930,7 @@ struct RecoveryLeaf<'a> {
     path: &'a Path,
     chain_id: [u8; 32],
     discards: Cell<usize>,
+    state_api_epoch: StateApiEpoch,
 }
 impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
     fn load_committed_state_descriptor(
@@ -902,6 +944,7 @@ impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
         let observed = ConcreteStateLifecycle::inspect_existing(self.path, self.chain_id)?;
         Ok(FinalChainExternalEvmPreflightReport {
             request_id: request.request_id,
+            state_api_epoch: self.state_api_epoch.current(),
             committed: FinalChainExternalEvmCommittedStateDescriptor {
                 period: observed.committed.period,
                 state_root: observed.committed.state_root,
@@ -916,6 +959,8 @@ impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
         &self,
         request: &FinalChainExternalEvmDiscardRequest,
     ) -> Result<FinalChainExternalEvmDiscardReport> {
+        self.state_api_epoch
+            .validate(request.expected_state_api_epoch)?;
         let mut concrete = ConcreteStateLifecycle::open(
             self.path,
             self.chain_id,
@@ -934,9 +979,19 @@ impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
             observed.pending_marker_rlp.is_empty(),
             "recovery discard pending marker"
         );
+        ensure!(
+            observed.committed.period == request.prior_state.period
+                && observed.committed.state_root == request.prior_state.state_root,
+            "recovery discard committed descriptor"
+        );
+        let (previous_state_api_epoch, state_api_epoch) = self
+            .state_api_epoch
+            .replace_after_discard(request.expected_state_api_epoch)?;
         self.discards.set(self.discards.get() + 1);
         Ok(FinalChainExternalEvmDiscardReport {
             request_id: request.request_id,
+            previous_state_api_epoch,
+            state_api_epoch,
             period: request.period,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
             marker_hash: request.marker_hash,
@@ -1035,6 +1090,7 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
             fixture: first,
             interruption,
             ordered: false,
+            state_api_epoch: StateApiEpoch::new(),
         };
         recover_final_chain_application_state(&chain, &adapter)?;
         let error = execute_final_chain_application_task(
@@ -1120,6 +1176,7 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
             path: &concrete_path,
             chain_id: genesis.identity.chain_id,
             discards: Cell::new(0),
+            state_api_epoch: StateApiEpoch::new(),
         };
         let report = recover_final_chain_application_state(&chain, &recovery)?;
         ensure!(
@@ -1255,6 +1312,7 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
                 fixture: period,
                 interruption: CommitInterruption::None,
                 ordered: false,
+                state_api_epoch: StateApiEpoch::new(),
             };
             recover_final_chain_application_state(&chain, &adapter)?;
             let report = execute_final_chain_application_task(
@@ -1406,15 +1464,19 @@ fn run_signed_periods(ordered: bool) -> Result<()> {
             fixture: period,
             interruption: CommitInterruption::None,
             ordered,
+            state_api_epoch: StateApiEpoch::new(),
         };
         recover_final_chain_application_state(&chain, &adapter)?;
+        let missing_intent = FinalChainExternalEvmStateCommitIntent {
+            state_api_epoch: adapter.state_api_epoch.current(),
+            ..Default::default()
+        };
+        let missing_error = chain
+            .validate_pending_external_evm_commit(&missing_intent)
+            .expect_err("missing durable intent accepted");
         ensure!(
-            chain
-                .validate_pending_external_evm_commit(
-                    &FinalChainExternalEvmStateCommitIntent::default()
-                )
-                .is_err(),
-            "missing durable intent accepted"
+            missing_error.to_string() == "FINAL_CHAIN_CONCRETE_PENDING_INTENT_MISSING",
+            "missing durable intent reached wrong rejection: {missing_error:#}"
         );
         let report = execute_final_chain_application_task(
             &chain,
