@@ -1,5 +1,9 @@
 //! Bounded read-only partial inversion of the qualified head DPoS inventory.
 
+#[path = "native_inverse_coverage/seeded_undelegations.rs"]
+mod seeded_undelegations;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -21,6 +25,10 @@ use rustaxa_types::concrete_state::{ConcreteRead, ConcreteStateIdentity};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use seeded_undelegations::{
+    SeededUndelegationCoverage, analyze_seeded_undelegations, hashed_storage_path,
+};
+
 const QUALIFIED_COPY: &str = "/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy";
 const FORBIDDEN_ORIGINAL: &str = "/tmp/snapshot-litenode";
 const TARGET_PERIOD: u64 = 25_706_949;
@@ -39,6 +47,7 @@ struct Report {
     limits: LimitsReport,
     inventory: InventoryReport,
     coverage: NativeInverseCoverage,
+    seeded_undelegations: SeededUndelegationCoverage,
     qualification: Qualification,
 }
 
@@ -71,6 +80,7 @@ struct Qualification {
     concrete_descriptor_matches_header: bool,
     complete_live_dpos_inventory_authenticated: bool,
     enumerable_rows_strictly_decoded: bool,
+    seeded_undelegation_rows_strictly_decoded: bool,
     matched_and_unexplained_partition_live_inventory: bool,
     historical_key_coverage_qualified: bool,
     semantic_dpos_snapshot_complete: bool,
@@ -126,9 +136,72 @@ fn main() -> Result<()> {
     let storage_root = inventory
         .storage_root
         .context("qualified DPoS account has no storage root")?;
+    let live_inventory = inventory
+        .entries
+        .iter()
+        .map(|entry| (entry.hashed_path, entry.value.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+    let mut base_matched_paths = BTreeSet::new();
     let coverage = analyze_native_head(&inventory, |key| {
-        readers.storage_at(identity, DPOS_CONTRACT_ADDRESS, key)
+        let read = readers.storage_at(identity, DPOS_CONTRACT_ADDRESS, key);
+        if let Ok(ConcreteRead::Present(value)) = &read {
+            let path = hashed_storage_path(key);
+            if live_inventory
+                .get(&path)
+                .is_some_and(|inventory_value| *inventory_value == value)
+            {
+                base_matched_paths.insert(path);
+            }
+        }
+        read
     })?;
+    ensure!(
+        base_matched_paths.len() == usize::try_from(coverage.matched_live_entries)?,
+        "observed base live paths differ from reported matched count"
+    );
+    let base_matched_value_bytes =
+        base_matched_paths
+            .iter()
+            .try_fold(0_u64, |total, path| -> Result<u64> {
+                total
+                    .checked_add(u64::try_from(
+                        live_inventory
+                            .get(path)
+                            .context("observed base live path is absent from inventory")?
+                            .len(),
+                    )?)
+                    .context("observed base live value-byte count overflow")
+            })?;
+    ensure!(
+        base_matched_value_bytes == coverage.matched_live_value_bytes,
+        "observed base live bytes differ from reported matched byte count"
+    );
+    let seeded_addresses = coverage
+        .seeded_delegations
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let address = hex::decode(&candidate.address_hex)
+                .context("decode authenticated seeded delegator address")?;
+            address.try_into().map_err(|address: Vec<u8>| {
+                anyhow::anyhow!(
+                    "authenticated seeded delegator address has {} bytes",
+                    address.len()
+                )
+            })
+        })
+        .collect::<Result<BTreeSet<[u8; 20]>>>()?;
+    ensure!(
+        seeded_addresses.len() == coverage.seeded_delegations.candidates.len(),
+        "authenticated seeded delegator addresses contain duplicates"
+    );
+    let seeded_undelegations = analyze_seeded_undelegations(
+        &inventory,
+        &base_matched_paths,
+        base_matched_value_bytes,
+        seeded_addresses,
+        |key| readers.storage_at(identity, DPOS_CONTRACT_ADDRESS, key),
+    )?;
     ensure!(
         coverage.matched_live_entries + coverage.unexplained_live_entries
             == u64::try_from(inventory.entries.len())?,
@@ -136,7 +209,7 @@ fn main() -> Result<()> {
     );
 
     let report = Report {
-        schema: 1,
+        schema: 2,
         tool_source_sha256: tool_source_sha256(),
         input_copy: input.display().to_string(),
         open_mode: "application DB and ConcreteCheckpointReaders opened read-only",
@@ -162,13 +235,16 @@ fn main() -> Result<()> {
             concrete_descriptor_matches_header: true,
             complete_live_dpos_inventory_authenticated: true,
             enumerable_rows_strictly_decoded: true,
-            matched_and_unexplained_partition_live_inventory: coverage.live_partition_exact,
+            seeded_undelegation_rows_strictly_decoded: true,
+            matched_and_unexplained_partition_live_inventory: seeded_undelegations
+                .live_partition_exact,
             historical_key_coverage_qualified: false,
             semantic_dpos_snapshot_complete: false,
             checkpoint_adoption_authorized: false,
             production_routing_authorized: false,
         },
         coverage,
+        seeded_undelegations,
     };
     write_report(&output, &report)
 }
@@ -264,5 +340,8 @@ fn tool_source_sha256() -> String {
     let mut digest = Sha256::new();
     digest.update(include_bytes!("../native_inverse.rs"));
     digest.update(include_bytes!("native_inverse_coverage.rs"));
+    digest.update(include_bytes!(
+        "native_inverse_coverage/seeded_undelegations.rs"
+    ));
     hex::encode(digest.finalize())
 }
