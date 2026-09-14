@@ -1,123 +1,127 @@
 # Restart checkpoint: existing-network milestone
 
-The owner requested an immediate checkpoint to start a fresh session with Luna
-capacity. Milestone 10 remains in progress; 08 remains open and 09 remains
-complete only within its declared synthetic scope. No acceptance or production
-routing is implied by this checkpoint.
+Milestone 10 remains in progress; 08 remains open and 09 remains complete only
+within its declared synthetic scope. The Luna-first continuation integrated and
+pushed the reviewed epoch, default TraceRunner, staged claims and shared
+setCommission slices. Implementation is accepted through `02281c89d`, with
+supporting documentation pushed through `bb2034611`. Scheduler work below remains
+unaccepted. No production backend switch or milestone acceptance is implied.
 
 ## Start the next session
 
 Read `AGENTS.md`, `PLAN.md`, `doc/evm_research/README.md`, milestone 10 and this
 file. Inspect repository/worktree state before edits. Continue on
-`feat/rust/evm-state-db`; accepted implementation is pushed through `19e9e7e59`.
-Subsequent feature-branch checkpoint commits are documentation only.
+`feat/rust/evm-state-db`.
 
-**Launch Luna first and confirm successful startup before allocating the other
-agent slots.** Request `gpt-5.6-luna` explicitly, medium reasoning, for a bounded
-read-only inventory of the missing epoch fields in the three EVM fixture files
-listed below. Reuse that Luna thread for related settled helper work. Do not
-substitute Sol/Astra if startup fails. Preserve the existing Sol implementation
-and independent Astra/Sol review assignments for complex semantic work.
+Launch Luna first, explicitly requesting `gpt-5.6-luna` with medium reasoning and
+an independent task context, and confirm successful startup before allocating
+other slots. Reserve that thread for bounded helper work. Retain Sol high for
+implementation and independent Astra/Sol review for semantic acceptance.
 
-The old session had seven open threads including a completed historical audit.
-Explicit Luna startup failed with `agent thread limit reached`. It did not run.
-The exposed tools could neither close threads nor change an existing model;
-completion/interruption did not establish released capacity. All workers were
-asked to checkpoint and stop new work. No usage/billing conclusion follows.
-Use a fresh session; merely resuming the old conversation has not been verified
-to release its thread slots.
+The fresh continuation successfully ran Luna first. Its recorded runtime
+`turn_context` confirms `gpt-5.6-luna`, medium reasoning. Reused helper tasks mapped
+epoch fixtures, C++ checks, semantic-port registration, bridge checks and remaining
+N4 qualification. Independent reviews corrected overbroad helper suggestions;
+helper maps never approved their own semantics. All six workers/reviewers started
+successfully; no routing or capacity failure occurred. The previous session's
+`agent thread limit reached` failure remains historical, not a current quota or
+billing conclusion. Exact assignments are in [the ledger](n6_agent_handoffs.md).
 
-## Saved work (all pushed)
+## Integrated continuation
 
-| Remote branch | Commit | State and next step |
+| Slice | Accepted feature commits | Evidence and limits |
 | --- | --- | --- |
-| `feat/rust/evm-state-db` | `19e9e7e59` implementation base | Integrated/reviewed bounded execution, native custody, historical policy, trace facts/serializer/refund sequences, and partial native inverse coverage; resume from here |
-| `checkpoint/evm-epoch-integration` | `db8ec5e4d` | Source-reviewed epoch transport, poison handling, nonwrapping allocation and C++ fixture adaptation; integration fast gate blocked by Rust fixture epoch fields |
-| `checkpoint/evm-trace-runner` | `b844c1896063eac32eab64fbd166e277ca6eca63` | Completed bounded default TraceRunner with targeted checks; final independent source/corpus review pending before cherry-pick |
-| `checkpoint/evm-reward-scheduler` | `621241a863e721b3facba41c02b6dc1295e01818` | Explicit unreviewed WIP; runtime/session/publication/recovery changes and new Go reopen exporter, whose fixtures are stale |
-| `checkpoint/evm-native-claims` | `f413b296af7b252f618ad0ef52d24666625196f6` | Explicit WIP claims adapters/oracle; Rust corpus comparison file is still a placeholder; final validation/review required |
-| `checkpoint/evm-semantic-port` | `0e629e9830a014992dc57a747a776634c0177801` | Unregistered/uncompiled setCommission-only semantic-port draft; design approved, source not reviewed or validated |
+| StateAPI epochs | `6b73513d6`, `7e317fb7a`, `da32ce9fc`, `89a361075`, `1d151e699`, `7b2c29ac3` | Nonwrapping owner epochs, poison checks, truthful fixture discard/reopen identities, durable-intent comparison independent of unpersisted epochs; actual post-reconstruction Go fault injection remains unproved |
+| Default structured TraceRunner | `b936558ab` | Independent dual-pin trace/refund reproduction; one disposable journal, supplied nonces, fresh target collectors; native/nested/OpenEthereum/RPC scope remains open |
+| Staged claims | `d620a5711`, `12fa2f48f` | Actual-Go corpus assertions, full-width and typed account errors, exact zero effects; unpublished semantic sessions only, zero-stake commission unsupported |
+| Shared setCommission kernel | `c3f53a0e2`, `02281c89d` | One kernel via complete-snapshot and authenticated checkpoint-row adapters; no sparse-snapshot or publication authority |
 
-WIP commits were preserved on separate branches, not accepted onto the feature
-branch. Some worker WIP commits intentionally used no-verify; their clean worktrees
-and saved commits do not establish validation. Fetch/cherry-pick only the intended
-slice; worker branches contain overlapping older integration history.
+The epoch fast gate exposed two additional issues beyond the original three
+fixture files: rejected descriptor-only preflight in `tests/contracts.rs` needed
+an explicit zero epoch, and durable pending-intent comparison incorrectly compared
+a decoded zero sentinel to a live epoch. Both are corrected and independently
+reviewed. Epoch identity is never serialized as durable authority.
 
-Local worktrees remain available:
+The bridge ratchet also exposed added surface. Reviewed contraction now borrows
+discard marker bytes plus an epoch scalar, centralizes epoch/descriptor checks in
+the native owner, preserves the essential pre-zip result-count check, and moves
+raw period-envelope assembly into the existing Rust types codec. Certificate
+bytes and weights move together without cloning. The bridge has 4,619 lines,
+below the previous 4,621, with unchanged carrier/function/handle counts. No
+inventory guard or test expectation was weakened to make the integration pass.
 
-- Trace: `/tmp/rustaxa-evm-trace`, `task/evm-trace-runner`.
-- Scheduler: `/tmp/rustaxa-evm-current-rewards`, `task/evm-current-rewards`.
-- Claims: `/tmp/rustaxa-evm-native-simulation`, `task/evm-native-simulation`.
-- Semantic port: `/tmp/rustaxa-evm-bootstrap-recovery`, `task/evm-checkpoint-account`.
+The checked-in pre-commit gate passes on the integrated feature branch. Focused
+lead evidence includes 38 execution-domain tests, two codec byte tests, persisted
+and mixed fixtures (3/5), 64 native-session tests, three commission rule-order
+tests and the six-case dual-pin driver/journal corpus. The epoch boundary rebuilt
+and passed eight C++ leaf/FinalChain tests with `RUSTAXA_ENABLE:BOOL=ON` and CMake
+`--parallel 12`; targeted C++ formatting passed. All touched C++ paths are
+main-only, with no original upstream C++ modification.
 
-## Immediate integration work
+See [trace evidence](n3_api_parity.md), [claims evidence](n2_claims_evidence.md),
+and [commission evidence](n2_commission_semantic_port.md) for exact scope.
 
-Epoch integration consists of commits `271dd258d`, `f60b5baa0`, `2d1f30a93`,
-`d941fceed`, then C++ tests `db8ec5e4d`, all preserved on its checkpoint branch.
-Its 37 Rust execution-domain tests and eight Rust-enabled C++ FinalChain/leaf
-tests passed. CMake built `rust_consensus_tests` with 12 jobs. Review approved
-source/contract, including permanent allocator exhaustion and poison checks.
-The poison test uses malformed marker input at the fallible Go boundary; it does
-not inject a failure after actual Go reconstruction.
+## Scheduler work still under review
 
-`make rewrite-validate-fast` exposed E0063 initializer errors in:
+The original saved checkpoint is `checkpoint/evm-reward-scheduler` at
+`621241a863e721b3facba41c02b6dc1295e01818`. Current corrections are in
+`/tmp/rustaxa-evm-current-rewards` on `task/evm-current-rewards`; inspect its dirty
+state before integrating. Do not cherry-pick overlapping older integration
+history. Lead alone owns shared `/build`.
 
-- `rust/crates/rustaxa-evm/tests/persisted_period_reference.rs`
-- `rust/crates/rustaxa-evm/tests/mixed_period_reference.rs`
-- `rust/crates/rustaxa-evm/tests/support/mixed_recovery.rs`
+Sol is correcting explicit joint-startup epoch authority, actual native-session
+basis wiring, publication-marker retention through runtime installation,
+idempotent recovery and verified-discard transitions. Independent review still
+requires fixes for old-publication cache rewind, rejected-report completion,
+pre-marker discard cleanup, exact live pending-intent binding and same-process
+retry after a successful discard followed by a failed verification read.
 
-The isolated test leaves must issue/echo nonzero current epochs and model actual
-old/new epoch replacement on discard/reopen. Add the missing `state_api_epoch`
-and `previous_state_api_epoch` fields without weakening identity assertions or
-inventing an epoch that skips lifecycle validation. Then rerun focused fixtures,
-fast gate, and relevant C++ tests before accepting this branch. Existing unrelated
-consensus warnings remain; do not weaken checks to hide them.
+A second Sol worker owns a new joined runtime/native-serializer test file,
+coordinated with the implementation owner. It must compare actual Rust scheduler
+and ordered slashing writes to both regenerated Go constructor/reopen witnesses;
+fixture self-comparison is not parity. The exporter reconstructs actual Go
+StateTransition over committed in-memory state. It does not prove actual
+StateAPI discard or interrupted durable recovery by itself. Final independent
+review and fresh integrated gates are required before accepting the slice.
 
-TraceRunner worker reports eight facade tests, ten driver tests, eight simulation
-tests and three serializer tests passing, plus strict focused clippy. It uses
-one disposable journal without normal transaction resets, exact preceding state,
-unchanged supplied nonces and a fresh collector per target. Review the final
-commit before integrating. Native/nested/OpenEthereum modes remain outside scope.
+## Other saved worktrees
 
-Scheduler WIP requires lock-order/Fresh-vs-Live/recovery/discard/publication review,
-current fixtures regenerated from both actual Go pins, and fresh targeted checks.
-Earlier passing tests predate later WIP changes and do not validate its HEAD.
+- Trace: `/tmp/rustaxa-evm-trace`, saved `b844c1896`, integrated.
+- Claims: `/tmp/rustaxa-evm-native-simulation`, completion `03f3598d3`, integrated.
+- Semantic port: `/tmp/rustaxa-evm-bootstrap-recovery`, completion `dd64b1125`, integrated.
+- Epoch checkpoint: `checkpoint/evm-epoch-integration`, saved `db8ec5e4d`, integrated
+  with the reviewed fixture/runtime and bridge-contraction corrections above.
 
-Claims WIP reuses kernels for claimRewards/claimCommissionRewards. Zero-stake
-commission paths are explicitly unsupported pending witnesses. Finish actual-Go
-corpus assertions, check typed/full-width account errors and exact zero-transfer
-behavior, then validate/review. Accrued cancellation is already integrated;
-three-period Go evidence is retained for future real publication/reopen tests.
+Normal commits do not establish that `.githooks/pre-commit` ran when
+`core.hooksPath` is unset. The lead explicitly invoked the checked-in hook for
+integrated validation. Saved WIP and a clean worktree never imply acceptance.
 
-Semantic-port WIP needs registration, privacy/compile fixes, refactoring only the
-existing setCommission kernel through snapshot and authenticated checkpoint
-adapters, exact-byte tests and review. Do not route claimCommissionRewards,
-publication or sparse DposSnapshot state through this seam.
-
-## State and architecture constraints
+## Existing-network and authority constraints
 
 Original `/tmp/snapshot-litenode` is untouched. Only the independent qualified copy
 `/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy` may be opened for bounded
 read validation. Mainnet H is 25,706,949. Owner-reported likely build, suspected
-validator identity and insufficient stake are recorded as provenance, not verified
+validator identity and insufficient stake remain provenance, not verified
 production facts. No private keys are required for semantic reconstruction.
 
 Current authenticated DPoS inventory has 23,278 live rows. Strict inverse decoding
 plus 290 known validator/owner candidates explains 2,065; 21,213 remain unexplained.
-Missing physical rows are never silently promoted to absence. Global delegator
-completeness, historical/deleted-key coverage and slashing reconstruction remain
-unqualified. Root independently reproduced the initial inverse report byte-for-byte;
-expanded coverage has worker execution and independent source/hash review.
+These are unresolved reconstruction/qualification inputs, not proof that data is
+unavailable externally. Missing physical rows are never silently promoted to
+absence. Global delegator completeness, historical/deleted-key coverage and
+slashing reconstruction remain unqualified.
 
-Lazy semantic point reads can execute localized native operations without inverting
-every key. Current publication/recovery still requires complete DposSnapshot maps,
-principal/reward-graph global invariants and snapshot/projection hashes. Do not
-serialize a sparse cache as a complete snapshot. A later checkpoint delta-lineage
-contract must be reviewed before changing that authority boundary. Existing Rust
-owners, separate databases and general layout remain fixed.
+Lazy point reads and localized semantic kernels do not authorize complete state
+publication. Current publication/recovery still requires complete DposSnapshot
+maps, global principal/reward-graph invariants and snapshot/projection hashes.
+Do not serialize a sparse cache as a complete snapshot. Any future checkpoint
+delta-lineage contract needs review before changing that authority boundary.
+Existing Rust owners, separate databases and general layout remain fixed.
 
+The 19 copied-head transactions have bounded receipt/gas/root preflight evidence.
+Full reward/system-input closure, complete native/catalog qualification,
+non-genesis paired adoption and real full-period replay/recovery remain open.
+Continue bounded local reconstruction before declaring an external data blocker.
 No broad replay, expensive differential/fault campaign, protocol change, original
 upstream C++ modification or production backend switch is authorized. Ask before
-expensive validation under AGENTS.md. Lead exclusively owns shared `/build`.
-Its artifacts currently reflect the epoch checkpoint branch; rebuild the desired
-source before relying on subsequent C++ test runs.
+expensive validation under AGENTS.md.
