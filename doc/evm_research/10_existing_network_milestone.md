@@ -102,6 +102,8 @@ or a single snapshot limits the evidence available.
   stateful-native coverage remains under validation. Ordered Aspen2 reward phases implemented.
   [Staged reward claims](n2_claims_evidence.md) have independently reviewed
   dual-reference semantic-session coverage; publication/reopen remains open.
+  The [shared setCommission port](n2_commission_semantic_port.md) has reviewed
+  snapshot/checkpoint adapters without sparse-snapshot publication authority.
 - N3: [gas-search and ordinary simulation evidence](n3_api_parity.md) implemented;
   ordinary persisted historical reads/simulation/reopen now have bounded evidence;
   the disposable native simulation facade is implemented and reviewed; actual

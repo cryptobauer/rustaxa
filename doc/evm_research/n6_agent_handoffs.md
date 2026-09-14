@@ -261,6 +261,13 @@ classification, not only eventual lifecycle acceptance.
   commits are `d620a5711` and `12fa2f48f`; the only first-commit conflict retained
   both the claims and existing checkpoint module declarations. The isolated
   worktree had no configured hook path; the lead owns integrated fast validation.
+- The reused `epoch_fixtures` Sol thread completed the setCommission draft as
+  `dd64b1125`. Independent Sol review in `claims_completion` approved the full
+  draft plus delta against both Go pins; neither author nor helper approved its
+  own semantics. Integrated commits are `c3f53a0e2` and `02281c89d`. Lead checks
+  passed 64 native-session tests, three commission rule-order tests and the
+  six-case driver/journal corpus. The acceptance scope is documented in
+  [the semantic-port evidence](n2_commission_semantic_port.md).
 
 Epoch integration passed the full fast gate, 38 execution-domain tests, two
 period-codec byte tests, persisted/mixed fixtures (3/5), and eight rebuilt C++
