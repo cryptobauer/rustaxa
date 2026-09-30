@@ -165,10 +165,19 @@ reviewer when their scopes can proceed independently.
 | Role | Model / reasoning | Assignment |
 | --- | --- | --- |
 | Coordination / integration lead | Current session: `gpt-6-astra`, medium | Sequencing, manifests, integration, validation and evidence; delegate high-risk contract decisions to Astra high |
-| Execution or state implementation | `gpt-6.1-sol`, high | Rust implementation under reviewed contracts, reference fixtures, compatible reads and bounded reconstruction |
-| Contract authority / difficult semantics | `gpt-6-astra`, high | Historical policy, trie/crypto invariants, oracle design, adoption and recovery/publication decisions |
-| Independent reviewer | `gpt-6-astra`, high for high-risk changes; separate `gpt-6.1-sol`, high for settled bounded changes | Compare original reference behavior, implementation and required evidence; never approve own implementation |
+| Execution or state implementation | `gpt-6.1-sol`, medium by default; high for ambiguous or high-risk work | Rust implementation under reviewed contracts, reference fixtures, compatible reads and bounded reconstruction |
+| Contract authority / difficult semantics | `gpt-6-astra`, medium by default; high for ambiguous or high-risk work | Historical policy, trie/crypto invariants, oracle design, adoption and recovery/publication decisions |
+| Independent reviewer | Separate `gpt-6-astra` or `gpt-6.1-sol`, medium by default; high for ambiguous or high-risk review | Compare original reference behavior, implementation and required evidence; never approve own implementation |
 | Focused helper | `gpt-6-luna`, medium for maps/docs; high for settled bounded implementation | Inventories, report tooling and specified mechanical changes; no independent consensus/publication authority |
+
+Medium is the default for both Sol and Astra, including routine independent
+review. Escalate to high for unresolved historical semantics, cryptographic or
+trie invariants, adoption/recovery/publication authority, difficult failures, or
+substantial review rework. A routine change in one of these modules does not
+alone require high; the task's semantic risk determines the effort. Record the
+reason for escalation in the handoff. Model choice, reviewer independence and
+all validation gates remain unchanged. This is the task owner's routing policy,
+not a benchmark establishing medium/high equivalence.
 
 Use a configurable `default` or `worker` role with an explicit model and
 reasoning effort. The current named reviewer/architect roles pin 5.6 Sol, and

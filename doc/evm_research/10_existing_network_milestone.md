@@ -50,8 +50,9 @@ do not leave four independent implementations for a final integration step.
 
 Use the current [08 assignment table](08_implementation_plan.md#agent-and-model-assignments)
 and [September 30 setup validation](n6_model_setup_validation.md). Prospective
-implementation uses `gpt-6.1-sol` high; high-risk contracts and independent
-semantic review use `gpt-6-astra` high. `gpt-6-luna` medium owns bounded maps
+implementation uses `gpt-6.1-sol` and contract/semantic review uses `gpt-6-astra`,
+both at medium by default. Escalate to high for ambiguous or high-risk work under
+the 08 criteria; independent review is still required. `gpt-6-luna` medium owns bounded maps
 and diagnostics, with high reasoning for settled mechanical implementation.
 Launch and confirm Luna first. Lead retains integration and shared-file ownership;
 models do not relax acceptance gates. The earlier Spark-quota fallback and

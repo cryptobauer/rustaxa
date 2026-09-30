@@ -348,3 +348,14 @@ agent session IDs, independent review and the environment recovery prerequisite:
 old `/tmp` worktrees/reports and both snapshot paths are absent. Surviving reward
 branch metadata points only to the already integrated baseline, not a saved
 extractor. No implementation or snapshot work resumed during this audit.
+
+### Task-owner effort adjustment — 2026-09-30
+
+After the routing smoke checks, the task owner requested medium as the default
+for both GPT-6.1 Sol and GPT-6 Astra. Prospective assignments and restart
+instructions now follow that policy, including routine independent review.
+High remains available for ambiguous or high-risk semantics, authority changes,
+difficult failures and substantial review rework; record the escalation reason.
+Historical high-effort startup records above remain accurate. This documentation
+change does not retune existing threads, claim medium/high benchmark equivalence,
+or change reviewer independence, model ownership or validation requirements.

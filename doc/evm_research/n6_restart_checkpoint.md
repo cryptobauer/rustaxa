@@ -16,9 +16,10 @@ file. Inspect repository/worktree state before edits. Continue on
 
 Use the [September 30 model/environment validation](n6_model_setup_validation.md)
 and the current assignment table in 08. Launch `gpt-6-luna` medium first and
-confirm actual startup before other workers. Use `gpt-6.1-sol` high for
-implementation and `gpt-6-astra` high for high-risk decisions and independent
-review. Use configurable roles with explicit IDs; fixed specialist roles still
+confirm actual startup before other workers. Use `gpt-6.1-sol` for
+implementation and `gpt-6-astra` for contract decisions and independent
+review, both at medium by default. Escalate to high for ambiguous or high-risk
+work under the 08 criteria; record why in the handoff. Use configurable roles with explicit IDs; fixed specialist roles still
 route older models. Historical assignments below remain historical.
 
 As of September 30, the feature checkout is clean at `78dc79054` before the

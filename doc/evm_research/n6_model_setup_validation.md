@@ -32,8 +32,12 @@ No model-equivalence or coding-quality benchmark was run.
 ## Routing policy
 
 The [current assignment table](08_implementation_plan.md#agent-and-model-assignments)
-assigns Sol high to implementation, Astra high to difficult contracts and
-independent high-risk review, and Luna to bounded helper work. The current
+assigns Sol to implementation, Astra to contracts and independent semantic
+review, and Luna to bounded helper work. At the task owner's request, Sol and
+Astra now default to medium, including routine review, with high reserved for
+ambiguous or high-risk work under the 08 escalation criteria. The startup table
+above preserves the actual high-effort checks; it is not rewritten as medium
+validation. No medium/high equivalence benchmark has been run. The current
 medium-reasoning root coordinates integration; it does not claim to have switched
 itself to high reasoning. High-risk decisions go to an explicitly configured
 Astra high worker, with a separate reviewer if that worker implements the change.
@@ -91,11 +95,12 @@ four-key copied-head sender scout has no currently verified completion artifact.
 
 ## Next assignments
 
-1. Sol high: recover the interrupted reward extractor and scout source from
+1. Sol medium by default: recover the interrupted reward extractor and scout source from
    saved evidence; inventory exactly what survives before editing. Keep prior
    raw mismatch and candidate-only qualification explicit.
-2. Astra high: independently review reconstructed source and provenance.
+2. Astra medium by default: independently review reconstructed source and provenance.
    Missing reports or snapshot inputs cannot be replaced by conversation claims.
+   Escalate to high if reconstruction leaves provenance or semantic ambiguity.
 3. Luna medium: check links, hashes, fixture inventories and handoff completeness.
 4. Lead: coordinate restoration/requalification of supplied inputs, then run
    only the applicable bounded checks under the existing repository policy.
