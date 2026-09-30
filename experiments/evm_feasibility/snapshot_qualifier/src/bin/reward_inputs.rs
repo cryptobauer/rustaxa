@@ -1,13 +1,19 @@
-//! Extracts one bounded retained-head reward-input candidate without state reads.
+//! Bounded retained-head reward planner comparisons with no state execution.
 //!
-//! The tool accepts only the already-qualified independent snapshot copy and
-//! opens only its application database through RocksDB's read-only API. Exact
-//! retained `PeriodData`, receipt, header, and current `BlockStats` rows are
-//! decoded with Rust compatibility types. The `BlockStats` row captures the
-//! producer-observed blocks-per-year and vote weights, so values derived from it
-//! remain candidate reconstruction inputs rather than independent prior-state
-//! proof. No state database, range iterator, execution, or publication handle is
-//! opened.
+//! Both modes accept only the guarded independent copy and perform seven
+//! read-only application point reads. Rust compatibility owners decode exact
+//! PeriodData, receipts, header and BlockStats. Legacy mode derives vote weights
+//! and blocks/year from the expected BlockStats row and labels that circular
+//! candidate evidence. `--independent-artifacts` instead binds exact historical
+//! vote/rate/config artifacts and fresh signed certificate identities; author,
+//! weights, true total and rate enter planning before expected stats is decoded.
+//! Typed fields, raw bytes and validator order are compared separately. Reused
+//! state/VRF evidence is historical and candidate policy is not producer authority.
+//! No state database, inventory, execution, publication or complete cache owner
+//! is opened; malformed rows/artifact identities and existing outputs fail closed.
+
+#[path = "reward_inputs/independent_artifacts.rs"]
+mod independent_artifacts;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -86,6 +92,8 @@ struct Report {
     planner_candidate: PlannerCandidate,
     planner_comparison: PlannerComparison,
     qualification: Qualification,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    independent_artifacts: Option<independent_artifacts::IndependentEvidence>,
 }
 
 #[derive(Serialize)]
@@ -185,7 +193,7 @@ struct Qualification {
 }
 
 fn main() -> Result<()> {
-    let (input, output) = validated_paths()?;
+    let (input, output, independent_mode) = validated_paths()?;
     let app_path = canonical_application_path(&input)?;
     let (application, columns) = open_application_read_only(&app_path)?;
     let application = Arc::new(application);
@@ -242,31 +250,92 @@ fn main() -> Result<()> {
 
     let stored_header = StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&header))?;
     ensure!(stored_header.total_reward.is_zero());
-    let observed = decode_rewards_block_distributions(&[RewardsStatsPeriodRlp {
-        period: TARGET_PERIOD,
-        data: current_stats.clone(),
-    }])?
-    .pop()
-    .context("current BlockStats decoder returned no row")?;
-    ensure!(observed.max_votes_weight <= u64::from(MAINNET_COMMITTEE_SIZE));
+    let independent = if independent_mode {
+        Some(independent_artifacts::load(
+            &input,
+            stored_header.state_root.as_bytes(),
+            &header,
+        )?)
+    } else {
+        None
+    };
+    // The independent branch never decodes expected stats before planning.
+    let observed_before_plan = if independent.is_none() {
+        Some(decode_observed_stats(&current_stats)?)
+    } else {
+        None
+    };
     let pbft = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(
         Rlp::new(&period_data).at(0)?.as_raw(),
     ))?;
-    ensure!(pbft.period == TARGET_PERIOD && pbft.author == observed.block_author);
-
+    ensure!(pbft.period == TARGET_PERIOD);
     let votes = reconstruct_cert_votes(&period_data)?;
-    let (cert_facts, weighted_bundle, cert_report) = candidate_vote_weights(
-        &votes,
-        &observed.validators_stats,
-        observed.total_votes_weight,
-    )?;
+    let inputs = if let Some(independent) = &independent {
+        let cert_facts = independent.cert_facts(&votes.canonical)?;
+        let weighted = votes
+            .canonical
+            .iter()
+            .zip(&cert_facts)
+            .map(|(vote, fact)| build_weighted_pbft_vote_payload(vote, fact.weight))
+            .collect::<Result<Vec<_>>>()?;
+        PlannerFactInputs {
+            blocks_per_year: independent.blocks_per_year,
+            total_vote_count: independent.total_vote_count,
+            weighted_bundle: build_weighted_pbft_vote_bundle(&weighted)?,
+            cert_report: CertVoteCandidate {
+                certified_period: votes.certified_period,
+                round: votes.round,
+                step: votes.step,
+                count: cert_facts.len(),
+                unique_voters: true,
+                every_voter_has_observed_nonzero_weight: false,
+                no_unpaired_observed_nonzero_weights: false,
+                observed_weights_sum_matches_stats: false,
+                weighted_bundle_bytes: 0,
+                weighted_bundle_sha256: String::new(),
+                weight_source: "SHA-bound e63be522d independent delayed-state/strict-VRF artifact calculated_weight; candidate configuration",
+                independent_prior_state_weights_qualified: false,
+            },
+            cert_facts,
+        }
+    } else {
+        let observed = observed_before_plan.as_ref().expect("legacy observation");
+        ensure!(
+            observed.max_votes_weight <= u64::from(MAINNET_COMMITTEE_SIZE)
+                && pbft.author == observed.block_author
+        );
+        let (cert_facts, weighted_bundle, cert_report) = candidate_vote_weights(
+            &votes,
+            &observed.validators_stats,
+            observed.total_votes_weight,
+        )?;
+        PlannerFactInputs {
+            blocks_per_year: observed.blocks_per_year,
+            total_vote_count: observed.max_votes_weight,
+            cert_facts,
+            weighted_bundle,
+            cert_report,
+        }
+    };
+    let PlannerFactInputs {
+        blocks_per_year,
+        total_vote_count,
+        cert_facts,
+        weighted_bundle,
+        mut cert_report,
+    } = inputs;
+    // Retained output enters only reporting/comparison after process_period.
+    let derived_weights = cert_facts
+        .iter()
+        .map(|fact| (fact.voter.0, fact.weight))
+        .collect::<BTreeMap<_, _>>();
     let transaction_facts = transaction_facts(&period_data, &receipts)?;
     let dag_facts = dag_facts(&period_data)?;
     let fact = FinalizedRewardsPeriodFact {
         period: TARGET_PERIOD,
-        block_author: observed.block_author,
-        blocks_per_year: observed.blocks_per_year,
-        dpos_eligible_total_vote_count: observed.max_votes_weight,
+        block_author: pbft.author,
+        blocks_per_year,
+        dpos_eligible_total_vote_count: total_vote_count,
         transactions: transaction_facts,
         dag_blocks: dag_facts,
         cert_votes: cert_facts,
@@ -285,6 +354,28 @@ fn main() -> Result<()> {
     )?;
     let plan = runtime.process_period(fact);
     ensure!(plan.status == RewardsStatsStatus::Applied);
+    let observed = match observed_before_plan {
+        Some(observed) => observed,
+        None => decode_observed_stats(&current_stats)?,
+    };
+    if independent.is_some() {
+        cert_report.every_voter_has_observed_nonzero_weight = derived_weights.keys().all(|voter| {
+            observed
+                .validators_stats
+                .get(voter)
+                .is_some_and(|row| row.vote_weight > 0)
+        });
+        cert_report.no_unpaired_observed_nonzero_weights = observed
+            .validators_stats
+            .iter()
+            .filter(|(_, row)| row.vote_weight > 0)
+            .all(|(voter, _)| derived_weights.contains_key(voter));
+        let sum = derived_weights.values().try_fold(0_u64, |sum, weight| {
+            sum.checked_add(*weight)
+                .context("derived weight sum overflow")
+        })?;
+        cert_report.observed_weights_sum_matches_stats = sum == observed.total_votes_weight;
+    }
     let exact_current_block_stats_match = plan.current_block_stats_rlp == current_stats;
     ensure!(plan.cache_current_period && !plan.clear_cached_stats);
     ensure!(plan.distribution_stats.is_empty());
@@ -306,6 +397,7 @@ fn main() -> Result<()> {
             &[
                 include_bytes!("reward_inputs.rs").as_slice(),
                 include_bytes!("../reward_votes.rs"),
+                include_bytes!("reward_inputs/independent_artifacts.rs"),
             ]
             .concat(),
         ),
@@ -350,7 +442,8 @@ fn main() -> Result<()> {
         planner_candidate: PlannerCandidate {
             config_source: "checked-in mainnet config; target-period behavior candidate only",
             checked_in_mainnet_config_producer_qualified: false,
-            capped_dpos_total_vote_projection: observed.max_votes_weight,
+            capped_dpos_total_vote_projection: total_vote_count
+                .min(u64::from(MAINNET_COMMITTEE_SIZE)),
             exact_dpos_total_vote_count_qualified: false,
             exact_current_block_stats_match,
             cache_current_period: plan.cache_current_period,
@@ -385,10 +478,34 @@ fn main() -> Result<()> {
             state_api_or_end_block_executed: false,
             reward_transition_or_root_qualified: false,
             producer_binary_or_global_hardfork_config_qualified: false,
-            note: "vote weights and blocks_per_year come from the retained current BlockStats expected output; typed equality is circular for those fields and does not independently prove historical VRF validation, prior-state vote weights, other prior-state reward inputs, or legacy unordered-map serialization order",
+            note: if independent_mode {
+                "weights, true total and blocks_per_year reuse exact historical independent artifacts, author comes from signed PBFT source, and expected BlockStats enters only after planning; configuration remains candidate-only, concrete authentication/VRF are not freshly rerun, historical cache closure and reward transition remain unqualified"
+            } else {
+                "vote weights and blocks_per_year come from the retained current BlockStats expected output; typed equality is circular for those fields and does not independently prove historical VRF validation, prior-state vote weights, other prior-state reward inputs, or legacy unordered-map serialization order"
+            },
         },
+        independent_artifacts: independent.map(|inputs| inputs.evidence),
     };
     write_report(&output, &report)
+}
+
+/// Facts selected before planning; expected output is unavailable to the
+/// independent artifact loader and does not supply author, weights, rate or total.
+struct PlannerFactInputs {
+    blocks_per_year: u32,
+    total_vote_count: u64,
+    cert_facts: Vec<RewardCertVoteFact>,
+    weighted_bundle: Vec<u8>,
+    cert_report: CertVoteCandidate,
+}
+
+fn decode_observed_stats(bytes: &[u8]) -> Result<rustaxa_consensus::RewardsBlockDistribution> {
+    decode_rewards_block_distributions(&[RewardsStatsPeriodRlp {
+        period: TARGET_PERIOD,
+        data: bytes.to_vec(),
+    }])?
+    .pop()
+    .context("current BlockStats decoder returned no row")
 }
 
 fn candidate_vote_weights(
@@ -487,19 +604,24 @@ fn dag_facts(period_data: &[u8]) -> Result<Vec<RewardDagBlockFact>> {
         .collect()
 }
 
-fn validated_paths() -> Result<(PathBuf, PathBuf)> {
+fn validated_paths() -> Result<(PathBuf, PathBuf, bool)> {
     let mut args = env::args_os().skip(1);
-    let input = PathBuf::from(
-        args.next()
-            .context("usage: reward_inputs QUALIFIED_COPY OUTPUT_JSON")?,
-    );
+    let first = args
+        .next()
+        .context("usage: reward_inputs [--independent-artifacts] QUALIFIED_COPY OUTPUT_JSON")?;
+    let independent = first == "--independent-artifacts";
+    let input = PathBuf::from(if independent {
+        args.next().context("missing copy")?
+    } else {
+        first
+    });
     let output = PathBuf::from(
         args.next()
             .context("usage: reward_inputs QUALIFIED_COPY OUTPUT_JSON")?,
     );
     ensure!(args.next().is_none());
     let paths = rustaxa_snapshot_qualifier::paths::validate(&input, &output)?;
-    Ok((paths.input, paths.output))
+    Ok((paths.input, paths.output, independent))
 }
 
 fn canonical_application_path(input: &Path) -> Result<PathBuf> {

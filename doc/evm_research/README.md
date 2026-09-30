@@ -25,7 +25,12 @@ and publication/recovery. Implementation is authorized; production routing remai
 
 The [current restart checkpoint](n6_restart_checkpoint.md) and
 [restored-input next slice](n4_restored_snapshot_next_slice.md) locate the supplied
-DB pair under `data/` and specify requalification before the next bounded probe.
+DB pair under `data/`. The [restored-pair continuation](n4_restored_snapshot_evidence.md)
+qualified the independent working copy and completed the physical sender scout;
+[four authenticated paths](n4_head_sender_proofs.md) separately prove nonmembership.
+[Independent reward inputs](n4_independent_reward_inputs.md) now reconstruct
+certificate weights, annualized rate and bounded retained DPoS metadata, with
+producer policy and reward execution still unqualified.
 
 Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qualification.md),
 [S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),

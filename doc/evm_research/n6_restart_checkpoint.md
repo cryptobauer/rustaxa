@@ -49,12 +49,22 @@ annualization 9,275,294. A separate capped CF8 metadata check exhausts one
 delay match the candidate. Metadata is not state-root authenticated; producer
 identity, hardfork/PBFT settings and reward transition remain unqualified.
 
-Next bounded step: integrate independently derived vote/total/rate facts into
-the existing Rust reward planner comparison, preserving historical raw order
-mismatch and candidate-policy labels. Do not infer reward execution or complete
-native state from these diagnostics. The 43 qualifier tests, strict clippy/fmt
-and explicit fast pre-commit gate (including 1,444 consensus tests) passed;
-Astra independently approved source and exact execution evidence.
+The [independent planner comparison](n4_independent_reward_plan.md) now
+consumes those SHA-bound facts: all typed reward fields match, while the raw
+legacy validator-order mismatch remains. It uses seven application point reads,
+actual total 534,879 (committee cap 1,000), independently derived rate and signed
+PBFT author. Expected BlockStats enters only after planning. Zero distributions
+and current-period caching are proved within this candidate planner scope;
+actual EndBlock, cache closure and reward-root qualification remain open.
+Legacy-mode observations also match exactly apart from source fingerprint.
+
+Next bounded diagnostic follows the [conditional native-effects contract](n4_empty_native_effects_contract.md):
+parent DPoS account code presence and authenticated empty parent jailed list,
+with pinned historical transfer and independent planner evidence. This is not
+execution, replay, complete native reconstruction or publication authority.
+The input batch passed 43 qualifier tests and the explicit fast pre-commit gate
+(including 1,444 consensus tests); five additional planner tests and independent
+Astra source/report review passed.
 The user authorized bounded progress while preserving at least 25% remaining
 weekly usage: monitor telemetry, stop new slices at 30% remaining, and reserve
 closeout capacity. Broad replay, production routing and sparse publication remain

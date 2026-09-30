@@ -73,6 +73,19 @@ a baseline and latest policy at/before Q. Metadata is not state-root authenticat
 Both accept the guarded copy and a fresh exclusive output filename; neither
 executes a state transition or qualifies the producer.
 
+Use `reward_inputs --independent-artifacts COPY OUTPUT` for the separately
+bounded planner comparison. It preserves the legacy seven application point
+reads and reuses exact SHA-bound vote/rate/retained-config reports from
+`e63be522d`. It binds their H/P/Q/D, network, header/root and candidate-config
+identities, then matches all19 voters to freshly inspected canonical signed
+certificate bytes. Author comes from the PBFT row, actual total534879 and
+rate9275294 from independent artifacts; `RewardsStatsRuntime` applies the
+committee cap1000. Expected BlockStats is decoded only after planning. The report
+keeps full typed comparison, exact-byte comparison and validator ordering separate.
+State authentication/VRF evidence is historical reuse, with no fresh state reads,
+producer-config authority, historical cache closure or reward transition claim.
+Historical reports remain unchanged; write a fresh planner output filename.
+
 The shared guard validates the exact copy and both DB children before any open, rejects
 symlink components and source/output overlap, and requires new report files. Opens are
 read-only and publication uses exclusive creation. Use fresh output filenames for reruns.

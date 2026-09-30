@@ -455,3 +455,22 @@ See [the evidence](n4_independent_reward_inputs.md). Latest sampled weekly usage
 during this batch was 51% used; stop new slices at70% used to preserve closeout
 capacity and the user's requested25% reserve. No producer certification, full
 native reconstruction, reward execution or publication is claimed.
+
+
+## Independent reward planner integration
+
+From `e63be522d`, reused Sol6.1 medium implemented the optional artifact-bound
+mode in the existing reward diagnostic. Reused Astra6 medium independently
+reviewed both code and fresh independent/legacy outputs; exact delayed identity
+and signed certificate-hash gates were tightened before freeze. Root reran five
+focused tests, strict targeted clippy, both seven-read modes and explicit fast
+pre-commit successfully. All typed fields match using independent inputs; raw
+legacy order remains different. See [planner evidence](n4_independent_reward_plan.md).
+
+After delivering frozen source and its successful test handoff, `sol_n4_tools`
+reported `Selected model is at capacity`. This is a late model-capacity failure,
+not a thread-capacity or account-usage conclusion. No retry or substitution was
+needed: root completed execution/validation and Astra approved the result.
+Latest sampled weekly usage during this closeout was57% used. The conditional
+native-effects diagnostic is separately scoped; it does not extend planner
+acceptance to actual EndBlock or publication.

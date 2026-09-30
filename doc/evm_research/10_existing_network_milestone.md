@@ -111,8 +111,12 @@ or a single snapshot limits the evidence available.
   transactions, exact receipts and transaction-only derivation of the retained
   root; [identity-pinned checkpoint readers](n4_checkpoint_readers.md) are
   implemented and reviewed. [Seeded undelegation reconstruction](n4_native_seeded_undelegations.md)
-  raises authenticated inverse coverage to 2,282 of 23,278 rows. Bootstrap and qualification of terminal
-  rewards/system inputs remain open.
+  raises authenticated inverse coverage to 2,282 of 23,278 rows. The restored pair
+  is requalified; [independent reward-input diagnostics](n4_independent_reward_inputs.md)
+  reproduce all 19 vote weights and the annualized rate under candidate policy.
+  A bounded retained configuration record corroborates stake/delay scalars, but
+  does not authenticate producer or hardfork/PBFT policy. Bootstrap, complete
+  native reconstruction and reward/system transition qualification remain open.
 - N5–N6: open; the [reward scheduler lifecycle](n5_reward_scheduler_evidence.md)
   has reviewed bounded startup, discard-retry and publication-ordering coverage.
   Full existing-network acceptance remains open. The
