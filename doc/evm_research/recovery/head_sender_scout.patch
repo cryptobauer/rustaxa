@@ -1,0 +1,109 @@
+*** Begin Patch
+*** Update File: /tmp/rustaxa-evm-bootstrap-recovery/experiments/evm_feasibility/snapshot_qualifier/src/bin/native_inverse_coverage/seeded_undelegations.rs
+@@
+ pub struct SeededUndelegationCoverage {
+@@
+     pub semantic_snapshot_complete: bool,
+ }
++
++/// One typed fixed-identity point observation for an address-seeded scout.
++#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
++pub struct SeededAddressScoutObservation {
++    pub family: &'static str,
++    pub logical_key_hex: String,
++    pub physical_result: &'static str,
++    pub exact_value_hex: Option<String>,
++    pub decoded_value: Option<u64>,
++}
+@@
+ pub fn analyze_seeded_undelegations<F>(
+@@
+ }
++
++/// Reads exactly the four delegator-scoped count/cursor keys justified by one
++/// externally authenticated address candidate.
++///
++/// `read` must be fixed to the same qualified concrete-state identity and DPoS
++/// account reported by the caller. Present count rows must be exactly four
++/// little-endian bytes and a present last-ID row must be exactly eight. Absence,
++/// tombstone, unavailable history, and pruning remain distinct observations.
++/// Other reader errors fail rather than becoming a typed empty result. This
++/// scout does not enumerate child entries or establish catalog completeness.
++pub fn scout_seeded_address<F>(
++    candidate: [u8; 20],
++    mut read: F,
++) -> Result<Vec<SeededAddressScoutObservation>>
++where
++    F: FnMut(ConcreteStorageKey) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError>,
++{
++    let probes = [
++        (
++            "delegation_validator_count",
++            iterable_count_key(&delegation_validators_prefix(candidate)),
++            4_usize,
++        ),
++        (
++            "undelegation_v1_validator_count",
++            iterable_count_key(&undelegation_v1_validators_prefix(candidate)),
++            4,
++        ),
++        (
++            "undelegation_v2_validator_count",
++            iterable_count_key(&undelegation_v2_validators_prefix(candidate)),
++            4,
++        ),
++        (
++            "undelegation_v2_last_id",
++            last_v2_id_key(candidate),
++            8,
++        ),
++    ];
++    let mut observations = Vec::with_capacity(probes.len());
++    for (family, key, width) in probes {
++        let (physical_result, exact_value_hex, decoded_value) = match read(key) {
++            Ok(ConcreteRead::Present(value)) => {
++                let decoded = match width {
++                    4 => u64::from(decode_le_u32(&value, family)?),
++                    8 => decode_le_u64(&value, family)?,
++                    _ => unreachable!("fixed scout width"),
++                };
++                ("present", Some(hex::encode(&value)), Some(decoded))
++            }
++            Ok(ConcreteRead::Absent) => ("absent", None, None),
++            Ok(ConcreteRead::Tombstone) => ("tombstone", None, None),
++            Err(ConcreteReadError::HistoryUnavailable(_)) => {
++                ("history_unavailable", None, None)
++            }
++            Err(ConcreteReadError::Pruned(_)) => ("pruned", None, None),
++            Err(error) => {
++                return Err(anyhow::Error::new(error)).with_context(|| {
++                    format!(
++                        "read seeded address scout {family} logical key {}",
++                        hex::encode(key.0)
++                    )
++                });
++            }
++        };
++        observations.push(SeededAddressScoutObservation {
++            family,
++            logical_key_hex: hex::encode(key.0),
++            physical_result,
++            exact_value_hex,
++            decoded_value,
++        });
++    }
++    ensure!(
++        observations.len() == 4,
++        "seeded address scout did not produce exactly four observations"
++    );
++    Ok(observations)
++}
+@@
+ fn undelegation_v1_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
+@@
+ }
++
++fn delegation_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
++    [&[2, 1][..], &delegator].concat()
++}
+*** End Patch

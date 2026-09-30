@@ -359,3 +359,20 @@ difficult failures and substantial review rework; record the escalation reason.
 Historical high-effort startup records above remain accurate. This documentation
 change does not retune existing threads, claim medium/high benchmark equivalence,
 or change reviewer independence, model ownership or validation requirements.
+
+### Interrupted-work recovery — 2026-09-30
+
+Reused `luna_setup_validation` (GPT-6 Luna medium) acknowledged first, then
+mapped sessions and searched filenames. Fresh `recover_reward_source` and
+`recover_scout_source` requested GPT-6.1 Sol medium and recovered disjoint
+artifacts. Fresh `recovery_review` requested GPT-6 Astra medium and independently
+verified recovery fidelity. Runtime logs confirmed all requested model/effort
+pairs; all ran successfully with no routing failures. No worker made commits;
+the lead integrated and validated the recovery.
+
+Reward source/report hashes match the historical records exactly, and the
+manifest/lock delta matches the logged diff. The sender scout yielded only a
+partial helper patch, preserved inert with provenance. Locked diagnostic tests
+2/2, targeted format/clippy and the explicit full pre-commit gate passed.
+No database was opened. See [the recovery checkpoint](n6_recovery_checkpoint.md)
+for artifacts, source evidence and missing snapshot inputs.

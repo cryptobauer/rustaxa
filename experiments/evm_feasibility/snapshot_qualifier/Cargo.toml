@@ -15,6 +15,7 @@ num-bigint = "0.4"
 rlp = "0.6"
 rocksdb = { version = "0.24", default-features = false, features = ["lz4"] }
 rustaxa-evm = { path = "../../../rust/crates/rustaxa-evm" }
+rustaxa-consensus = { path = "../../../rust/crates/rustaxa-consensus" }
 rustaxa-storage = { path = "../../../rust/crates/rustaxa-storage" }
 rustaxa-types = { path = "../../../rust/crates/rustaxa-types" }
 serde = { version = "1", features = ["derive"] }

@@ -27,8 +27,10 @@ setup-document update. Old agent threads are no longer live. Historical
 `/tmp` worktrees are absent and marked prunable; the original snapshot and
 qualified copy are also absent. Do not treat the worktree paths below as live
 or open a different database under the old qualification. Committed artifacts
-survive; ephemeral reward diagnostics and unfinished scout work need recovery
-from saved session evidence or reconstruction and fresh validation.
+survive. The [September 30 recovery](n6_recovery_checkpoint.md) restored the
+reward extractor, dependency delta and historical report byte-exact, and preserved
+the unfinished scout helper as an inert patch. The scout CLI/tests were never
+completed. Snapshot inputs still require restoration and requalification.
 The existing build cache is present but was not rebuilt or validated this session.
 
 The September 13–14 continuation successfully ran Luna first. Its recorded runtime

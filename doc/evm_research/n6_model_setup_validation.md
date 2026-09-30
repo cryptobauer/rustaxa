@@ -93,6 +93,13 @@ currently reproducible artifact: recover the exact source/report from session
 records if available, or reconstruct and rerun after input restoration. The
 four-key copied-head sender scout has no currently verified completion artifact.
 
+## Recovery follow-up
+
+The subsequent [recovery checkpoint](n6_recovery_checkpoint.md) supersedes the
+missing-source/report status above: reward source and report are restored exactly,
+and the unfinished scout helper patch is preserved. The snapshot remains absent.
+The assignments below record the setup audit's original recovery plan.
+
 ## Next assignments
 
 1. Sol medium by default: recover the interrupted reward extractor and scout source from
