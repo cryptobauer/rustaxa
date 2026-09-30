@@ -167,6 +167,10 @@ Use `make cpp-intersection-list` before applying a carry-back patch and verify i
 ## Agent capacity and quota management
 
 - Reserve one available agent slot for Luna’s bounded tasks.
+- For EVM/state work, use the current model table in `doc/evm_research/08_implementation_plan.md`
+  and validation record in `doc/evm_research/n6_model_setup_validation.md`. Explicitly configure
+  models through an override-capable role; a fixed specialist role may still select an older model.
+  Preserve historical routing evidence rather than rewriting it as if a new model performed prior work.
 - On fresh team startup, launch and confirm Luna’s bounded worker before filling the remaining agent slots.
 - Reuse existing agents for related work. Close completed threads when supported; do not assume a finished task releases its slot.
 - Before spawning, check capacity and explicitly select the assigned model. Confirm successful startup before reporting that work was delegated.

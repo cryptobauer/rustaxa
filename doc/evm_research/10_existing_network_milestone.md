@@ -48,18 +48,14 @@ do not leave four independent implementations for a final integration step.
 
 ## Assignments and ownership
 
-The task owner approved Luna as the bounded Spark fallback because Spark quota
-is exhausted. The assignments in 08 apply with these milestone responsibilities:
-
-- Astra lead: shared contracts, manifests, composition, `PLAN.md`, branch/commits,
-  integration validation and publication authority.
-- Sol execution owner: EVM/frame/native implementation and reference semantics.
-- Sol state owner: compatible reader/bootstrap/recovery implementation and state
-  qualification on independent snapshot copies.
-- Luna helper: narrowly scoped code maps, fixture tooling, settled adapters and
-  targeted tests. Medium reasoning for maps, high for bounded implementation.
-- Independent Astra/Sol reviewer: original-reference and contract review before
-  integration; helper-created expectations never approve their own semantics.
+Use the current [08 assignment table](08_implementation_plan.md#agent-and-model-assignments)
+and [September 30 setup validation](n6_model_setup_validation.md). Prospective
+implementation uses `gpt-6.1-sol` high; high-risk contracts and independent
+semantic review use `gpt-6-astra` high. `gpt-6-luna` medium owns bounded maps
+and diagnostics, with high reasoning for settled mechanical implementation.
+Launch and confirm Luna first. Lead retains integration and shared-file ownership;
+models do not relax acceptance gates. The earlier Spark-quota fallback and
+baseline assignments below are historical, not current routing instructions.
 
 Initial read-only assignments at baseline `48dd3173b`: `milestone_execution`
 (Sol high) audits execution/native coverage; `milestone_state` (Sol high) audits

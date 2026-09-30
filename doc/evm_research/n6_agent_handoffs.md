@@ -327,3 +327,24 @@ ran the eight binary tests after integration; the reviewer reconstructed all
 new preimages/values and checked artifact/source hashes without reopening the DB.
 The original snapshot was untouched, and qualified-copy access was released.
 See [the exact evidence and limits](n4_native_seeded_undelegations.md).
+
+## Model refresh validation — 2026-09-30
+
+The agent service initially listed only root; historical threads were not live.
+Fresh `luna_setup_validation` requested `gpt-6-luna` medium and started first.
+After acknowledgment, `sol_setup_validation` requested `gpt-6.1-sol` high and
+`astra_setup_review` requested `gpt-6-astra` high. All three completed bounded
+read-only setup tasks. Local runtime `turn_context` records confirm the exact
+requested models and efforts; no routing failure occurred. They made no commits.
+The lead owns the documentation update. No quota/billing inference is made.
+
+The current lead remains `gpt-6-astra` medium. Project routing now explicitly
+assigns high-risk contract decisions and review to Astra high, implementation
+to Sol high, and bounded helper work to Luna. Old fixed specialist roles are not
+used to select new models. Historical 5.6 assignments above remain unchanged.
+
+The [setup validation](n6_model_setup_validation.md) records the new routing,
+agent session IDs, independent review and the environment recovery prerequisite:
+old `/tmp` worktrees/reports and both snapshot paths are absent. Surviving reward
+branch metadata points only to the already integrated baseline, not a saved
+extractor. No implementation or snapshot work resumed during this audit.

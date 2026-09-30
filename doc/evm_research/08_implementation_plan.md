@@ -157,27 +157,38 @@ remain separate. The new milestone's acceptance conditions cannot be waived by s
 
 ## Agent and model assignments
 
-Start with one lead and two implementation workers; add independent review at contract and
-integration boundaries and a helper only for work that can proceed independently.
+Current routing was revalidated on 2026-09-30; see the
+[model and environment validation](n6_model_setup_validation.md). Launch and
+confirm Luna first, then add at most two implementation workers and an independent
+reviewer when their scopes can proceed independently.
 
 | Role | Model / reasoning | Assignment |
 | --- | --- | --- |
-| Lead / integration owner | `gpt-6-astra`, high | Shared contracts, composition, sequencing, integration and evidence |
-| Execution worker | `gpt-5.6-sol`, high | Execution/native semantics and reference compatibility |
-| State worker | `gpt-5.6-sol`, high | Compatible reads, bootstrap, persistence and recovery |
-| Independent reviewer | `gpt-6-astra` or `gpt-5.6-sol`, high | Original-reference comparison, invariants and required evidence |
-| Focused helper | `gpt-5.6-luna`, medium for maps/mechanical work; high for bounded implementation | Code maps, fixture/report tooling, settled adapters and tests with independently established expectations |
+| Coordination / integration lead | Current session: `gpt-6-astra`, medium | Sequencing, manifests, integration, validation and evidence; delegate high-risk contract decisions to Astra high |
+| Execution or state implementation | `gpt-6.1-sol`, high | Rust implementation under reviewed contracts, reference fixtures, compatible reads and bounded reconstruction |
+| Contract authority / difficult semantics | `gpt-6-astra`, high | Historical policy, trie/crypto invariants, oracle design, adoption and recovery/publication decisions |
+| Independent reviewer | `gpt-6-astra`, high for high-risk changes; separate `gpt-6.1-sol`, high for settled bounded changes | Compare original reference behavior, implementation and required evidence; never approve own implementation |
+| Focused helper | `gpt-6-luna`, medium for maps/docs; high for settled bounded implementation | Inventories, report tooling and specified mechanical changes; no independent consensus/publication authority |
 
-The task owner approved Luna as the Spark fallback on 2026-09-13 because Spark quota is
-exhausted. Explicitly select Luna through a configurable role; Spark-fixed specialist roles
-cannot provide this substitution. Historical evidence keeps the actual model used at that time.
-This changes project assignments, not global Codex settings.
+Use a configurable `default` or `worker` role with an explicit model and
+reasoning effort. The current named reviewer/architect roles pin 5.6 Sol, and
+Rust/code-mapper roles pin Spark; selecting those names does not select the new
+models. New explicitly configured workers require an independent context
+(`fork_turns="none"`), including objective, base/reference/configuration,
+owned files, dependencies, invariants, tests, non-goals and report format.
+Reuse compatible live workers, but do not treat an old thread as upgraded.
 
-Each helper handoff specifies files, inputs, outputs, invariants and checks. Sol/Astra reviews
-consensus-sensitive changes against the reference. Historical policy, trie design, cryptographic
-compatibility, oracle expectations and recovery decisions remain with lead/implementation owners.
-Escalate ambiguous work. Assess Luna's first patches by correctness and review rework; there is
-no repository benchmark establishing equivalence to Spark. All models retain the same test gates.
+The September 13 approval of 5.6 Luna as a Spark fallback is historical.
+Preserve those runtime records; do not infer current quota exhaustion from them.
+The September 30 routes actually ran, with runtime `turn_context` confirmation.
+This updates project routing, not global Codex configuration or the live lead's
+model. A successful startup is availability evidence, not a repository benchmark
+or assurance against future account limits.
+
+Reserve Luna's slot; use one writer per module, independent review, lead ownership
+of shared interfaces/manifests/`PLAN.md` and exclusive lead use of `/build`.
+All existing parity, snapshot, publication and validation gates remain required.
+Record actual runtime routing, results and failures at every handoff.
 
 ## Branching, integration and validation
 
@@ -202,6 +213,7 @@ subsystem/smoke gate. Ask the task owner before expensive repository-wide or sto
 fault campaigns or sustained operational workloads. Prepare exact commands, dataset identity and scope first. Record
 failed and skipped requirements explicitly; aggregate exit success cannot stand in for an unavailable required test.
 
-The immediate next implementation work follows the active grouped milestone. Layout
+The immediate next implementation work follows the [restart checkpoint](n6_restart_checkpoint.md),
+including its current environment-recovery prerequisites. Layout
 consolidation and further engine surveys are not prerequisites. Snapshot qualification, remaining historical coverage
 and production acceptance remain explicit gates; no duration or throughput estimate is claimed by this plan.

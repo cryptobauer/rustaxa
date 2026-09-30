@@ -14,12 +14,23 @@ Read `AGENTS.md`, `PLAN.md`, `doc/evm_research/README.md`, milestone 10 and this
 file. Inspect repository/worktree state before edits. Continue on
 `feat/rust/evm-state-db`.
 
-Launch Luna first, explicitly requesting `gpt-5.6-luna` with medium reasoning and
-an independent task context, and confirm successful startup before allocating
-other slots. Reserve that thread for bounded helper work. Retain Sol high for
-implementation and independent Astra/Sol review for semantic acceptance.
+Use the [September 30 model/environment validation](n6_model_setup_validation.md)
+and the current assignment table in 08. Launch `gpt-6-luna` medium first and
+confirm actual startup before other workers. Use `gpt-6.1-sol` high for
+implementation and `gpt-6-astra` high for high-risk decisions and independent
+review. Use configurable roles with explicit IDs; fixed specialist roles still
+route older models. Historical assignments below remain historical.
 
-The fresh continuation successfully ran Luna first. Its recorded runtime
+As of September 30, the feature checkout is clean at `78dc79054` before the
+setup-document update. Old agent threads are no longer live. Historical
+`/tmp` worktrees are absent and marked prunable; the original snapshot and
+qualified copy are also absent. Do not treat the worktree paths below as live
+or open a different database under the old qualification. Committed artifacts
+survive; ephemeral reward diagnostics and unfinished scout work need recovery
+from saved session evidence or reconstruction and fresh validation.
+The existing build cache is present but was not rebuilt or validated this session.
+
+The September 13–14 continuation successfully ran Luna first. Its recorded runtime
 `turn_context` confirms `gpt-5.6-luna`, medium reasoning. Reused helper tasks mapped
 epoch fixtures, C++ checks, semantic-port registration, bridge checks and remaining
 N4 qualification. Independent reviews corrected overbroad helper suggestions;
@@ -100,9 +111,12 @@ integrated validation. Saved WIP and a clean worktree never imply acceptance.
 
 ## Existing-network and authority constraints
 
-Original `/tmp/snapshot-litenode` is untouched. Only the independent qualified copy
-`/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy` may be opened for bounded
-read validation. Mainnet H is 25,706,949. Owner-reported likely build, suspected
+Historical runs preserved original `/tmp/snapshot-litenode` and used only the
+independent qualified copy
+`/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy` for bounded read
+validation. Both paths are absent in the September 30 environment. Restore and
+requalify inputs before any database-dependent continuation; the original must
+still remain unmodified. The recorded mainnet H is 25,706,949. Owner-reported likely build, suspected
 validator identity and insufficient stake remain provenance, not verified
 production facts. No private keys are required for semantic reconstruction.
 
