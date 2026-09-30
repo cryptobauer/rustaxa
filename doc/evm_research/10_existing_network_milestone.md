@@ -16,7 +16,9 @@ Preserve existing-network behavior and current separate application/concrete
 database layout. Reuse Rust consensus, storage, FinalChain and native kernels.
 The EVM backend remains isolated from production routing. No protocol changes,
 silent legacy fallback, original upstream C++ edits or automatic schema changes.
-The original `/tmp/snapshot-litenode` remains untouched. Its likely producer
+The supplied source is now under `data/`; preserve it and follow the
+[restored-input qualification contract](n4_restored_snapshot_next_slice.md).
+Historical `/tmp/snapshot-litenode` evidence is retained. Its likely producer
 `a0e85fe31eb03573cd92c165a5f81035cec9907e` is owner-reported; the exact binary
 and capture command remain unknown and must not be upgraded to verified facts.
 

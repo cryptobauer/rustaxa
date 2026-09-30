@@ -23,6 +23,10 @@ The active [existing-network execution and API parity milestone](10_existing_net
 couples execution/native completeness, historical queries/simulation, existing-state bootstrap/replay
 and publication/recovery. Implementation is authorized; production routing remains disabled.
 
+The [current restart checkpoint](n6_restart_checkpoint.md) and
+[restored-input next slice](n4_restored_snapshot_next_slice.md) locate the supplied
+DB pair under `data/` and specify requalification before the next bounded probe.
+
 Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qualification.md),
 [S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),
 [the bounded S3 execution core](s3_execution_core.md),

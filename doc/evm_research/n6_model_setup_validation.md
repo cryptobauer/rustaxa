@@ -4,6 +4,10 @@ The current model routes work. The milestone's ephemeral execution environment
 needs recovery before snapshot-dependent work resumes. This is setup validation,
 not renewed EVM parity or milestone acceptance.
 
+The later [restored-input handoff](n4_restored_snapshot_next_slice.md) supersedes
+this audit's absent-snapshot finding: the source is now under `data/`, pending
+fresh qualification. Historical environment observations below remain unchanged.
+
 ## Verified model routing
 
 At the start of this check, the agent service listed only the root. The six

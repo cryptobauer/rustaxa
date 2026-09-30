@@ -4,6 +4,13 @@ Recovery restores the logged reward diagnostic and preserves the unfinished
 sender-scout patch. No database was opened, snapshot reconstructed, diagnostic
 rerun or new semantic implementation invented.
 
+## Later input restoration
+
+After this recovery, the task owner restored the database under `data/`.
+The [new intake and next-slice contract](n4_restored_snapshot_next_slice.md)
+supersedes the missing-input status below. Only filesystem checks have run;
+the restored pair still needs an independent copy and fresh qualification.
+
 ## Recovered artifacts
 
 | Item | Recovery result | Evidence |

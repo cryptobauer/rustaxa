@@ -25,7 +25,12 @@ The light snapshot supplies bounded real-state evidence; it does not narrow prot
 
 ## Snapshot intake and provenance
 
-The task owner supplied `/tmp/snapshot-litenode`, described as a mainnet light-node snapshot captured using RocksDB's
+Current location update (2026-09-30): the source is now `data/` in the checkout.
+Use the [restored-input contract and next slice](n4_restored_snapshot_next_slice.md)
+for current paths, independent copying and requalification. The original intake
+observations below remain historical; path presence does not transfer qualification.
+
+The task owner originally supplied `/tmp/snapshot-litenode`, described as a mainnet light-node snapshot captured using RocksDB's
 snapshot feature, mostly before the reported network hold and excluding the final blocks. Network status and capture
 consistency are user-reported context, not independently established findings. The absence of the latest blocks does
 not prevent codec/read/reopen tests at a verified older period.

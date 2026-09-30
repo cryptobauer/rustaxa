@@ -22,16 +22,20 @@ review, both at medium by default. Escalate to high for ambiguous or high-risk
 work under the 08 criteria; record why in the handoff. Use configurable roles with explicit IDs; fixed specialist roles still
 route older models. Historical assignments below remain historical.
 
-As of September 30, the feature checkout is clean at `78dc79054` before the
-setup-document update. Old agent threads are no longer live. Historical
-`/tmp` worktrees are absent and marked prunable; the original snapshot and
-qualified copy are also absent. Do not treat the worktree paths below as live
-or open a different database under the old qualification. Committed artifacts
-survive. The [September 30 recovery](n6_recovery_checkpoint.md) restored the
-reward extractor, dependency delta and historical report byte-exact, and preserved
+Current continuation base: `7357205b8` (recovery committed and pushed). The task
+owner has now restored the supplied pair under `data/db/db` and
+`data/db/state_db`. Filesystem-only intake confirmed both `CURRENT` pointers
+and referenced manifests; the restored pair is not yet requalified. Follow the
+[restored-input next slice](n4_restored_snapshot_next_slice.md): migrate guarded
+paths to a separate `local/` working copy, requalify the pair, reproduce the
+bounded reward diagnostic and finish the four-key sender scout.
+
+Historical `/tmp` worktrees are absent and marked prunable; do not treat their
+paths below as live. The [September 30 recovery](n6_recovery_checkpoint.md)
+restored reward source, dependencies and historical report exactly, and preserved
 the unfinished scout helper as an inert patch. The scout CLI/tests were never
-completed. Snapshot inputs still require restoration and requalification.
-The existing build cache is present but was not rebuilt or validated this session.
+completed. The build cache exists; its presence does not establish fresh CMake
+validation. The owner's `data/` ignore addition must be preserved; never stage DBs.
 
 The September 13–14 continuation successfully ran Luna first. Its recorded runtime
 `turn_context` confirms `gpt-5.6-luna`, medium reasoning. Reused helper tasks mapped
@@ -95,12 +99,12 @@ mixed/persisted suites (5/3). A separate reviewed contraction validates system-f
 request identity in the native owner before planning, preserves transport errors
 and binds owner policy; both focused regressions passed.
 
-The original scheduler worktree is `/tmp/rustaxa-evm-current-rewards`, clean at
-`e393f542b`. Do not cherry-pick overlapping older integration history. Lead alone
+The historical scheduler worktree was `/tmp/rustaxa-evm-current-rewards`, clean at
+`e393f542b`; its directory is no longer present. Do not cherry-pick overlapping older integration history. Lead alone
 owns shared `/build`. Constructor witnesses do not establish actual Go StateAPI
 discard durability, a full fault campaign or complete existing-state publication.
 
-## Other saved worktrees
+## Historical saved worktrees (directories no longer present)
 
 - Trace: `/tmp/rustaxa-evm-trace`, saved `b844c1896`, integrated.
 - Claims: `/tmp/rustaxa-evm-native-simulation`, completion `03f3598d3`, integrated.
@@ -117,9 +121,10 @@ integrated validation. Saved WIP and a clean worktree never imply acceptance.
 Historical runs preserved original `/tmp/snapshot-litenode` and used only the
 independent qualified copy
 `/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy` for bounded read
-validation. Both paths are absent in the September 30 environment. Restore and
-requalify inputs before any database-dependent continuation; the original must
-still remain unmodified. The recorded mainnet H is 25,706,949. Owner-reported likely build, suspected
+validation. Those paths are obsolete. The supplied source is now `data/`;
+follow the [current path and qualification contract](n4_restored_snapshot_next_slice.md).
+Requalify an independent copy before database-dependent continuation, preserving
+the supplied source unmodified. The recorded mainnet H is 25,706,949. Owner-reported likely build, suspected
 validator identity and insufficient stake remain provenance, not verified
 production facts. No private keys are required for semantic reconstruction.
 
