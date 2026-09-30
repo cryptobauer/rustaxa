@@ -408,3 +408,22 @@ second four-key scout invocation; observations matched exactly. No broad
 inventory/replay or production route was run. See
 [the execution evidence](n4_restored_snapshot_evidence.md) for artifacts,
 remaining gaps and validation limits. Milestone 10 remains open.
+
+
+## Budgeted continuation: authenticated sender paths
+
+From `bf57aec01`, Luna medium acknowledged first and mapped existing read-only
+APIs. Reused Sol medium implemented the four-key proof mode; reused Astra medium
+independently approved source and matching report. All ran; no route/capacity
+failure. Lead ran four proofs on the qualified copy: all NonMember, while earlier
+raw HistoryUnavailable observations remain historical and unchanged. 15 focused
+tests, strict qualifier clippy/fmt and explicit fast pre-commit passed. See
+[proof evidence](n4_head_sender_proofs.md). No full inventory, replay or production
+route changed. The user requested at least 25% weekly allowance remain; closeout
+starts at 30% remaining. Initial sampled usage was 37% used.
+
+Separate `astra_reward_contract` explicitly requested `gpt-6-astra`, high, ran
+read-only to settle ambiguous vote-period/delegation-delay/jail semantics before
+reward implementation. It identified D=H−7 under candidate delay5 and a 59-key
+empty-jail-list bound. It made no source edits or DB opens; no routing failure
+occurred. This is a contract result, not reward qualification or billing evidence.

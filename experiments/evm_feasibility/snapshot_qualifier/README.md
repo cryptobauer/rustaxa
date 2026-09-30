@@ -35,6 +35,18 @@ successful result. Absent, tombstone, history-unavailable and pruned outcomes st
 No child enumeration, fresh signature validation, live membership authentication,
 semantic completeness, publication or production authority is claimed.
 
+The separately authorized `--head-sender-proofs` continuation reuses the same four
+key/width definitions, provenance and paired qualification. Run it with the same
+copy argument and a fresh `head-sender-proofs.json` output. It calls the existing
+Rust `verify_storage_path_at` owner exactly four times, with no separate
+`storage_at` scout calls or inventory. The owner performs internal database reads
+to authenticate each path. Member bytes must have their exact declared widths;
+nonmember means authenticated logical nonmembership only. Proof history unavailable
+and pruning stay separate; corruption, I/O, identity mismatch and malformed member
+bytes fail closed. The proof report cites the original physical scout artifact and
+hash at `bf57aec01`; keep that historical report unchanged. Neither four proofs nor
+four nonmembers establish historical/deleted delegation coverage or complete state.
+
 The shared guard validates the exact copy and both DB children before any open, rejects
 symlink components and source/output overlap, and requires new report files. Opens are
 read-only and publication uses exclusive creation. Use fresh output filenames for reruns.

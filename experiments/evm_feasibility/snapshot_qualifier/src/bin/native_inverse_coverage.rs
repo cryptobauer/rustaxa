@@ -88,8 +88,8 @@ struct Qualification {
 
 fn main() -> Result<()> {
     let (input, output, scout) = validated_paths()?;
-    if scout {
-        return head_sender_scout(&input, &output);
+    if let Some(proofs) = scout {
+        return head_sender_scout(&input, &output, proofs);
     }
     let app_path = canonical_child(&input, "db/db")?;
     let state_path = canonical_child(&input, "db/state_db")?;
@@ -276,13 +276,19 @@ fn open_application_read_only(path: &Path) -> Result<Database> {
     )?)
 }
 
-fn validated_paths() -> Result<(PathBuf, PathBuf, bool)> {
+fn validated_paths() -> Result<(PathBuf, PathBuf, Option<bool>)> {
     let mut args = env::args_os().skip(1);
-    let first = args
-        .next()
-        .context("usage: native_inverse_coverage [--head-sender-scout] COPY OUTPUT")?;
-    let scout = first == "--head-sender-scout";
-    let input = PathBuf::from(if scout {
+    let first = args.next().context(
+        "usage: native_inverse_coverage [--head-sender-scout|--head-sender-proofs] COPY OUTPUT",
+    )?;
+    let scout = if first == "--head-sender-scout" {
+        Some(false)
+    } else if first == "--head-sender-proofs" {
+        Some(true)
+    } else {
+        None
+    };
+    let input = PathBuf::from(if scout.is_some() {
         args.next().context("missing copy")?
     } else {
         first
@@ -298,7 +304,7 @@ fn canonical_child(input: &Path, relative: &str) -> Result<PathBuf> {
     Ok(input.join(relative))
 }
 
-fn head_sender_scout(input: &Path, output: &Path) -> Result<()> {
+fn head_sender_scout(input: &Path, output: &Path, proofs: bool) -> Result<()> {
     validate_sender_provenance(include_bytes!(
         "../../../../../doc/evm_research/n4_replay_preflight.json"
     ))?;
@@ -309,13 +315,25 @@ fn head_sender_scout(input: &Path, output: &Path) -> Result<()> {
     let sender: [u8; 20] = hex::decode("35307b7b24fb1473abb364f0c3dd3082b3730cd5")?
         .try_into()
         .expect("fixed sender width");
-    let observations = seeded_undelegations::scout_seeded_address(sender, |key| {
-        readers.storage_at(identity, DPOS_CONTRACT_ADDRESS, key)
-    })?;
-    let successful_logical_reads = observations
-        .iter()
-        .filter(|row| matches!(row.physical_result, "present" | "absent" | "tombstone"))
-        .count();
+    let (observations, successful_logical_reads) = if proofs {
+        let rows = seeded_undelegations::prove_seeded_address(sender, |key| {
+            readers.verify_storage_path_at(identity, DPOS_CONTRACT_ADDRESS, key)
+        })?;
+        let successful = rows
+            .iter()
+            .filter(|row| matches!(row.proof_result, "member" | "nonmember"))
+            .count();
+        (serde_json::to_value(rows)?, successful)
+    } else {
+        let rows = seeded_undelegations::scout_seeded_address(sender, |key| {
+            readers.storage_at(identity, DPOS_CONTRACT_ADDRESS, key)
+        })?;
+        let successful = rows
+            .iter()
+            .filter(|row| matches!(row.physical_result, "present" | "absent" | "tombstone"))
+            .count();
+        (serde_json::to_value(rows)?, successful)
+    };
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -323,16 +341,25 @@ fn head_sender_scout(input: &Path, output: &Path) -> Result<()> {
     serde_json::to_writer_pretty(
         &mut file,
         &serde_json::json!({
-            "schema": 1, "mode": "head_sender_scout", "input_copy": input, "tool_source_sha256": tool_source_sha256(), "pair": pair,
+            "schema": 1, "mode": if proofs { "head_sender_proofs" } else { "head_sender_scout" }, "input_copy": input, "tool_source_sha256": tool_source_sha256(), "pair": pair,
             "sender_hex": hex::encode(sender), "sender_provenance": "historical doc/evm_research/n4_replay_preflight.json envelope entries 0..18 and recovered_sender_scout.md; not fresh signature validation",
             "sender_evidence_sha256": "d68ab554634e7907f2b43ab43f753d6b9351d1b760afc8b91eb3f77c523ae437",
         "fresh_transaction_signature_validation": false,
         "open_mode": "application and concrete checkpoint owners read-only",
         "dpos_address_hex": hex::encode(DPOS_CONTRACT_ADDRESS),
         "checkpoint_adoption_authorized": false, "publication_authorized": false, "production_routing_authorized": false,
-            "attempted_logical_reads": observations.len(), "successful_logical_reads": successful_logical_reads,
+            "attempted_logical_reads": 4, "successful_logical_reads": successful_logical_reads,
             "logical_read_limit": 4, "child_enumeration_performed": false, "broad_inventory_performed": false,
-            "logical_membership_authenticated": false, "semantic_snapshot_complete": false, "observations": observations
+            "logical_membership_authenticated": proofs && successful_logical_reads == 4,
+            "proof_calls": if proofs { 4 } else { 0 }, "separate_storage_at_calls": if proofs { 0 } else { 4 },
+            "proof_bound_basis": "four logical path calls; owner traversal performs internal database reads",
+            "historical_physical_scout": if proofs { Some(serde_json::json!({
+                "reference": "doc/evm_research/n4_head_sender_scout.json at bf57aec01",
+                "sha256": hex::encode(Sha256::digest(include_bytes!("../../../../../doc/evm_research/n4_head_sender_scout.json"))),
+                "rerun": false
+            })) } else { None },
+            "historical_or_deleted_delegation_coverage_qualified": false,
+            "physical_observations_inferred_from_proofs": false, "semantic_snapshot_complete": false, "observations": observations
         }),
     )?;
     file.write_all(b"\n")?;

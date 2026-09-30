@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail, ensure};
 use num_bigint::BigUint;
 use rlp::{Rlp, RlpStream};
-use rustaxa_storage::{ConcreteStorageInventory, ConcreteStorageInventoryEntry};
+use rustaxa_storage::{
+    ConcreteStorageInventory, ConcreteStorageInventoryEntry, ConcreteStoragePath,
+};
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -563,24 +565,7 @@ pub fn scout_seeded_address<F>(
 where
     F: FnMut(ConcreteStorageKey) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError>,
 {
-    let probes = [
-        (
-            "delegation_validator_count",
-            iterable_count_key(&delegation_validators_prefix(candidate)),
-            4_usize,
-        ),
-        (
-            "undelegation_v1_validator_count",
-            iterable_count_key(&undelegation_v1_validators_prefix(candidate)),
-            4,
-        ),
-        (
-            "undelegation_v2_validator_count",
-            iterable_count_key(&undelegation_v2_validators_prefix(candidate)),
-            4,
-        ),
-        ("undelegation_v2_last_id", last_v2_id_key(candidate), 8),
-    ];
+    let probes = seeded_address_probes(candidate);
     let mut observations = Vec::with_capacity(probes.len());
     for (family, key, width) in probes {
         let (physical_result, exact_value_hex, decoded_value) = match read(key) {
@@ -617,6 +602,86 @@ where
         observations.len() == 4,
         "seeded address scout did not produce exactly four observations"
     );
+    Ok(observations)
+}
+
+fn seeded_address_probes(candidate: [u8; 20]) -> [(&'static str, ConcreteStorageKey, usize); 4] {
+    [
+        (
+            "delegation_validator_count",
+            iterable_count_key(&delegation_validators_prefix(candidate)),
+            4_usize,
+        ),
+        (
+            "undelegation_v1_validator_count",
+            iterable_count_key(&undelegation_v1_validators_prefix(candidate)),
+            4,
+        ),
+        (
+            "undelegation_v2_validator_count",
+            iterable_count_key(&undelegation_v2_validators_prefix(candidate)),
+            4,
+        ),
+        ("undelegation_v2_last_id", last_v2_id_key(candidate), 8),
+    ]
+}
+
+/// Authenticated path result for one of the four fixed sender keys. Exact
+/// member bytes and little-endian values are retained; nonmember proves only
+/// logical nonmembership, never physical row absence. Proof failures have no
+/// decoded value and never become nonmembership.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SeededAddressProofObservation {
+    pub family: &'static str,
+    pub logical_key_hex: String,
+    pub proof_result: &'static str,
+    pub exact_value_hex: Option<String>,
+    pub decoded_value: Option<u64>,
+}
+
+/// Authenticates exactly the same four keys as the physical scout, through a
+/// caller-pinned account and retained identity. The callback performs no child
+/// enumeration. Member widths must be 4/4/4/8 bytes. Unknown history and pruning
+/// remain proof failures; corruption, I/O and identity failures abort, as do
+/// malformed member bytes. No physical read outcome is inferred from a proof.
+pub fn prove_seeded_address<F>(
+    candidate: [u8; 20],
+    mut prove: F,
+) -> Result<Vec<SeededAddressProofObservation>>
+where
+    F: FnMut(ConcreteStorageKey) -> Result<ConcreteStoragePath, ConcreteReadError>,
+{
+    let mut observations = Vec::with_capacity(4);
+    for (family, key, width) in seeded_address_probes(candidate) {
+        let (proof_result, exact_value_hex, decoded_value) = match prove(key) {
+            Ok(ConcreteStoragePath::Member(value)) => {
+                let decoded = match width {
+                    4 => u64::from(decode_le_u32(&value, family)?),
+                    8 => decode_le_u64(&value, family)?,
+                    _ => unreachable!("fixed proof width"),
+                };
+                ("member", Some(hex::encode(value)), Some(decoded))
+            }
+            Ok(ConcreteStoragePath::NonMember) => ("nonmember", None, None),
+            Err(ConcreteReadError::HistoryUnavailable(_)) => ("history_unavailable", None, None),
+            Err(ConcreteReadError::Pruned(_)) => ("pruned", None, None),
+            Err(error) => {
+                return Err(anyhow::Error::new(error)).with_context(|| {
+                    format!(
+                        "prove seeded address {family} logical key {}",
+                        hex::encode(key.0)
+                    )
+                });
+            }
+        };
+        observations.push(SeededAddressProofObservation {
+            family,
+            logical_key_hex: hex::encode(key.0),
+            proof_result,
+            exact_value_hex,
+            decoded_value,
+        });
+    }
     Ok(observations)
 }
 
@@ -1336,5 +1401,123 @@ mod scout_tests {
             )))
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod proof_tests {
+    use super::*;
+    use rustaxa_types::{FinalChainBlockNumber, concrete_state::ConcreteStateIdentity};
+
+    #[test]
+    fn proofs_use_same_four_keys_and_preserve_exact_members() {
+        let sender = [7; 20];
+        let scout = scout_seeded_address(sender, |_| Ok(ConcreteRead::Absent)).unwrap();
+        let mut calls = 0;
+        let proofs = prove_seeded_address(sender, |_| {
+            calls += 1;
+            Ok(ConcreteStoragePath::Member(if calls == 4 {
+                0x1122334455667788_u64.to_le_bytes().to_vec()
+            } else {
+                0x11223344_u32.to_le_bytes().to_vec()
+            }))
+        })
+        .unwrap();
+        assert_eq!(calls, 4);
+        assert_eq!(
+            proofs
+                .iter()
+                .map(|r| &r.logical_key_hex)
+                .collect::<Vec<_>>(),
+            scout.iter().map(|r| &r.logical_key_hex).collect::<Vec<_>>()
+        );
+        for row in &proofs[..3] {
+            assert_eq!(row.proof_result, "member");
+            assert_eq!(row.exact_value_hex.as_deref(), Some("44332211"));
+            assert_eq!(row.decoded_value, Some(0x11223344));
+        }
+        assert_eq!(
+            proofs[3].exact_value_hex.as_deref(),
+            Some("8877665544332211")
+        );
+        assert_eq!(proofs[3].decoded_value, Some(0x1122334455667788));
+    }
+
+    #[test]
+    fn only_authenticated_nonmembership_becomes_nonmember() {
+        let identity = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(3),
+            state_root: [4; 32],
+        };
+        let mut calls = 0;
+        let rows = prove_seeded_address([1; 20], |_| {
+            calls += 1;
+            match calls {
+                1 => Ok(ConcreteStoragePath::NonMember),
+                2 => Err(ConcreteReadError::HistoryUnavailable(identity)),
+                3 => Err(ConcreteReadError::Pruned(identity)),
+                _ => Ok(ConcreteStoragePath::NonMember),
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, 4);
+        assert_eq!(
+            rows.iter().map(|r| r.proof_result).collect::<Vec<_>>(),
+            ["nonmember", "history_unavailable", "pruned", "nonmember"]
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.exact_value_hex.is_none() && r.decoded_value.is_none())
+        );
+        for error in [
+            ConcreteReadError::Corrupt("missing/corrupt node".into()),
+            ConcreteReadError::Io("I/O".into()),
+            ConcreteReadError::IdentityMismatch {
+                expected: identity,
+                observed: ConcreteStateIdentity {
+                    period: FinalChainBlockNumber::new(4),
+                    ..identity
+                },
+            },
+        ] {
+            let mut calls = 0;
+            assert!(
+                prove_seeded_address([1; 20], |_| {
+                    calls += 1;
+                    Err(error.clone())
+                })
+                .is_err()
+            );
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn malformed_member_width_aborts_without_more_proofs() {
+        for position in 1..=4 {
+            for width in [0, 1, 3, 4, 5, 7, 8, 9]
+                .into_iter()
+                .filter(|width| *width != if position == 4 { 8 } else { 4 })
+            {
+                let mut calls = 0;
+                assert!(
+                    prove_seeded_address([1; 20], |_| {
+                        calls += 1;
+                        Ok(ConcreteStoragePath::Member(vec![
+                            0;
+                            if calls == position {
+                                width
+                            } else if calls == 4 {
+                                8
+                            } else {
+                                4
+                            }
+                        ]))
+                    })
+                    .is_err()
+                );
+                assert_eq!(calls, position);
+            }
+        }
     }
 }

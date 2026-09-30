@@ -33,12 +33,20 @@ false. The four-key sender scout is complete: all four physical reads returned
 `history_unavailable`, with no zero/absence/pruning inference or child enumeration.
 See the [scout report](n4_head_sender_scout.json). Milestone 10 remains open.
 
-Next bounded N4 planning may investigate authenticated membership/nonmembership
-for those same four keys before considering seed expansion. Such a slice must
-preserve missing-history distinctions and the current separate Rust ownership;
-this checkpoint does not authorize broad inventory/replay, existing-head adoption,
-sparse publication or production routing. The full native/reward/system-input
-qualification and replay/recovery gates remain open.
+The [authenticated four-key follow-up](n4_head_sender_proofs.md) now proves
+NonMember for all four keys at H. The earlier physical `history_unavailable`
+results remain unchanged; logical absence follows from these separate proofs,
+not missing physical history. Global native reconstruction remains incomplete.
+
+The next bounded reward slice must distinguish certificate P=H−1, requested
+DPoS period Q=P−1=H−2 and candidate five-period delayed concrete state D=H−7.
+Astra high reviewed that contract; require authenticated D root and independent
+validator/VRF/jail/total facts before deriving weights. Checked-in config remains
+a candidate, and nonempty jail-list semantics require explicit handling.
+The user authorized bounded progress while preserving at least 25% remaining
+weekly usage: monitor telemetry, stop new slices at 30% remaining, and reserve
+closeout capacity. Broad replay, production routing and sparse publication remain
+outside scope; full native/reward inputs, adoption and replay/recovery stay open.
 
 Historical `/tmp` worktrees are absent and marked prunable; do not treat their
 paths below as live. The [September 30 recovery](n6_recovery_checkpoint.md)
