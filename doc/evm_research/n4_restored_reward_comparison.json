@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "historical_report_sha256": "a6ea0da0de5072d8c4372fff51204fe1eefb6628e9ebed8459e749538dfcd443",
+  "fresh_report_sha256": "bf1292101a4afb406489cbb029e51c7fca23e6d3b2ee260684ce0880b6ba0907",
+  "changed_top_level_fields": [
+    "input_copy",
+    "tool_source_sha256"
+  ],
+  "all_observations_and_qualification_fields_equal": true,
+  "seven_point_read_contract_unchanged": true,
+  "retained_stats_sha256": "18bb350916c3d85a52ec401cb2b898d2696b57e3859d5ff9dda1218a8ed05070",
+  "candidate_stats_sha256": "85e2aacceab96cfd4c5fe92773540106761af6f2939da1c70161b40bb99c07a9",
+  "exact_rlp_bytes_match": false,
+  "typed_full_distribution_match": true,
+  "prior_weights_and_producer_inputs_qualified": false
+}

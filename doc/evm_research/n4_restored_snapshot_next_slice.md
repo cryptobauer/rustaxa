@@ -1,5 +1,10 @@
 # Restored input and next N4 slice — 2026-09-30
 
+This planned slice is now completed within its bounded scope. See the
+[execution evidence](n4_restored_snapshot_evidence.md): the independent pair
+qualified, reward observations reproduced, and all four scout keys returned
+`history_unavailable`. The intake and plan below remain the pre-execution record.
+
 The task owner restored the database under the repository's `data/` directory.
 Treat it as supplied evidence, not a writable node database. This supersedes
 the earlier missing-input status, but not the requirement to requalify the pair.

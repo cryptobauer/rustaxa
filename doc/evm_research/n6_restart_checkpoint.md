@@ -22,20 +22,30 @@ review, both at medium by default. Escalate to high for ambiguous or high-risk
 work under the 08 criteria; record why in the handoff. Use configurable roles with explicit IDs; fixed specialist roles still
 route older models. Historical assignments below remain historical.
 
-Current continuation base: `7357205b8` (recovery committed and pushed). The task
-owner has now restored the supplied pair under `data/db/db` and
-`data/db/state_db`. Filesystem-only intake confirmed both `CURRENT` pointers
-and referenced manifests; the restored pair is not yet requalified. Follow the
-[restored-input next slice](n4_restored_snapshot_next_slice.md): migrate guarded
-paths to a separate `local/` working copy, requalify the pair, reproduce the
-bounded reward diagnostic and finish the four-key sender scout.
+Latest N4 continuation is recorded in the
+[restored-pair evidence](n4_restored_snapshot_evidence.md), from base
+`5aa3febfee14a3ad59c2b24c15d94a49013fd170`. The supplied `data/` tree is
+preserved. Its independent `local/evm-state-db/snapshot-litenode-copy/` pair is
+now freshly qualified at mainnet H=25,706,949 and the recorded prior root.
+The seven-read reward diagnostic reproduces the recovered observations exactly
+apart from path/source metadata: typed equality remains true and raw-byte equality
+false. The four-key sender scout is complete: all four physical reads returned
+`history_unavailable`, with no zero/absence/pruning inference or child enumeration.
+See the [scout report](n4_head_sender_scout.json). Milestone 10 remains open.
+
+Next bounded N4 planning may investigate authenticated membership/nonmembership
+for those same four keys before considering seed expansion. Such a slice must
+preserve missing-history distinctions and the current separate Rust ownership;
+this checkpoint does not authorize broad inventory/replay, existing-head adoption,
+sparse publication or production routing. The full native/reward/system-input
+qualification and replay/recovery gates remain open.
 
 Historical `/tmp` worktrees are absent and marked prunable; do not treat their
 paths below as live. The [September 30 recovery](n6_recovery_checkpoint.md)
 restored reward source, dependencies and historical report exactly, and preserved
-the unfinished scout helper as an inert patch. The scout CLI/tests were never
-completed. The build cache exists; its presence does not establish fresh CMake
-validation. The owner's `data/` ignore addition must be preserved; never stage DBs.
+the unfinished scout helper as an inert patch. The recovered scout CLI/tests were incomplete at recovery; this continuation
+completed them with historical-provenance checks and focused rejection tests. The build cache exists; its presence does not establish fresh CMake
+validation. The owner's `data/` ignore addition is preserved unchanged; never stage DBs.
 
 The September 13–14 continuation successfully ran Luna first. Its recorded runtime
 `turn_context` confirms `gpt-5.6-luna`, medium reasoning. Reused helper tasks mapped
@@ -123,8 +133,9 @@ independent qualified copy
 `/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy` for bounded read
 validation. Those paths are obsolete. The supplied source is now `data/`;
 follow the [current path and qualification contract](n4_restored_snapshot_next_slice.md).
-Requalify an independent copy before database-dependent continuation, preserving
-the supplied source unmodified. The recorded mainnet H is 25,706,949. Owner-reported likely build, suspected
+The independent persistent copy has now passed bounded requalification; verify
+its recorded content/identity before future continuation and preserve the source
+unmodified. The recorded mainnet H is 25,706,949. Owner-reported likely build, suspected
 validator identity and insufficient stake remain provenance, not verified
 production facts. No private keys are required for semantic reconstruction.
 

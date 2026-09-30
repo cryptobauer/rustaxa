@@ -5,7 +5,7 @@ mod seeded_undelegations;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,8 +29,6 @@ use seeded_undelegations::{
     SeededUndelegationCoverage, analyze_seeded_undelegations, hashed_storage_path,
 };
 
-const QUALIFIED_COPY: &str = "/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy";
-const FORBIDDEN_ORIGINAL: &str = "/tmp/snapshot-litenode";
 const TARGET_PERIOD: u64 = 25_706_949;
 const MAX_NODES: u64 = 50_000;
 const MAX_LEAVES: u64 = 50_000;
@@ -89,7 +87,10 @@ struct Qualification {
 }
 
 fn main() -> Result<()> {
-    let (input, output) = validated_paths()?;
+    let (input, output, scout) = validated_paths()?;
+    if scout {
+        return head_sender_scout(&input, &output);
+    }
     let app_path = canonical_child(&input, "db/db")?;
     let state_path = canonical_child(&input, "db/state_db")?;
 
@@ -275,49 +276,111 @@ fn open_application_read_only(path: &Path) -> Result<Database> {
     )?)
 }
 
-fn validated_paths() -> Result<(PathBuf, PathBuf)> {
+fn validated_paths() -> Result<(PathBuf, PathBuf, bool)> {
     let mut args = env::args_os().skip(1);
-    let input = PathBuf::from(
-        args.next()
-            .context("usage: native_inverse_coverage QUALIFIED_COPY OUTPUT_JSON")?,
-    );
-    let output = PathBuf::from(
-        args.next()
-            .context("usage: native_inverse_coverage QUALIFIED_COPY OUTPUT_JSON")?,
-    );
-    ensure!(
-        args.next().is_none(),
-        "usage: native_inverse_coverage QUALIFIED_COPY OUTPUT_JSON"
-    );
-
-    let input = fs::canonicalize(input)?;
-    let qualified = fs::canonicalize(QUALIFIED_COPY)?;
-    ensure!(
-        input == qualified,
-        "only the recorded qualified copy is accepted"
-    );
-    ensure!(
-        input != Path::new(FORBIDDEN_ORIGINAL) && !input.starts_with(FORBIDDEN_ORIGINAL),
-        "refusing original snapshot"
-    );
-    ensure!(!output.exists(), "output already exists");
-    let name = output.file_name().context("output path has no file name")?;
-    let parent = fs::canonicalize(output.parent().unwrap_or_else(|| Path::new(".")))?;
-    let output = parent.join(name);
-    ensure!(
-        !output.starts_with(&input) && !output.starts_with(FORBIDDEN_ORIGINAL),
-        "output must remain outside snapshot paths"
-    );
-    Ok((input, output))
+    let first = args
+        .next()
+        .context("usage: native_inverse_coverage [--head-sender-scout] COPY OUTPUT")?;
+    let scout = first == "--head-sender-scout";
+    let input = PathBuf::from(if scout {
+        args.next().context("missing copy")?
+    } else {
+        first
+    });
+    let output = PathBuf::from(args.next().context("missing output")?);
+    ensure!(args.next().is_none(), "unexpected argument");
+    let paths = rustaxa_snapshot_qualifier::paths::validate(&input, &output)?;
+    Ok((paths.input, paths.output, scout))
 }
 
 fn canonical_child(input: &Path, relative: &str) -> Result<PathBuf> {
-    let child = fs::canonicalize(input.join(relative))?;
+    // Shared policy validates both children before opening either database.
+    Ok(input.join(relative))
+}
+
+fn head_sender_scout(input: &Path, output: &Path) -> Result<()> {
+    validate_sender_provenance(include_bytes!(
+        "../../../../../doc/evm_research/n4_replay_preflight.json"
+    ))?;
+    let (readers, identity, pair) = rustaxa_snapshot_qualifier::qualification::qualify(
+        &input.join("db/db"),
+        &input.join("db/state_db"),
+    )?;
+    let sender: [u8; 20] = hex::decode("35307b7b24fb1473abb364f0c3dd3082b3730cd5")?
+        .try_into()
+        .expect("fixed sender width");
+    let observations = seeded_undelegations::scout_seeded_address(sender, |key| {
+        readers.storage_at(identity, DPOS_CONTRACT_ADDRESS, key)
+    })?;
+    let successful_logical_reads = observations
+        .iter()
+        .filter(|row| matches!(row.physical_result, "present" | "absent" | "tombstone"))
+        .count();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    serde_json::to_writer_pretty(
+        &mut file,
+        &serde_json::json!({
+            "schema": 1, "mode": "head_sender_scout", "input_copy": input, "tool_source_sha256": tool_source_sha256(), "pair": pair,
+            "sender_hex": hex::encode(sender), "sender_provenance": "historical doc/evm_research/n4_replay_preflight.json envelope entries 0..18 and recovered_sender_scout.md; not fresh signature validation",
+            "sender_evidence_sha256": "d68ab554634e7907f2b43ab43f753d6b9351d1b760afc8b91eb3f77c523ae437",
+        "fresh_transaction_signature_validation": false,
+        "open_mode": "application and concrete checkpoint owners read-only",
+        "dpos_address_hex": hex::encode(DPOS_CONTRACT_ADDRESS),
+        "checkpoint_adoption_authorized": false, "publication_authorized": false, "production_routing_authorized": false,
+            "attempted_logical_reads": observations.len(), "successful_logical_reads": successful_logical_reads,
+            "logical_read_limit": 4, "child_enumeration_performed": false, "broad_inventory_performed": false,
+            "logical_membership_authenticated": false, "semantic_snapshot_complete": false, "observations": observations
+        }),
+    )?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Validates historical report bytes and all bounded sender facts without
+/// claiming a fresh transaction/signature decode on the restored snapshot.
+fn validate_sender_provenance(bytes: &[u8]) -> Result<()> {
     ensure!(
-        child.starts_with(input) && !child.starts_with(FORBIDDEN_ORIGINAL),
-        "snapshot child escapes qualified copy"
+        hex::encode(Sha256::digest(bytes))
+            == "d68ab554634e7907f2b43ab43f753d6b9351d1b760afc8b91eb3f77c523ae437",
+        "historical sender evidence byte hash differs"
     );
-    Ok(child)
+    validate_sender_facts(&serde_json::from_slice(bytes)?)
+}
+
+fn validate_sender_facts(report: &serde_json::Value) -> Result<()> {
+    ensure!(
+        report["period"].as_u64() == Some(TARGET_PERIOD),
+        "historical sender evidence period differs"
+    );
+    let envelope = &report["envelope_classification"];
+    ensure!(
+        envelope["expected_count"].as_u64() == Some(19)
+            && envelope["exact_count"].as_u64() == Some(19),
+        "historical sender count differs"
+    );
+    ensure!(
+        envelope["every_signature_decoded"].as_bool() == Some(true),
+        "historical signature evidence incomplete"
+    );
+    let entries = envelope["entries"]
+        .as_array()
+        .context("missing sender entries")?;
+    ensure!(entries.len() == 19, "historical sender entry count differs");
+    for (position, entry) in entries.iter().enumerate() {
+        ensure!(
+            entry["position"].as_u64() == Some(position as u64),
+            "historical sender position differs"
+        );
+        ensure!(
+            entry["sender_hex"].as_str() == Some("35307b7b24fb1473abb364f0c3dd3082b3730cd5"),
+            "historical sender differs"
+        );
+    }
+    Ok(())
 }
 
 fn write_report(path: &Path, report: &Report) -> Result<()> {
@@ -339,9 +402,54 @@ fn exact_le_u64(bytes: &[u8], label: &str) -> Result<u64> {
 fn tool_source_sha256() -> String {
     let mut digest = Sha256::new();
     digest.update(include_bytes!("../native_inverse.rs"));
+    digest.update(include_bytes!("../paths.rs"));
+    digest.update(include_bytes!("../qualification.rs"));
     digest.update(include_bytes!("native_inverse_coverage.rs"));
     digest.update(include_bytes!(
         "native_inverse_coverage/seeded_undelegations.rs"
     ));
     hex::encode(digest.finalize())
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    const EVIDENCE: &[u8] =
+        include_bytes!("../../../../../doc/evm_research/n4_replay_preflight.json");
+    #[test]
+    fn historical_sender_evidence_is_bound_and_rejects_drift() {
+        validate_sender_provenance(EVIDENCE).unwrap();
+        assert!(validate_sender_provenance(b"{}").is_err());
+        let source: serde_json::Value = serde_json::from_slice(EVIDENCE).unwrap();
+        for field in [
+            "period",
+            "count",
+            "signature",
+            "sender",
+            "position",
+            "missing",
+        ] {
+            let mut changed = source.clone();
+            match field {
+                "period" => changed["period"] = 0.into(),
+                "count" => changed["envelope_classification"]["exact_count"] = 20.into(),
+                "signature" => {
+                    changed["envelope_classification"]["every_signature_decoded"] = false.into()
+                }
+                "sender" => {
+                    changed["envelope_classification"]["entries"][0]["sender_hex"] = "00".into()
+                }
+                "position" => {
+                    changed["envelope_classification"]["entries"][0]["position"] = 1.into()
+                }
+                _ => {
+                    changed["envelope_classification"]["entries"]
+                        .as_array_mut()
+                        .unwrap()
+                        .pop();
+                }
+            }
+            assert!(validate_sender_facts(&changed).is_err(), "{field}");
+        }
+    }
 }

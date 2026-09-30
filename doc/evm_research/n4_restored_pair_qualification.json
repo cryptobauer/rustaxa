@@ -1,0 +1,21 @@
+{
+  "input_copy": "/workspaces/rustaxa-evm/local/evm-state-db/snapshot-litenode-copy",
+  "open_mode": "read_only",
+  "pair": {
+    "broad_inventory_performed": false,
+    "complete_state_or_adoption_authorized": false,
+    "current_and_prior_roots_authenticated": true,
+    "descriptor_matches_header": true,
+    "exact_checkpoint_timing_qualified": false,
+    "genesis_hash_hex": "8129076db1332837152b0212faad56ab882c1d511e0aac495f200f0a08cb6377",
+    "head": 25706949,
+    "header_sha256": "1bebb6391e97caa4e8d34db4336810ec71eae83ef975d48bfb05e0b56e81363f",
+    "network_identity_basis": "exact historical mainnet genesis hash; not producer/config certification",
+    "prior_period": 25706948,
+    "prior_state_root_hex": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
+    "producer_revision_qualified": false,
+    "state_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227"
+  },
+  "schema": 1,
+  "tool_source_sha256": "7ef3ab6929bed6c33e3b31e16d39d5ae300ce28ca41609c03c10c47d65228d6b"
+}

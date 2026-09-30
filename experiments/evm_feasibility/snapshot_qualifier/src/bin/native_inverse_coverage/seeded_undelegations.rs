@@ -40,6 +40,16 @@ pub const MAX_DERIVED_READS: u64 = 3 * (MAX_SEEDED_UNDELEGATORS as u64)
     + 3 * (MAX_V2_VALIDATOR_GROUPS as u64)
     + 3 * (MAX_V2_ENTRIES as u64);
 
+/// One typed fixed-identity point observation for an address-seeded scout.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SeededAddressScoutObservation {
+    pub family: &'static str,
+    pub logical_key_hex: String,
+    pub physical_result: &'static str,
+    pub exact_value_hex: Option<String>,
+    pub decoded_value: Option<u64>,
+}
+
 /// Physical results and decoded counts for one authenticated address seed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SeededUndelegatorFact {
@@ -536,6 +546,80 @@ where
     })
 }
 
+/// Reads exactly the four delegator-scoped count/cursor keys justified by one
+/// historical or freshly authenticated address candidate; provenance belongs
+/// to the caller and is not validated by this helper.
+///
+/// `read` must be fixed to the same qualified concrete-state identity and DPoS
+/// account reported by the caller. Present count rows must be exactly four
+/// little-endian bytes and a present last-ID row must be exactly eight. Absence,
+/// tombstone, unavailable history, and pruning remain distinct observations.
+/// Other reader errors fail rather than becoming a typed empty result. This
+/// scout does not enumerate child entries or establish catalog completeness.
+pub fn scout_seeded_address<F>(
+    candidate: [u8; 20],
+    mut read: F,
+) -> Result<Vec<SeededAddressScoutObservation>>
+where
+    F: FnMut(ConcreteStorageKey) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError>,
+{
+    let probes = [
+        (
+            "delegation_validator_count",
+            iterable_count_key(&delegation_validators_prefix(candidate)),
+            4_usize,
+        ),
+        (
+            "undelegation_v1_validator_count",
+            iterable_count_key(&undelegation_v1_validators_prefix(candidate)),
+            4,
+        ),
+        (
+            "undelegation_v2_validator_count",
+            iterable_count_key(&undelegation_v2_validators_prefix(candidate)),
+            4,
+        ),
+        ("undelegation_v2_last_id", last_v2_id_key(candidate), 8),
+    ];
+    let mut observations = Vec::with_capacity(probes.len());
+    for (family, key, width) in probes {
+        let (physical_result, exact_value_hex, decoded_value) = match read(key) {
+            Ok(ConcreteRead::Present(value)) => {
+                let decoded = match width {
+                    4 => u64::from(decode_le_u32(&value, family)?),
+                    8 => decode_le_u64(&value, family)?,
+                    _ => unreachable!("fixed scout width"),
+                };
+                ("present", Some(hex::encode(&value)), Some(decoded))
+            }
+            Ok(ConcreteRead::Absent) => ("absent", None, None),
+            Ok(ConcreteRead::Tombstone) => ("tombstone", None, None),
+            Err(ConcreteReadError::HistoryUnavailable(_)) => ("history_unavailable", None, None),
+            Err(ConcreteReadError::Pruned(_)) => ("pruned", None, None),
+            Err(error) => {
+                return Err(anyhow::Error::new(error)).with_context(|| {
+                    format!(
+                        "read seeded address scout {family} logical key {}",
+                        hex::encode(key.0)
+                    )
+                });
+            }
+        };
+        observations.push(SeededAddressScoutObservation {
+            family,
+            logical_key_hex: hex::encode(key.0),
+            physical_result,
+            exact_value_hex,
+            decoded_value,
+        });
+    }
+    ensure!(
+        observations.len() == 4,
+        "seeded address scout did not produce exactly four observations"
+    );
+    Ok(observations)
+}
+
 /// Returns the irreversible trie path for a native logical storage key.
 pub fn hashed_storage_path(key: ConcreteStorageKey) -> [u8; 32] {
     storage_key(&[&key.0]).0
@@ -559,6 +643,10 @@ fn decode_optional_le_u64(probe: &Probe, label: &str) -> Result<Option<u64>> {
         )?)),
         _ => Ok(None),
     }
+}
+
+fn delegation_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
+    [&[2, 1][..], &delegator].concat()
 }
 
 fn undelegation_v1_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
@@ -1147,5 +1235,106 @@ mod tests {
         value: Vec<u8>,
     ) {
         assert!(rows.insert(key.0, (key, value)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod scout_tests {
+    use super::*;
+    use rustaxa_types::{FinalChainBlockNumber, concrete_state::ConcreteStateIdentity};
+    #[test]
+    fn recorded_sender_keys_match_independent_keccak_vectors() {
+        let sender = hex::decode("35307b7b24fb1473abb364f0c3dd3082b3730cd5")
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let rows = scout_seeded_address(sender, |_| Ok(ConcreteRead::Absent)).unwrap();
+        // Independently generated Keccak-f1600 vectors, checked against empty/abc.
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.logical_key_hex.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "09167ae1cb6bcea1f33309c3059d7658176f055871a201ba51157a73910f940a",
+                "e3cd18d4003545ffb4752655c5a93140e97f1f186aa83d7914588caa52bf6252",
+                "1b353b08ef7ef744424bb1e5c7894617d918a4d095c00416fe65e7f36e72a929",
+                "8c24e5827c98351254a14b2832af96808a9c9a6cc61dd54c3c524317fb345a9c",
+            ]
+        );
+    }
+    #[test]
+    fn scout_bounds_and_widths() {
+        let mut calls = 0;
+        let rows = scout_seeded_address([1; 20], |_| {
+            calls += 1;
+            Ok(ConcreteRead::Present(if calls == 4 {
+                17_u64.to_le_bytes().to_vec()
+            } else {
+                3_u32.to_le_bytes().to_vec()
+            }))
+        })
+        .unwrap();
+        assert_eq!(calls, 4);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[3].decoded_value, Some(17));
+        assert_eq!(
+            rows.iter()
+                .map(|r| &r.logical_key_hex)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            4
+        );
+        for position in 1..=4 {
+            for width in [0, 1, 3, 4, 5, 7, 8, 9]
+                .into_iter()
+                .filter(|width| *width != if position == 4 { 8 } else { 4 })
+            {
+                let mut calls = 0;
+                let error = scout_seeded_address([1; 20], |_| {
+                    calls += 1;
+                    Ok(ConcreteRead::Present(if calls == position {
+                        vec![0; width]
+                    } else if calls == 4 {
+                        vec![0; 8]
+                    } else {
+                        vec![0; 4]
+                    }))
+                });
+                assert!(error.is_err());
+                assert_eq!(calls, position);
+            }
+        }
+    }
+    #[test]
+    fn scout_preserves_physical_outcomes_and_errors() {
+        let identity = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(3),
+            state_root: [4; 32],
+        };
+        let mut calls = 0;
+        let rows = scout_seeded_address([1; 20], |_| {
+            calls += 1;
+            match calls {
+                1 => Ok(ConcreteRead::Absent),
+                2 => Ok(ConcreteRead::Tombstone),
+                3 => Err(ConcreteReadError::HistoryUnavailable(identity)),
+                _ => Err(ConcreteReadError::Pruned(identity)),
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.physical_result).collect::<Vec<_>>(),
+            ["absent", "tombstone", "history_unavailable", "pruned"]
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.decoded_value.is_none() && r.exact_value_hex.is_none())
+        );
+        assert!(
+            scout_seeded_address([1; 20], |_| Err(ConcreteReadError::Corrupt(
+                "broken".into()
+            )))
+            .is_err()
+        );
     }
 }

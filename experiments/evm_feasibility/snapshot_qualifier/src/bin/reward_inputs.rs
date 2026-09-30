@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,8 +37,6 @@ use rustaxa_types::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-const QUALIFIED_COPY: &str = "/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy";
-const SUPPLIED_EVIDENCE: &str = "/tmp/snapshot-litenode";
 const TARGET_PERIOD: u64 = 25_706_949;
 const EXPECTED_PERIOD_DATA_BYTES: usize = 7_286;
 const EXPECTED_PERIOD_DATA_SHA256: &str =
@@ -538,23 +536,13 @@ fn validated_paths() -> Result<(PathBuf, PathBuf)> {
             .context("usage: reward_inputs QUALIFIED_COPY OUTPUT_JSON")?,
     );
     ensure!(args.next().is_none());
-    let supplied = fs::canonicalize(SUPPLIED_EVIDENCE)?;
-    let qualified = fs::canonicalize(QUALIFIED_COPY)?;
-    let input = fs::canonicalize(input)?;
-    ensure!(input == qualified, "input is not the exact qualified copy");
-    ensure!(input != supplied && !input.starts_with(&supplied));
-    ensure!(!output.exists(), "output already exists");
-    let output_name = output.file_name().context("output path has no file name")?;
-    let output_parent = fs::canonicalize(output.parent().unwrap_or_else(|| Path::new(".")))?;
-    let output = output_parent.join(output_name);
-    ensure!(!output.starts_with(&supplied) && !output.starts_with(&input));
-    Ok((input, output))
+    let paths = rustaxa_snapshot_qualifier::paths::validate(&input, &output)?;
+    Ok((paths.input, paths.output))
 }
 
 fn canonical_application_path(input: &Path) -> Result<PathBuf> {
-    let app = fs::canonicalize(input.join("db/db"))?;
-    ensure!(app.starts_with(input));
-    Ok(app)
+    // Both DB children were checked together before any open.
+    Ok(input.join("db/db"))
 }
 
 fn open_application_read_only(path: &Path) -> Result<(Database, Vec<String>)> {

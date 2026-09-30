@@ -376,3 +376,35 @@ partial helper patch, preserved inert with provenance. Locked diagnostic tests
 2/2, targeted format/clippy and the explicit full pre-commit gate passed.
 No database was opened. See [the recovery checkpoint](n6_recovery_checkpoint.md)
 for artifacts, source evidence and missing snapshot inputs.
+
+
+## September 30 restored N4 pair and sender scout
+
+Continuation base `5aa3febfee14a3ad59c2b24c15d94a49013fd170`, same feature
+branch. The lead kept sole database-operation ownership and shared evidence;
+Sol alone edited the isolated qualifier crate in the shared checkout. No
+production/storage-library/C++ implementation or `/build` operation changed.
+Capacity was checked before each launch; Luna acknowledged startup before
+Sol or Astra were launched. Runtime `turn_context` records confirm all three
+requested model/effort pairs. No routing/capacity failure or escalation occurred;
+no billing/quota inference follows.
+
+| Thread | Requested and observed model / effort | Ran and result |
+| --- | --- | --- |
+| `luna_n4_audit` | `gpt-6-luna`, medium | Started first; recovered-artifact/key map and reused read-only historical sender/copy-evidence audit completed |
+| `sol_n4_tools` | `gpt-6.1-sol`, medium | Guarded paths, bounded pair qualifier, four-key scout, provenance/rejection tests and README; 28 tests plus final 3 scout tests, strict clippy and formatting passed |
+| `astra_n4_review` | `gpt-6-astra`, medium | Independent source/reference derivation, golden key, report and provenance review; corrections resolved and final source/reports approved |
+
+Runtime session IDs, respectively:
+`01a0f259-fabf-7441-a34e-3e5c75b978a7`,
+`01a0f25a-56bc-7810-9bfa-62cb834404de`,
+`01a0f25b-32c3-7643-afd8-0a4067e369e4`.
+
+Lead validation: independent source/copy manifests and inode checks; fresh
+bounded pair qualification; seven-point reward reproduction with only metadata
+differences; four-key scout (four `history_unavailable` outcomes); explicit
+pre-commit fast gate. A final test-only source-fingerprint change required a
+second four-key scout invocation; observations matched exactly. No broad
+inventory/replay or production route was run. See
+[the execution evidence](n4_restored_snapshot_evidence.md) for artifacts,
+remaining gaps and validation limits. Milestone 10 remains open.

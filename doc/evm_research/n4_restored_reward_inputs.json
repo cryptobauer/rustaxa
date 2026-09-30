@@ -1,0 +1,148 @@
+{
+  "schema": 1,
+  "tool_package_version": "0.0.0",
+  "tool_source_sha256": "704628b66980dbcde2cf189a1ff3bd396a5e2c4c84a21ec60f9a7eb05831fa1c",
+  "input_copy": "/workspaces/rustaxa-evm/local/evm-state-db/snapshot-litenode-copy",
+  "read_contract": {
+    "mode": "DB::open_cf_descriptors_read_only",
+    "application_only": true,
+    "exact_key_reads": [
+      "final_chain_meta[1]",
+      "genesis[0]",
+      "period_data[25706949]",
+      "final_chain_receipt_by_period[25706949]",
+      "final_chain_blk_by_number[25706949]",
+      "final_chain_blk_hash_by_number[25706949]",
+      "block_rewards_stats[25706949]"
+    ],
+    "range_or_iterator_reads": false,
+    "application_column_family_count": 36
+  },
+  "period": 25706949,
+  "rows": {
+    "period_data": {
+      "bytes": 7286,
+      "sha256": "bcb4b16bed154c41156ed87f6d020f5ed7fad96f0c7562af778aeefd474de11b"
+    },
+    "receipts": {
+      "bytes": 208,
+      "sha256": "a0cf47cce427e5517939c1eeaefc347184899e5fef60d6a580db109d30260aa1"
+    },
+    "header": {
+      "bytes": 399,
+      "sha256": "1bebb6391e97caa4e8d34db4336810ec71eae83ef975d48bfb05e0b56e81363f"
+    },
+    "current_block_stats": {
+      "bytes": 566,
+      "sha256": "18bb350916c3d85a52ec401cb2b898d2696b57e3859d5ff9dda1218a8ed05070"
+    },
+    "genesis_hash_hex": "8129076db1332837152b0212faad56ab882c1d511e0aac495f200f0a08cb6377",
+    "block_hash_hex": "e5b61be65207997d9d30536500b4bd8be3fc2bbe3ec00c38343f20282c6e5065"
+  },
+  "observed_current_stats": {
+    "block_author_hex": "a6cec53b4d7920709f05ca1f7ac0d66338d29cb9",
+    "blocks_per_year": 9275294,
+    "validator_rows": 20,
+    "total_dag_blocks_count": 1,
+    "total_votes_weight": 714,
+    "max_votes_weight": 1000
+  },
+  "cert_vote_candidate": {
+    "certified_period": 25706948,
+    "round": 1,
+    "step": 3,
+    "count": 19,
+    "unique_voters": true,
+    "every_voter_has_observed_nonzero_weight": true,
+    "no_unpaired_observed_nonzero_weights": true,
+    "observed_weights_sum_matches_stats": true,
+    "weighted_bundle_bytes": 3728,
+    "weighted_bundle_sha256": "b85c4d2bd58709beede8651f208b120b26aa317555d9eb703db70076f5fa036a",
+    "weight_source": "retained current BlockStats validator_stats.vote_weight expected output",
+    "independent_prior_state_weights_qualified": false
+  },
+  "planner_candidate": {
+    "config_source": "checked-in mainnet config; target-period behavior candidate only",
+    "checked_in_mainnet_config_producer_qualified": false,
+    "capped_dpos_total_vote_projection": 1000,
+    "exact_dpos_total_vote_count_qualified": false,
+    "exact_current_block_stats_match": false,
+    "cache_current_period": true,
+    "clear_cached_stats": false,
+    "distribution_stats_count": 0,
+    "concrete_rewards_input_hex": "c0",
+    "concrete_rewards_input_sha256": "e4ff5e7d7a7f08e9800a3e25cb774533cb20040df30b6ba10f956f9acd0eb3f7"
+  },
+  "planner_comparison": {
+    "candidate_row": {
+      "bytes": 566,
+      "sha256": "85e2aacceab96cfd4c5fe92773540106761af6f2939da1c70161b40bb99c07a9"
+    },
+    "exact_rlp_bytes_match": false,
+    "typed_full_distribution_match": true,
+    "block_author_match": true,
+    "blocks_per_year_match": true,
+    "validators_stats_match": true,
+    "total_dag_blocks_count_match": true,
+    "total_votes_weight_match": true,
+    "max_votes_weight_match": true,
+    "retained_validator_order_hex": [
+      "1d8240c50cc3eefa80bca068624236f35ade7e1b",
+      "a6cec53b4d7920709f05ca1f7ac0d66338d29cb9",
+      "c9b2ed9876bd463f67a412bb7ce3ea269e3fdafa",
+      "329d40b5f15cfe4de0e9953d0599d2a39a65fc04",
+      "e50b5452b2e8435404dbe06e6a05410c47b7583d",
+      "fbb3ee068e491e218d2cda595c23c6e3cc2f00f2",
+      "49f85534bbcf461d44fd3fc96feecf9abb6d38ad",
+      "70b7ffd8269f116f7df6a46edd993263abd3eeb0",
+      "f27d87cda5bc0bfac6ef93222cfd83c6e8dc9f0d",
+      "264a30e880d3b53bb2cdeb234e34201ebf9a9965",
+      "6bf44c438f6328640b0bc5d7d7766310cf49610f",
+      "d27c327e3dfcfce0acf72438f6e7a7e6c87e06ef",
+      "d6d73e4c65c92787a2bbc80d109c293d8d3477af",
+      "575910424ac437467726542781508b2220b71ce8",
+      "03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b",
+      "138c1b9baea7d93a981ba694f5318f735c997298",
+      "414d739c4dccfe47d475cc08274b9e735a7941bd",
+      "7f821a7f63c0e7251e332b9b7c08da0b757124b5",
+      "b92a29912b08b4fa7404b02dfa2b8a971abdeda1",
+      "a8a23a6c96a09c7783b70373d2302fefd943730e"
+    ],
+    "candidate_validator_order_hex": [
+      "03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b",
+      "138c1b9baea7d93a981ba694f5318f735c997298",
+      "1d8240c50cc3eefa80bca068624236f35ade7e1b",
+      "264a30e880d3b53bb2cdeb234e34201ebf9a9965",
+      "329d40b5f15cfe4de0e9953d0599d2a39a65fc04",
+      "414d739c4dccfe47d475cc08274b9e735a7941bd",
+      "49f85534bbcf461d44fd3fc96feecf9abb6d38ad",
+      "575910424ac437467726542781508b2220b71ce8",
+      "6bf44c438f6328640b0bc5d7d7766310cf49610f",
+      "70b7ffd8269f116f7df6a46edd993263abd3eeb0",
+      "7f821a7f63c0e7251e332b9b7c08da0b757124b5",
+      "a6cec53b4d7920709f05ca1f7ac0d66338d29cb9",
+      "a8a23a6c96a09c7783b70373d2302fefd943730e",
+      "b92a29912b08b4fa7404b02dfa2b8a971abdeda1",
+      "c9b2ed9876bd463f67a412bb7ce3ea269e3fdafa",
+      "d27c327e3dfcfce0acf72438f6e7a7e6c87e06ef",
+      "d6d73e4c65c92787a2bbc80d109c293d8d3477af",
+      "e50b5452b2e8435404dbe06e6a05410c47b7583d",
+      "f27d87cda5bc0bfac6ef93222cfd83c6e8dc9f0d",
+      "fbb3ee068e491e218d2cda595c23c6e3cc2f00f2"
+    ],
+    "validator_order_match": false,
+    "legacy_unordered_map_order_qualified": false
+  },
+  "qualification": {
+    "exact_retained_rows_match_recorded_hashes": true,
+    "captured_candidate_sidecar_reconstructed": true,
+    "candidate_planner_typed_fields_match_retained_row": true,
+    "candidate_planner_exact_bytes_match_retained_row": false,
+    "historical_vrf_or_prior_vote_inputs_qualified": false,
+    "producer_compatible_reward_request_qualified": false,
+    "state_api_or_end_block_executed": false,
+    "reward_transition_or_root_qualified": false,
+    "producer_binary_or_global_hardfork_config_qualified": false,
+    "note": "vote weights and blocks_per_year come from the retained current BlockStats expected output; typed equality is circular for those fields and does not independently prove historical VRF validation, prior-state vote weights, other prior-state reward inputs, or legacy unordered-map serialization order"
+  }
+}

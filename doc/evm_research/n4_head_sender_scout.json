@@ -1,0 +1,67 @@
+{
+  "attempted_logical_reads": 4,
+  "broad_inventory_performed": false,
+  "checkpoint_adoption_authorized": false,
+  "child_enumeration_performed": false,
+  "dpos_address_hex": "00000000000000000000000000000000000000fe",
+  "fresh_transaction_signature_validation": false,
+  "input_copy": "/workspaces/rustaxa-evm/local/evm-state-db/snapshot-litenode-copy",
+  "logical_membership_authenticated": false,
+  "logical_read_limit": 4,
+  "mode": "head_sender_scout",
+  "observations": [
+    {
+      "decoded_value": null,
+      "exact_value_hex": null,
+      "family": "delegation_validator_count",
+      "logical_key_hex": "09167ae1cb6bcea1f33309c3059d7658176f055871a201ba51157a73910f940a",
+      "physical_result": "history_unavailable"
+    },
+    {
+      "decoded_value": null,
+      "exact_value_hex": null,
+      "family": "undelegation_v1_validator_count",
+      "logical_key_hex": "e3cd18d4003545ffb4752655c5a93140e97f1f186aa83d7914588caa52bf6252",
+      "physical_result": "history_unavailable"
+    },
+    {
+      "decoded_value": null,
+      "exact_value_hex": null,
+      "family": "undelegation_v2_validator_count",
+      "logical_key_hex": "1b353b08ef7ef744424bb1e5c7894617d918a4d095c00416fe65e7f36e72a929",
+      "physical_result": "history_unavailable"
+    },
+    {
+      "decoded_value": null,
+      "exact_value_hex": null,
+      "family": "undelegation_v2_last_id",
+      "logical_key_hex": "8c24e5827c98351254a14b2832af96808a9c9a6cc61dd54c3c524317fb345a9c",
+      "physical_result": "history_unavailable"
+    }
+  ],
+  "open_mode": "application and concrete checkpoint owners read-only",
+  "pair": {
+    "broad_inventory_performed": false,
+    "complete_state_or_adoption_authorized": false,
+    "current_and_prior_roots_authenticated": true,
+    "descriptor_matches_header": true,
+    "exact_checkpoint_timing_qualified": false,
+    "genesis_hash_hex": "8129076db1332837152b0212faad56ab882c1d511e0aac495f200f0a08cb6377",
+    "head": 25706949,
+    "header_sha256": "1bebb6391e97caa4e8d34db4336810ec71eae83ef975d48bfb05e0b56e81363f",
+    "network_identity_basis": "exact historical mainnet genesis hash; not producer/config certification",
+    "prior_period": 25706948,
+    "prior_state_root_hex": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
+    "producer_revision_qualified": false,
+    "state_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227"
+  },
+  "production_routing_authorized": false,
+  "publication_authorized": false,
+  "schema": 1,
+  "semantic_snapshot_complete": false,
+  "sender_evidence_sha256": "d68ab554634e7907f2b43ab43f753d6b9351d1b760afc8b91eb3f77c523ae437",
+  "sender_hex": "35307b7b24fb1473abb364f0c3dd3082b3730cd5",
+  "sender_provenance": "historical doc/evm_research/n4_replay_preflight.json envelope entries 0..18 and recovered_sender_scout.md; not fresh signature validation",
+  "successful_logical_reads": 0,
+  "tool_source_sha256": "651d935334a110887e1e5031b82501e5f2f15060504ab05f49d2279be7975291"
+}

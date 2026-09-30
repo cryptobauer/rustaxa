@@ -1,0 +1,47 @@
+{
+  "source": "/workspaces/rustaxa-evm/data",
+  "copy": "/workspaces/rustaxa-evm/local/evm-state-db/snapshot-litenode-copy",
+  "method": "cp -a --reflink=never",
+  "regular_files_checked": 1100450,
+  "shared_source_copy_inodes": 0,
+  "files_with_link_count_above_one": 0,
+  "source_opened_with_rocksdb": false,
+  "schema": 1,
+  "observed_utc": "2026-09-30",
+  "source_content": {
+    "logical_bytes": 9826980174,
+    "manifest_sha256": "d6f7d58c7e9ff8d7d734ea5104fc2bdd593cbfbcecf949f1ccec7a5ec259fccb",
+    "regular_files": 1100450
+  },
+  "copy_content": {
+    "logical_bytes": 9826980174,
+    "manifest_sha256": "d6f7d58c7e9ff8d7d734ea5104fc2bdd593cbfbcecf949f1ccec7a5ec259fccb",
+    "regular_files": 1100450
+  },
+  "content_equal": true,
+  "matches_historical_s0_manifest": true,
+  "source_and_copy_rocksdb_opened_at_comparison": false,
+  "current_controls": {
+    "db": {
+      "manifest": "MANIFEST-32593043",
+      "sha256": "d67ac4c21444515e24261cb981fba930915606078e9052a21fec7a8d586b4cae"
+    },
+    "state_db": {
+      "manifest": "MANIFEST-997855",
+      "sha256": "8c0d794b338c7cf4ad381040e48b8c639fff7ac033a962400695f264ecd1e71a"
+    }
+  },
+  "symlinks_observed": 0,
+  "every_regular_file_size_equal": true,
+  "post_probe_source_content": {
+    "logical_bytes": 9826980174,
+    "manifest_sha256": "d6f7d58c7e9ff8d7d734ea5104fc2bdd593cbfbcecf949f1ccec7a5ec259fccb",
+    "regular_files": 1100450
+  },
+  "post_probe_copy_content": {
+    "logical_bytes": 9826980174,
+    "manifest_sha256": "d6f7d58c7e9ff8d7d734ea5104fc2bdd593cbfbcecf949f1ccec7a5ec259fccb",
+    "regular_files": 1100450
+  },
+  "source_and_copy_content_unchanged_after_probes": true
+}
