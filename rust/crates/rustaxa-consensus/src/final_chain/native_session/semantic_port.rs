@@ -368,7 +368,7 @@ pub(in crate::final_chain) fn apply_set_commission<P: CommissionStatePort>(
     )?]))
 }
 
-fn decode_validator_facts(
+pub(super) fn decode_validator_facts(
     bytes: &[u8],
     extended_validator_active: bool,
 ) -> std::result::Result<ValidatorFacts, FinalChainNativeSessionError> {

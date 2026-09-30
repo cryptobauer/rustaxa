@@ -38,11 +38,23 @@ NonMember for all four keys at H. The earlier physical `history_unavailable`
 results remain unchanged; logical absence follows from these separate proofs,
 not missing physical history. Global native reconstruction remains incomplete.
 
-The next bounded reward slice must distinguish certificate P=H−1, requested
-DPoS period Q=P−1=H−2 and candidate five-period delayed concrete state D=H−7.
-Astra high reviewed that contract; require authenticated D root and independent
-validator/VRF/jail/total facts before deriving weights. Checked-in config remains
-a candidate, and nonempty jail-list semantics require explicit handling.
+The [independent reward-input continuation](n4_independent_reward_inputs.md)
+now authenticates D=H−7 under retained/candidate delay five and derives all
+19 certificate weights independently: all signatures/strict VRF checks pass,
+all retained weights match and the sum is 714. Exactly 59 logical keys were
+read/proved, with authenticated empty jailed list and total 534,879. Existing
+Rust persisted-lambda lookup independently yields 1,500 ms and candidate-delay
+annualization 9,275,294. A separate capped CF8 metadata check exhausts one
+2,904-byte baseline configuration row; threshold, vote step, maximum stake and
+delay match the candidate. Metadata is not state-root authenticated; producer
+identity, hardfork/PBFT settings and reward transition remain unqualified.
+
+Next bounded step: integrate independently derived vote/total/rate facts into
+the existing Rust reward planner comparison, preserving historical raw order
+mismatch and candidate-policy labels. Do not infer reward execution or complete
+native state from these diagnostics. The 43 qualifier tests, strict clippy/fmt
+and explicit fast pre-commit gate (including 1,444 consensus tests) passed;
+Astra independently approved source and exact execution evidence.
 The user authorized bounded progress while preserving at least 25% remaining
 weekly usage: monitor telemetry, stop new slices at 30% remaining, and reserve
 closeout capacity. Broad replay, production routing and sparse publication remain

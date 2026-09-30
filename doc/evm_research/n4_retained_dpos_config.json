@@ -1,0 +1,227 @@
+{
+  "input_copy": "/workspaces/rustaxa-evm/local/evm-state-db/snapshot-litenode-copy",
+  "pair_qualification": {
+    "broad_inventory_performed": false,
+    "complete_state_or_adoption_authorized": false,
+    "current_and_prior_roots_authenticated": true,
+    "descriptor_matches_header": true,
+    "exact_checkpoint_timing_qualified": false,
+    "genesis_hash_hex": "8129076db1332837152b0212faad56ab882c1d511e0aac495f200f0a08cb6377",
+    "head": 25706949,
+    "header_sha256": "1bebb6391e97caa4e8d34db4336810ec71eae83ef975d48bfb05e0b56e81363f",
+    "network_identity_basis": "exact historical mainnet genesis hash; not producer/config certification",
+    "prior_period": 25706948,
+    "prior_state_root_hex": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
+    "producer_revision_qualified": false,
+    "state_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227"
+  },
+  "qualification": {
+    "adoption_authorized": false,
+    "full_record_codec_validated": true,
+    "genesis_semantics_qualified": false,
+    "hardfork_configuration_qualified": false,
+    "metadata_state_root_authenticated": false,
+    "pbft_configuration_qualified": false,
+    "producer_binary_qualified": false,
+    "producer_configuration_qualified": false,
+    "retained_metadata_exhausted_within_caps": true,
+    "selected_dpos_scalar_metadata_available": true,
+    "vote_inputs_or_reward_transition_qualified": false
+  },
+  "read_bound": {
+    "concrete_qualification": "existing descriptor/current/prior-root checks",
+    "maximum_accepted_key_value_bytes": 65536,
+    "maximum_accepted_records": 16,
+    "maximum_extra_validity_lookaheads": 1,
+    "metadata_cf": "8",
+    "other_cf_iteration_performed": false,
+    "pair_application_point_reads": 4,
+    "trie_scan_performed": false
+  },
+  "retained_dpos_configuration": {
+    "candidate_comparison": {
+      "candidate_source_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+      "fields": {
+        "delegation_delay": {
+          "candidate_unsigned_decimal": "5",
+          "matches": true,
+          "retained_unsigned_decimal": "5"
+        },
+        "eligibility_balance_threshold": {
+          "candidate_unsigned_decimal": "500000000000000000000000",
+          "matches": true,
+          "retained_unsigned_decimal": "500000000000000000000000"
+        },
+        "validator_maximum_stake": {
+          "candidate_unsigned_decimal": "80000000000000000000000000",
+          "matches": true,
+          "retained_unsigned_decimal": "80000000000000000000000000"
+        },
+        "vote_eligibility_balance_step": {
+          "candidate_unsigned_decimal": "1000000000000000000000",
+          "matches": true,
+          "retained_unsigned_decimal": "1000000000000000000000"
+        }
+      },
+      "producer_configuration_qualified": false,
+      "relevant_stake_fields_fit_u256": true
+    },
+    "cf": "8",
+    "exhausted_within_caps": true,
+    "key_value_bytes": 2904,
+    "query_period": 25706947,
+    "record_count": 1,
+    "selected": {
+      "full_record_codec_validated": true,
+      "genesis_semantics_qualified": false,
+      "initial_validator_count": 20,
+      "raw_bytes": 2904,
+      "raw_key_hex": "",
+      "raw_sha256": "17c5ec372da3122ca291227ec073ef59b1cfef9fed1c93d3be314a9a0c87e9e0",
+      "scalar_fields": {
+        "blocks_per_year": {
+          "bytes": 3,
+          "canonical_unsigned_be_hex": "820deb",
+          "unsigned_decimal": "8523243"
+        },
+        "commission_change_delta": {
+          "bytes": 2,
+          "canonical_unsigned_be_hex": "01f4",
+          "unsigned_decimal": "500"
+        },
+        "commission_change_frequency": {
+          "bytes": 3,
+          "canonical_unsigned_be_hex": "01c814",
+          "unsigned_decimal": "116756"
+        },
+        "dag_proposers_reward": {
+          "bytes": 1,
+          "canonical_unsigned_be_hex": "32",
+          "unsigned_decimal": "50"
+        },
+        "delegation_delay": {
+          "bytes": 1,
+          "canonical_unsigned_be_hex": "05",
+          "unsigned_decimal": "5"
+        },
+        "delegation_locking_period": {
+          "bytes": 3,
+          "canonical_unsigned_be_hex": "0ab07c",
+          "unsigned_decimal": "700540"
+        },
+        "eligibility_balance_threshold": {
+          "bytes": 10,
+          "canonical_unsigned_be_hex": "69e10de76676d0800000",
+          "unsigned_decimal": "500000000000000000000000"
+        },
+        "max_block_author_reward": {
+          "bytes": 1,
+          "canonical_unsigned_be_hex": "05",
+          "unsigned_decimal": "5"
+        },
+        "minimum_deposit": {
+          "bytes": 9,
+          "canonical_unsigned_be_hex": "3635c9adc5dea00000",
+          "unsigned_decimal": "1000000000000000000000"
+        },
+        "validator_maximum_stake": {
+          "bytes": 11,
+          "canonical_unsigned_be_hex": "422ca8b0a00a4250000000",
+          "unsigned_decimal": "80000000000000000000000000"
+        },
+        "vote_eligibility_balance_step": {
+          "bytes": 9,
+          "canonical_unsigned_be_hex": "3635c9adc5dea00000",
+          "unsigned_decimal": "1000000000000000000000"
+        },
+        "yield_percentage": {
+          "bytes": 1,
+          "canonical_unsigned_be_hex": "14",
+          "unsigned_decimal": "20"
+        }
+      },
+      "update_period": 0
+    },
+    "updates_numeric_order": [
+      {
+        "full_record_codec_validated": true,
+        "genesis_semantics_qualified": false,
+        "initial_validator_count": 20,
+        "raw_bytes": 2904,
+        "raw_key_hex": "",
+        "raw_sha256": "17c5ec372da3122ca291227ec073ef59b1cfef9fed1c93d3be314a9a0c87e9e0",
+        "scalar_fields": {
+          "blocks_per_year": {
+            "bytes": 3,
+            "canonical_unsigned_be_hex": "820deb",
+            "unsigned_decimal": "8523243"
+          },
+          "commission_change_delta": {
+            "bytes": 2,
+            "canonical_unsigned_be_hex": "01f4",
+            "unsigned_decimal": "500"
+          },
+          "commission_change_frequency": {
+            "bytes": 3,
+            "canonical_unsigned_be_hex": "01c814",
+            "unsigned_decimal": "116756"
+          },
+          "dag_proposers_reward": {
+            "bytes": 1,
+            "canonical_unsigned_be_hex": "32",
+            "unsigned_decimal": "50"
+          },
+          "delegation_delay": {
+            "bytes": 1,
+            "canonical_unsigned_be_hex": "05",
+            "unsigned_decimal": "5"
+          },
+          "delegation_locking_period": {
+            "bytes": 3,
+            "canonical_unsigned_be_hex": "0ab07c",
+            "unsigned_decimal": "700540"
+          },
+          "eligibility_balance_threshold": {
+            "bytes": 10,
+            "canonical_unsigned_be_hex": "69e10de76676d0800000",
+            "unsigned_decimal": "500000000000000000000000"
+          },
+          "max_block_author_reward": {
+            "bytes": 1,
+            "canonical_unsigned_be_hex": "05",
+            "unsigned_decimal": "5"
+          },
+          "minimum_deposit": {
+            "bytes": 9,
+            "canonical_unsigned_be_hex": "3635c9adc5dea00000",
+            "unsigned_decimal": "1000000000000000000000"
+          },
+          "validator_maximum_stake": {
+            "bytes": 11,
+            "canonical_unsigned_be_hex": "422ca8b0a00a4250000000",
+            "unsigned_decimal": "80000000000000000000000000"
+          },
+          "vote_eligibility_balance_step": {
+            "bytes": 9,
+            "canonical_unsigned_be_hex": "3635c9adc5dea00000",
+            "unsigned_decimal": "1000000000000000000000"
+          },
+          "yield_percentage": {
+            "bytes": 1,
+            "canonical_unsigned_be_hex": "14",
+            "unsigned_decimal": "20"
+          }
+        },
+        "update_period": 0
+      }
+    ]
+  },
+  "source_contract": {
+    "delegation_map": "rlp/decode.go:574; list of two-field pairs with duplicate rejection",
+    "fields": "taraxa/state/chain_config/chain_config.go:152; full thirteen-field DPOSConfig",
+    "immutable_go_revision": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "numeric_selection": "taraxa/state/api.go:39-70; sorted update keys; contracts/dpos/precompiled/api.go:83-104",
+    "update_keys": "taraxa/state/state_db_rocksdb/db.go:532/551; minimal BE bytes, zero empty"
+  },
+  "tool_source_sha256": "4b9b06f02a17711dab913b9cfcfd17f56d894ae192dcc923c08875df90cc86cc"
+}

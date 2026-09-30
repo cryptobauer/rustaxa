@@ -1,0 +1,79 @@
+{
+  "candidate_policy": {
+    "cacti_activation": 24350801,
+    "cacti_active_at_h": true,
+    "consensus_delay_ms": 400,
+    "lambda_max_ms": 1500,
+    "lambda_min_ms": 500,
+    "later_round_lambda_default_ms": 2000,
+    "legal_lambda": "inclusive [lambda_min,lambda_max] OR lambda_default; no finalized-round inference",
+    "producer_configuration_qualified": false,
+    "source": "libraries/cli/include/cli/config_jsons/mainnet/mainnet_genesis.json",
+    "source_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7"
+  },
+  "independent_rate_input": {
+    "blocks_per_year": 9275294,
+    "canonical_u32_le_encoding_hex": "dc050000",
+    "consensus_delay_ms": 400,
+    "finalized_round_qualified": false,
+    "lambda_ms": 1500,
+    "lookup_upper_bound_key_le_hex": "c541880100000000",
+    "lookup_upper_bound_period": 25706949,
+    "provenance_limit": "repository returns decoded lambda only; selected update period/key and original value bytes are not exposed",
+    "selected_raw_key": null,
+    "selected_update_period": null,
+    "source": "MetadataRepository::period_lambda(H,true); independent of BlockStats",
+    "status": "available_under_candidate_policy"
+  },
+  "input_copy": "/workspaces/rustaxa-evm/local/evm-state-db/snapshot-litenode-copy",
+  "pair_qualification": {
+    "broad_inventory_performed": false,
+    "complete_state_or_adoption_authorized": false,
+    "current_and_prior_roots_authenticated": true,
+    "descriptor_matches_header": true,
+    "exact_checkpoint_timing_qualified": false,
+    "genesis_hash_hex": "8129076db1332837152b0212faad56ab882c1d511e0aac495f200f0a08cb6377",
+    "head": 25706949,
+    "header_sha256": "1bebb6391e97caa4e8d34db4336810ec71eae83ef975d48bfb05e0b56e81363f",
+    "network_identity_basis": "exact historical mainnet genesis hash; not producer/config certification",
+    "prior_period": 25706948,
+    "prior_state_root_hex": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
+    "producer_revision_qualified": false,
+    "state_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227"
+  },
+  "qualification": {
+    "adoption_authorized": false,
+    "historical_vote_weights_qualified": false,
+    "independent_period_lambda_available": true,
+    "live_dynamic_lambda_state_qualified": false,
+    "producer_binary_qualified": false,
+    "producer_configuration_qualified": false,
+    "reward_transition_or_root_qualified": false
+  },
+  "read_bound": {
+    "application_logical_reads_total": 6,
+    "block_stats_point_reads": 1,
+    "broad_scan_performed": false,
+    "concrete_reads": "existing descriptor/current/prior-root qualification only",
+    "live_dynamic_lambda_read": false,
+    "maximum_period_lambda_rows_returned": 1,
+    "pair_application_point_reads": 4,
+    "period_lambda_reverse_seeks": 1
+  },
+  "retained_output_comparison": {
+    "independent_blocks_per_year": 9275294,
+    "matches": true,
+    "observed_blocks_per_year": 9275294,
+    "period": 25706949,
+    "purpose": "expected-output comparison only; existing full raw/typed parity evidence remains unchanged",
+    "raw_bytes": 566,
+    "raw_sha256": "18bb350916c3d85a52ec401cb2b898d2696b57e3859d5ff9dda1218a8ed05070"
+  },
+  "source_semantics": {
+    "formula": "libraries/config/src/genesis.cpp:103; 365-day year milliseconds / (2*lambda_ms + delay_ms)",
+    "period_lambda_persistence": "libraries/core_libs/consensus/src/pbft/pbft_manager.cpp:2080-2100; period lambda saved before dynamic update",
+    "round_lambda_policy": "libraries/core_libs/consensus/src/pbft/pbft_manager.cpp:507; dynamic round-one lambda, default for later rounds",
+    "rust_calculator": "rust/crates/rustaxa-consensus/src/pbft_finalize.rs::calc_blocks_per_year; existing checked u64 arithmetic"
+  },
+  "tool_source_sha256": "b710ac1379268c460c2e7dfed223b3a9766c9177ee68a1b246ccbdd392454a4e"
+}

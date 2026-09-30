@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
-use ethereum_types::{H160, H256};
-use rlp::{Rlp, RlpStream};
+use ethereum_types::H160;
+use rlp::Rlp;
 use rocksdb::{ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options};
 use rustaxa_consensus::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
@@ -36,6 +36,8 @@ use rustaxa_types::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+
+use rustaxa_snapshot_qualifier::reward_votes::{ReconstructedVotes, reconstruct_cert_votes};
 
 const TARGET_PERIOD: u64 = 25_706_949;
 const EXPECTED_PERIOD_DATA_BYTES: usize = 7_286;
@@ -182,13 +184,6 @@ struct Qualification {
     note: &'static str,
 }
 
-struct ReconstructedVotes {
-    certified_period: u64,
-    round: u64,
-    step: u64,
-    canonical: Vec<Vec<u8>>,
-}
-
 fn main() -> Result<()> {
     let (input, output) = validated_paths()?;
     let app_path = canonical_application_path(&input)?;
@@ -307,7 +302,13 @@ fn main() -> Result<()> {
     let report = Report {
         schema: 1,
         tool_package_version: env!("CARGO_PKG_VERSION"),
-        tool_source_sha256: sha256_hex(include_bytes!("reward_inputs.rs")),
+        tool_source_sha256: sha256_hex(
+            &[
+                include_bytes!("reward_inputs.rs").as_slice(),
+                include_bytes!("../reward_votes.rs"),
+            ]
+            .concat(),
+        ),
         input_copy: input.display().to_string(),
         read_contract: ReadContract {
             mode: "DB::open_cf_descriptors_read_only",
@@ -446,45 +447,6 @@ fn candidate_vote_weights(
     ))
 }
 
-fn reconstruct_cert_votes(period_data: &[u8]) -> Result<ReconstructedVotes> {
-    let period = Rlp::new(period_data);
-    ensure!(matches!(period.item_count()?, 4 | 5));
-    let bundle = period.at(1)?;
-    ensure!(bundle.item_count()? == 5);
-    let block_hash: H256 = bundle.val_at(0)?;
-    let certified_period: u64 = bundle.val_at(1)?;
-    let round: u64 = bundle.val_at(2)?;
-    let step: u64 = bundle.val_at(3)?;
-    ensure!(step == 3, "previous reward bundle is not cert votes");
-    let optimized = bundle.at(4)?;
-    ensure!(optimized.item_count()? > 0);
-    let canonical = optimized
-        .iter()
-        .map(|vote| {
-            ensure!(vote.item_count()? == 2);
-            let proof = vote.at(0)?.data()?;
-            let signature = vote.at(1)?.data()?;
-            ensure!(signature.len() == 65);
-            let mut sortition = RlpStream::new_list(4);
-            sortition.append(&certified_period);
-            sortition.append(&round);
-            sortition.append(&step);
-            sortition.append(&proof);
-            let mut canonical = RlpStream::new_list(3);
-            canonical.append(&block_hash);
-            canonical.append(&sortition.out().as_ref());
-            canonical.append(&signature);
-            Ok(canonical.out().to_vec())
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(ReconstructedVotes {
-        certified_period,
-        round,
-        step,
-        canonical,
-    })
-}
-
 fn transaction_facts(period_data: &[u8], receipts: &[u8]) -> Result<Vec<RewardTransactionFact>> {
     let transactions = Rlp::new(period_data).at(3)?;
     let receipts = Rlp::new(receipts);
@@ -620,6 +582,8 @@ fn write_report(path: &Path, report: &Report) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethereum_types::H256;
+    use rlp::RlpStream;
 
     #[test]
     fn optimized_bundle_reconstructs_canonical_vote_shape() {

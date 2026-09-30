@@ -47,6 +47,32 @@ bytes fail closed. The proof report cites the original physical scout artifact a
 hash at `bf57aec01`; keep that historical report unchanged. Neither four proofs nor
 four nonmembers establish historical/deleted delegation coverage or complete state.
 
+The `independent_reward_inputs` continuation uses the checked-in mainnet policy
+as an explicit candidate. It pins H=25706949, certificate P=25706948, request
+Q=25706947, and delay5 storage/eligibility D=25706942. Current H descriptor and
+D root are authenticated through the existing checkpoint owner. It consults
+at most59 unique keys (one raw read and one proof per key): total counter and
+jailed-list gate, then validator/VRF/jail rows for19 recovered certificate voters.
+A nonempty jailed list stops before per-voter probes. No sparse snapshot is built.
+Proof members must match exact physical bytes; proof nonmembers reconcile only
+absent/tombstone or HistoryUnavailable at the exact D identity. Proof failures
+and orphan/mismatching rows fail closed. Stake decoding and vote counting remain
+consensus-owned; strict VRF/signature validation calculates weights without a
+preverified sidecar. Retained BlockStats enters only afterward as expected output.
+Gate failures retain partial JSON diagnostics and return a failing exit status.
+Run with the same guarded copy argument and a fresh output filename. Producer
+configuration, complete state and reward/root transition remain unqualified.
+
+The `reward_rate_inputs` diagnostic uses the existing persisted period-lambda
+repository and checked annualization calculator before comparing retained
+BlockStats. Candidate delay/Cacti policy and unavailable selected-row provenance
+remain explicit. The `retained_dpos_config` diagnostic separately inspects only
+CF8 configuration metadata, capped at16 records/64KiB key+value bytes with one
+extra validity lookahead. It requires canonical Go RLP, numeric update ordering,
+a baseline and latest policy at/before Q. Metadata is not state-root authenticated.
+Both accept the guarded copy and a fresh exclusive output filename; neither
+executes a state transition or qualifies the producer.
+
 The shared guard validates the exact copy and both DB children before any open, rejects
 symlink components and source/output overlap, and requires new report files. Opens are
 read-only and publication uses exclusive creation. Use fresh output filenames for reruns.

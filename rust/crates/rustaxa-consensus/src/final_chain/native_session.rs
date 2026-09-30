@@ -21,6 +21,7 @@ mod query;
 pub(super) mod raw;
 pub(super) mod rewards;
 pub(super) mod semantic_port;
+pub mod vote_inputs;
 
 #[cfg(test)]
 mod cancel_custody_reference_tests;

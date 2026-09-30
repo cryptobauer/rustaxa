@@ -427,3 +427,31 @@ read-only to settle ambiguous vote-period/delegation-delay/jail semantics before
 reward implementation. It identified D=H−7 under candidate delay5 and a 59-key
 empty-jail-list bound. It made no source edits or DB opens; no routing failure
 occurred. This is a contract result, not reward qualification or billing evidence.
+
+
+## Independent reward vote/rate and retained metadata continuation
+
+Base `3605bf909`. Reused Luna medium completed bounded API/provenance and
+remaining-work mapping. Reused Sol6.1 medium (`sol_n4_tools`) implemented the
+59-key diagnostic, shared certificate decoder and consensus point-fact facade.
+`sol_reward_rate` explicitly requested `gpt-6.1-sol`, medium, started successfully
+and implemented the independent rate diagnostic, existing calculator exposure,
+and separately capped CF8 configuration diagnostic. Ownership was disjoint;
+lead alone ran all database probes, and no worker used `/build`.
+
+Reused Astra6 medium independently reviewed source and all exact report hashes.
+Reused `astra_reward_contract` at Astra6 high settled consequential delayed-state,
+Magnolia codec and historical jail semantics, then verified the complete Go
+configuration codec against immutable source. The high escalation is limited to
+these ambiguous contracts. All requested agents ran; no model/capacity routing
+failure occurred. Assignment is not a billing/usage assertion.
+
+Review corrections resolved before evidence acceptance: Magnolia activation,
+exact-D physical absence reconciliation and tests, pinned expected stats,
+canonical nested config RLP, and candid value-only lambda repository provenance.
+Lead ran three bounded successful diagnostics, 43 qualifier tests, strict clippy,
+format and the explicit pre-commit fast gate with 1,444 consensus tests.
+See [the evidence](n4_independent_reward_inputs.md). Latest sampled weekly usage
+during this batch was 51% used; stop new slices at70% used to preserve closeout
+capacity and the user's requested25% reserve. No producer certification, full
+native reconstruction, reward execution or publication is claimed.

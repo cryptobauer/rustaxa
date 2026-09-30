@@ -3300,7 +3300,15 @@ fn is_dynamic_lambda_change_interval(
             && block_number.is_multiple_of(u64::from(lambda_change_interval)))
 }
 
-fn calc_blocks_per_year(lambda_ms: u32, delay_ms: u32) -> Option<u32> {
+/// Computes the annualized finalized-block rate from the period's consensus
+/// lambda and additional consensus delay, both in milliseconds.
+///
+/// Uses a fixed 365-day year and truncating integer division by `2 * lambda +
+/// delay`, matching the existing finalization policy. This function has no
+/// storage or runtime dependencies and does not validate hardfork activation or
+/// the caller's lambda policy. Returns `None` for a zero denominator, checked
+/// arithmetic failure, or a rate that cannot fit in `u32`.
+pub fn calc_blocks_per_year(lambda_ms: u32, delay_ms: u32) -> Option<u32> {
     let expected_block_time = u64::from(lambda_ms)
         .checked_mul(2)?
         .checked_add(u64::from(delay_ms))?;
@@ -3337,6 +3345,15 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn annualized_rate_preserves_checked_arithmetic_and_truncation() {
+        assert_eq!(calc_blocks_per_year(500, 400), Some(22_525_714));
+        assert_eq!(calc_blocks_per_year(2_000, 400), Some(7_167_272));
+        assert_eq!(calc_blocks_per_year(0, 0), None);
+        assert_eq!(calc_blocks_per_year(0, 1), None);
+        assert_eq!(calc_blocks_per_year(u32::MAX, u32::MAX), Some(2));
+    }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
