@@ -498,3 +498,30 @@ source archive, observer-only mutation hooks, deny-by-default two-record test
 port, and Init/BeginBlock/EndBlock/Close without replay, PrepareCommit, commit or
 root calculation. It is not yet accepted by this handoff. Latest sampled weekly
 usage was59% used; the70% new-slice cutoff and25% reserve remain in force.
+
+
+## Executable cold Go witness closeout
+
+From `399b3d8ae`, reused Sol6.1 medium implemented the isolated Go/Python harness.
+Reused Astra6 high scoped the cold constructor and exact two-record port;
+Astra6 medium independently reviewed implementation and final evidence. Reused
+Luna medium audited current evidence/checkpoint boundaries. All ran successfully;
+no new routing failure occurred (the earlier Soltools capacity failure remains
+recorded above). Root owns final execution and commits.
+
+The reference archive has explicit hash-guarded observer-only mutation hooks;
+separate StartMutation/Delete controls prove rejection. Exactly two allowed
+fixture reads and zero backend/TrieSink mutation attempts occurred after
+Init/BeginBlock/EndBlock/Close. Review tightened historical readers to deny all
+reads, protected output paths from original-source writes, and bound constructed
+fixture/config hashes. Root reproduced the final cold run and pure output guards;
+Go formatting, Python execution and whitespace validation passed. See
+[cold reference evidence](n4_empty_native_go_cold.md). No Go checkout, DB, production
+Rust, C++ or shared build changes occurred. Warm/Rust EndBlock/root/adoption remain
+unqualified. The previous handoff's pending witness is now accepted only within
+this narrow cold reference scope.
+
+Closeout usage sample: 2026-09-30 14:23 UTC, weekly65% used/35% remaining.
+The authorized bounded batch is complete with more than the requested25% reserve;
+no broad replay or production route was started. Original Go checkout status is
+clean; full source/copy content equality is recorded separately above.

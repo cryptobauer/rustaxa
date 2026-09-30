@@ -30,7 +30,10 @@ qualified the independent working copy and completed the physical sender scout;
 [four authenticated paths](n4_head_sender_proofs.md) separately prove nonmembership.
 [Independent reward inputs](n4_independent_reward_inputs.md) now reconstruct
 certificate weights, annualized rate and bounded retained DPoS metadata, with
-producer policy and reward execution still unqualified.
+producer policy and full reward execution still unqualified. The
+[conditional parent witness](n4_empty_native_effects.md) and
+[executable cold Go witness](n4_empty_native_go_cold.md) add bounded no-effect
+evidence without Rust EndBlock, complete-state or publication authority.
 
 Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qualification.md),
 [S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),

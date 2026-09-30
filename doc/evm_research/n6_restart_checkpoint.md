@@ -66,10 +66,31 @@ actual Rust EndBlock, complete native state, producer policy and reward-root
 execution are still unqualified. All 51 qualifier tests, strict clippy/fmt and
 explicit fast pre-commit passed; Astra independently approved exact evidence.
 Further work must preserve this distinction and avoid sparse-snapshot adoption.
+
+The [executable cold Go witness](n4_empty_native_go_cold.md) now runs actual
+Init/BeginBlock/EndBlock/Close in a pinned disposable archive with observer-only
+mutation hooks. It performs exactly two fixture reads and zero backend writes,
+commits or observed trie mutations; separate mutation controls pass. Root
+reproduced it, and independent Astra review verified all source/report/fixture
+hashes. The test port is not authenticated or complete, delayed reader labels
+cannot read parent fixtures, and no warm state, transactions, reward distribution,
+PrepareCommit or root calculation runs. This does not close Rust EndBlock or
+reward-inclusive real replay. Source/copy full content hashes remain unchanged.
+
+The authorized restored N4 slice and these bounded follow-ups are complete.
+Milestone10 remains open. Next work should settle the bounded Rust-native
+EndBlock/transition port and its authority contract, then independent producer
+policy and reward-inclusive replay inputs. Complete native reconstruction,
+non-genesis paired adoption and publication/reopen/recovery remain separate gates;
+none may be bypassed by publishing these sparse diagnostic fixtures.
 The user authorized bounded progress while preserving at least 25% remaining
 weekly usage: monitor telemetry, stop new slices at 30% remaining, and reserve
 closeout capacity. Broad replay, production routing and sparse publication remain
 outside scope; full native/reward inputs, adoption and replay/recovery stay open.
+Closeout telemetry sampled at 2026-09-30 14:23 UTC reported **65% used / 35%
+remaining** in the weekly window, above the requested 25% reserve. The bounded
+batch is complete; this is a sampled allowance observation, not a billing claim
+or hard account cutoff. No additional slice was started to consume the reserve.
 
 Historical `/tmp` worktrees are absent and marked prunable; do not treat their
 paths below as live. The [September 30 recovery](n6_recovery_checkpoint.md)

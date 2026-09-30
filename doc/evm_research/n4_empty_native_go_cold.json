@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "immutable_go_revision": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+  "go_version": "go version go1.24.4 linux/amd64",
+  "input_sha256": {
+    "doc/evm_research/n4_empty_native_effects.json": "c5cc64181cd6611648c975220d29403eafd3e9d4995b34fd90bf54c03cb870ba",
+    "doc/evm_research/n4_retained_dpos_config.json": "3c817ff7974da68e0d5865b34e92765c7e50c71a6892c81d299f28c579e38634",
+    "doc/evm_research/n4_independent_reward_plan.json": "f88d67ecbd06d6c483466290262fabe8fb03e4532164cf0311fdd63232bcb0e9",
+    "libraries/cli/include/cli/config_jsons/mainnet/mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "doc/evm_research/n4_replay_preflight.json": "d68ab554634e7907f2b43ab43f753d6b9351d1b760afc8b91eb3f77c523ae437"
+  },
+  "immutable_source_sha256": {
+    "taraxa/C/state.go": "b6effa29e1d465a0bcc1badcf398a57e982d16b0d6f4f9b14844632306f7e3ec",
+    "taraxa/state/state_transition/state_transition.go": "d447ac4599f0107ccad4379f95a7269a6d5729283d8dcf00db850ea8fe119e90",
+    "taraxa/state/state_transition/state_hardforks.go": "1432c0e39e7ecaee8683c3e9fd28571e97f816e906c3938b0f38fa886c246aae",
+    "taraxa/state/contracts/dpos/precompiled/dpos_contract.go": "28bb58adb9d99d604fdacf0c284deea49c6887eee789381a5c5a231b5c89f565",
+    "taraxa/state/contracts/slashing/precompiled/slashing_contract.go": "2ac21dbe9ece16e11f1ab85d2670488d24a2a0e8940d2c181ced142511c6edfb",
+    "taraxa/state/state_transition/trie_sink.go": "90d3ac9dd49e3e78cdbe5c35ac34d1d8d508324c282ee7af22b23c74909f8aa4"
+  },
+  "harness_sha256": {
+    "empty_native_effects_reference.go": "8540e39d3ad6103360b7dfea0279acda4d79f89d5e4cd048d9684682c85c610d",
+    "empty_native_effects_reference.py": "d2c5d3837e87a2ef7cbf3c9f727a946e2fe5fa77cd716f33850401d5f93ade90"
+  },
+  "observer_archive_patch": {
+    "immutable_target_sha256": "90d3ac9dd49e3e78cdbe5c35ac34d1d8d508324c282ee7af22b23c74909f8aa4",
+    "patched_target_sha256": "625029eb1a8af877dc724e3eede23ae5dbc3876d096b2f4e6860566189ac7418",
+    "observer_sha256": "6903e50988bbbede7fca1813f773be0f59740edef35687d96dac144ac7893998",
+    "observation_points": [
+      "TrieSink.StartMutation",
+      "TrieSink.Delete"
+    ],
+    "original_checkout_modified": false
+  },
+  "fixture_json_sha256": "96c05f7c7a774fa0eb6ba9ece995155f1c8145c1a2aff29a20479c80fa222cfe",
+  "constructor_configuration": {
+    "dpos_scalar_source": "all twelve retained baseline scalar fields",
+    "inventory_and_hardfork_source": "pinned checked-in candidate genesis validators, balances and complete Taraxa hardfork configuration",
+    "ethereum_chain_config_scope": "chainId only; no ordinary transaction or bytecode execution",
+    "initial_validator_count": 20,
+    "constructor_config_sha256": "ee84a255752ba108f07ff945b9e94a3199d3efb3900ded094490309cf5c0238d",
+    "producer_configuration_qualified": false,
+    "complete_native_snapshot_reconstructed": false
+  },
+  "witness": {
+    "backend_put_attempts": 0,
+    "commit_attempts": 0,
+    "complete_snapshot_claim": false,
+    "construction": "one cold StateTransition",
+    "fixture_port_authenticated": false,
+    "historical_reader_labels": [
+      25706943,
+      25706943,
+      25706943,
+      25706943,
+      25706943
+    ],
+    "historical_reads_allowed": false,
+    "operations": [
+      "Init",
+      "BeginBlock",
+      "EndBlock",
+      "Close"
+    ],
+    "ordinary_transactions_executed": 0,
+    "parent_period_label": 25706948,
+    "parent_root_label": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
+    "period": 25706949,
+    "prepare_commit_called": false,
+    "producer_qualified": false,
+    "read_count": 2,
+    "reads": [
+      {
+        "column": 2,
+        "key_hex": "d24e8fff20c5317074c54fd54ca9f1fc8fef36bb70c44b55f90a70c621b91f9a",
+        "bytes": 85
+      },
+      {
+        "column": 4,
+        "key_hex": "b31797efde99799dba08dac1b52c7dfc6498317677024bb1e2939b2cb6069099",
+        "bytes": 1
+      }
+    ],
+    "reward_distributions_executed": 0,
+    "root_derived": false,
+    "trie_mutation_attempts": 0,
+    "warm_constructor_claim": false
+  },
+  "negative_controls": [
+    {
+      "control": "start",
+      "mutation_attempts": 1,
+      "reason": "empty-effects observer rejects TrieSink mutation attempt",
+      "rejected": true
+    },
+    {
+      "control": "delete",
+      "mutation_attempts": 1,
+      "reason": "empty-effects observer rejects TrieSink mutation attempt",
+      "rejected": true
+    }
+  ],
+  "scope": "actual cold immutable-Go Init/BeginBlock/EndBlock/Close with observer-only archive instrumentation; fixture bytes reuse earlier Rust authentication; no warm state, transactions, rewards execution, complete snapshot, PrepareCommit, root derivation, production or adoption claim"
+}
