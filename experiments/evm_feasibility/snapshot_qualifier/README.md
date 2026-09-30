@@ -86,6 +86,14 @@ State authentication/VRF evidence is historical reuse, with no fresh state reads
 producer-config authority, historical cache closure or reward transition claim.
 Historical reports remain unchanged; write a fresh planner output filename.
 
+The `empty_native_effects` diagnostic pins the historical transfer and independent
+reward-plan reports, then checks only the parent DPoS account and parent jailed
+list through three owner calls. It requires positive code size and exact physical
+plus authenticated Member `c0`, and uses the existing non-pillar system planner.
+Failure preserves a partial report and returns a failing exit status. Success is
+conditional source-derived evidence, not actual Rust EndBlock or root execution.
+It uses the same guarded COPY OUTPUT arguments and has no publication handle.
+
 The shared guard validates the exact copy and both DB children before any open, rejects
 symlink components and source/output overlap, and requires new report files. Opens are
 read-only and publication uses exclusive creation. Use fresh output filenames for reruns.

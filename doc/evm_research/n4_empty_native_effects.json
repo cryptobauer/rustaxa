@@ -1,0 +1,97 @@
+{
+  "conditional_source_argument": {
+    "begin_block": "positive parent DPoS code excludes Aspen install; H differs from exact Cornus and redelegation correction heights",
+    "contract": "doc/evm_research/n4_empty_native_effects_contract.md",
+    "empty_rewards": "independent planner distributions empty; EndBlock still required",
+    "end_block": "ordinary transfers and empty rewards leave deferred DPoS counters untouched; empty parent jail list yields no cleanup durable effects for cold or warm timer",
+    "immutable_go_revision": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "immutable_source_sha256": {
+      "taraxa/C/state.go": "b6effa29e1d465a0bcc1badcf398a57e982d16b0d6f4f9b14844632306f7e3ec",
+      "taraxa/state/contracts/dpos/precompiled/dpos_contract.go": "28bb58adb9d99d604fdacf0c284deea49c6887eee789381a5c5a231b5c89f565",
+      "taraxa/state/contracts/slashing/precompiled/slashing_contract.go": "2ac21dbe9ece16e11f1ab85d2670488d24a2a0e8940d2c181ced142511c6edfb",
+      "taraxa/state/state_transition/state_hardforks.go": "1432c0e39e7ecaee8683c3e9fd28571e97f816e906c3938b0f38fa886c246aae",
+      "taraxa/state/state_transition/state_transition.go": "d447ac4599f0107ccad4379f95a7269a6d5729283d8dcf00db850ea8fe119e90"
+    },
+    "slashing_initialization": "memory registration only; nonce/storage changes occur only on jail mutation"
+  },
+  "input_copy": "/workspaces/rustaxa-evm/local/evm-state-db/snapshot-litenode-copy",
+  "pair_qualification": {
+    "broad_inventory_performed": false,
+    "complete_state_or_adoption_authorized": false,
+    "current_and_prior_roots_authenticated": true,
+    "descriptor_matches_header": true,
+    "exact_checkpoint_timing_qualified": false,
+    "genesis_hash_hex": "8129076db1332837152b0212faad56ab882c1d511e0aac495f200f0a08cb6377",
+    "head": 25706949,
+    "header_sha256": "1bebb6391e97caa4e8d34db4336810ec71eae83ef975d48bfb05e0b56e81363f",
+    "network_identity_basis": "exact historical mainnet genesis hash; not producer/config certification",
+    "prior_period": 25706948,
+    "prior_state_root_hex": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
+    "producer_revision_qualified": false,
+    "state_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227"
+  },
+  "parent_dpos_account": {
+    "address_hex": "00000000000000000000000000000000000000fe",
+    "code_size": 3000,
+    "outcome": "Ok(Present(ConcreteAccountRecord { account: ConcreteAccount { nonce: FinalChainNonce(1), balance: ConcreteAccountBalance(2908932024748147765938131058), storage_root: Some([198, 39, 103, 251, 227, 91, 9, 228, 89, 117, 210, 81, 50, 151, 15, 139, 197, 230, 97, 75, 65, 227, 243, 234, 81, 225, 242, 91, 119, 220, 245, 4]), code_hash: Some([124, 23, 202, 95, 117, 251, 213, 38, 69, 81, 89, 92, 77, 140, 152, 173, 9, 70, 76, 233, 63, 199, 114, 203, 82, 27, 157, 187, 5, 227, 228, 71]), code_size: 3000 }, physical_rlp: [248, 83, 1, 140, 9, 102, 54, 81, 10, 207, 148, 244, 240, 30, 144, 114, 160, 198, 39, 103, 251, 227, 91, 9, 228, 89, 117, 210, 81, 50, 151, 15, 139, 197, 230, 97, 75, 65, 227, 243, 234, 81, 225, 242, 91, 119, 220, 245, 4, 160, 124, 23, 202, 95, 117, 251, 213, 38, 69, 81, 89, 92, 77, 140, 152, 173, 9, 70, 76, 233, 63, 199, 114, 203, 82, 27, 157, 187, 5, 227, 228, 71, 130, 11, 184] }))",
+    "physical_rlp_hex": "f853018c096636510acf94f4f01e9072a0c62767fbe35b09e45975d25132970f8bc5e6614b41e3f3ea51e1f25b77dcf504a07c17ca5f75fbd5264551595c4d8c98ad09464ce93fc772cb521b9dbb05e3e447820bb8",
+    "positive_code_size_required": true,
+    "qualified": true
+  },
+  "parent_jailed_list": {
+    "address_hex": "00000000000000000000000000000000000000ee",
+    "authenticated_outcome": "Ok(Member([192]))",
+    "key_hex": "0000000000000000000000000000000000000000000000000000000000000002",
+    "physical_outcome": "Ok(Present([192]))",
+    "qualified": true,
+    "required_value_hex": "c0"
+  },
+  "period": 25706949,
+  "pinned_evidence": {
+    "candidate_mainnet_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "historical_preflight_input_path": "/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy",
+    "historical_preflight_sha256": "d68ab554634e7907f2b43ab43f753d6b9351d1b760afc8b91eb3f77c523ae437",
+    "historical_preflight_source_sha256": "0cbcc3c97cea6eed0784be84fafbf401a43ceb6ae2e3bfc647ccde2c386ee66c",
+    "independent_reward_planner_sha256": "f88d67ecbd06d6c483466290262fabe8fb03e4532164cf0311fdd63232bcb0e9",
+    "retained_dpos_config_sha256": "3c817ff7974da68e0d5865b34e92765c7e50c71a6892c81d299f28c579e38634",
+    "reuse_scope": "historical transfer evidence and independently observed config/planner reports reused; this command freshly reads only the paired qualification and three native-owner targets",
+    "transaction_replay_performed": false
+  },
+  "prior_identity": {
+    "period": 25706948,
+    "state_root_hex": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2"
+  },
+  "qualification": {
+    "actual_rust_end_block_executed": false,
+    "adoption_authorized": false,
+    "complete_dpos_snapshot_reconstructed": false,
+    "conditional_legacy_no_additional_durable_effects_witness": true,
+    "final_state_root_qualified": false,
+    "full_snapshot_qualified": false,
+    "partial_required_native_probes": false,
+    "producer_binary_qualified": false,
+    "producer_configuration_qualified": false,
+    "production_routing_qualified": false,
+    "reward_transition_or_root_qualified": false
+  },
+  "read_bound": {
+    "account_at_calls": 1,
+    "additional_reads": "fixed pair qualification plus existing owner-internal root/path authentication",
+    "broad_scan_performed": false,
+    "logical_targets": 2,
+    "owner_top_level_calls": 3,
+    "separate_code_nonce_supply_counter_other_jail_inventory_calls": false,
+    "storage_at_calls": 1,
+    "verify_storage_path_at_calls": 1
+  },
+  "system_planning": {
+    "bridge_address_presence_code_epoch_nonce_and_gas": "UNOBSERVED dead-branch placeholders; no account absence claim",
+    "candidate_schedule_period": 25706954,
+    "pillar_interval": 4000,
+    "planner_called": true,
+    "remainder": 2954,
+    "system_transaction_count": 0,
+    "system_transactions_executed": false
+  },
+  "tool_source_sha256": "43e852fa5162d72e69caa0ed45a3a866aece2951a18958094ea45be967fea0a2"
+}

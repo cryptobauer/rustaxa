@@ -474,3 +474,27 @@ needed: root completed execution/validation and Astra approved the result.
 Latest sampled weekly usage during this closeout was57% used. The conditional
 native-effects diagnostic is separately scoped; it does not extend planner
 acceptance to actual EndBlock or publication.
+
+
+## Conditional parent native-effects witness
+
+From `36d2efa9f`, reused Sol6.1 medium implemented a separate experimental
+three-call witness. Reused Astra6 high specified BeginBlock/EndBlock gates;
+Astra6 medium independently reviewed final source and exact execution evidence.
+All ran without a routing failure in this slice. Root alone read the copied DB:
+parent DPoS code_size3,000 and exact authenticated jailed-list `c0`; the existing
+Rust non-pillar system planner emits no transactions. This remains conditional
+source evidence, with actual Rust EndBlock/root/publication flags false.
+
+Root passed all51 qualifier tests, strict clippy/fmt and explicit pre-commit.
+Full source/copy manifests still match the original content digest. A subsequent
+structured-report change exposed the already-read physical account RLP without
+extra logical reads; root reran the3calls, five focused tests and targeted clippy,
+and Astra verified the new source/report hashes. Historical local outputs remain
+unchanged. See [witness evidence](n4_empty_native_effects.md).
+
+A separately bounded executable Go cold-constructor witness is next: immutable
+source archive, observer-only mutation hooks, deny-by-default two-record test
+port, and Init/BeginBlock/EndBlock/Close without replay, PrepareCommit, commit or
+root calculation. It is not yet accepted by this handoff. Latest sampled weekly
+usage was59% used; the70% new-slice cutoff and25% reserve remain in force.
