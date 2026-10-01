@@ -3,8 +3,8 @@
 //! This module exposes consensus-owned staged sessions for DPoS reads and the
 //! selected `setCommission`, `delegate`, V1/V2 `undelegate`, and V1/V2
 //! confirmation, cancellation, reward claims and validator metadata mutations.
-//! Metadata updates require decoded ABI and consistent owner/info/membership
-//! rows; malformed ABI and sparse/orphan metadata are explicit remaining gaps.
+//! Metadata updates use selector-first admission, a pinned Go ABI codec and
+//! consistent owner/info/membership rows; sparse/orphan metadata remains a gap.
 //! Sessions reuse existing decoders,
 //! gas policy and business kernels. Pending execution advances from the
 //! finalized parent; historical simulation starts from an exact finalized
@@ -322,6 +322,7 @@ enum PreparedKind {
     NestedCallRejected,
     NonPayable,
     InsufficientGas,
+    AbiFailure(String),
     SetCommission(Box<PreparedSetCommission>),
     SelectedCustody(DposTransaction),
     Query {
@@ -606,6 +607,10 @@ impl FinalChainNativeSession<'_> {
         }
         self.validate_request(request)?;
 
+        if request.input.starts_with(&DPOS_SET_VALIDATOR_INFO_SELECTOR) {
+            return self.prepare_validator_info(request);
+        }
+
         let mut transaction = decode_dpos_transaction_for_execution(
             &request.input,
             request.caller,
@@ -789,6 +794,16 @@ impl FinalChainNativeSession<'_> {
         let prepared = prepared.clone();
 
         let result = match prepared.kind {
+            PreparedKind::AbiFailure(error) => Ok(FinalChainNativeInvocationResult::Completed(
+                FinalChainNativeOutcome {
+                    status: FinalChainNativeStatus::ContractFailure { error },
+                    gas_used: quote.required_gas,
+                    output: Vec::new(),
+                    account_mutations: Vec::new(),
+                    raw_mutations: Vec::new(),
+                    logs: Vec::new(),
+                },
+            )),
             PreparedKind::NestedCallRejected => Ok(FinalChainNativeInvocationResult::Completed(
                 FinalChainNativeOutcome {
                     status: FinalChainNativeStatus::ContractFailure {

@@ -4,6 +4,10 @@ Base: `4148a1a`, following the approved preparation commit on
 `feat/rust/evm-state-db`. This is an N1 contract and N2/N3 session slice.
 Milestone 10 and the complete execution/API matrices remain open.
 
+The subsequent [ABI/admission slice](n2_validator_info_abi.md) supersedes this
+report's malformed/noncanonical ABI dependency. The results and limits below
+record the decoded-only slice as executed.
+
 ## Contract and ownership
 
 The selected method is `setValidatorInfo(address,string,string)`, selector

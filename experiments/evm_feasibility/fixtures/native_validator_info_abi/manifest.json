@@ -1,0 +1,22 @@
+{
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "local": [
+      "ded961f4b2a953f9c39110c44641b3d63d14946abdf4ac3fae79f086cee31449",
+      "ef1e9e221c1478a4e9cde8de7e87fb341214b8334923503f4064e1316213b7a2"
+    ],
+    "public": [
+      "ded961f4b2a953f9c39110c44641b3d63d14946abdf4ac3fae79f086cee31449",
+      "ef1e9e221c1478a4e9cde8de7e87fb341214b8334923503f4064e1316213b7a2"
+    ]
+  },
+  "source_sha256": {
+    "native_validator_info_abi_reference.go": "0d0e7933db278ca0f19e8b0aa9840844e3d618a51e70ee62696c3b6d929adcaa",
+    "native_validator_info_abi_reference.py": "633840d83d50681f8cfaeb73962754d37a1252971fa923a6937ff8fbdc4a1951",
+    "native_validator_info_reference.go": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5"
+  }
+}

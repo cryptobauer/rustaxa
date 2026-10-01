@@ -1,0 +1,13 @@
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go type: length insufficient 0 require 32
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go type: length insufficient 1 require 32
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go type: length insufficient 31 require 32
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go type: length insufficient 32 require 64
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go type: length insufficient 63 require 64
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go slice: offset 128 would go over slice boundary (len=64)
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go slice: offset 128 would go over slice boundary (len=95)
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go slice: offset 57896044618658097711785492504343953926634992332820282019728792003956564820000 would go over slice boundary (len=224)
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go slice: offset 57896044618658097711785492504343953926634992332820282019728792003956564820000 would go over slice boundary (len=224)
+Unable to parse setValidatorInfo input args:  abi length larger than int64: 57896044618658097711785492504343953926634992332820282019728792003956564820096
+Unable to parse setValidatorInfo input args:  abi length larger than int64: 57896044618658097711785492504343953926634992332820282019728792003956564820160
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go type: length insufficient 224 require 10128
+Unable to parse setValidatorInfo input args:  abi: cannot marshal in to go slice: offset 10032 would go over slice boundary (len=64)

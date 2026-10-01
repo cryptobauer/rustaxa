@@ -6,6 +6,10 @@ const INFO_OWNER: [u8; 20] = [
 ];
 
 fn with_info_chain(name: &str, test: impl FnOnce(&FinalChain)) {
+    with_info_chain_profile(name, false, test);
+}
+
+fn with_info_chain_profile(name: &str, cacti: bool, test: impl FnOnce(&FinalChain)) {
     let path = temp_db_path(name);
     let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
     let chain = FinalChain::new_with_rewards_config_and_ficus_activation(
@@ -35,10 +39,18 @@ fn with_info_chain(name: &str, test: impl FnOnce(&FinalChain)) {
             cornus_period: FinalChainBlockNumber::GENESIS,
             fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
             aspen_part_two_period: FinalChainBlockNumber::MAX,
-            cacti_period: FinalChainBlockNumber::MAX,
+            cacti_period: if cacti {
+                FinalChainBlockNumber::GENESIS
+            } else {
+                FinalChainBlockNumber::MAX
+            },
             ..Default::default()
         },
-        FinalChainBlockNumber::MAX,
+        if cacti {
+            FinalChainBlockNumber::GENESIS
+        } else {
+            FinalChainBlockNumber::MAX
+        },
     )
     .unwrap();
     test(&chain);
@@ -51,6 +63,189 @@ const INFO_ORACLE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../experiments/evm_feasibility/fixtures/native_validator_info/public.json"
 ));
+
+const ABI_ORACLE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../experiments/evm_feasibility/fixtures/native_validator_info_abi/public.json"
+));
+
+#[test]
+fn validator_info_abi_and_cacti_sessions_match_actual_go_admission_and_effects() {
+    let oracle: Value = serde_json::from_str(ABI_ORACLE).unwrap();
+    assert_eq!(oracle["chain_id"], 841);
+    assert_eq!(oracle["cacti"], 24_350_801);
+    assert_eq!(oracle["period"], 25_706_949);
+    let cases = oracle["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 21);
+    with_info_chain_profile("validator-info-abi-cacti", true, |chain| {
+        let finalized = chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        for case in cases {
+            for historical in [false, true] {
+                let mut state = RawState::from_snapshot(&finalized, BTreeMap::new());
+                state.fail_reads = case["native_error"].as_str().unwrap().starts_with("abi");
+                let period = if historical {
+                    FinalChainBlockNumber::GENESIS
+                } else {
+                    1.into()
+                };
+                let mut pending;
+                let mut simulation;
+                let session: &mut dyn InfoSession = if historical {
+                    simulation = chain.begin_native_simulation(period).unwrap();
+                    &mut simulation
+                } else {
+                    pending = chain
+                        .begin_native_session(period, FinalChainBlockNumber::GENESIS)
+                        .unwrap();
+                    &mut pending
+                };
+                let mut request = simulation_request(
+                    period,
+                    0,
+                    unhex(&case["input"]),
+                    case["supplied_native_gas"].as_u64().unwrap(),
+                );
+                request.caller = unhex(&case["caller"]).try_into().unwrap();
+                request.depth = case["depth"].as_u64().unwrap() as u16;
+                request.value = FinalChainNativeValue::new(case["value"].as_u64().unwrap().into());
+                let quote = session.prepare_info(&request, &state).unwrap();
+                assert_eq!(
+                    quote.required_gas.as_u64(),
+                    case["required_gas"].as_u64().unwrap(),
+                    "{}",
+                    case["name"]
+                );
+                let result = session.invoke_info(&request, quote, &state).unwrap();
+                if !case["native_called"].as_bool().unwrap() {
+                    assert_eq!(
+                        result,
+                        FinalChainNativeInvocationResult::InsufficientGas {
+                            required_gas: quote.required_gas
+                        }
+                    );
+                    assert_eq!(state.reads.get(), 0);
+                    continue;
+                }
+                let outcome = completed(result);
+                let error = case["native_error"].as_str().unwrap();
+                assert_eq!(
+                    outcome.status,
+                    if error.is_empty() {
+                        FinalChainNativeStatus::Success
+                    } else {
+                        FinalChainNativeStatus::ContractFailure {
+                            error: error.to_owned(),
+                        }
+                    },
+                    "{}",
+                    case["name"]
+                );
+                assert_eq!(outcome.gas_used, quote.required_gas);
+                assert_eq!(outcome.output, unhex(&case["native_output"]));
+                assert!(outcome.account_mutations.is_empty());
+                assert_eq!(state.account_reads.get(), 0);
+                let reads = case["ordered_reads"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|key| ConcreteStorageKey(unhex(key).try_into().unwrap()))
+                    .collect::<Vec<_>>();
+                assert_eq!(*state.read_keys.borrow(), reads, "{}", case["name"]);
+                let writes = case["ordered_raw_writes"].as_array().unwrap();
+                assert_eq!(outcome.raw_mutations.len(), writes.len());
+                for (actual, expected) in outcome.raw_mutations.iter().zip(writes) {
+                    assert_eq!(actual.address.as_slice(), unhex(&expected["address"]));
+                    assert_eq!(actual.key.0.as_slice(), unhex(&expected["key"]));
+                    assert_eq!(
+                        actual.expected,
+                        ConcreteRead::Present(vec![0xc2, 0x80, 0x80])
+                    );
+                    assert_eq!(
+                        actual.operation,
+                        FinalChainNativeRawOperation::Put(
+                            FinalChainNativeRawValue::new(unhex(&expected["value"])).unwrap()
+                        )
+                    );
+                    state.apply(actual);
+                }
+                let logs = case["logs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|log| FinalChainCallLog {
+                        address: unhex(&log["address"]).try_into().unwrap(),
+                        topics: log["topics"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|topic| unhex(topic).try_into().unwrap())
+                            .collect(),
+                        data: unhex(&log["data"]),
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(outcome.logs, logs);
+                let key = concrete_storage_key(&[&[0, 1], &VALIDATOR]);
+                assert_eq!(
+                    state.rows.borrow().get(&(DPOS_CONTRACT_ADDRESS, key)),
+                    Some(&ConcreteRead::Present(unhex(&case["after_info"])))
+                );
+            }
+        }
+        assert_eq!(
+            chain
+                .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                .unwrap(),
+            finalized
+        );
+    });
+}
+
+#[test]
+fn validator_info_abi_failure_binds_exact_quote_and_leaves_next_invocation_available() {
+    with_info_chain("validator-info-abi-binding", |chain| {
+        let mut session = chain
+            .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let state = RawState::from_snapshot(&session.session.dpos_state, BTreeMap::new());
+        let request = simulation_request(
+            FinalChainBlockNumber::GENESIS,
+            0,
+            DPOS_SET_VALIDATOR_INFO_SELECTOR.to_vec(),
+            20_000,
+        );
+        let quote = session.prepare(&request, &state).unwrap();
+        let mut mismatch = request.clone();
+        mismatch.input.push(0);
+        assert_eq!(
+            session.invoke(&mismatch, quote, &state),
+            Err(FinalChainNativeSessionError::QuoteMismatch)
+        );
+        assert_eq!(state.reads.get(), 0);
+        let failure = completed(session.invoke(&request, quote, &state).unwrap());
+        assert_eq!(
+            failure.status,
+            FinalChainNativeStatus::ContractFailure {
+                error: "abi: cannot marshal in to go type: length insufficient 0 require 32"
+                    .to_owned()
+            }
+        );
+        assert!(failure.raw_mutations.is_empty());
+        let oracle: Value = serde_json::from_str(ABI_ORACLE).unwrap();
+        let mut valid = simulation_request(
+            FinalChainBlockNumber::GENESIS,
+            1,
+            unhex(&oracle["cases"][0]["input"]),
+            20_000,
+        );
+        valid.caller = INFO_OWNER;
+        let quote = session.prepare(&valid, &state).unwrap();
+        let success = completed(session.invoke(&valid, quote, &state).unwrap());
+        assert_eq!(success.status, FinalChainNativeStatus::Success);
+        assert_eq!(success.raw_mutations.len(), 1);
+    });
+}
 
 fn unhex(value: &Value) -> Vec<u8> {
     let text = value.as_str().unwrap();

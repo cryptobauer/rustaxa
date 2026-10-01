@@ -4,14 +4,67 @@
 //! adapter authenticates the owner, metadata and iterable position in Go read
 //! order, then emits one irreversible metadata put. Failed reads or mismatched
 //! raw/domain state poison the session without advancing semantic state.
-//! Malformed ABI and inconsistent owner/info snapshots remain outside this
-//! bounded adapter; ordinary frames, fees and publication remain caller-owned.
+//! Selector admission precedes the operation-specific Go ABI codec. Inconsistent
+//! owner/info snapshots remain outside this bounded adapter; ordinary frames,
+//! fees and publication remain caller-owned.
 
 use super::custody::{encode_validator_info, validator_info_key, validator_owner_key};
 use super::raw::FinalChainNativeRawTrace;
 use super::*;
 
+mod codec;
+
 impl FinalChainNativeSession<'_> {
+    /// Quotes a recognized metadata selector before decoding its arguments.
+    ///
+    /// Funding, historical depth and nonpayability terminate before ABI unpack.
+    /// A normal ABI error retains an exact quote and returns no state effects.
+    pub(super) fn prepare_validator_info(
+        &mut self,
+        request: &FinalChainNativeRequest,
+    ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        let selector = DposTransaction::MalformedMutation {
+            selector: DPOS_SET_VALIDATOR_INFO_SELECTOR,
+        };
+        let admission = match self.final_chain.native_invocation_admission(
+            &selector,
+            request.period,
+            request.depth,
+            request.value.value(),
+            request.supplied_gas,
+            None,
+        ) {
+            Ok(admission) => admission,
+            Err(error) => {
+                self.aborted = true;
+                return Err(FinalChainNativeSessionError::Domain(error.to_string()));
+            }
+        };
+        let quote = FinalChainNativeGasQuote {
+            invocation: request.id,
+            required_gas: admission.required_gas,
+        };
+        let kind = if let Some(failure) = admission.failure {
+            use super::super::native_admission::NativeAdmissionFailure as Failure;
+            match failure {
+                Failure::InsufficientGas => PreparedKind::InsufficientGas,
+                Failure::NestedBeforeFix => PreparedKind::NestedCallRejected,
+                Failure::NonPayable => PreparedKind::NonPayable,
+            }
+        } else {
+            match codec::decode(&request.input, request.caller) {
+                Ok(transaction) => PreparedKind::SelectedCustody(transaction),
+                Err(error) => PreparedKind::AbiFailure(error),
+            }
+        };
+        self.prepared = Some(PreparedCall {
+            request: request.clone(),
+            quote,
+            kind,
+        });
+        Ok(quote)
+    }
+
     /// Executes a decoded metadata update using the existing business kernel.
     pub(super) fn invoke_validator_info(
         &mut self,

@@ -81,8 +81,10 @@ undelegateV2 and confirmUndelegateV2. Later slices added V1 custody, cancellatio
 reward claims and selected queries. The current bounded
 [validator metadata slice](n2_staged_validator_info.md) adds decoded
 setValidatorInfo over consistent snapshots to pending and historical sessions.
-Its malformed ABI, sparse-state and full frame/API composition limits remain
-open. Existing adapters retain their recorded historical limitations; this is
+The subsequent [metadata ABI/admission slice](n2_validator_info_abi.md) adds
+selector-first admission and pinned dynamic-ABI errors, including a synthetic
+Cacti corpus. Sparse-state and full frame/API composition limits remain open.
+Existing adapters retain their recorded historical limitations; this is
 not complete N2 acceptance.
 
 Slashing address `0xee` includes commitDoubleVotingProof, getJailBlock and
