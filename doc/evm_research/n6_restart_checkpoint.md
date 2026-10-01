@@ -1,216 +1,87 @@
 # Restart checkpoint: existing-network milestone
 
-Milestone 10 remains in progress; 08 remains open and 09 remains complete only
-within its declared synthetic scope. The Luna-first continuation integrated and
-pushed the reviewed epoch, default TraceRunner, staged claims and shared
-setCommission slices. The reviewed scheduler is now integrated through
-`51c408c20`, with reviewed integration corrections in `cb1e133f4`. Combined
-validation passed; the latest handoff follows below. No
-production backend switch or milestone acceptance is implied.
+Milestone 10 remains in progress and is not accepted. Milestone 09 is complete
+only for its synthetic four-period scope; implementation plan 08 also remains
+open. The latest N4 continuation is recorded at `a028b7a2a`. These recorded
+results do not establish the current checkout's acceptance, a production backend
+switch, existing-head adoption or full replay.
 
-## Start the next session
+## Start here
 
-Read `AGENTS.md`, `PLAN.md`, `doc/evm_research/README.md`, milestone 10 and this
-file. Inspect repository/worktree state before edits. Continue on
-`feat/rust/evm-state-db`.
+Inspect branch, commit, worktree, ignored database paths and current artifacts
+before edits. The expected work branch is `feat/rust/evm-state-db`; do not assume
+the workspace is at the recorded N4 commit. Read `AGENTS.md` and this checkpoint,
+then read only the relevant `PLAN.md`, [milestone 10](10_existing_network_milestone.md) and
+[implementation plan 08 sections](08_implementation_plan.md#agent-and-model-assignments)
+for the chosen slice. Use that linked section as the current model table; read
+the [model/environment record](n6_model_setup_validation.md) only when routing
+agents or recovering a previous session. Follow the Luna-first capacity policy.
+Do not rewrite old model assignments as current routing evidence.
 
-Use the [September 30 model/environment validation](n6_model_setup_validation.md)
-and the current assignment table in 08. Launch `gpt-6-luna` medium first and
-confirm actual startup before other workers. Use `gpt-6.1-sol` for
-implementation and `gpt-6-astra` for contract decisions and independent
-review, both at medium by default. Escalate to high for ambiguous or high-risk
-work under the 08 criteria; record why in the handoff. Use configurable roles with explicit IDs; fixed specialist roles still
-route older models. Historical assignments below remain historical.
+The restored N4 qualification and bounded probes are complete. Their detailed
+evidence is in the [N4 report](n4_restored_snapshot_evidence.md), the
+[four-key proof report](n4_head_sender_proofs.md), the
+[independent reward inputs](n4_independent_reward_inputs.md), the
+[reward planner comparison](n4_independent_reward_plan.md), the
+[native-effects witness](n4_empty_native_effects.md), and the
+[cold Go witness](n4_empty_native_go_cold.md). The corresponding task definition
+is closed and preserved in [the N4 intake](n4_restored_snapshot_next_slice.md).
+The original checkpoint is archived byte-for-byte in
+[the October 1 history](n6_restart_checkpoint_history_2026_10_01.md); the dated
+agent ledger retains assignment and runtime outcomes. Earlier slice details remain
+in the [progress checkpoint](n6_progress_checkpoint.md) and dated
+[handoff ledger](n6_agent_handoffs.md); these are historical sources, not new work
+instructions.
 
-Latest N4 continuation is recorded in the
-[restored-pair evidence](n4_restored_snapshot_evidence.md), from base
-`5aa3febfee14a3ad59c2b24c15d94a49013fd170`. The supplied `data/` tree is
-preserved. Its independent `local/evm-state-db/snapshot-litenode-copy/` pair is
-now freshly qualified at mainnet H=25,706,949 and the recorded prior root.
-The seven-read reward diagnostic reproduces the recovered observations exactly
-apart from path/source metadata: typed equality remains true and raw-byte equality
-false. The four-key sender scout is complete: all four physical reads returned
-`history_unavailable`, with no zero/absence/pruning inference or child enumeration.
-See the [scout report](n4_head_sender_scout.json). Milestone 10 remains open.
+## Current limits and authority
 
-The [authenticated four-key follow-up](n4_head_sender_proofs.md) now proves
-NonMember for all four keys at H. The earlier physical `history_unavailable`
-results remain unchanged; logical absence follows from these separate proofs,
-not missing physical history. Global native reconstruction remains incomplete.
+The supplied `data/` tree is evidence and must remain unchanged. Use only the
+independent, requalified copy at `local/evm-state-db/snapshot-litenode-copy/` for
+bounded read checks, after verifying its recorded identity and contents. The
+recorded paired mainnet head is 25,706,949. Copy and qualification evidence does
+not prove producer binary or capture provenance, full trie closure, or complete
+native state.
 
-The [independent reward-input continuation](n4_independent_reward_inputs.md)
-now authenticates D=H−7 under retained/candidate delay five and derives all
-19 certificate weights independently: all signatures/strict VRF checks pass,
-all retained weights match and the sum is 714. Exactly 59 logical keys were
-read/proved, with authenticated empty jailed list and total 534,879. Existing
-Rust persisted-lambda lookup independently yields 1,500 ms and candidate-delay
-annualization 9,275,294. A separate capped CF8 metadata check exhausts one
-2,904-byte baseline configuration row; threshold, vote step, maximum stake and
-delay match the candidate. Metadata is not state-root authenticated; producer
-identity, hardfork/PBFT settings and reward transition remain unqualified.
+Reward inputs and planner comparisons are bounded. Typed reward fields match in
+the candidate comparison, while serialized RLP still differs in validator
+ordering. Producer identity, hardfork/PBFT settings, reward transition, actual
+Rust EndBlock, cache closure and reward-root execution remain open. The four
+sender physical reads returned `history_unavailable`; separate authenticated
+proofs establish NonMember for those four keys only. Neither result proves global
+native completeness. The cold Go witness observes no backend writes in its narrow
+fixture and does not execute warm state, transactions, reward distribution,
+PrepareCommit or root calculation. Consult the linked reports for exact scopes.
 
-The [independent planner comparison](n4_independent_reward_plan.md) now
-consumes those SHA-bound facts: all typed reward fields match, while the raw
-legacy validator-order mismatch remains. It uses seven application point reads,
-actual total 534,879 (committee cap 1,000), independently derived rate and signed
-PBFT author. Expected BlockStats enters only after planning. Zero distributions
-and current-period caching are proved within this candidate planner scope;
-actual EndBlock, cache closure and reward-root qualification remain open.
-Legacy-mode observations also match exactly apart from source fingerprint.
+Never give sparse reads or caches complete-snapshot, adoption or publication
+authority. Adoption/recovery still requires complete DposSnapshot maps, global
+principal/reward-graph invariants, snapshot/projection hashes, paired database
+ownership, durable ordering and idempotent recovery. Full native/catalog
+qualification, slashing reconstruction, producer policy, reward-inclusive real
+replay and non-genesis adoption remain separate gates.
 
-The [conditional native-effects witness](n4_empty_native_effects.md) also
-passed: parent DPoS code_size=3,000, exact physical/authenticated empty jailed
-list, and candidate non-pillar system plan with zero transactions. It makes only
-three parent owner calls. This supports the pinned source no-effect argument;
-actual Rust EndBlock, complete native state, producer policy and reward-root
-execution are still unqualified. All 51 qualifier tests, strict clippy/fmt and
-explicit fast pre-commit passed; Astra independently approved exact evidence.
-Further work must preserve this distinction and avoid sparse-snapshot adoption.
+## Next action and validation
 
-The [executable cold Go witness](n4_empty_native_go_cold.md) now runs actual
-Init/BeginBlock/EndBlock/Close in a pinned disposable archive with observer-only
-mutation hooks. It performs exactly two fixture reads and zero backend writes,
-commits or observed trie mutations; separate mutation controls pass. Root
-reproduced it, and independent Astra review verified all source/report/fixture
-hashes. The test port is not authenticated or complete, delayed reader labels
-cannot read parent fixtures, and no warm state, transactions, reward distribution,
-PrepareCommit or root calculation runs. This does not close Rust EndBlock or
-reward-inclusive real replay. Source/copy full content hashes remain unchanged.
+Continue with a bounded Rust-native EndBlock/transition contract through existing
+Rust kernels. First define its authority boundary, exact inputs/outputs, reference
+oracle, tests and non-goals; then implement only the reviewed slice. Keep producer
+policy and reward-inclusive replay inputs distinct follow-up gates. Do not start
+broad replay, expensive differential/fault campaigns, sparse publication, protocol
+changes, original upstream C++ changes or production routing without the required
+task-owner authorization.
 
-The authorized restored N4 slice and these bounded follow-ups are complete.
-Milestone10 remains open. Next work should settle the bounded Rust-native
-EndBlock/transition port and its authority contract, then independent producer
-policy and reward-inclusive replay inputs. Complete native reconstruction,
-non-genesis paired adoption and publication/reopen/recovery remain separate gates;
-none may be bypassed by publishing these sparse diagnostic fixtures.
-The user authorized bounded progress while preserving at least 25% remaining
-weekly usage: monitor telemetry, stop new slices at 30% remaining, and reserve
-closeout capacity. Broad replay, production routing and sparse publication remain
-outside scope; full native/reward inputs, adoption and replay/recovery stay open.
-Closeout telemetry sampled at 2026-09-30 14:23 UTC reported **65% used / 35%
-remaining** in the weekly window, above the requested 25% reserve. The bounded
-batch is complete; this is a sampled allowance observation, not a billing claim
-or hard account cutoff. No additional slice was started to consume the reserve.
+For a slice, use the narrowest tier in
+[`rewrite_validation_strategy.md`](../rewrite_validation_strategy.md). Require
+the focused Rust package tests and reference parity; add the applicable Rust
+smoke/subsystem checks for startup, sync, consensus, finalization or RPC paths.
+For storage changes, build and run `rust_storage_tests` and affected C++ tests.
+Ask first before expensive repository-wide or differential gates. Keep replay,
+fault campaigns and sustained workloads within the authorized slice. Record
+exact commands, data identity, results, failures and skipped required checks. An
+aggregate pass does not cover skipped requirements.
 
-Historical `/tmp` worktrees are absent and marked prunable; do not treat their
-paths below as live. The [September 30 recovery](n6_recovery_checkpoint.md)
-restored reward source, dependencies and historical report exactly, and preserved
-the unfinished scout helper as an inert patch. The recovered scout CLI/tests were incomplete at recovery; this continuation
-completed them with historical-provenance checks and focused rejection tests. The build cache exists; its presence does not establish fresh CMake
-validation. The owner's `data/` ignore addition is preserved unchanged; never stage DBs.
-
-The September 13–14 continuation successfully ran Luna first. Its recorded runtime
-`turn_context` confirms `gpt-5.6-luna`, medium reasoning. Reused helper tasks mapped
-epoch fixtures, C++ checks, semantic-port registration, bridge checks and remaining
-N4 qualification. Independent reviews corrected overbroad helper suggestions;
-helper maps never approved their own semantics. All six workers/reviewers started
-successfully; no routing or capacity failure occurred. The previous session's
-`agent thread limit reached` failure remains historical, not a current quota or
-billing conclusion. Exact assignments are in [the ledger](n6_agent_handoffs.md).
-
-## Integrated continuation
-
-| Slice | Accepted feature commits | Evidence and limits |
-| --- | --- | --- |
-| StateAPI epochs | `6b73513d6`, `7e317fb7a`, `da32ce9fc`, `89a361075`, `1d151e699`, `7b2c29ac3` | Nonwrapping owner epochs, poison checks, truthful fixture discard/reopen identities, durable-intent comparison independent of unpersisted epochs; actual post-reconstruction Go fault injection remains unproved |
-| Default structured TraceRunner | `b936558ab` | Independent dual-pin trace/refund reproduction; one disposable journal, supplied nonces, fresh target collectors; native/nested/OpenEthereum/RPC scope remains open |
-| Staged claims | `d620a5711`, `12fa2f48f` | Actual-Go corpus assertions, full-width and typed account errors, exact zero effects; unpublished semantic sessions only, zero-stake commission unsupported |
-| Shared setCommission kernel | `c3f53a0e2`, `02281c89d` | One kernel via complete-snapshot and authenticated checkpoint-row adapters; no sparse-snapshot or publication authority |
-| Reward scheduler lifecycle | `f3f6bb7a8`, `51c408c20` | Joint-startup authority, epoch-bound native sessions, retained marker ordering, verified discard retry and stale duplicate protection; actual-Go constructor witnesses, not durable StateAPI fault acceptance |
-
-The epoch fast gate exposed two additional issues beyond the original three
-fixture files: rejected descriptor-only preflight in `tests/contracts.rs` needed
-an explicit zero epoch, and durable pending-intent comparison incorrectly compared
-a decoded zero sentinel to a live epoch. Both are corrected and independently
-reviewed. Epoch identity is never serialized as durable authority.
-
-The bridge ratchet also exposed added surface. Reviewed contraction now borrows
-discard marker bytes plus an epoch scalar, centralizes epoch/descriptor checks in
-the native owner, preserves the essential pre-zip result-count check, and moves
-raw period-envelope assembly into the existing Rust types codec. Certificate
-bytes and weights move together without cloning. The bridge has 4,618 lines,
-below the prior 4,619, with unchanged carrier/function/handle counts. No
-inventory guard or test expectation was weakened to make the integration pass.
-
-The full FinalChain Tier 2 gate passes on the integrated feature branch, including
-the exact fast command used by the checked-in pre-commit hook: 1,441 consensus
-unit tests, all workspace tests and structural guards, C++ consensus 15/15,
-StateAPI 3/3, RPC 50/50, and binary CLI smoke. No required target was skipped.
-The storage bridge also passed 4/4; targeted C++ formatting passed. Focused
-lead evidence includes 38 execution-domain tests, two codec byte tests, persisted
-and mixed fixtures (3/5), 64 native-session tests, three commission rule-order
-tests and the six-case dual-pin driver/journal corpus. The epoch boundary rebuilt
-and passed eight C++ leaf/FinalChain tests with `RUSTAXA_ENABLE:BOOL=ON` and CMake
-`--parallel 12`; targeted C++ formatting passed. All touched C++ paths are
-main-only, with no original upstream C++ modification.
-
-See [trace evidence](n3_api_parity.md), [claims evidence](n2_claims_evidence.md),
-and [commission evidence](n2_commission_semantic_port.md) for exact scope.
-
-## Integrated scheduler
-
-Saved scheduler `621241a863e` and completion `e393f542b` are integrated.
-Independent Astra review approved both the completed source and the integrated
-pending-intent, marker and committed-descriptor boundaries. Sol's joined tests
-compare actual Rust native serialization and scheduler transitions with both
-Go constructor/reopen witnesses. See [scheduler evidence](n5_reward_scheduler_evidence.md).
-
-The first combined gate caught duplicate epoch declarations/initializers from
-automatic fixture merging. Removing only those duplicates restored the focused
-mixed/persisted suites (5/3). A separate reviewed contraction validates system-fact
-request identity in the native owner before planning, preserves transport errors
-and binds owner policy; both focused regressions passed.
-
-The historical scheduler worktree was `/tmp/rustaxa-evm-current-rewards`, clean at
-`e393f542b`; its directory is no longer present. Do not cherry-pick overlapping older integration history. Lead alone
-owns shared `/build`. Constructor witnesses do not establish actual Go StateAPI
-discard durability, a full fault campaign or complete existing-state publication.
-
-## Historical saved worktrees (directories no longer present)
-
-- Trace: `/tmp/rustaxa-evm-trace`, saved `b844c1896`, integrated.
-- Claims: `/tmp/rustaxa-evm-native-simulation`, completion `03f3598d3`, integrated.
-- Semantic port: `/tmp/rustaxa-evm-bootstrap-recovery`, completion `dd64b1125`, integrated.
-- Epoch checkpoint: `checkpoint/evm-epoch-integration`, saved `db8ec5e4d`, integrated
-  with the reviewed fixture/runtime and bridge-contraction corrections above.
-
-Normal commits do not establish that `.githooks/pre-commit` ran when
-`core.hooksPath` is unset. The lead explicitly invoked the checked-in hook for
-integrated validation. Saved WIP and a clean worktree never imply acceptance.
-
-## Existing-network and authority constraints
-
-Historical runs preserved original `/tmp/snapshot-litenode` and used only the
-independent qualified copy
-`/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy` for bounded read
-validation. Those paths are obsolete. The supplied source is now `data/`;
-follow the [current path and qualification contract](n4_restored_snapshot_next_slice.md).
-The independent persistent copy has now passed bounded requalification; verify
-its recorded content/identity before future continuation and preserve the source
-unmodified. The recorded mainnet H is 25,706,949. Owner-reported likely build, suspected
-validator identity and insufficient stake remain provenance, not verified
-production facts. No private keys are required for semantic reconstruction.
-
-Current authenticated DPoS inventory has 23,278 live rows. Strict inverse decoding
-and delegation probes over 290 known validator/owner candidates explained 2,065.
-The reviewed [seeded undelegation extension](n4_native_seeded_undelegations.md)
-adds 217 exact rows, raising coverage to 2,282; 20,996 remain unexplained.
-These are unresolved reconstruction/qualification inputs, not proof that data is
-unavailable externally. Missing physical rows are never silently promoted to
-absence. Global delegator completeness, historical/deleted-key coverage and
-slashing reconstruction remain unqualified.
-
-Lazy point reads and localized semantic kernels do not authorize complete state
-publication. Current publication/recovery still requires complete DposSnapshot
-maps, global principal/reward-graph invariants and snapshot/projection hashes.
-Do not serialize a sparse cache as a complete snapshot. Any future checkpoint
-delta-lineage contract needs review before changing that authority boundary.
-Existing Rust owners, separate databases and general layout remain fixed.
-
-The 19 copied-head transactions have bounded receipt/gas/root preflight evidence.
-Full reward/system-input closure, complete native/catalog qualification,
-non-genesis paired adoption and real full-period replay/recovery remain open.
-Continue bounded local reconstruction before declaring an external data blocker.
-No broad replay, expensive differential/fault campaign, protocol change, original
-upstream C++ modification or production backend switch is authorized. Ask before
-expensive validation under AGENTS.md.
+The September 30 closeout sample was **65% used / 35% remaining** at 14:23 UTC.
+The [separate usage audit](../../token_usage_audit.md) records a later **66% used**
+sample. Keep both as time-specific observations; neither is a billing claim or a
+hard quota limit. The owner's reserve remains at least 25% weekly usage, with no
+new slice started below 30% remaining. Monitor telemetry and preserve closeout
+capacity.

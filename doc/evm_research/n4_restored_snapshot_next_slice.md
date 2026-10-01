@@ -4,6 +4,9 @@ This planned slice is now completed within its bounded scope. See the
 [execution evidence](n4_restored_snapshot_evidence.md): the independent pair
 qualified, reward observations reproduced, and all four scout keys returned
 `history_unavailable`. The intake and plan below remain the pre-execution record.
+The later N4 follow-ups and current open work are tracked in the
+[N6 restart checkpoint](n6_restart_checkpoint.md); preserve this file as the
+historical intake and slice definition.
 
 The task owner restored the database under the repository's `data/` directory.
 Treat it as supplied evidence, not a writable node database. This supersedes
