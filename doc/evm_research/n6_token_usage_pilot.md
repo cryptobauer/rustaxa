@@ -1,5 +1,13 @@
 # Milestone-review token pilot
 
+The original schedule below describes the closed no-database slice. For the next
+session, use [Next bounded synthetic pilot](#next-bounded-synthetic-pilot) and
+the current model table. Preserve the original routing observations as history.
+
+The current branch-run policy is a 20% remaining floor under the
+[slice workflow](../codex_slice_workflow.md). The older 25% reserve and 30%
+no-start schedule below are historical; do not apply them to new runs.
+
 Use this pilot for the bounded N4 Rust-native transition slice. It measures the whole review batch without changing the established lead, model routing, or approval gates. Launch Luna first for bounded mapping; keep the Astra lead/contract role, Sol implementation role, and an independent Astra or Sol reviewer as assigned. Use initial contract review only when the owner map or authority is uncertain. Finish each reviewer assignment before starting the next dependent assignment. Freeze source, evidence, and test results before independent final review; if corrections are needed, make discrete batches and review them again.
 
 The weekly allowance reserve remains at least 25%. Start no new slice at 30% or less remaining. Sample available telemetry at slice start, before implementation, after validation, and at closeout. If telemetry is missing, record `unknown`; do not estimate it from history or infer billing/quota from assignment. The prior **110M EVM-token** figure covers the full earlier batch and is not a comparable per-slice baseline.
@@ -44,8 +52,20 @@ review found no blocking findings. No correction batch followed final review.
 | Final review / closeout | 68% / 32%, 03:46:24 | Astra medium, same observed | No blocking findings; total elapsed to 03:46:44 capture: 9m 41s |
 
 Root runtime differs from the historical lead policy; no model switch or silent
-substitution is claimed. Deduplicated token totals by phase, Standard credit
-estimates and full-session totals are `unknown`; the external log audit is
+substitution is claimed. At closeout, deduplicated phase totals, Standard credit
+estimates and full-session totals were `unknown`, and the external audit was
 `pending`. Raw cumulative counters and first/last samples are saved under
 `/home/fry/artifacts/n4-transition-2026-10-01/`. These measurements do not prove
 model equivalence, future access, billing or milestone acceptance.
+
+## Next bounded synthetic pilot
+
+The [external audit](n6_token_usage_pilot_2026_10_01_audit.md) is now complete:
+5,338,987 recorded tokens and 79.87897 estimated Standard credits. The next
+pilot keeps the observed Sol-medium lead and milestone review schedule, under
+the prospective [08 assignment table](08_implementation_plan.md#agent-and-model-assignments).
+The prompt will permit isolated synthetic fixture databases and required test
+databases. It will continue to protect supplied data and forbid real-state
+adoption or production routing. This changes the task from blocked helper tests
+to attempted synthetic lifecycle execution; compare accepted scope as well as
+tokens, costs, corrections and time.

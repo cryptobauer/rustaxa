@@ -111,6 +111,8 @@ Use `make cpp-intersection-list` before applying a carry-back patch and verify i
 
 ## Agent capacity and quota management
 
+- For bounded EVM slices, follow [`doc/codex_slice_workflow.md`](doc/codex_slice_workflow.md) for startup telemetry, direct implementation, review and measurement.
+- Continue authorized branch work while fresh weekly allowance exceeds 20% remaining. Check at startup and work milestones. At 20% or less, stop new work/delegation and save a resumable checkpoint; this replaces the earlier 25% reserve and 30% no-start policy. Finish only in-flight atomic work and minimal closeout. Resolve unknown telemetry before continuing implementation.
 - Reserve one available agent slot for Luna’s bounded tasks.
 - For EVM/state work, use the current model table in `doc/evm_research/08_implementation_plan.md`
   and validation record in `doc/evm_research/n6_model_setup_validation.md`. Explicitly configure
