@@ -1,0 +1,19 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "harness_sha256": "6f6feb78cea4eba35b9078fda79bfa1d79e46fbe04e988bc1ebaac33d7437200",
+  "input_sha256": "2bb7476cac40f02046fa9300f24ceff9d9c947a7375631a36bd0af9c14684a4a",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "cpp": "432297163ca02daa94fb482b5c7c66c0048ab94d3ae4b69cb43040ceeb6f0fc7",
+    "local": "ebcc5143dd691ce021d2fdf7be74c61487f577c391c75d588e560317cdab08e7",
+    "public": "ebcc5143dd691ce021d2fdf7be74c61487f577c391c75d588e560317cdab08e7"
+  },
+  "source_sha256": {
+    "native_metadata_estimate_reference.go": "7e6489edf870c737be1897ca88e2ce87ce2c36edc3f12853e4009c6d43160388",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60"
+  }
+}

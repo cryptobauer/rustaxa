@@ -87,8 +87,9 @@ Cacti corpus. The [frame/API composition slice](n2_validator_info_frames.md)
 adds real pending-driver and disposable historical API tests over eight actual
 Go frame cases. [Actual metadata DryRunner parity](n3_metadata_dry_runner.md)
 adds nine cases and 36 persisted-reader executions with exact nonce, error,
-gas, output, log and disposal comparisons. Sparse-state, metadata estimation
-and trace limits remain open.
+gas, output, log and disposal comparisons. [Metadata estimation](n3_metadata_estimation.md)
+compares actual Go probes, the unchanged C++ search and fresh real Rust sessions
+across reader reopen. Sparse-state and trace limits remain open.
 Existing adapters retain their recorded historical limitations; this is
 not complete N2 acceptance.
 

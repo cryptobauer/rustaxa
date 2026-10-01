@@ -1,4 +1,4 @@
-# Restart checkpoint: persisted metadata DryRunner parity complete
+# Restart checkpoint: native metadata estimation complete
 
 ## Current state
 
@@ -6,7 +6,7 @@ Branch: `feat/rust/evm-state-db`. Preparation is committed at `4148a1a` after
 separate Sol review and quota-reader corrections. Decoded metadata is committed
 at `86e74ff`. The latest implementation commit includes the completed
 [ABI/admission report](n2_validator_info_abi.md), at `8945453`. The latest local
-commit adds [persisted DryRunner parity](n3_metadata_dry_runner.md); use `git log`
+commit adds [native estimation](n3_metadata_estimation.md); use `git log`
 for its exact ID.
 No push or production routing is authorized.
 
@@ -23,7 +23,7 @@ rebuilt ON consensus bridge with all 15 tests. Frozen independent Astra review
 accepted it without findings or corrections. Scope is staged metadata over
 consistent snapshots, with exact ABI/admission and synthetic active-Cacti
 evidence. Sparse owner/info distinctions, pre-Cornus session admission, delegate,
-call-code and metadata estimation/trace parity remain open. Historical
+call-code and metadata trace parity remain open. Historical
 simulation here is synthetic and does not certify real inputs.
 Milestone 10 and N1–N6 remain open. Supplied data and historical copies were not
 opened or changed. The earlier N4 hardening remains complete at `5bfdf494c`;
@@ -46,23 +46,29 @@ each probe. Matching semantic history remains fixed; no network adoption or
 semantic-owner reopen is claimed. The first intrinsic-gas fixture discovery and
 its retained/additional cases are in the report and complete logs.
 
-The next ready bounded N3 dependency is native gas-estimation probe composition,
-using actual Go DryRunner probes, the independently extracted C++ search and
-fresh real Rust historical simulation ports. Luna is checking that candidate.
-Reuse the existing complete seed and read only selected ranges. Other native
-method and trace gaps remain in the milestone queue.
+Native metadata estimation also passed targeted tests, actual dual-pin/C++
+reproduction and workspace fast checks; independent frozen Astra review accepted
+it without findings. The unchanged C++ search consumes 24 exact actual-Go probes,
+and Rust runs 96 fresh simulations across reader reopen with matching results.
+The next ready bounded N3 candidate is direct native structured tracing with
+retained prefix/target state. Read the real Go TraceRunner lifetime before design;
+its delayed native factory uses live block state rather than DryRunner history.
+Do not infer full delayed-query/native trace parity from metadata-only coverage.
 
 Current root log confirmed `gpt-6.1-sol` medium. Luna startup map ran on
 `gpt-6-luna` medium; independent metadata review ran on `gpt-6-astra` medium.
 There were no routing failures. Compatible reviewer/helper threads can be reused
 in this session; fresh startup must confirm routing again. Account allowance was
-27% after ABI validation and review. Read fresh telemetry at startup and
+26% after estimation validation and review. Read fresh telemetry at startup and
 before new work; do not reuse this observation. At 20% remaining, stop new work
 and finish only the in-flight atomic closeout. Unknown telemetry after one
 bounded refresh also stops new work.
 
-An asynchronous request is pending for the exact snapshot executable identity,
-runtime overrides and capture command. The likely release commit is already
-recorded; those missing producer facts remain an N4 blocker. Other ready N2/N3
+The user reports that exact producer facts might not be recoverable. Record
+executable identity, runtime overrides and capture command as unknown unless
+evidence is found; do not invent them or repeat the request. The likely release
+commit and checked-in reference configuration remain available for bounded
+checks, but do not prove the producer setup. Qualified real-window acceptance
+remains limited by those unknowns and completeness; other ready N2/N3
 work can continue. Broad replay/differential/fault gates still need the authority
 required by repository policy. Nothing has been pushed.

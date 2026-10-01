@@ -45,6 +45,9 @@ use serde_json::{Value, json};
 #[path = "native_simulation_reference/metadata.rs"]
 mod metadata;
 
+#[path = "native_simulation_reference/metadata_estimate.rs"]
+mod metadata_estimate;
+
 fn address(last: u8) -> [u8; 20] {
     let mut result = [0; 20];
     result[19] = last;

@@ -1,0 +1,50 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "cases": [
+    {
+      "consumed": 6,
+      "name": "replace",
+      "result": 44905
+    },
+    {
+      "consumed": 6,
+      "name": "empty",
+      "result": 43913
+    },
+    {
+      "consumed": 6,
+      "name": "maximum",
+      "result": 54081
+    },
+    {
+      "consumed": 1,
+      "error": "Max endpoint length exceeded",
+      "name": "both_too_long"
+    },
+    {
+      "consumed": 1,
+      "error": "This account is not owner of specified validator",
+      "name": "missing_validator"
+    },
+    {
+      "consumed": 1,
+      "error": "abi: cannot marshal in to go type: length insufficient 0 require 32",
+      "name": "malformed"
+    },
+    {
+      "consumed": 1,
+      "error": "Method is not payable",
+      "name": "nonpayable_malformed"
+    },
+    {
+      "consumed": 1,
+      "error": "out of gas",
+      "name": "insufficient_gas"
+    },
+    {
+      "consumed": 1,
+      "error": "intrinsic gas too low",
+      "name": "intrinsic_gas"
+    }
+  ]
+}
