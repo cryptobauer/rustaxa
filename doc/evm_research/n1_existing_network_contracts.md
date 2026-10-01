@@ -76,9 +76,14 @@ claim-all forms, commission claims, set commission, set validator information,
 the special escrow transfer, validator/validator-page queries, eligibility/vote
 queries, delegation queries and V1/V2 undelegation queries. Registration selector
 `d6fdc127` is included even though it was omitted from the first helper inventory.
-The staged session currently admits only setCommission, delegate, undelegateV2
-and confirmUndelegateV2; even these retain the bounded historical limitations
-recorded by M1–M6. All remaining adapters are N2 work.
+The initial staged-session inventory admitted only setCommission, delegate,
+undelegateV2 and confirmUndelegateV2. Later slices added V1 custody, cancellations,
+reward claims and selected queries. The current bounded
+[validator metadata slice](n2_staged_validator_info.md) adds decoded
+setValidatorInfo over consistent snapshots to pending and historical sessions.
+Its malformed ABI, sparse-state and full frame/API composition limits remain
+open. Existing adapters retain their recorded historical limitations; this is
+not complete N2 acceptance.
 
 Slashing address `0xee` includes commitDoubleVotingProof, getJailBlock and
 getJailedValidators. Unknown or truncated selectors fail ABI lookup in Go;

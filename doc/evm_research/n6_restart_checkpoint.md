@@ -1,48 +1,49 @@
-# Restart checkpoint: synthetic fixture hardening
+# Restart checkpoint: bounded staged validator metadata
 
 ## Current state
 
-Checkout baseline: `5bfdf494c4ea84a3982903a4d46cb8113fc0d79b` on
-`feat/rust/evm-state-db`. The N4 synthetic fixture-hardening slice is complete
-and committed at this baseline. The working tree also has uncommitted
-preparation edits; inspect status and preserve them.
+Branch: `feat/rust/evm-state-db`. Preparation is committed at `4148a1a` after
+separate Sol review and quota-reader corrections. The next local commit records
+the completed decoded metadata session slice; use `git log` for its exact ID.
+No push or production routing is authorized.
 
-Milestone 10 and plan 08 remain open. Milestone 09 is complete only for its
-bounded synthetic four-period scope.
+The [metadata report](n2_staged_validator_info.md) records the shared pending and
+historical session adapter, actual dual-pin Go corpus, complete logs and frozen
+independent Astra review. Five targeted tests, workspace fast checks, an ON
+consensus bridge build with 12 jobs, and all 15 bridge tests passed. The first
+owner-fixture failure and independent-review gas-funding correction are preserved
+in `/home/fry/artifacts/evm-branch-2026-10-01-2233/`.
 
-The [hardening report](n4_synthetic_fixture_hardening.md) and
-[independent review](n4_synthetic_fixture_hardening_review.md) record a
-successful synthetic Rust lifecycle and pinned Go run. Both engines validate
-the full shared input contract and reject 306 drift cases. The Go runner and
-Rust parity test require an empty observed raw-write list. Targeted Rust,
-Go/Python, bridge and workspace fast checks passed. See the report for first-run
-failures, corrections, logs and source freeze details.
+Scope is decoded metadata over consistent snapshots. Malformed/noncanonical
+ABI, sparse owner/info distinctions, pre-Cornus session admission, delegate and
+call-code, current Cacti profile and complete Rust frame/API composition remain
+open. Historical simulation here is synthetic and does not certify real inputs.
+Milestone 10 and N1–N6 remain open. Supplied data and historical copies were not
+opened or changed. The earlier N4 hardening remains complete at `5bfdf494c`;
+its reports and [checkpoint history](n6_restart_checkpoint_history_2026_10_01_post_hardening.md)
+are retained.
 
-This result covers only the bounded synthetic cold nonboundary case. It does
-not qualify the historical producer or establish complete historical state,
-real-window acceptance, publication, adoption, replay or root derivation.
-Supplied `data/` and historical copies remain protected.
+## Next action
 
-## Next startup
+Continue the active [root prompt](../../next_executable_slice_prompt.md) and
+[remaining queue](n6_remaining_branch_queue.md) under the
+[slice workflow](../codex_slice_workflow.md). The next ready bounded metadata
+dependency is selector-first gas/admission and exact pinned Go ABI decoding,
+followed by current Cacti/frame/API composition. Contract review already names
+the Go rules in the metadata report; do not claim existing decoder errors are
+Go-compatible. Read only the selected contract and source ranges.
 
-Read `AGENTS.md`, this checkpoint, and only the relevant plan and validation
-sections for the selected task. Follow
-[`doc/codex_slice_workflow.md`](../codex_slice_workflow.md). Check current
-allowance with [`scripts/codex_quota.py`](../../scripts/codex_quota.py) at
-startup and at the workflow milestones. The account-wide floor is 20% remaining
-for all agent activity. If current telemetry remains unknown after one bounded
-refresh, checkpoint before starting new work. Historical quota samples and
-model-routing audits do not establish current allowance or routing.
+Current root log confirmed `gpt-6.1-sol` medium. Luna startup map ran on
+`gpt-6-luna` medium; independent metadata review ran on `gpt-6-astra` medium.
+There were no routing failures. Compatible reviewer/helper threads can be reused
+in this session; fresh startup must confirm routing again. Account allowance was
+28% after metadata validation and review. Read fresh telemetry at startup and
+before new work; do not reuse this observation. At 20% remaining, stop new work
+and finish only the in-flight atomic closeout. Unknown telemetry after one
+bounded refresh also stops new work.
 
-The [remaining branch queue](n6_remaining_branch_queue.md) orders N1 contract
-closure, paired N2/N3 coverage, qualified N4 replay, then N5/N6 acceptance.
-Continue ready authorized work; keep external input blockers explicit.
-
-The [completed prompt](n4_fixture_hardening_completed_prompt.md) preserves the
-exact prior task. The root
-[`next_executable_slice_prompt.md`](../../next_executable_slice_prompt.md) is the
-active autonomous branch-run prompt. The [slice scorecard](../codex_slice_scorecard.md) records this
-completed task and leaves three rows for comparable future slices.
-
-The prior checkpoint is preserved byte-for-byte in the
-[post-hardening history](n6_restart_checkpoint_history_2026_10_01_post_hardening.md).
+An asynchronous request is pending for the exact snapshot executable identity,
+runtime overrides and capture command. The likely release commit is already
+recorded; those missing producer facts remain an N4 blocker. Other ready N2/N3
+work can continue. Broad replay/differential/fault gates still need the authority
+required by repository policy. Nothing has been pushed.

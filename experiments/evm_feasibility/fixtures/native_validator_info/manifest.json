@@ -1,0 +1,13 @@
+{
+  "exporter_sha256": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5",
+  "harness_sha256": "e96e02ccefc302a738ddbe7bc229aba8415fd53724ccd5307537095e65c6f972",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "local": "2ba99fba787e2139df8df32c1496cd393a25d76dc53986a61a8a83f247e6ae58",
+    "public": "2ba99fba787e2139df8df32c1496cd393a25d76dc53986a61a8a83f247e6ae58"
+  }
+}

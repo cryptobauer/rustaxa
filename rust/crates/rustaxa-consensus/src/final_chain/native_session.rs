@@ -2,7 +2,10 @@
 //!
 //! This module exposes consensus-owned staged sessions for DPoS reads and the
 //! selected `setCommission`, `delegate`, V1/V2 `undelegate`, and V1/V2
-//! confirmation and cancellation mutations. Sessions reuse existing decoders,
+//! confirmation, cancellation, reward claims and validator metadata mutations.
+//! Metadata updates require decoded ABI and consistent owner/info/membership
+//! rows; malformed ABI and sparse/orphan metadata are explicit remaining gaps.
+//! Sessions reuse existing decoders,
 //! gas policy and business kernels. Pending execution advances from the
 //! finalized parent; historical simulation starts from an exact finalized
 //! snapshot behind a wrapper that cannot finish rewards or publish. Transaction fees, CALL value
@@ -21,6 +24,7 @@ mod query;
 pub(super) mod raw;
 pub(super) mod rewards;
 pub(super) mod semantic_port;
+mod validator_info;
 pub mod vote_inputs;
 
 #[cfg(test)]
@@ -623,7 +627,8 @@ impl FinalChainNativeSession<'_> {
             | DposTransaction::ConfirmUndelegateV2 { .. }
             | DposTransaction::CancelUndelegateV2 { .. }
             | DposTransaction::ClaimRewards { .. }
-            | DposTransaction::ClaimCommissionRewards { .. } => None,
+            | DposTransaction::ClaimCommissionRewards { .. }
+            | DposTransaction::SetValidatorInfo { .. } => None,
             transaction if query::is_query(transaction) => {
                 let admission = match self.final_chain.native_invocation_admission(
                     transaction,
@@ -817,7 +822,9 @@ impl FinalChainNativeSession<'_> {
                 self.invoke_set_commission(prepared, quote, state)
             }
             PreparedKind::SelectedCustody(transaction) => {
-                if claims::is_claim(&transaction) {
+                if matches!(transaction, DposTransaction::SetValidatorInfo { .. }) {
+                    self.invoke_validator_info(transaction, quote, state)
+                } else if claims::is_claim(&transaction) {
                     self.invoke_selected_claim(transaction, quote, state)
                 } else {
                     self.invoke_selected_custody(transaction, quote, state)
@@ -1091,6 +1098,7 @@ fn checked_undelegations_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod validator_info_reference_tests;
     use ethereum_types::{H160, H256};
     use rustaxa_storage::Config;
     use rustaxa_types::GenesisValidatorMetadata;
@@ -1124,6 +1132,7 @@ mod tests {
         rows: RefCell<RawRows>,
         accounts: BTreeMap<[u8; 20], FinalChainNativeAccount>,
         reads: Cell<usize>,
+        read_keys: RefCell<Vec<ConcreteStorageKey>>,
         account_reads: Cell<usize>,
         fail_reads: bool,
     }
@@ -1237,6 +1246,7 @@ mod tests {
             key: &ConcreteStorageKey,
         ) -> std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
             self.reads.set(self.reads.get() + 1);
+            self.read_keys.borrow_mut().push(*key);
             if self.fail_reads {
                 return Err(FinalChainNativeStateReadError::Invariant(
                     "reader must not run on this path".to_owned(),

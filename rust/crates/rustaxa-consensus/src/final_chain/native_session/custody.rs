@@ -1138,7 +1138,7 @@ fn validator_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &validator]))
 }
 
-fn validator_info_key(validator: [u8; 20]) -> ConcreteStorageKey {
+pub(super) fn validator_info_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 1], &validator]))
 }
 
@@ -1146,7 +1146,7 @@ fn rewards_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &validator]))
 }
 
-fn validator_owner_key(validator: [u8; 20]) -> ConcreteStorageKey {
+pub(super) fn validator_owner_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 3], &validator]))
 }
 
@@ -1212,7 +1212,7 @@ fn iterable_count_key(prefix: &[u8]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[prefix, &[1]]))
 }
 
-fn encode_validator_info(metadata: &DposValidatorMetadata) -> Vec<u8> {
+pub(super) fn encode_validator_info(metadata: &DposValidatorMetadata) -> Vec<u8> {
     let mut row = rlp::RlpStream::new_list(2);
     row.append(&metadata.description.as_slice())
         .append(&metadata.endpoint.as_slice());
