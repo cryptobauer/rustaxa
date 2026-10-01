@@ -297,10 +297,153 @@ fn bounded_u256(value: &BigUint, operation: &str) -> Result<U256> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::FinalChainNativeStateReadError;
     use super::*;
+    use rustaxa_types::FinalChainBlockNumber;
+    use rustaxa_types::concrete_state::{
+        ConcreteRead, ConcreteReadError, ConcreteStateIdentity, ConcreteStorageKey,
+    };
+    use std::cell::RefCell;
 
     const CONTRACT: [u8; 20] = DPOS_CONTRACT_ADDRESS;
     const RECIPIENT: [u8; 20] = [0x44; 20];
+
+    struct DeniedAccountReads {
+        error: FinalChainNativeStateReadError,
+        attempts: RefCell<Vec<[u8; 20]>>,
+        raw_attempts: RefCell<Vec<([u8; 20], ConcreteStorageKey)>>,
+    }
+
+    impl FinalChainNativeStateRead for DeniedAccountReads {
+        fn account(
+            &self,
+            address: [u8; 20],
+        ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+            self.attempts.borrow_mut().push(address);
+            Err(self.error.clone())
+        }
+
+        fn raw_storage(
+            &self,
+            address: [u8; 20],
+            key: &ConcreteStorageKey,
+        ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+            self.raw_attempts.borrow_mut().push((address, *key));
+            Err(self.error.clone())
+        }
+    }
+
+    #[test]
+    fn bounded_transition_account_reads_and_balances_reject_unavailable_state_without_staging() {
+        // This synthetic identity carries no historical-state authority.
+        let identity = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(7),
+            state_root: [0x71; 32],
+        };
+        for error in [
+            FinalChainNativeStateReadError::State(ConcreteReadError::HistoryUnavailable(identity)),
+            FinalChainNativeStateReadError::Invariant(
+                "bounded account reads are unavailable".to_owned(),
+            ),
+        ] {
+            let reader = DeniedAccountReads {
+                error: error.clone(),
+                attempts: RefCell::new(Vec::new()),
+                raw_attempts: RefCell::new(Vec::new()),
+            };
+            let mut accounts = StagedDposAccountPort::from_state(&reader);
+            let initial_accounts = accounts.accounts.clone();
+            let initial_mutations = accounts.mutations.clone();
+            let mut expected_attempts = Vec::new();
+
+            // A retry must read again rather than fabricate an empty account.
+            for _ in 0..2 {
+                let actual = accounts.account(CONTRACT).unwrap_err();
+                assert_eq!(
+                    actual.downcast_ref::<FinalChainNativeStateReadError>(),
+                    Some(&error)
+                );
+                expected_attempts.push(CONTRACT);
+                assert_eq!(accounts.accounts, initial_accounts);
+                assert_eq!(accounts.mutations, initial_mutations);
+                for amount in [BigUint::default(), BigUint::from(9_u8)] {
+                    for address in [CONTRACT, RECIPIENT] {
+                        let actual = accounts.add_balance(address, &amount).unwrap_err();
+                        assert_eq!(
+                            actual.downcast_ref::<FinalChainNativeStateReadError>(),
+                            Some(&error)
+                        );
+                        expected_attempts.push(address);
+                        assert_eq!(accounts.accounts, initial_accounts);
+                        assert_eq!(accounts.mutations, initial_mutations);
+
+                        let actual = accounts.subtract_balance(address, &amount).unwrap_err();
+                        assert_eq!(
+                            actual.downcast_ref::<FinalChainNativeStateReadError>(),
+                            Some(&error)
+                        );
+                        expected_attempts.push(address);
+                        assert_eq!(accounts.accounts, initial_accounts);
+                        assert_eq!(accounts.mutations, initial_mutations);
+                    }
+                }
+            }
+            assert_eq!(*reader.attempts.borrow(), expected_attempts);
+            assert!(reader.raw_attempts.borrow().is_empty());
+            assert_eq!(accounts.into_mutations(), initial_mutations);
+        }
+    }
+
+    #[test]
+    fn bounded_transition_account_absence_and_existing_zero_keep_distinct_effect_expectations() {
+        struct AccountFact(FinalChainNativeAccount);
+
+        impl FinalChainNativeStateRead for AccountFact {
+            fn account(
+                &self,
+                _address: [u8; 20],
+            ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+                Ok(self.0.clone())
+            }
+
+            fn raw_storage(
+                &self,
+                _address: [u8; 20],
+                _key: &ConcreteStorageKey,
+            ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+                panic!("account operations must not read raw storage");
+            }
+        }
+
+        for exists in [false, true] {
+            let supplied = fact(exists, 0, BigInt::default());
+            let reader = AccountFact(supplied.clone());
+            let mut accounts = StagedDposAccountPort::from_state(&reader);
+            assert_eq!(accounts.account(CONTRACT).unwrap(), supplied);
+            assert!(accounts.mutations.is_empty());
+            accounts
+                .subtract_balance(CONTRACT, &BigUint::default())
+                .unwrap();
+            accounts.add_balance(CONTRACT, &BigUint::default()).unwrap();
+            assert_eq!(
+                accounts.account(CONTRACT).unwrap(),
+                fact(true, 0, BigInt::default())
+            );
+            assert_eq!(
+                accounts.into_mutations(),
+                vec![
+                    FinalChainNativeOrdinaryMutation::EnsureExists {
+                        address: CONTRACT,
+                        expected_exists: exists,
+                    },
+                    FinalChainNativeOrdinaryMutation::Touch {
+                        address: CONTRACT,
+                        expected_exists: true,
+                    },
+                ]
+            );
+        }
+    }
 
     fn fact(exists: bool, nonce: u64, balance: BigInt) -> FinalChainNativeAccount {
         FinalChainNativeAccount {

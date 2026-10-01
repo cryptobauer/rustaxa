@@ -148,6 +148,103 @@ impl<'a> FinalChainNativeRawTrace<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustaxa_types::FinalChainBlockNumber;
+    use rustaxa_types::concrete_state::ConcreteStateIdentity;
+    use std::cell::RefCell;
+
+    struct DeniedRawReads {
+        error: FinalChainNativeStateReadError,
+        attempts: RefCell<Vec<([u8; 20], ConcreteStorageKey)>>,
+    }
+
+    impl FinalChainNativeStateRead for DeniedRawReads {
+        fn raw_storage(
+            &self,
+            address: [u8; 20],
+            key: &ConcreteStorageKey,
+        ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+            self.attempts.borrow_mut().push((address, *key));
+            Err(self.error.clone())
+        }
+    }
+
+    #[test]
+    fn bounded_transition_raw_reads_and_writes_reject_unavailable_state_without_staging() {
+        // This identity labels an unavailable synthetic view, not an authenticated root.
+        let identity = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(7),
+            state_root: [0x71; 32],
+        };
+        for error in [
+            FinalChainNativeStateReadError::State(ConcreteReadError::HistoryUnavailable(identity)),
+            FinalChainNativeStateReadError::Invariant(
+                "bounded raw reads are unavailable".to_owned(),
+            ),
+        ] {
+            let reader = DeniedRawReads {
+                error: error.clone(),
+                attempts: RefCell::new(Vec::new()),
+            };
+            let address = [3; 20];
+            let key = ConcreteStorageKey([4; 32]);
+            let mut trace = FinalChainNativeRawTrace::new(&reader);
+            let initial_current = trace.current.clone();
+            let initial_mutations = trace.mutations.clone();
+
+            // Repeat every operation against the same key: an error must not
+            // become cached absence, a value, or a successful mutation.
+            for _ in 0..2 {
+                assert_eq!(
+                    trace.current(address, key),
+                    Err(FinalChainNativeSessionError::StateRead(error.clone()))
+                );
+                assert_eq!(trace.current, initial_current);
+                assert_eq!(trace.mutations, initial_mutations);
+                for value in [vec![9], Vec::new()] {
+                    assert_eq!(
+                        trace.put(address, key, value),
+                        Err(FinalChainNativeSessionError::StateRead(error.clone()))
+                    );
+                    assert_eq!(trace.current, initial_current);
+                    assert_eq!(trace.mutations, initial_mutations);
+                }
+            }
+            assert_eq!(*reader.attempts.borrow(), vec![(address, key); 6]);
+            assert_eq!(trace.finish(), initial_mutations);
+        }
+    }
+
+    #[test]
+    fn bounded_transition_raw_classifications_remain_distinct_from_read_failure() {
+        struct ClassifiedRow(ConcreteRead<Vec<u8>>);
+
+        impl FinalChainNativeStateRead for ClassifiedRow {
+            fn raw_storage(
+                &self,
+                _address: [u8; 20],
+                _key: &ConcreteStorageKey,
+            ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        // The reader owns the coverage proof for Absent. The trace must
+        // preserve that classification, tombstones, and actual zero bytes.
+        for classified in [
+            ConcreteRead::Absent,
+            ConcreteRead::Tombstone,
+            ConcreteRead::Present(Vec::new()),
+            ConcreteRead::Present(vec![0]),
+        ] {
+            let reader = ClassifiedRow(classified.clone());
+            let address = [3; 20];
+            let key = ConcreteStorageKey([4; 32]);
+            let mut trace = FinalChainNativeRawTrace::new(&reader);
+            assert_eq!(trace.current(address, key).unwrap(), classified);
+            trace.put(address, key, vec![9]).unwrap();
+            assert_eq!(trace.finish()[0].expected, classified);
+        }
+    }
 
     struct OneRow;
 

@@ -61,10 +61,22 @@ replay and non-genesis adoption remain separate gates.
 
 ## Next action and validation
 
-Continue with a bounded Rust-native EndBlock/transition contract through existing
-Rust kernels. First define its authority boundary, exact inputs/outputs, reference
-oracle, tests and non-goals; then implement only the reviewed slice. Keep producer
-policy and reward-inclusive replay inputs distinct follow-up gates. Do not start
+The [bounded transition closeout](n4_rust_native_transition_blocked.md) records
+the slice from `896ac8886` under the [prompt](../../next_slice_prompt.md),
+[contract](n4_rust_native_transition_next_slice.md) and
+[review pilot](n6_token_usage_pilot.md). Rust EndBlock execution is **blocked**:
+the complete FinalChain owner requires live storage, and terminal processing
+requires raw vote/stake origins absent from the two-read cold Go fixture. Four
+database-free rejection/classification tests passed in the existing raw/account
+helpers. No Rust lifecycle execution, parity, zero-effect or acceptance result
+is claimed. The full workspace test/hook gate remains outside the no-database
+scope. Independent Astra review found no blocking findings. See the closeout
+for focused checks, routing, source usage counters and the pending external
+log audit. This checkpoint and the rejection tests are committed together.
+
+The next executable slice needs authorized isolated complete synthetic owner
+state and exact raw rows, or a separately reviewed database-free owner boundary.
+Keep producer policy and reward-inclusive replay inputs distinct follow-up gates. Do not start
 broad replay, expensive differential/fault campaigns, sparse publication, protocol
 changes, original upstream C++ changes or production routing without the required
 task-owner authorization.
