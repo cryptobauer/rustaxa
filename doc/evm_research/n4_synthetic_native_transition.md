@@ -190,3 +190,12 @@ This local commit contains the reviewed test implementation, synthetic harness,
 shared manifest, observed outputs, report and checkpoint handoff. The existing
 preparation edits remain in the working tree. No push was made. Producer
 qualification and the real-window gate remain open.
+
+
+## Fixture-hardening follow-up — 2026-10-01
+
+The two regression limits above are retained as historical review findings.
+The [fixture-hardening report](n4_synthetic_fixture_hardening.md) closes them
+with complete input contracts, raw-write rejection, fresh evidence, first-run
+logs and independent Sol-medium review. The old frozen outputs and source pins
+remain unchanged. Producer qualification and the real-window gate remain open.

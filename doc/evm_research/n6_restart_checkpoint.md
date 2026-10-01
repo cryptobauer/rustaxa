@@ -124,3 +124,35 @@ The report records the compact slot-5 codec correction and two nonblocking
 regression limits. The reviewed synthetic slice and this handoff are included
 in a local Conventional Commit. No push was made. Pre-existing preparation
 changes remain in the working tree.
+
+
+## October 1 synthetic fixture-hardening handoff
+
+The [fixture-hardening report](n4_synthetic_fixture_hardening.md) closes the two
+harness regression gaps recorded at `214c87b58`. The Go runner now requires an
+empty observed raw-write list. Both engines validate every field in the complete
+shared synthetic manifest before setup or lifecycle execution. Each engine
+rejects 306 missing, unknown, type, value and array drift controls. Positive
+lifecycle behavior and raw-integrity/request/period/authority rejection coverage
+remain intact. The input contract contains no expected execution effects.
+
+Fresh Go/Rust outputs and the source/evidence freeze record are separate files;
+old outputs, source pins and historical reports remain as history. Both engines
+still have zero measured effects, Rust has zero reward and unchanged semantic
+state, and all 27 Go raw genesis rows match Rust. Exact read sets and complete
+physical snapshot identity remain different.
+
+Targeted Rust tests pass (4/4 nonboundary and 17/17 rewards); Python raw-write
+controls pass. Consensus/storage bridge build and tests pass (12 build jobs,
+15/15 and 4/4 tests, `RUSTAXA_ENABLE=ON`). The workspace fast gate passes.
+Commands, exit statuses and complete first-run logs include both corrected Go
+harness failures. Independent Sol-medium review follows source/evidence freeze;
+its result is recorded in the report. The lead implemented directly; bounded
+Luna-medium input mapping completed. Runtime and current quota telemetry remain
+unknown; no model, quota or billing claim is inferred from assignments.
+
+Only fixture/test code and evidence changed. No production routing, supplied
+database or historical snapshot access, replay, adoption or root derivation was
+added. Producer qualification and the real-window gate remain open. This slice
+is committed locally after review. No push is made. Pre-existing preparation
+remains outside this commit.

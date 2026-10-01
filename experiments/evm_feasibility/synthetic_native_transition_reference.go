@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,8 +19,10 @@ import (
 	"github.com/Taraxa-project/taraxa-evm/taraxa/state/state_transition"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/state/state_transition/op_stack"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/util/keccak256"
+	"io"
 	"math/big"
 	"os"
+	"reflect"
 	"sort"
 )
 
@@ -125,12 +128,171 @@ func must(e error) {
 		panic(e)
 	}
 }
+
+// Full bounded input contract. It constrains setup and caller orchestration;
+// it supplies no observed output or expected effect to the engine.
+const syntheticInputContract = `{
+  "schema": 1,
+  "synthetic": true,
+  "period": 1,
+  "parent_period": 0,
+  "parent_root_label": "0x1234",
+  "block_author": "0x0000000000000000000000000000000000000051",
+  "timestamp": 0,
+  "gas_limit": 1000000,
+  "config": {
+    "EVMChainConfig": {
+      "chainId": 1
+    },
+    "GenesisBalances": {
+      "0x0000000000000000000000000000000000000032": 2000,
+      "0x0000000000000000000000000000000000000042": 3000
+    },
+    "DPOS": {
+      "EligibilityBalanceThreshold": 100,
+      "VoteEligibilityBalanceStep": 10,
+      "ValidatorMaximumStake": 1000000,
+      "MinimumDeposit": 1,
+      "MaxBlockAuthorReward": 10,
+      "DagProposersReward": 50,
+      "CommissionChangeDelta": 0,
+      "CommissionChangeFrequency": 0,
+      "DelegationDelay": 0,
+      "DelegationLockingPeriod": 0,
+      "BlocksPerYear": 10,
+      "YieldPercentage": 1,
+      "InitialValidators": [
+        {
+          "Address": "0x0000000000000000000000000000000000000031",
+          "Owner": "0x0000000000000000000000000000000000000032",
+          "VrfKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "Commission": 100,
+          "Endpoint": "",
+          "Description": "",
+          "Delegations": {
+            "0x0000000000000000000000000000000000000032": 1000
+          }
+        },
+        {
+          "Address": "0x0000000000000000000000000000000000000041",
+          "Owner": "0x0000000000000000000000000000000000000042",
+          "VrfKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "Commission": 2500,
+          "Endpoint": "",
+          "Description": "",
+          "Delegations": {
+            "0x0000000000000000000000000000000000000042": 2000
+          }
+        }
+      ]
+    },
+    "Hardforks": {
+      "FixRedelegateBlockNum": 18446744073709551615,
+      "Redelegations": null,
+      "RewardsDistributionFrequency": {
+        "0": 2
+      },
+      "MagnoliaHf": {
+        "BlockNum": 0,
+        "JailTime": 0
+      },
+      "PhalaenopsisHfBlockNum": 0,
+      "FixClaimAllBlockNum": 0,
+      "AspenHf": {
+        "BlockNumPartOne": 0,
+        "BlockNumPartTwo": 1,
+        "MaxSupply": 6000,
+        "GeneratedRewards": 0
+      },
+      "FicusHf": {
+        "BlockNum": 0,
+        "PillarBlocksInterval": 0,
+        "BridgeContractAddress": "0x0000000000000000000000000000000000000000"
+      },
+      "CornusHf": {
+        "BlockNum": 0,
+        "DelegationLockingPeriod": 0,
+        "DagGasLimit": 0,
+        "PbftGasLimit": 0
+      },
+      "SoleiroliaHf": {
+        "BlockNum": 18446744073709551615,
+        "TrxMinGasPrice": 0,
+        "TrxMaxGasLimit": 0
+      },
+      "CactiHf": {
+        "BlockNum": 18446744073709551615,
+        "LambdaMin": 0,
+        "LambdaMax": 0,
+        "LambdaDefault": 0,
+        "LambdaChangeInterval": 0,
+        "LambdaChange": 0,
+        "BlockPropagationMin": 0,
+        "BlockPropagationMax": 0,
+        "ConsensusDelay": 0,
+        "DelegationLockingPeriod": 0,
+        "JailTime": 0
+      }
+    }
+  },
+  "rewards_fact": {
+    "period": 1,
+    "block_author": "0x0000000000000000000000000000000000000051",
+    "blocks_per_year": 10,
+    "caller_eligible_vote_count": 0,
+    "planner_eligible_vote_count": 10,
+    "transactions": [],
+    "dag_blocks": [],
+    "cert_votes": []
+  },
+  "rust_genesis_accounts_after_delegation": {
+    "0000000000000000000000000000000000000032": 1000,
+    "0000000000000000000000000000000000000042": 1000
+  },
+  "go_setup": "ApplyGenesis, then pinned genesis Cornus DPoS bytecode and op_stack.OpPrecompiles through value-only account/raw collector; no trie/root",
+  "synthetic_root_authenticated": false,
+  "producer_qualified": false,
+  "real_window_gate_closed": false
+}`
+
+func validateManifest(raw []byte) error {
+	decode := func(input []byte) (any, error) {
+		decoder := json.NewDecoder(bytes.NewReader(input))
+		decoder.UseNumber()
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			return nil, fmt.Errorf("trailing manifest data")
+		}
+		return value, nil
+	}
+	actual, err := decode(raw)
+	if err != nil {
+		return err
+	}
+	expected, err := decode([]byte(syntheticInputContract))
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		return fmt.Errorf("synthetic input contract drift")
+	}
+	return nil
+}
+
 func main() {
-	if len(os.Args) != 2 {
+	if len(os.Args) != 2 && !(len(os.Args) == 3 && os.Args[2] == "--validate-only") {
 		panic("shared synthetic manifest required")
 	}
 	raw, err := os.ReadFile(os.Args[1])
 	must(err)
+	must(validateManifest(raw))
+	if len(os.Args) == 3 {
+		return
+	}
 	var manifest struct {
 		Config       chain_config.ChainConfig `json:"config"`
 		Period       uint64                   `json:"period"`
@@ -180,7 +342,7 @@ func main() {
 		rawWrites = append(rawWrites, rawRow{hex.EncodeToString(address[:]), hex.EncodeToString(key[:]), hex.EncodeToString(value)})
 	})
 	transition := new(state_transition.StateTransition).Init(p, func(types.BlockNum) *big.Int { panic("block hash forbidden") }, api, func(n types.BlockNum) dpos.Reader { return api.NewDelayedReader(n, factory) }, func(n types.BlockNum) slashing.Reader { return api.NewSlashingReader(n, factory) }, &cfg, state_transition.Opts{EVMState: state_evm.Opts{NumTransactionsToBuffer: 1}})
-	transition.BeginBlock(&vm.BlockInfo{Author: currentMissingAuthor, Time: manifest.Timestamp, GasLimit: manifest.GasLimit, Difficulty: new(big.Int)})
+	transition.BeginBlock(&vm.BlockInfo{Author: manifest.Author, Time: manifest.Timestamp, GasLimit: manifest.GasLimit, Difficulty: new(big.Int)})
 	transition.EndBlock()
 	transition.Close()
 	state_evm.SetMixedPeriodRawWriteObserver(nil)
@@ -189,7 +351,7 @@ func main() {
 	}
 	// Frequency and empty rewards are explicit caller orchestration inputs; Go
 	// EndBlock does not itself invoke the C++/Rust rewards-stats planner.
-	result := map[string]any{"synthetic": true, "period": 1, "distribution_frequency": cfg.Hardforks.RewardsDistributionFrequency[0], "nonboundary": 1%cfg.Hardforks.RewardsDistributionFrequency[0] != 0, "reward_distributions_requested": 0, "operations": []string{"Init", "BeginBlock", "EndBlock", "Close"}, "config": cfg, "setup_account_updates": p.setupAccounts, "setup_raw_updates": p.setupRaw, "genesis_accounts_after_delegation": setupAccounts, "genesis_raw_rows": setupRows, "reads": p.reads, "ordered_raw_writes": rawWrites, "backend_put_attempts": p.puts, "commit_attempts": p.commits, "trie_mutation_attempts": state_transition.EmptyEffectsMutationAttempts(), "prepare_commit_called": false, "root_derived": false, "parent_root_label": "1234 (synthetic nonempty label; no authenticated root)", "producer_qualified": false, "real_window_gate_closed": false}
+	result := map[string]any{"synthetic": true, "period": manifest.Period, "distribution_frequency": cfg.Hardforks.RewardsDistributionFrequency[0], "nonboundary": manifest.Period%uint64(cfg.Hardforks.RewardsDistributionFrequency[0]) != 0, "reward_distributions_requested": 0, "operations": []string{"Init", "BeginBlock", "EndBlock", "Close"}, "config": cfg, "setup_account_updates": p.setupAccounts, "setup_raw_updates": p.setupRaw, "genesis_accounts_after_delegation": setupAccounts, "genesis_raw_rows": setupRows, "reads": p.reads, "ordered_raw_writes": rawWrites, "backend_put_attempts": p.puts, "commit_attempts": p.commits, "trie_mutation_attempts": state_transition.EmptyEffectsMutationAttempts(), "prepare_commit_called": false, "root_derived": false, "parent_root_label": "1234 (synthetic nonempty label; no authenticated root)", "producer_qualified": false, "real_window_gate_closed": false}
 	if fmt.Sprint(result["distribution_frequency"]) != "2" {
 		panic("frequency drift")
 	}

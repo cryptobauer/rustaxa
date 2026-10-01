@@ -1444,12 +1444,238 @@ mod tests {
         format!("0x{}", hex_bytes(bytes))
     }
 
-    fn with_nonboundary_reward_chain(test: impl FnOnce(&FinalChain)) {
+    // Exact input contract for this bounded fixture, independent of observed effects.
+    // Compare complete JSON values: missing/extra keys, types and array lengths
+    // must match before any owner state or lifecycle is constructed.
+    const NONBOUNDARY_INPUT_CONTRACT: &str = r#"{
+  "schema": 1,
+  "synthetic": true,
+  "period": 1,
+  "parent_period": 0,
+  "parent_root_label": "0x1234",
+  "block_author": "0x0000000000000000000000000000000000000051",
+  "timestamp": 0,
+  "gas_limit": 1000000,
+  "config": {
+    "EVMChainConfig": {
+      "chainId": 1
+    },
+    "GenesisBalances": {
+      "0x0000000000000000000000000000000000000032": 2000,
+      "0x0000000000000000000000000000000000000042": 3000
+    },
+    "DPOS": {
+      "EligibilityBalanceThreshold": 100,
+      "VoteEligibilityBalanceStep": 10,
+      "ValidatorMaximumStake": 1000000,
+      "MinimumDeposit": 1,
+      "MaxBlockAuthorReward": 10,
+      "DagProposersReward": 50,
+      "CommissionChangeDelta": 0,
+      "CommissionChangeFrequency": 0,
+      "DelegationDelay": 0,
+      "DelegationLockingPeriod": 0,
+      "BlocksPerYear": 10,
+      "YieldPercentage": 1,
+      "InitialValidators": [
+        {
+          "Address": "0x0000000000000000000000000000000000000031",
+          "Owner": "0x0000000000000000000000000000000000000032",
+          "VrfKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "Commission": 100,
+          "Endpoint": "",
+          "Description": "",
+          "Delegations": {
+            "0x0000000000000000000000000000000000000032": 1000
+          }
+        },
+        {
+          "Address": "0x0000000000000000000000000000000000000041",
+          "Owner": "0x0000000000000000000000000000000000000042",
+          "VrfKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "Commission": 2500,
+          "Endpoint": "",
+          "Description": "",
+          "Delegations": {
+            "0x0000000000000000000000000000000000000042": 2000
+          }
+        }
+      ]
+    },
+    "Hardforks": {
+      "FixRedelegateBlockNum": 18446744073709551615,
+      "Redelegations": null,
+      "RewardsDistributionFrequency": {
+        "0": 2
+      },
+      "MagnoliaHf": {
+        "BlockNum": 0,
+        "JailTime": 0
+      },
+      "PhalaenopsisHfBlockNum": 0,
+      "FixClaimAllBlockNum": 0,
+      "AspenHf": {
+        "BlockNumPartOne": 0,
+        "BlockNumPartTwo": 1,
+        "MaxSupply": 6000,
+        "GeneratedRewards": 0
+      },
+      "FicusHf": {
+        "BlockNum": 0,
+        "PillarBlocksInterval": 0,
+        "BridgeContractAddress": "0x0000000000000000000000000000000000000000"
+      },
+      "CornusHf": {
+        "BlockNum": 0,
+        "DelegationLockingPeriod": 0,
+        "DagGasLimit": 0,
+        "PbftGasLimit": 0
+      },
+      "SoleiroliaHf": {
+        "BlockNum": 18446744073709551615,
+        "TrxMinGasPrice": 0,
+        "TrxMaxGasLimit": 0
+      },
+      "CactiHf": {
+        "BlockNum": 18446744073709551615,
+        "LambdaMin": 0,
+        "LambdaMax": 0,
+        "LambdaDefault": 0,
+        "LambdaChangeInterval": 0,
+        "LambdaChange": 0,
+        "BlockPropagationMin": 0,
+        "BlockPropagationMax": 0,
+        "ConsensusDelay": 0,
+        "DelegationLockingPeriod": 0,
+        "JailTime": 0
+      }
+    }
+  },
+  "rewards_fact": {
+    "period": 1,
+    "block_author": "0x0000000000000000000000000000000000000051",
+    "blocks_per_year": 10,
+    "caller_eligible_vote_count": 0,
+    "planner_eligible_vote_count": 10,
+    "transactions": [],
+    "dag_blocks": [],
+    "cert_votes": []
+  },
+  "rust_genesis_accounts_after_delegation": {
+    "0000000000000000000000000000000000000032": 1000,
+    "0000000000000000000000000000000000000042": 1000
+  },
+  "go_setup": "ApplyGenesis, then pinned genesis Cornus DPoS bytecode and op_stack.OpPrecompiles through value-only account/raw collector; no trie/root",
+  "synthetic_root_authenticated": false,
+  "producer_qualified": false,
+  "real_window_gate_closed": false
+}"#;
+
+    fn validate_nonboundary_input(fixture: &Value) -> Result<(), &'static str> {
+        let expected: Value = serde_json::from_str(NONBOUNDARY_INPUT_CONTRACT).unwrap();
+        if fixture != &expected {
+            return Err("synthetic input contract drift");
+        }
+        Ok(())
+    }
+
+    fn nonboundary_input() -> Value {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../experiments/evm_feasibility/fixtures/synthetic_native_transition_input.json"
         )))
         .unwrap();
+        validate_nonboundary_input(&fixture).unwrap();
+        fixture
+    }
+
+    #[test]
+    fn nonboundary_manifest_rejects_drift_at_every_field() {
+        fn visit(root: &Value, node: &Value, path: &str, cases: &mut usize) {
+            let mut changed = root.clone();
+            *changed.pointer_mut(path).unwrap() = if node.is_null() {
+                serde_json::json!(false)
+            } else {
+                Value::Null
+            };
+            assert!(
+                validate_nonboundary_input(&changed).is_err(),
+                "changed {path}"
+            );
+            *cases += 1;
+            match node {
+                Value::Object(fields) => {
+                    let mut unknown = root.clone();
+                    unknown
+                        .pointer_mut(path)
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("unknown_input".into(), serde_json::json!(0));
+                    assert!(
+                        validate_nonboundary_input(&unknown).is_err(),
+                        "unknown {path}"
+                    );
+                    *cases += 1;
+                    for (key, value) in fields {
+                        let mut missing = root.clone();
+                        missing
+                            .pointer_mut(path)
+                            .unwrap()
+                            .as_object_mut()
+                            .unwrap()
+                            .remove(key);
+                        assert!(
+                            validate_nonboundary_input(&missing).is_err(),
+                            "missing {path}/{key}"
+                        );
+                        *cases += 1;
+                        let escaped = key.replace('~', "~0").replace('/', "~1");
+                        visit(root, value, &format!("{path}/{escaped}"), cases);
+                    }
+                }
+                Value::Array(items) => {
+                    let mut extra = root.clone();
+                    extra
+                        .pointer_mut(path)
+                        .unwrap()
+                        .as_array_mut()
+                        .unwrap()
+                        .push(Value::Null);
+                    assert!(validate_nonboundary_input(&extra).is_err(), "extra {path}");
+                    *cases += 1;
+                    for (index, item) in items.iter().enumerate() {
+                        visit(root, item, &format!("{path}/{index}"), cases);
+                    }
+                }
+                _ => {
+                    let replacement = match node {
+                        Value::Bool(value) => serde_json::json!(!value),
+                        Value::Number(value) => {
+                            serde_json::json!(value.as_u64().unwrap().wrapping_add(1))
+                        }
+                        Value::String(value) => serde_json::json!(format!("{value}drift")),
+                        Value::Null => serde_json::json!(0),
+                        _ => unreachable!(),
+                    };
+                    let mut changed = root.clone();
+                    *changed.pointer_mut(path).unwrap() = replacement;
+                    assert!(
+                        validate_nonboundary_input(&changed).is_err(),
+                        "value {path}"
+                    );
+                    *cases += 1;
+                }
+            }
+        }
+        let fixture = nonboundary_input();
+        let mut cases = 0;
+        visit(&fixture, &fixture, "", &mut cases);
+        println!("nonboundary manifest drift controls: {cases}");
+    }
+
+    fn with_nonboundary_reward_chain(test: impl FnOnce(&FinalChain)) {
+        let fixture = nonboundary_input();
         assert_eq!(
             fixture["config"]["Hardforks"]["RewardsDistributionFrequency"]["0"],
             2
@@ -1502,6 +1728,7 @@ mod tests {
     }
 
     fn nonboundary_plan(chain: &FinalChain) -> FinalChainPreparedExternalEvmRewardsStatsPlan {
+        let _ = nonboundary_input();
         let plan = chain
             .plan_external_evm_rewards_stats(
                 [0x74; 32],
@@ -1555,11 +1782,13 @@ mod tests {
             assert_eq!(*state.raw_reads.borrow(), expected);
             let go: Value = serde_json::from_str(include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../../experiments/evm_feasibility/fixtures/synthetic_native_transition_go.json"
+                "/../../../experiments/evm_feasibility/fixtures/synthetic_native_transition_go_hardened.json"
             )))
             .unwrap();
             let witness = &go["witness"];
             assert_eq!(witness["nonboundary"], true);
+            assert_eq!(witness["ordered_raw_writes"], serde_json::json!([]));
+            assert_eq!(go["manifest_binding"]["positive_accepted"], true);
             for counter in [
                 "backend_put_attempts",
                 "commit_attempts",

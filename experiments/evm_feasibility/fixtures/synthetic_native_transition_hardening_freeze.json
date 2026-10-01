@@ -1,0 +1,173 @@
+{
+  "schema": 1,
+  "frozen_utc": "2026-10-01T18:14:34.463879+00:00",
+  "baseline": "214c87b583263333ac95561d9c6bf4b13f526bdd",
+  "branch": "feat/rust/evm-state-db",
+  "source_and_fresh_evidence_sha256": {
+    "rust/crates/rustaxa-consensus/src/final_chain/native_session/rewards.rs": "e89c1072589631a7317295f0b123f9e293f26336607b86fa0a8e10f7fcfe6959",
+    "experiments/evm_feasibility/synthetic_native_transition_reference.go": "ac0bfa30a9f568b7aa90b0671ee75e6e4f532662cd4609c29c5426595459b64a",
+    "experiments/evm_feasibility/synthetic_native_transition_reference.py": "d0ec8b1259ad4377665ca87523821575ba40fb368d0031d9ec5c3e722f6e9af8",
+    "experiments/evm_feasibility/test_synthetic_native_transition_reference.py": "c577dab11484acbfcbbd1037d1a96dfa82d6c045158eb01ba406714c92563568",
+    "experiments/evm_feasibility/fixtures/synthetic_native_transition_go_hardened.json": "239ffdf89aaeade4e9b3297f68eddaae642faccbbdd809695cc0fb0efd23be4b",
+    "experiments/evm_feasibility/fixtures/synthetic_native_transition_rust_hardened.json": "4ab076146deccefbde3c77bfaf9878fda0b7449a68f377842e92e9413daf420e"
+  },
+  "unchanged_history_sha256": {
+    "experiments/evm_feasibility/fixtures/synthetic_native_transition_input.json": "68ea481e6907f6490119f4b2a605d499180fd2d4f0dd439a9349dfb02a9040f1",
+    "experiments/evm_feasibility/fixtures/synthetic_native_transition_go.json": "4eae0a98e2688c71d4cd305098d05350fea59a0ab5e3e5636566bf4452404f29",
+    "experiments/evm_feasibility/fixtures/synthetic_native_transition_rust.json": "4ab076146deccefbde3c77bfaf9878fda0b7449a68f377842e92e9413daf420e",
+    "experiments/evm_feasibility/empty_native_effects_reference.py": "d2c5d3837e87a2ef7cbf3c9f727a946e2fe5fa77cd716f33850401d5f93ade90",
+    "experiments/evm_feasibility/current_rewards_reference.py": "de7b09ab64a41bce512d15436cbce87abe40285d2467d99937fc4bb83c81098c"
+  },
+  "artifact_sha256": {
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/bridge-build.json": "734b8c2cb61460254d430fece81fa489551000d80e00657ca18d8611fbaaf7a2",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/bridge-build.log": "cf7dba9fc114347112f5802942c74bedc7a9da3ad4589f39bb9d4fd581faed05",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/build-cache.json": "e0c6d2fcd39e36731d5f3c1c4be8c73221af74106d07bdbd557b368ca718a97a",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/consensus-bridge.json": "2c71ecae494c17547df823f6b7d7db475dea672c73b43b5900c3a064af4bd64b",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/consensus-bridge.log": "7afee5a10e49d725f572c7896b36b64c7fbf32387d2275542f60c2708f3f4fcd",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh-contract-corrected.json": "4be74794c668c3c054cbb39f4c6a7adc07096c94462c964c5ee2ac6e360fe739",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh-contract-corrected.log": "a3909711bf37cad8ab9c7718cf5d6d17e6d8224117616b6042523efe96bac1a9",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh-corrected.json": "6ad4ca1eeff75c8172c6c79883d50a3a7ff24314711edad7c975272b3ba81e2d",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh-corrected.log": "6c764386012d72774059e447be70de4edcf7a88f86ab6e7ba1ae2e1179587394",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh.json": "de81c0c2fe984cc2260e6fd0019767405eb6d2ea22009cfbec4930f6b654f11e",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh.log": "ef6736af1658aeb19d35b94e4ec42c6543420d9d995f5d538fba87018ae7ebd8",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go.json": "239ffdf89aaeade4e9b3297f68eddaae642faccbbdd809695cc0fb0efd23be4b",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/harness-unit.json": "3946d7407ae9e081b812dc5f92e6eeb749410fb89c05df977e6d5aa6f7c4585e",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/harness-unit.log": "77eb023fc3b535f7af3c14663e93f9f7fdd209ee5398ad1d6177f0ed192bebad",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/report-at-freeze.md": "e7c97cad0f88784af7e9ec0fbb99a557a25057c42ac12198fe9bba7e12a48b17",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rewrite-fast.json": "e37d225323f2adbdd727660c17eb620474a16765a5472fdd72923cf5180c1e6a",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rewrite-fast.log": "04bb350c86a9d285ec47725ea9615113b810651aa513e8901a325e5f106a14b5",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/run_check.py": "2fd4557458df33421af7522bb30220ff722ba0d6f332e85886d1c45647cedfa6",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rust-nonboundary.json": "4513655071be84dcd12121dadc7b4e9881857008db9fa8c1167087d09a744652",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rust-nonboundary.log": "019d7aa66084a2222eda1e4e6fbf2e77f5b3e51fe67af9a5afe3e821cca70f54",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rust-rewards.json": "9c249741f4411293640c83b1e3837a70a737506453bb92487e588eb0abf107b3",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rust-rewards.log": "9f91bee114174d0208c9df90eddcd461b3208c8054f977167754540163fd81e9",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rust.json": "4ab076146deccefbde3c77bfaf9878fda0b7449a68f377842e92e9413daf420e",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/storage-bridge.json": "ea50f55e6117f0efee52ba78cfed471c776ac9b3fa3aece471a11813a8ab1e29",
+    "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/storage-bridge.log": "34b3b918bf92b39fcb2db1a2f342355c07190100921f7d66f4879d77635e402e"
+  },
+  "validation": [
+    {
+      "command": [
+        "cmake",
+        "--build",
+        "/build",
+        "--target",
+        "rust_consensus_tests",
+        "rust_storage_tests",
+        "--parallel",
+        "12"
+      ],
+      "exit_status": 0,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/bridge-build.log",
+      "finished_utc": "2026-10-01T18:11:07.275954+00:00"
+    },
+    {
+      "command": [
+        "/build/bin/rust_consensus_tests"
+      ],
+      "exit_status": 0,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/consensus-bridge.log",
+      "finished_utc": "2026-10-01T18:11:40.367687+00:00"
+    },
+    {
+      "command": [
+        "python3",
+        "experiments/evm_feasibility/synthetic_native_transition_reference.py",
+        "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go.json"
+      ],
+      "exit_status": 0,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh-contract-corrected.log",
+      "finished_utc": "2026-10-01T18:11:12.952086+00:00"
+    },
+    {
+      "command": [
+        "python3",
+        "experiments/evm_feasibility/synthetic_native_transition_reference.py",
+        "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go.json"
+      ],
+      "exit_status": 1,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh-corrected.log",
+      "finished_utc": "2026-10-01T18:10:39.282683+00:00"
+    },
+    {
+      "command": [
+        "python3",
+        "experiments/evm_feasibility/synthetic_native_transition_reference.py",
+        "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go.json"
+      ],
+      "exit_status": 1,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/go-fresh.log",
+      "finished_utc": "2026-10-01T18:10:23.164254+00:00"
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "experiments/evm_feasibility",
+        "-p",
+        "test_synthetic_native_transition_reference.py",
+        "-v"
+      ],
+      "exit_status": 0,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/harness-unit.log",
+      "finished_utc": "2026-10-01T18:10:22.064099+00:00"
+    },
+    {
+      "command": [
+        "make",
+        "rewrite-validate-fast"
+      ],
+      "exit_status": 0,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rewrite-fast.log",
+      "finished_utc": "2026-10-01T18:13:13.679482+00:00"
+    },
+    {
+      "command": [
+        "env",
+        "RUSTAXA_SYNTHETIC_REWARDS_EVIDENCE=/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rust.json",
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "-p",
+        "rustaxa-consensus",
+        "nonboundary",
+        "--",
+        "--nocapture"
+      ],
+      "exit_status": 0,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rust-nonboundary.log",
+      "finished_utc": "2026-10-01T18:11:45.667160+00:00"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "-p",
+        "rustaxa-consensus",
+        "final_chain::native_session::rewards::tests",
+        "--",
+        "--nocapture"
+      ],
+      "exit_status": 0,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/rust-rewards.log",
+      "finished_utc": "2026-10-01T18:11:57.875326+00:00"
+    },
+    {
+      "command": [
+        "/build/bin/rust_storage_tests"
+      ],
+      "exit_status": 0,
+      "log": "/home/fry/artifacts/n4-fixture-hardening-2026-10-01/storage-bridge.log",
+      "finished_utc": "2026-10-01T18:11:40.430886+00:00"
+    }
+  ],
+  "quota_telemetry": "unknown",
+  "root_runtime_metadata": "unknown",
+  "cmake_rustaxa_enable": "ON"
+}

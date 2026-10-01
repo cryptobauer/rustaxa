@@ -1,0 +1,3760 @@
+{
+  "schema": 1,
+  "manifest_binding": {
+    "positive_accepted": true,
+    "negative_count": 306,
+    "controls": [
+      {
+        "mode": "changed",
+        "path": [],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "schema"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "schema"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "schema"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "synthetic"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "synthetic"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "synthetic"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "parent_period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "parent_period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "parent_period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "parent_root_label"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "parent_root_label"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "parent_root_label"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "block_author"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "block_author"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "block_author"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "timestamp"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "timestamp"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "timestamp"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "gas_limit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "gas_limit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "gas_limit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "EVMChainConfig"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "EVMChainConfig"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "EVMChainConfig"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "EVMChainConfig",
+          "chainId"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "EVMChainConfig",
+          "chainId"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "EVMChainConfig",
+          "chainId"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "GenesisBalances"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "GenesisBalances"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "GenesisBalances"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "GenesisBalances",
+          "0x0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "GenesisBalances",
+          "0x0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "GenesisBalances",
+          "0x0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "GenesisBalances",
+          "0x0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "GenesisBalances",
+          "0x0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "GenesisBalances",
+          "0x0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "DPOS"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "EligibilityBalanceThreshold"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "EligibilityBalanceThreshold"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "EligibilityBalanceThreshold"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "VoteEligibilityBalanceStep"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "VoteEligibilityBalanceStep"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "VoteEligibilityBalanceStep"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "ValidatorMaximumStake"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "ValidatorMaximumStake"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "ValidatorMaximumStake"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "MinimumDeposit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "MinimumDeposit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "MinimumDeposit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "MaxBlockAuthorReward"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "MaxBlockAuthorReward"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "MaxBlockAuthorReward"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "DagProposersReward"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "DagProposersReward"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "DagProposersReward"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "CommissionChangeDelta"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "CommissionChangeDelta"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "CommissionChangeDelta"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "CommissionChangeFrequency"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "CommissionChangeFrequency"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "CommissionChangeFrequency"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "DelegationDelay"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "DelegationDelay"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "DelegationDelay"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "BlocksPerYear"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "BlocksPerYear"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "BlocksPerYear"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "YieldPercentage"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "YieldPercentage"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "YieldPercentage"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "extra",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Address"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Address"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Address"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Owner"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Owner"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Owner"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "VrfKey"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "VrfKey"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "VrfKey"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Commission"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Commission"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Commission"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Endpoint"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Endpoint"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Endpoint"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Description"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Description"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Description"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Delegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Delegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Delegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Delegations",
+          "0x0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Delegations",
+          "0x0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          0,
+          "Delegations",
+          "0x0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Address"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Address"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Address"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Owner"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Owner"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Owner"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "VrfKey"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "VrfKey"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "VrfKey"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Commission"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Commission"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Commission"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Endpoint"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Endpoint"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Endpoint"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Description"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Description"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Description"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Delegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Delegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Delegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Delegations",
+          "0x0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Delegations",
+          "0x0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "DPOS",
+          "InitialValidators",
+          1,
+          "Delegations",
+          "0x0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "Hardforks"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "FixRedelegateBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "FixRedelegateBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "FixRedelegateBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "Redelegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "Redelegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "Redelegations"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "RewardsDistributionFrequency"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "RewardsDistributionFrequency"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "Hardforks",
+          "RewardsDistributionFrequency"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "RewardsDistributionFrequency",
+          "0"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "RewardsDistributionFrequency",
+          "0"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "RewardsDistributionFrequency",
+          "0"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf",
+          "JailTime"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf",
+          "JailTime"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "MagnoliaHf",
+          "JailTime"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "PhalaenopsisHfBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "PhalaenopsisHfBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "PhalaenopsisHfBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "FixClaimAllBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "FixClaimAllBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "FixClaimAllBlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "BlockNumPartOne"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "BlockNumPartOne"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "BlockNumPartOne"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "BlockNumPartTwo"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "BlockNumPartTwo"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "BlockNumPartTwo"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "MaxSupply"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "MaxSupply"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "MaxSupply"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "GeneratedRewards"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "GeneratedRewards"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "AspenHf",
+          "GeneratedRewards"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "PillarBlocksInterval"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "PillarBlocksInterval"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "PillarBlocksInterval"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "BridgeContractAddress"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "BridgeContractAddress"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "FicusHf",
+          "BridgeContractAddress"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "DagGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "DagGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "DagGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "PbftGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "PbftGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CornusHf",
+          "PbftGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "TrxMinGasPrice"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "TrxMinGasPrice"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "TrxMinGasPrice"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "TrxMaxGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "TrxMaxGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "SoleiroliaHf",
+          "TrxMaxGasLimit"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockNum"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaMin"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaMin"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaMin"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaMax"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaMax"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaMax"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaDefault"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaDefault"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaDefault"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaChangeInterval"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaChangeInterval"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaChangeInterval"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaChange"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaChange"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "LambdaChange"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockPropagationMin"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockPropagationMin"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockPropagationMin"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockPropagationMax"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockPropagationMax"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "BlockPropagationMax"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "ConsensusDelay"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "ConsensusDelay"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "ConsensusDelay"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "DelegationLockingPeriod"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "JailTime"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "JailTime"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "config",
+          "Hardforks",
+          "CactiHf",
+          "JailTime"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "rewards_fact"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact",
+          "period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact",
+          "period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "rewards_fact",
+          "period"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact",
+          "block_author"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact",
+          "block_author"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "rewards_fact",
+          "block_author"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact",
+          "blocks_per_year"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact",
+          "blocks_per_year"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "rewards_fact",
+          "blocks_per_year"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact",
+          "caller_eligible_vote_count"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact",
+          "caller_eligible_vote_count"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "rewards_fact",
+          "caller_eligible_vote_count"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact",
+          "planner_eligible_vote_count"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact",
+          "planner_eligible_vote_count"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "rewards_fact",
+          "planner_eligible_vote_count"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact",
+          "transactions"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact",
+          "transactions"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "extra",
+        "path": [
+          "rewards_fact",
+          "transactions"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact",
+          "dag_blocks"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact",
+          "dag_blocks"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "extra",
+        "path": [
+          "rewards_fact",
+          "dag_blocks"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rewards_fact",
+          "cert_votes"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rewards_fact",
+          "cert_votes"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "extra",
+        "path": [
+          "rewards_fact",
+          "cert_votes"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rust_genesis_accounts_after_delegation"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rust_genesis_accounts_after_delegation"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "unknown",
+        "path": [
+          "rust_genesis_accounts_after_delegation"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rust_genesis_accounts_after_delegation",
+          "0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rust_genesis_accounts_after_delegation",
+          "0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "rust_genesis_accounts_after_delegation",
+          "0000000000000000000000000000000000000032"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "rust_genesis_accounts_after_delegation",
+          "0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "rust_genesis_accounts_after_delegation",
+          "0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "rust_genesis_accounts_after_delegation",
+          "0000000000000000000000000000000000000042"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "go_setup"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "go_setup"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "go_setup"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "synthetic_root_authenticated"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "synthetic_root_authenticated"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "synthetic_root_authenticated"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "producer_qualified"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "producer_qualified"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "producer_qualified"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "missing",
+        "path": [
+          "real_window_gate_closed"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "changed",
+        "path": [
+          "real_window_gate_closed"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      },
+      {
+        "mode": "value",
+        "path": [
+          "real_window_gate_closed"
+        ],
+        "exit_status": 2,
+        "stdout": "",
+        "stderr": "panic: synthetic input contract drift\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:128\nmain.main()\n\t/home/fry/artifacts/n4-synthetic-go-vruu8kvw/cmd/synthetic_native_transition_reference/main.go:292 +0x1ad7\n"
+      }
+    ]
+  },
+  "negative_controls": [
+    {
+      "control": "start",
+      "mutation_attempts": 1,
+      "reason": "empty-effects observer rejects TrieSink mutation attempt",
+      "rejected": true
+    },
+    {
+      "control": "delete",
+      "mutation_attempts": 1,
+      "reason": "empty-effects observer rejects TrieSink mutation attempt",
+      "rejected": true
+    }
+  ],
+  "immutable_go_revision": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+  "immutable_source_sha256": {
+    "taraxa/C/state.go": "b6effa29e1d465a0bcc1badcf398a57e982d16b0d6f4f9b14844632306f7e3ec",
+    "taraxa/state/state_transition/state_transition.go": "d447ac4599f0107ccad4379f95a7269a6d5729283d8dcf00db850ea8fe119e90",
+    "taraxa/state/state_transition/state_hardforks.go": "1432c0e39e7ecaee8683c3e9fd28571e97f816e906c3938b0f38fa886c246aae",
+    "taraxa/state/contracts/dpos/precompiled/dpos_contract.go": "28bb58adb9d99d604fdacf0c284deea49c6887eee789381a5c5a231b5c89f565",
+    "taraxa/state/contracts/slashing/precompiled/slashing_contract.go": "2ac21dbe9ece16e11f1ab85d2670488d24a2a0e8940d2c181ced142511c6edfb",
+    "taraxa/state/state_transition/trie_sink.go": "90d3ac9dd49e3e78cdbe5c35ac34d1d8d508324c282ee7af22b23c74909f8aa4"
+  },
+  "observer_archive_patch": {
+    "immutable_target_sha256": "90d3ac9dd49e3e78cdbe5c35ac34d1d8d508324c282ee7af22b23c74909f8aa4",
+    "patched_target_sha256": "625029eb1a8af877dc724e3eede23ae5dbc3876d096b2f4e6860566189ac7418",
+    "observer_sha256": "6903e50988bbbede7fca1813f773be0f59740edef35687d96dac144ac7893998",
+    "observation_points": [
+      "TrieSink.StartMutation",
+      "TrieSink.Delete"
+    ],
+    "original_checkout_modified": false,
+    "raw_write_observer": {
+      "target": "taraxa/state/state_evm/account.go",
+      "source_sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+      "patched_sha256": "ece20b8f31c04715b2cb4d8648dcdd939637f870236b8463081986ab607cc117",
+      "helper_sha256": "1b1dca25e854e10166c3bf3f58ae1df35ff5e42f949c55852a4b64f2288f644b"
+    }
+  },
+  "archive_path": "/home/fry/artifacts/n4-synthetic-go-vruu8kvw",
+  "archive_sha256": "8c4a2a969883411686027355416fd8c630aefbe04f1dd5a25979af54f3e985bf",
+  "go_version": "go version go1.24.4 linux/amd64",
+  "control_harness_sha256": "8540e39d3ad6103360b7dfea0279acda4d79f89d5e4cd048d9684682c85c610d",
+  "fixture_sha256": "68ea481e6907f6490119f4b2a605d499180fd2d4f0dd439a9349dfb02a9040f1",
+  "harness_sha256": "ac0bfa30a9f568b7aa90b0671ee75e6e4f532662cd4609c29c5426595459b64a",
+  "runner_sha256": "d0ec8b1259ad4377665ca87523821575ba40fb368d0031d9ec5c3e722f6e9af8",
+  "witness": {
+    "backend_put_attempts": 0,
+    "commit_attempts": 0,
+    "config": {
+      "EVMChainConfig": {
+        "chainId": 1
+      },
+      "GenesisBalances": {
+        "0x0000000000000000000000000000000000000032": 2000,
+        "0x0000000000000000000000000000000000000042": 3000
+      },
+      "DPOS": {
+        "EligibilityBalanceThreshold": 100,
+        "VoteEligibilityBalanceStep": 10,
+        "ValidatorMaximumStake": 1000000,
+        "MinimumDeposit": 1,
+        "MaxBlockAuthorReward": 10,
+        "DagProposersReward": 50,
+        "CommissionChangeDelta": 0,
+        "CommissionChangeFrequency": 0,
+        "DelegationDelay": 0,
+        "DelegationLockingPeriod": 0,
+        "BlocksPerYear": 10,
+        "YieldPercentage": 1,
+        "InitialValidators": [
+          {
+            "Address": "0x0000000000000000000000000000000000000031",
+            "Owner": "0x0000000000000000000000000000000000000032",
+            "VrfKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "Commission": 100,
+            "Endpoint": "",
+            "Description": "",
+            "Delegations": {
+              "0x0000000000000000000000000000000000000032": 1000
+            }
+          },
+          {
+            "Address": "0x0000000000000000000000000000000000000041",
+            "Owner": "0x0000000000000000000000000000000000000042",
+            "VrfKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "Commission": 2500,
+            "Endpoint": "",
+            "Description": "",
+            "Delegations": {
+              "0x0000000000000000000000000000000000000042": 2000
+            }
+          }
+        ]
+      },
+      "Hardforks": {
+        "FixRedelegateBlockNum": 18446744073709551615,
+        "Redelegations": null,
+        "RewardsDistributionFrequency": {
+          "0": 2
+        },
+        "MagnoliaHf": {
+          "BlockNum": 0,
+          "JailTime": 0
+        },
+        "PhalaenopsisHfBlockNum": 0,
+        "FixClaimAllBlockNum": 0,
+        "AspenHf": {
+          "BlockNumPartOne": 0,
+          "BlockNumPartTwo": 1,
+          "MaxSupply": 6000,
+          "GeneratedRewards": 0
+        },
+        "FicusHf": {
+          "BlockNum": 0,
+          "PillarBlocksInterval": 0,
+          "BridgeContractAddress": "0x0000000000000000000000000000000000000000"
+        },
+        "CornusHf": {
+          "BlockNum": 0,
+          "DelegationLockingPeriod": 0,
+          "DagGasLimit": 0,
+          "PbftGasLimit": 0
+        },
+        "SoleiroliaHf": {
+          "BlockNum": 18446744073709551615,
+          "TrxMinGasPrice": 0,
+          "TrxMaxGasLimit": 0
+        },
+        "CactiHf": {
+          "BlockNum": 18446744073709551615,
+          "LambdaMin": 0,
+          "LambdaMax": 0,
+          "LambdaDefault": 0,
+          "LambdaChangeInterval": 0,
+          "LambdaChange": 0,
+          "BlockPropagationMin": 0,
+          "BlockPropagationMax": 0,
+          "ConsensusDelay": 0,
+          "DelegationLockingPeriod": 0,
+          "JailTime": 0
+        }
+      }
+    },
+    "distribution_frequency": 2,
+    "genesis_accounts_after_delegation": {
+      "0000000000000000000000000000000000000032": "1000",
+      "0000000000000000000000000000000000000042": "1000",
+      "00000000000000000000000000000000000000fe": "3000",
+      "000000000022d473030f116ddee9f6b43ac78ba3": "0",
+      "0000000071727de22e5e9d8baf0edac6f37da032": "0",
+      "13b0d85ccb8bf860b6b79af3029fca081ae9bef2": "0",
+      "4e59b44847b379578588920ca78fbf26c0b4956c": "0",
+      "5ff137d4b0fdcd49dca30c7cf57e578a026d2789": "0",
+      "69f4d1788e39c87893c980c06edf4b7f686e2938": "0",
+      "7fc98430eaedbb6070b35b39d798725049088348": "0",
+      "914d7fec6aac8cd542e72bca78b30650d45643d7": "0",
+      "998739bfdaadde7c933b942a68053933098f9eda": "0",
+      "a1dabef33b3b82c7814b6d82a79e50f4ac44102b": "0",
+      "ba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed": "0",
+      "ca11bde05977b3631167028862be2a173976ca11": "0",
+      "efc2c1444ebcc4db75e7613d20c6a62ff67a167c": "0",
+      "fb1bffc9d739b8d520daf37df666da4c687191ea": "0"
+    },
+    "genesis_raw_rows": [
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "045e1970cf28b7c3c696e82ddaf3a6bcab6a11282f41d472476ea6911936a39f",
+        "value": "0000000000000000000000000000000000000041"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "0c5cccfb5df46df63707478cbba880cc44283a61274fa0e6bdc8615954c4ee63",
+        "value": "c28002"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "18d1b9e8964b17ead9b5678f9df74c0c0f28aa2785ae296434c73a3f53469e0c",
+        "value": "c28080"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "19cd46f0a4b394d022754c30e8785fbc0c7d599dcdbca13de95978bf5a9dc881",
+        "value": "c28080"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "1e89c9bd7e01c689694f3012f98d0785aa621523e8fc48533361d058df6f1d86",
+        "value": "01000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "201cc75f80577783677db67825758de58d6407efb1af0842effc35f0e86729d5",
+        "value": "c28080"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "368110633bea482a7e7e53b83bd8cbd9e0fab72922686d88231adbc9ab7bad22",
+        "value": "02000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "4ec8e987ae8c32d5e6a93d7f1a07e4068caa2697c4e26d8444fd89965bf0660a",
+        "value": "c8c68203e864808080"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "5d96f6f3efe766445e7b883b8d3187bb07f51e4ac6f5933e0f3ad34cc7176f23",
+        "value": "0000000000000000000000000000000000000032"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "748d1f99e7c1841e68d529d81a6bdc1e1dd861f7e0058b17aecdd9c45b54126e",
+        "value": "02000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "78918945bce4dfebe735f47600625072acb92dc6702a58cbbb0deb666edc6546",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "794007236f5dc208760f9401ff0af27e5286ce750a5ed342b9d50e175144116c",
+        "value": "01000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "845910b17a838c33ed2c563a89f8826287650476b853bfa482874858e935489e",
+        "value": "01000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "931f9dcfbd4923003b409f1d08712e2e7e80c32ffbacd7059595341f61eebd9d",
+        "value": "0000000000000000000000000000000000000042"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "95241b3947561ea89889a13b183723032aab5d6d849037db821a1ac743cc03be",
+        "value": "0000000000000000000000000000000000000031"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "95a120a6e43cbf794732b6571356d284d7f2955509611577e746175a1a31af4b",
+        "value": "cac88207d08209c4808080"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "9628d16514f79a703e4482fabee9a299dff013617c786d3b9c36342714d0812e",
+        "value": "c28002"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "a17f80dba9bce10b496bf517c41202e59beb278fa43a7a66f62e752a99b36340",
+        "value": "01000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "a835641d1d8c22d1aa759d6b2c8e0e1c199395d181e433e954e51257e0261757",
+        "value": "c28080"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "b5137228d1309411928257c9edb4d6e6fe4b0cd8e3cc6ade0279502971cfc7e5",
+        "value": "01000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "c7a208c1537d526a48580bf298262f14b8e5f5c7dfc9f234251b05f3b1a57ba4",
+        "value": "0000000000000000000000000000000000000041"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "d047a35a3da23a69897441c573592b75560e7fdbc85558e7316d7c98ac6d2819",
+        "value": "0000000000000000000000000000000000000031"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "d9e7d017190a638fa6918175b1fd4406314891fa78f0dedeba9b72ab6eb836d3",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "dbb8d0f4c497851a5043c6363657698cb1387682cac2f786c731f8936109d795",
+        "value": "0bb8"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "df1842c6fff31aed7f3dff80bede490e7da330552b98c5f65ed26b1a02e646f6",
+        "value": "c48203e880"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "e45d5d8399564fc4c92cdd009a1dc66a690ad495228aced1749588f2026d6594",
+        "value": "c48207d080"
+      },
+      {
+        "address": "00000000000000000000000000000000000000fe",
+        "key": "f343681465b9efe82c933c3e8748c70cb8aa06539c361de20f72eac04e766393",
+        "value": "012c"
+      }
+    ],
+    "nonboundary": true,
+    "operations": [
+      "Init",
+      "BeginBlock",
+      "EndBlock",
+      "Close"
+    ],
+    "ordered_raw_writes": [],
+    "parent_root_label": "1234 (synthetic nonempty label; no authenticated root)",
+    "period": 1,
+    "prepare_commit_called": false,
+    "producer_qualified": false,
+    "reads": [
+      {
+        "column": 2,
+        "key": "d24e8fff20c5317074c54fd54ca9f1fc8fef36bb70c44b55f90a70c621b91f9a",
+        "value": "e901820bb880a07c17ca5f75fbd5264551595c4d8c98ad09464ce93fc772cb521b9dbb05e3e447820bb8",
+        "present": true
+      },
+      {
+        "column": 4,
+        "key": "b31797efde99799dba08dac1b52c7dfc6498317677024bb1e2939b2cb6069099",
+        "value": "",
+        "present": false
+      }
+    ],
+    "real_window_gate_closed": false,
+    "reward_distributions_requested": 0,
+    "root_derived": false,
+    "setup_account_updates": 17,
+    "setup_raw_updates": 27,
+    "synthetic": true,
+    "trie_mutation_attempts": 0
+  }
+}
