@@ -42,6 +42,9 @@ use rustaxa_types::{
 };
 use serde_json::{Value, json};
 
+#[path = "native_simulation_reference/metadata.rs"]
+mod metadata;
+
 fn address(last: u8) -> [u8; 20] {
     let mut result = [0; 20];
     result[19] = last;

@@ -85,8 +85,10 @@ The subsequent [metadata ABI/admission slice](n2_validator_info_abi.md) adds
 selector-first admission and pinned dynamic-ABI errors, including a synthetic
 Cacti corpus. The [frame/API composition slice](n2_validator_info_frames.md)
 adds real pending-driver and disposable historical API tests over eight actual
-Go frame cases. Sparse-state, separate metadata DryRunner policy parity,
-persisted metadata simulations and trace limits remain open.
+Go frame cases. [Actual metadata DryRunner parity](n3_metadata_dry_runner.md)
+adds nine cases and 36 persisted-reader executions with exact nonce, error,
+gas, output, log and disposal comparisons. Sparse-state, metadata estimation
+and trace limits remain open.
 Existing adapters retain their recorded historical limitations; this is
 not complete N2 acceptance.
 
