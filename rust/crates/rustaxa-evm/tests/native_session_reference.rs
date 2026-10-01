@@ -50,6 +50,9 @@ use rustaxa_types::{
 };
 use serde_json::Value;
 
+#[path = "native_session_reference/validator_info_frames.rs"]
+mod validator_info_frames;
+
 const SENDER: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa,
 ];

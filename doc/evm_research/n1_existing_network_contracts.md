@@ -83,7 +83,10 @@ reward claims and selected queries. The current bounded
 setValidatorInfo over consistent snapshots to pending and historical sessions.
 The subsequent [metadata ABI/admission slice](n2_validator_info_abi.md) adds
 selector-first admission and pinned dynamic-ABI errors, including a synthetic
-Cacti corpus. Sparse-state and full frame/API composition limits remain open.
+Cacti corpus. The [frame/API composition slice](n2_validator_info_frames.md)
+adds real pending-driver and disposable historical API tests over eight actual
+Go frame cases. Sparse-state, separate metadata DryRunner policy parity,
+persisted metadata simulations and trace limits remain open.
 Existing adapters retain their recorded historical limitations; this is
 not complete N2 acceptance.
 

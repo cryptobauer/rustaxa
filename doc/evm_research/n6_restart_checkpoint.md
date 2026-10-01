@@ -1,11 +1,13 @@
-# Restart checkpoint: metadata ABI/admission complete
+# Restart checkpoint: metadata frame/API composition complete
 
 ## Current state
 
 Branch: `feat/rust/evm-state-db`. Preparation is committed at `4148a1a` after
 separate Sol review and quota-reader corrections. Decoded metadata is committed
 at `86e74ff`. The latest implementation commit includes the completed
-[ABI/admission report](n2_validator_info_abi.md); use `git log` for its exact ID.
+[ABI/admission report](n2_validator_info_abi.md), at `8945453`. The latest local
+commit adds [frame/API composition](n2_validator_info_frames.md); use `git log`
+for its exact ID.
 No push or production routing is authorized.
 
 The [metadata report](n2_staged_validator_info.md) records the shared pending and
@@ -21,7 +23,7 @@ rebuilt ON consensus bridge with all 15 tests. Frozen independent Astra review
 accepted it without findings or corrections. Scope is staged metadata over
 consistent snapshots, with exact ABI/admission and synthetic active-Cacti
 evidence. Sparse owner/info distinctions, pre-Cornus session admission, delegate,
-call-code and complete Rust frame/API composition remain open. Historical
+call-code and separate metadata DryRunner/trace parity remain open. Historical
 simulation here is synthetic and does not certify real inputs.
 Milestone 10 and N1–N6 remain open. Supplied data and historical copies were not
 opened or changed. The earlier N4 hardening remains complete at `5bfdf494c`;
@@ -32,13 +34,15 @@ are retained.
 
 Continue the active [root prompt](../../next_executable_slice_prompt.md) and
 [remaining queue](n6_remaining_branch_queue.md) under the
-[slice workflow](../codex_slice_workflow.md). The next ready bounded metadata
-dependency is actual Rust frame/API composition. Luna mapped real owner harnesses
-in `rust/crates/rustaxa-evm/tests/native_session_reference.rs` and
-`native_simulation_reference.rs`, with the real simulation adapter in
-`tests/support/mixed_native.rs`. Add CALL, STATICCALL and parent-REVERT metadata
-fixtures and compare actual driver/journal and simulation outputs. Do not use
-the scripted-port tests as native business parity. Read only selected ranges.
+[slice workflow](../codex_slice_workflow.md). The frame/API slice passed all five
+integration tests, dual-pin fixture reproduction and workspace fast checks.
+Independent frozen Astra review accepted it without findings. It covers eight
+actual frames and sixteen historical probes over synthetic in-memory readers.
+A separate actual Go DryRunner metadata oracle and persisted reader comparison
+remain a ready bounded next dependency. Reuse the established Go seed/DryRunner
+exporter and `native_simulation_reference.rs` history/materialization helpers;
+preserve existing corpora. Read only selected ranges. Luna is checking the next
+ready candidate in this session.
 
 Current root log confirmed `gpt-6.1-sol` medium. Luna startup map ran on
 `gpt-6-luna` medium; independent metadata review ran on `gpt-6-astra` medium.
