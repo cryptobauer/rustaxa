@@ -1,0 +1,17 @@
+{
+  "harness_sha256": "4720ca94a794fe637cdeede62acf9ac224f217290f33d52d5ae86b8998035591",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "local": "0d3759898b213e0f51721eda1e16f0f82a63e10e6d6f1d6de876f9fe841d4727",
+    "public": "0d3759898b213e0f51721eda1e16f0f82a63e10e6d6f1d6de876f9fe841d4727"
+  },
+  "source_sha256": {
+    "native_metadata_trace_reference.go": "b7fa6646dc0b7772e134d6199cfbe0ddd7e9e82526654e2a8c6a78040d11b8e1",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
+    "native_validator_info_reference.go": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5"
+  }
+}

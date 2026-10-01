@@ -16,12 +16,13 @@ use rustaxa_types::concrete_state::{
 use crate::{
     contracts::{
         BlockHashRead, CodeExecutionStatus, ExecutionBlockContext, ExecutionTransaction,
-        ExecutionTransactionKind, TransactionExecutionResult,
+        ExecutionTransactionKind, NativeExecutionPort, NativePortError, TransactionExecutionResult,
     },
     driver::{
-        ExecutionDriverError, NativeAddressClassifier, execute_top_level_call,
+        ExecutionDriverError, NativeAddressClassifier, PeriodConsensusSequence,
+        execute_top_level_call, execute_top_level_call_with_native,
         execute_top_level_call_with_trace, execute_top_level_create,
-        execute_top_level_create_with_trace,
+        execute_top_level_create_with_native, execute_top_level_create_with_trace,
     },
     envelope::EnvelopeRules,
     journal::ExecutionJournal,
@@ -54,6 +55,8 @@ pub enum StructuredTraceRunnerError {
         /// Execution block period used to derive `expected`.
         execution: rustaxa_types::FinalChainBlockNumber,
     },
+    /// Creating the private native port failed before sequence execution.
+    NativeSession(NativePortError),
     /// One sequence transaction reached an infrastructure or unsupported path.
     Execution {
         /// Whether the transaction was a prerequisite or target.
@@ -201,6 +204,153 @@ pub fn run_structured_trace<
         observed.push(owned_result(execution, collector));
     }
 
+    let supplied = observed
+        .iter()
+        .map(|result| StructuredTraceResult {
+            gas_used: result.gas_used,
+            failed: result.failed,
+            return_value: &result.return_value,
+            events: &result.events,
+        })
+        .collect::<Vec<_>>();
+    let output = serialize_structured_results(&supplied)
+        .map_err(StructuredTraceRunnerError::Serialization)?;
+    Ok(StructuredTraceRun { state, output })
+}
+
+/// Runs a disposable default structured sequence with direct native CALL targets.
+///
+/// State selection, supplied nonces, retained journal and normal failure rows
+/// follow [`run_structured_trace`]. One private native port and period sequence
+/// span all prefix/target calls and are dropped with the journal on every exit.
+/// No write set, rewards plan or publication capability escapes.
+///
+/// Before any state read, `native_factory` receives the authenticated preceding
+/// concrete identity and execution period. It must bind its semantic snapshot
+/// and configuration to both. Go's TraceRunner native reader factory returns
+/// live sequence state even for delayed queries; the adapter must establish that
+/// policy for each admitted method. A normal historical simulation port is not
+/// a substitute. The initial real-port evidence covers current metadata updates
+/// and `getValidator`, not all delayed methods or period-zero native sessions.
+///
+/// Prefix CALL/CREATE uses the existing native driver. Direct addresses selected
+/// by either classifier use the native CALL driver for targets, preserving its
+/// integrity/unsupported checks. These calls have no interpreter opcode rows in
+/// Go. Other targets use the existing bounded traced driver; unsupported nested
+/// target paths fail without returning partial JSON. Native/ordinary code and
+/// consensus failures remain result rows and do not abort later targets.
+/// Factory errors use [`StructuredTraceRunnerError::NativeSession`]; driver errors
+/// retain the failing stage/index. OpenEthereum and RPC routing remain separate.
+#[allow(clippy::too_many_arguments)]
+pub fn run_structured_trace_with_native<
+    R: ConcreteStateRead + ?Sized,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+    F: FnOnce(
+        ConcreteStateIdentity,
+        rustaxa_types::FinalChainBlockNumber,
+    ) -> Result<P, NativePortError>,
+>(
+    reader: &R,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_factory: F,
+    block: &ExecutionBlockContext,
+    prefix: &[ExecutionTransaction],
+    targets: &[ExecutionTransaction],
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<StructuredTraceRun, StructuredTraceRunnerError> {
+    let state = reader.identity();
+    let expected =
+        rustaxa_types::FinalChainBlockNumber::new(block.period.as_u64().saturating_sub(1));
+    if state.period != expected {
+        return Err(StructuredTraceRunnerError::StatePeriodMismatch {
+            state,
+            expected,
+            execution: block.period,
+        });
+    }
+    let mut port =
+        native_factory(state, block.period).map_err(StructuredTraceRunnerError::NativeSession)?;
+    let mut sequence = PeriodConsensusSequence::new(block.period);
+    let mut journal = ExecutionJournal::new(BorrowedCommitted(reader));
+    for (index, transaction) in prefix.iter().enumerate() {
+        let result = match transaction.kind {
+            ExecutionTransactionKind::Call => execute_top_level_call_with_native(
+                &mut journal,
+                block_hashes,
+                all_native_addresses,
+                consensus_native_addresses,
+                &mut port,
+                &mut sequence,
+                block,
+                transaction,
+                envelope_rules,
+                profile,
+            ),
+            ExecutionTransactionKind::Create => execute_top_level_create_with_native(
+                &mut journal,
+                block_hashes,
+                all_native_addresses,
+                consensus_native_addresses,
+                &mut port,
+                &mut sequence,
+                block,
+                transaction,
+                envelope_rules,
+                profile,
+            ),
+            kind => Err(ExecutionDriverError::UnsupportedTransactionKind(kind)),
+        };
+        result.map_err(|error| StructuredTraceRunnerError::Execution {
+            stage: TraceSequenceStage::Prefix,
+            index,
+            error,
+        })?;
+    }
+    let mut observed = Vec::with_capacity(targets.len());
+    for (index, transaction) in targets.iter().enumerate() {
+        let mut collector = TraceCollector::default();
+        let direct_native = transaction.receiver.is_some_and(|address| {
+            all_native_addresses.is_native_address(block.period, address)
+                || consensus_native_addresses.is_native_address(block.period, address)
+        });
+        let execution = if direct_native {
+            execute_top_level_call_with_native(
+                &mut journal,
+                block_hashes,
+                all_native_addresses,
+                consensus_native_addresses,
+                &mut port,
+                &mut sequence,
+                block,
+                transaction,
+                envelope_rules,
+                profile,
+            )
+        } else {
+            execute_traced(
+                &mut journal,
+                block_hashes,
+                all_native_addresses,
+                block,
+                transaction,
+                envelope_rules,
+                profile,
+                &mut collector,
+            )
+        }
+        .map_err(|error| StructuredTraceRunnerError::Execution {
+            stage: TraceSequenceStage::Target,
+            index,
+            error,
+        })?;
+        observed.push(owned_result(execution, collector));
+    }
     let supplied = observed
         .iter()
         .map(|result| StructuredTraceResult {

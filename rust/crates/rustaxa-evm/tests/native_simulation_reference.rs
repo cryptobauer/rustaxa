@@ -48,6 +48,9 @@ mod metadata;
 #[path = "native_simulation_reference/metadata_estimate.rs"]
 mod metadata_estimate;
 
+#[path = "native_simulation_reference/metadata_trace.rs"]
+mod metadata_trace;
+
 fn address(last: u8) -> [u8; 20] {
     let mut result = [0; 20];
     result[19] = last;

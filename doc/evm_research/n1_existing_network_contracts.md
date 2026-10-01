@@ -89,7 +89,10 @@ Go frame cases. [Actual metadata DryRunner parity](n3_metadata_dry_runner.md)
 adds nine cases and 36 persisted-reader executions with exact nonce, error,
 gas, output, log and disposal comparisons. [Metadata estimation](n3_metadata_estimation.md)
 compares actual Go probes, the unchanged C++ search and fresh real Rust sessions
-across reader reopen. Sparse-state and trace limits remain open.
+across reader reopen. [Direct metadata structured traces](n3_direct_metadata_traces.md)
+add live prefix/target state and exact default JSON over persisted readers.
+Sparse-state, delayed native tracing, nested/OpenEthereum and full coverage
+limits remain open.
 Existing adapters retain their recorded historical limitations; this is
 not complete N2 acceptance.
 

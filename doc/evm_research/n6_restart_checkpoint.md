@@ -1,4 +1,4 @@
-# Restart checkpoint: native metadata estimation complete
+# Restart checkpoint: direct native metadata traces complete
 
 ## Current state
 
@@ -6,7 +6,7 @@ Branch: `feat/rust/evm-state-db`. Preparation is committed at `4148a1a` after
 separate Sol review and quota-reader corrections. Decoded metadata is committed
 at `86e74ff`. The latest implementation commit includes the completed
 [ABI/admission report](n2_validator_info_abi.md), at `8945453`. The latest local
-commit adds [native estimation](n3_metadata_estimation.md); use `git log`
+commit adds [direct native traces](n3_direct_metadata_traces.md); use `git log`
 for its exact ID.
 No push or production routing is authorized.
 
@@ -23,7 +23,7 @@ rebuilt ON consensus bridge with all 15 tests. Frozen independent Astra review
 accepted it without findings or corrections. Scope is staged metadata over
 consistent snapshots, with exact ABI/admission and synthetic active-Cacti
 evidence. Sparse owner/info distinctions, pre-Cornus session admission, delegate,
-call-code and metadata trace parity remain open. Historical
+call-code and delayed/nested/OpenEthereum native traces remain open. Historical
 simulation here is synthetic and does not certify real inputs.
 Milestone 10 and N1–N6 remain open. Supplied data and historical copies were not
 opened or changed. The earlier N4 hardening remains complete at `5bfdf494c`;
@@ -50,10 +50,18 @@ Native metadata estimation also passed targeted tests, actual dual-pin/C++
 reproduction and workspace fast checks; independent frozen Astra review accepted
 it without findings. The unchanged C++ search consumes 24 exact actual-Go probes,
 and Rust runs 96 fresh simulations across reader reopen with matching results.
-The next ready bounded N3 candidate is direct native structured tracing with
-retained prefix/target state. Read the real Go TraceRunner lifetime before design;
-its delayed native factory uses live block state rather than DryRunner history.
-Do not infer full delayed-query/native trace parity from metadata-only coverage.
+The direct native structured facade passed 30 focused tests, dual-pin actual
+TraceRunner reproduction and workspace fast checks. Independent Astra contract
+and frozen final review accepted it without findings. One private real pending
+port, journal and sequence retain live current metadata across prefix/targets;
+28 repeated trace runs span two physical reader reopens. The API explicitly
+requires method-specific live native reader compatibility. Do not infer full
+delayed-query, nested, period-zero or OpenEthereum parity from this coverage.
+
+Continue other ready native-method coverage from the remaining queue. Luna is
+mapping one smallest non-metadata staged-session gap, owner and oracle. Reuse
+existing business kernels and obtain bounded semantic review before any unsettled
+serializer/lifetime decisions. Read only selected source ranges.
 
 Current root log confirmed `gpt-6.1-sol` medium. Luna startup map ran on
 `gpt-6-luna` medium; independent metadata review ran on `gpt-6-astra` medium.
