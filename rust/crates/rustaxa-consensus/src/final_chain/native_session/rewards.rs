@@ -778,7 +778,7 @@ mod tests {
     use super::*;
     use ethereum_types::H160;
     use rustaxa_storage::{Config, Storage};
-    use rustaxa_types::GenesisValidatorMetadata;
+    use rustaxa_types::{FinalChainAccountBalance, GenesisValidatorMetadata};
     use serde_json::Value;
     use std::cell::{Cell, RefCell};
     use std::path::PathBuf;
@@ -810,6 +810,7 @@ mod tests {
     struct RewardState {
         rows: RefCell<RewardRows>,
         account_reads: Cell<usize>,
+        raw_reads: RefCell<Vec<(([u8; 20], [u8; 32]), ConcreteRead<Vec<u8>>)>>,
         dpos_balance: RefCell<BigInt>,
     }
 
@@ -839,6 +840,7 @@ mod tests {
             Self {
                 rows: RefCell::new(rows),
                 account_reads: Cell::new(0),
+                raw_reads: RefCell::new(Vec::new()),
                 dpos_balance: RefCell::new(BigInt::from(3_000_u64)),
             }
         }
@@ -883,12 +885,16 @@ mod tests {
             address: [u8; 20],
             key: &ConcreteStorageKey,
         ) -> std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
-            Ok(self
+            let value = self
                 .rows
                 .borrow()
                 .get(&(address, key.0))
                 .cloned()
-                .unwrap_or(ConcreteRead::Absent))
+                .unwrap_or(ConcreteRead::Absent);
+            self.raw_reads
+                .borrow_mut()
+                .push(((address, key.0), value.clone()));
+            Ok(value)
         }
     }
 
@@ -914,6 +920,26 @@ mod tests {
         cacti_jail_time: u64,
         test: impl FnOnce(&FinalChain),
     ) {
+        with_reward_chain_setup(
+            yield_percentage,
+            cacti_period,
+            magnolia_jail_time,
+            cacti_jail_time,
+            1,
+            test,
+        );
+    }
+
+    // Frequency-two uses the same complete owner fixture and post-delegation
+    // ordinary balances as the independent synthetic Go genesis setup.
+    fn with_reward_chain_setup(
+        yield_percentage: u16,
+        cacti_period: FinalChainBlockNumber,
+        magnolia_jail_time: u64,
+        cacti_jail_time: u64,
+        distribution_frequency: u32,
+        test: impl FnOnce(&FinalChain),
+    ) {
         let path = temp_db_path();
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = |address, delegator, stake: u64, commission| GenesisValidator {
@@ -931,7 +957,20 @@ mod tests {
             storage.clone(),
             1_000_000.into(),
             0,
-            Vec::new(),
+            if distribution_frequency == 2 {
+                [(DELEGATOR_ONE, 1_000_u64), (DELEGATOR_TWO, 1_000)]
+                    .into_iter()
+                    .map(|(address, balance)| GenesisAccount {
+                        address,
+                        balance: FinalChainAccountBalance::from_cpp_genesis_bytes(
+                            &U256::from(balance).to_big_endian(),
+                        )
+                        .unwrap(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
             vec![
                 validator(VALIDATOR_ONE, DELEGATOR_ONE, 1_000, 100),
                 validator(VALIDATOR_TWO, DELEGATOR_TWO, 2_000, 2_500),
@@ -960,7 +999,10 @@ mod tests {
                 cacti_period,
                 magnolia_jail_time,
                 cacti_jail_time,
-                rewards_distribution_frequency: vec![(FinalChainBlockNumber::GENESIS, 1)],
+                rewards_distribution_frequency: vec![(
+                    FinalChainBlockNumber::GENESIS,
+                    distribution_frequency,
+                )],
                 ..Default::default()
             },
             FinalChainBlockNumber::GENESIS,
@@ -1398,10 +1440,93 @@ mod tests {
         });
     }
 
+    fn hex_bytes_with_prefix(bytes: [u8; 20]) -> String {
+        format!("0x{}", hex_bytes(bytes))
+    }
+
+    fn with_nonboundary_reward_chain(test: impl FnOnce(&FinalChain)) {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../experiments/evm_feasibility/fixtures/synthetic_native_transition_input.json"
+        )))
+        .unwrap();
+        assert_eq!(
+            fixture["config"]["Hardforks"]["RewardsDistributionFrequency"]["0"],
+            2
+        );
+        assert_eq!(
+            fixture["config"]["GenesisBalances"],
+            serde_json::json!({hex_bytes_with_prefix(DELEGATOR_ONE):2000, hex_bytes_with_prefix(DELEGATOR_TWO):3000})
+        );
+        let validators = fixture["config"]["DPOS"]["InitialValidators"]
+            .as_array()
+            .unwrap();
+        for (row, (address, owner, stake, commission)) in validators.iter().zip([
+            (VALIDATOR_ONE, DELEGATOR_ONE, 1000, 100),
+            (VALIDATOR_TWO, DELEGATOR_TWO, 2000, 2500),
+        ]) {
+            assert_eq!(row["Address"], hex_bytes_with_prefix(address));
+            assert_eq!(row["Owner"], hex_bytes_with_prefix(owner));
+            assert_eq!(row["Commission"], commission);
+            assert_eq!(row["Delegations"][hex_bytes_with_prefix(owner)], stake);
+        }
+        assert_eq!(validators.len(), 2);
+        assert_eq!(fixture["rewards_fact"]["planner_eligible_vote_count"], 10);
+        for (field, value) in [
+            ("EligibilityBalanceThreshold", 100),
+            ("VoteEligibilityBalanceStep", 10),
+            ("ValidatorMaximumStake", 1_000_000),
+            ("MinimumDeposit", 1),
+            ("MaxBlockAuthorReward", 10),
+            ("DagProposersReward", 50),
+            ("BlocksPerYear", 10),
+            ("YieldPercentage", 1),
+            ("DelegationDelay", 0),
+            ("DelegationLockingPeriod", 0),
+        ] {
+            assert_eq!(fixture["config"]["DPOS"][field], value);
+        }
+        let forks = &fixture["config"]["Hardforks"];
+        assert_eq!(forks["FixRedelegateBlockNum"], u64::MAX);
+        for field in ["MagnoliaHf", "FicusHf", "CornusHf"] {
+            assert_eq!(forks[field]["BlockNum"], 0);
+        }
+        for field in ["CactiHf", "SoleiroliaHf"] {
+            assert_eq!(forks[field]["BlockNum"], u64::MAX);
+        }
+        assert_eq!(
+            forks["AspenHf"],
+            serde_json::json!({"BlockNumPartOne":0,"BlockNumPartTwo":1,"MaxSupply":6000,"GeneratedRewards":0})
+        );
+        with_reward_chain_setup(1, FinalChainBlockNumber::MAX, 0, 0, 2, test);
+    }
+
+    fn nonboundary_plan(chain: &FinalChain) -> FinalChainPreparedExternalEvmRewardsStatsPlan {
+        let plan = chain
+            .plan_external_evm_rewards_stats(
+                [0x74; 32],
+                FinalizedRewardsPeriodFact {
+                    period: 1,
+                    block_author: H160::from(MISSING_AUTHOR),
+                    blocks_per_year: 10,
+                    dpos_eligible_total_vote_count: 0,
+                    transactions: Vec::new(),
+                    dag_blocks: Vec::new(),
+                    cert_votes: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert!(plan.distribution_stats.is_empty());
+        assert!(plan.storage_update.cache_current_period);
+        assert!(!plan.storage_update.clear_cached_stats);
+        assert!(!plan.storage_update.current_block_stats_rlp.is_empty());
+        plan
+    }
+
     #[test]
     fn empty_distribution_stream_is_a_zero_effect_nonboundary_phase() {
-        with_current_reward_chain(|chain| {
-            let reward_plan = plan(Vec::new());
+        with_nonboundary_reward_chain(|chain| {
+            let reward_plan = nonboundary_plan(chain);
             let mut session = chain
                 .begin_native_session_bound(
                     reward_plan.request_id,
@@ -1412,11 +1537,179 @@ mod tests {
             let before = session.dpos_state.clone();
             let state = RewardState::from_snapshot(&before);
             let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
-
             assert_eq!(outcome.total_reward, DposTokenAmount::zero());
             assert!(outcome.account_mutations.is_empty());
             assert!(outcome.raw_mutations.is_empty());
             assert_eq!(outcome.dpos_snapshot, before);
+            assert_eq!(state.account_reads.get(), 0);
+            let expected = vec![
+                (
+                    (DPOS_CONTRACT_ADDRESS, concrete_storage_key(&[&[4]])),
+                    ConcreteRead::Present(concrete_compact_u64(300)),
+                ),
+                (
+                    (DPOS_CONTRACT_ADDRESS, concrete_storage_key(&[&[5]])),
+                    ConcreteRead::Present(concrete_u256_bytes(U256::from(3_000))),
+                ),
+            ];
+            assert_eq!(*state.raw_reads.borrow(), expected);
+            let go: Value = serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../experiments/evm_feasibility/fixtures/synthetic_native_transition_go.json"
+            )))
+            .unwrap();
+            let witness = &go["witness"];
+            assert_eq!(witness["nonboundary"], true);
+            for counter in [
+                "backend_put_attempts",
+                "commit_attempts",
+                "trie_mutation_attempts",
+            ] {
+                assert_eq!(witness[counter], 0);
+            }
+            let canonical = canonical_concrete_precompile_storage(&before, true).unwrap();
+            let go_rows = witness["genesis_raw_rows"].as_array().unwrap();
+            assert_eq!(go_rows.len(), 27);
+            for row in go_rows {
+                let address = fixed_hex::<20>(row["address"].as_str().unwrap());
+                let key = fixed_hex::<32>(row["key"].as_str().unwrap());
+                assert_eq!(
+                    canonical[&(address, key)][0],
+                    hex_decode(row["value"].as_str().unwrap())
+                );
+            }
+            assert_eq!(canonical.len(), 29);
+            // Go leaves the empty DPoS minted-token row and slashing jail-list absent.
+            // These two representational rows are not exact raw snapshot parity.
+            let rust_only = canonical
+                .iter()
+                .filter(|((address, key), _)| {
+                    !go_rows.iter().any(|row| {
+                        row["address"] == hex_bytes(address) && row["key"] == hex_bytes(key)
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(rust_only.len(), 2);
+            assert!(
+                rust_only
+                    .iter()
+                    .all(|((address, _), values)| (*address == DPOS_CONTRACT_ADDRESS
+                        && values[0].is_empty())
+                        || (*address == SLASHING_CONTRACT_ADDRESS && values[0] == vec![0xc0]))
+            );
+            // Optional evidence export is derived from actual reads and effects.
+            // It never supplies planner or executor inputs.
+            if let Ok(path) = std::env::var("RUSTAXA_SYNTHETIC_REWARDS_EVIDENCE") {
+                let rows = canonical_concrete_precompile_storage(&before, true).unwrap();
+                let report = serde_json::json!({
+                    "synthetic": true, "period": 1, "distribution_frequency": 2,
+                    "cache_current_period": reward_plan.storage_update.cache_current_period,
+                    "distribution_count": reward_plan.distribution_stats.len(),
+                    "reads": state.raw_reads.borrow().iter().map(|((address,key),value)| {
+                        let ConcreteRead::Present(value) = value else { panic!("origin absent") };
+                        serde_json::json!({"address":hex_bytes(address),"key":hex_bytes(key),"value":hex_bytes(value)})
+                    }).collect::<Vec<_>>(),
+                    "genesis_raw_rows": rows.into_iter().map(|((address,key),values)| serde_json::json!({"address":hex_bytes(address),"key":hex_bytes(key),"value":hex_bytes(&values[0])})).collect::<Vec<_>>(),
+                    "account_mutations": outcome.account_mutations.len(), "raw_mutations": outcome.raw_mutations.len(),
+                    "total_reward": outcome.total_reward.as_u256().to_string(), "snapshot_unchanged": outcome.dpos_snapshot == before,
+                    "account_reads": state.account_reads.get(),
+                });
+                std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn nonboundary_rewards_reject_missing_and_malformed_origins() {
+        with_nonboundary_reward_chain(|chain| {
+            let plan = nonboundary_plan(chain);
+            for suffix in [4_u8, 5] {
+                for malformed in [false, true] {
+                    let mut session = chain
+                        .begin_native_session_bound(
+                            plan.request_id,
+                            1.into(),
+                            FinalChainBlockNumber::GENESIS,
+                        )
+                        .unwrap();
+                    let before = session.dpos_state.clone();
+                    let state = RewardState::from_snapshot(&before);
+                    let identity = (DPOS_CONTRACT_ADDRESS, concrete_storage_key(&[&[suffix]]));
+                    if malformed {
+                        state
+                            .rows
+                            .borrow_mut()
+                            .insert(identity, ConcreteRead::Present(vec![0xff]));
+                    } else {
+                        state.rows.borrow_mut().remove(&identity);
+                    }
+                    assert!(matches!(
+                        session.finish_rewards(&plan, &state),
+                        Err(FinalChainNativeSessionError::RawIntegrity(_))
+                    ));
+                    assert_eq!(session.dpos_state, before);
+                    assert_eq!(state.account_reads.get(), 0);
+                    assert_eq!(
+                        session.finish_rewards(&plan, &state),
+                        Err(FinalChainNativeSessionError::Aborted)
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn nonboundary_rewards_reject_request_period_and_authority_before_reads() {
+        with_nonboundary_reward_chain(|chain| {
+            let plan = nonboundary_plan(chain);
+            assert!(matches!(
+                chain.begin_native_session_bound(
+                    plan.request_id,
+                    2.into(),
+                    FinalChainBlockNumber::GENESIS
+                ),
+                Err(FinalChainNativeSessionError::PendingPeriodMismatch)
+            ));
+            for request in [[0x75; 32]] {
+                let period = 1_u64;
+                let mut session = chain
+                    .begin_native_session_bound(
+                        request,
+                        period.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                let before = session.dpos_state.clone();
+                let state = RewardState::from_snapshot(&before);
+                assert_eq!(
+                    session.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::RewardsPlanMismatch)
+                );
+                assert_eq!(session.dpos_state, before);
+                assert!(state.raw_reads.borrow().is_empty());
+                assert_eq!(state.account_reads.get(), 0);
+            }
+            let mut session = chain
+                .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                .unwrap();
+            let state = RewardState::from_snapshot(&session.dpos_state);
+            assert_eq!(
+                session.finish_rewards(&plan, &state),
+                Err(FinalChainNativeSessionError::UnboundRewards)
+            );
+            assert!(state.raw_reads.borrow().is_empty());
+            let mut session = chain
+                .begin_native_session_bound(
+                    plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            chain.rewards_stats_runtime.lock().unwrap().generation += 1;
+            assert!(
+                matches!(session.finish_rewards(&plan, &state), Err(FinalChainNativeSessionError::Domain(message)) if message.contains("RUNTIME_GENERATION_MISMATCH"))
+            );
+            assert!(state.raw_reads.borrow().is_empty());
             assert_eq!(state.account_reads.get(), 0);
         });
     }

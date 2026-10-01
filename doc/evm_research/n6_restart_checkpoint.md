@@ -97,3 +97,30 @@ sample. Keep both as time-specific observations; neither is a billing claim or a
 hard quota limit. The owner's reserve remains at least 25% weekly usage, with no
 new slice started below 30% remaining. Monitor telemetry and preserve closeout
 capacity.
+
+## October 1 bounded synthetic execution handoff
+
+The [executed synthetic nonboundary report](n4_synthetic_native_transition.md)
+records the complete two-validator Rust owner fixture, actual frequency-two
+planner, bound session and successful `finish_rewards`, plus fresh pinned Go
+cold Init/BeginBlock/EndBlock/Close execution. Both have zero terminal effects;
+Rust returns zero reward and unchanged semantic state. Rust reads slots 4/5;
+Go reads the DPoS account and absent jail list. All 27 Go raw genesis rows match
+Rust; Rust has two extra empty-state representations. Exact read-set and full
+raw snapshot identity are not claimed.
+
+Origin and request/period/authority negatives pass. Focused Rust and
+consensus/storage bridge checks pass; the fast workspace gate passes. Source,
+fixtures and results were frozen before independent review. The report records
+hashes, the same-route model-capacity interruption, unavailable usage telemetry
+and correction groups. No commit or push was made by the implementation lead.
+Producer qualification, historical/mainnet completeness, real-window acceptance,
+publication and adoption remain open. Preparation and historical routing records
+are preserved.
+
+Independent Astra-medium review completed with no blocking findings. Root
+reran consensus and storage bridge tests with retained logs (15/15 and 4/4).
+The report records the compact slot-5 codec correction and two nonblocking
+regression limits. The reviewed synthetic slice and this handoff are included
+in a local Conventional Commit. No push was made. Pre-existing preparation
+changes remain in the working tree.
