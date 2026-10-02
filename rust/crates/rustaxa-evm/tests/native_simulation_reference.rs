@@ -51,6 +51,9 @@ mod metadata_estimate;
 #[path = "native_simulation_reference/metadata_trace.rs"]
 mod metadata_trace;
 
+#[path = "native_simulation_reference/escrow.rs"]
+mod escrow;
+
 fn address(last: u8) -> [u8; 20] {
     let mut result = [0; 20];
     result[19] = last;
@@ -197,6 +200,13 @@ impl ConcreteStateRead for CompleteSeedReader {
 }
 
 fn native_history(path: &FixturePath) -> FinalChain {
+    native_history_with_phalaenopsis(path, FinalChainBlockNumber::MAX)
+}
+
+fn native_history_with_phalaenopsis(
+    path: &FixturePath,
+    phalaenopsis_period: FinalChainBlockNumber,
+) -> FinalChain {
     let storage = Arc::new(Storage::new(Config::new(path.0.clone())).unwrap());
     let final_chain = FinalChain::new_with_rewards_config(
         storage.clone(),
@@ -232,6 +242,7 @@ fn native_history(path: &FixturePath) -> FinalChain {
             cornus_period: 0.into(),
             fix_redelegate_block_num: 0.into(),
             fix_claim_all_block_num: 0.into(),
+            phalaenopsis_period,
             aspen_part_one_period: 0.into(),
             aspen_part_two_period: FinalChainBlockNumber::MAX,
             cacti_period: FinalChainBlockNumber::MAX,

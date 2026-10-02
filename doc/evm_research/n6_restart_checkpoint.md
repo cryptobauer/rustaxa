@@ -1,4 +1,4 @@
-# Restart checkpoint: redelegation observations complete
+# Restart checkpoint: escrow DryRunner complete
 
 ## Current state
 
@@ -97,8 +97,12 @@ Ten existing redelegation tests, workspace fast checks, ON consensus bridge buil
 with 12 jobs and all 15 bridge tests passed. Independent Sol medium review
 accepted the corrected method documentation. Staged redelegation remains
 unsupported; the next adapter must settle authenticated reads and excluded
-success branches before wiring. An independent ready N3 gap is actual escrow
-DryRunner parity with fresh sessions over the existing complete persisted seed.
+success branches before wiring. The independent N3 escrow DryRunner gap is now
+complete within its bounded synthetic scope: five actual dual-pin cases,
+20 fresh Rust simulations across two physical reopens, all ten integration tests,
+workspace fast and frozen independent Astra review passed without corrections.
+The semantic owner remains fixed. The next ready N3 dependency is escrow gas
+estimation through fresh historical sessions and the unchanged C++ search.
 Root telemetry remained 23% after this review. Read a fresh value on restart.
 
 The user reports that exact producer facts might not be recoverable. Record

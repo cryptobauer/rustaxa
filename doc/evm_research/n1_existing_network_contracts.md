@@ -93,6 +93,10 @@ across reader reopen. [Direct metadata structured traces](n3_direct_metadata_tra
 add live prefix/target state and exact default JSON over persisted readers.
 Sparse-state, delayed native tracing, nested/OpenEthereum and full coverage
 limits remain open.
+The [actual escrow DryRunner slice](n3_escrow_dry_runner.md) compares five
+dual-pin cases with 20 fresh persisted Rust simulations across physical reopen.
+Estimation, tracing and full-width value funding remain separate gaps.
+
 The [redelegation observation corpus](n2_redelegate_observations.md) captures
 actual pinned read/write vectors and failure prefixes before staged wiring.
 Go caches all native rows on a second partial call in the same block; storage
