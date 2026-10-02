@@ -1,4 +1,4 @@
-# Restart checkpoint: escrow estimation complete
+# Restart checkpoint: direct escrow traces complete
 
 ## Current state
 
@@ -104,8 +104,14 @@ workspace fast and frozen independent Astra review passed without corrections.
 The semantic owner remains fixed. Escrow estimation is also complete within
 that profile: 26 actual dual-pin probes, unchanged C++ search, 104 fresh Rust
 simulations, workspace fast and independent frozen Astra review passed without
-corrections. The next ready N3 dependency is direct escrow default structured
-traces over retained prefix/target frame state, with bounded values and failures.
+corrections. Direct escrow default structured traces are also complete within
+the bounded active profile: seven dual-pin sequences, 28 Rust runs, all 12
+integration tests, workspace fast and independent frozen Astra review passed.
+One early compile failure waited for fixture generation; it is retained in logs.
+The next bounded N2 dependency is comparing the existing redelegation kernel
+and source/destination serializers with the actual two-call reference, using
+the new account port and zero-reward profile. This can settle exact write
+composition before the larger session admission/authentication adapter.
 Root telemetry remained 23% after this review. Read a fresh value on restart.
 
 The user reports that exact producer facts might not be recoverable. Record

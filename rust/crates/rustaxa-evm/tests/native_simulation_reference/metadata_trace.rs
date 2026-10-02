@@ -15,11 +15,11 @@ use std::{
     rc::Rc,
 };
 
-struct TrackingPort<'a> {
-    inner: mixed_native::MixedNativeExecutionPort<'a>,
-    seen: Rc<RefCell<Vec<NativeInvocation>>>,
-    drops: Rc<Cell<usize>>,
-    fail_at: Option<u64>,
+pub(super) struct TrackingPort<'a> {
+    pub(super) inner: mixed_native::MixedNativeExecutionPort<'a>,
+    pub(super) seen: Rc<RefCell<Vec<NativeInvocation>>>,
+    pub(super) drops: Rc<Cell<usize>>,
+    pub(super) fail_at: Option<u64>,
 }
 
 impl Drop for TrackingPort<'_> {
@@ -52,7 +52,7 @@ impl NativeExecutionPort for TrackingPort<'_> {
     }
 }
 
-fn block(period: u64) -> ExecutionBlockContext {
+pub(super) fn block(period: u64) -> ExecutionBlockContext {
     ExecutionBlockContext {
         period: period.into(),
         author: address(0x31),
@@ -63,7 +63,7 @@ fn block(period: u64) -> ExecutionBlockContext {
     }
 }
 
-fn requests(rows: &Value, offset: usize) -> Vec<ExecutionTransaction> {
+pub(super) fn requests(rows: &Value, offset: usize) -> Vec<ExecutionTransaction> {
     rows.as_array()
         .unwrap()
         .iter()
