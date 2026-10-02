@@ -93,6 +93,11 @@ across reader reopen. [Direct metadata structured traces](n3_direct_metadata_tra
 add live prefix/target state and exact default JSON over persisted readers.
 Sparse-state, delayed native tracing, nested/OpenEthereum and full coverage
 limits remain open.
+The [redelegation observation corpus](n2_redelegate_observations.md) captures
+actual pinned read/write vectors and failure prefixes before staged wiring.
+Go caches all native rows on a second partial call in the same block; storage
+observations do not prove all API lookup behavior. Staged redelegation is open.
+
 The [staged escrow-entry slice](n2_staged_escrow_transfer.md) admits exact active
 `44df8e70`, with 1,000 gas, arbitrary-width value and empty native effects.
 Actual frames prove that ordinary account transfer and rollback remain outside

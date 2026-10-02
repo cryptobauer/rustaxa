@@ -1,4 +1,4 @@
-# Restart checkpoint: staged escrow entry complete
+# Restart checkpoint: redelegation observations complete
 
 ## Current state
 
@@ -84,6 +84,16 @@ in this session; fresh startup must confirm routing again. Account allowance was
 before new work; do not reuse this observation. At 20% remaining, stop new work
 and finish only the in-flight atomic closeout. Unknown telemetry after one
 bounded refresh also stops new work.
+
+The [redelegation reference corpus](n2_redelegate_observations.md) now captures
+12 actual dual-pin cases, 13 attempts, failure read prefixes and repeated exact
+raw writes. Both uninstrumented controls and fixture reproduction passed,
+workspace fast checks passed, and frozen independent Astra medium review accepted
+the slice without findings. The first read-count assertion was corrected after
+actual Go showed zero storage reads on the cached repeated call. Storage vectors
+do not prove all API lookups or read/write interleaving. A narrow generic account
+port conversion is now in progress; the staged adapter is still unsupported.
+Root telemetry remained 23% after this review. Read a fresh value on restart.
 
 The user reports that exact producer facts might not be recoverable. Record
 executable identity, runtime overrides and capture command as unknown unless
