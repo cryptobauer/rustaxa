@@ -1,0 +1,14 @@
+{
+  "exporter_sha256": "df9a27e25822b05ed2a0a001a9477e6f8835aee7b1404faa62c8eb43005c7b4d",
+  "harness_sha256": "71ba3b4442472bca622b65f8f7f485f6f798e96b783cf9f65618dc033bee31ae",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "local": "51f2337f48568ef03bf1190663b7bbd81190de2f68def0be9ea9daacea7c3b7a",
+    "public": "51f2337f48568ef03bf1190663b7bbd81190de2f68def0be9ea9daacea7c3b7a"
+  },
+  "support_sha256": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5"
+}

@@ -1,4 +1,4 @@
-# Restart checkpoint: direct native metadata traces complete
+# Restart checkpoint: staged escrow entry complete
 
 ## Current state
 
@@ -6,7 +6,7 @@ Branch: `feat/rust/evm-state-db`. Preparation is committed at `4148a1a` after
 separate Sol review and quota-reader corrections. Decoded metadata is committed
 at `86e74ff`. The latest implementation commit includes the completed
 [ABI/admission report](n2_validator_info_abi.md), at `8945453`. The latest local
-commit adds [direct native traces](n3_direct_metadata_traces.md); use `git log`
+commit adds [staged escrow entry](n2_staged_escrow_transfer.md); use `git log`
 for its exact ID.
 No push or production routing is authorized.
 
@@ -58,16 +58,29 @@ port, journal and sequence retain live current metadata across prefix/targets;
 requires method-specific live native reader compatibility. Do not infer full
 delayed-query, nested, period-zero or OpenEthereum parity from this coverage.
 
-Continue other ready native-method coverage from the remaining queue. Luna is
-mapping one smallest non-metadata staged-session gap, owner and oracle. Reuse
-existing business kernels and obtain bounded semantic review before any unsettled
-serializer/lifetime decisions. Read only selected source ranges.
+The exact active escrow-entry slice also passed five targeted consensus tests,
+four frame/support tests, 12-case dual-pin reproduction, workspace fast checks
+and an ON consensus bridge build with 12 jobs plus all 15 tests. Independent
+Astra contract and frozen final reviews accepted it without findings. Native
+execution is a shared pure helper; all value transfer/rollback stays in the EVM
+frame. Inactive/trailing input and pre-Cornus session limits remain explicit.
+
+Continue other ready native-method coverage from the remaining queue. Luna mapped
+`reDelegate(address,address,uint256)` as the next bounded gap: post-fix distinct
+validators, partial principal, zero rewards. Reuse `apply_dpos_redelegate` and
+its destination helper; their account parameters still use `HashMap` while the
+underlying reward/removal kernels already accept `DposAccountPort`. A narrow port
+conversion is needed before session wiring. Existing custody serializers have
+source-removal and destination-delegate primitives, but exact two-validator
+operation ordering needs a new actual-Go dual-pin corpus and semantic review.
+Do not claim same-validator historical corrections or reward-bearing scope.
+Read selected kernel ranges 9072–9330 and the custody serializers only.
 
 Current root log confirmed `gpt-6.1-sol` medium. Luna startup map ran on
 `gpt-6-luna` medium; independent metadata review ran on `gpt-6-astra` medium.
 There were no routing failures. Compatible reviewer/helper threads can be reused
 in this session; fresh startup must confirm routing again. Account allowance was
-26% after estimation validation and review. Read fresh telemetry at startup and
+25% after escrow validation and review. Read fresh telemetry at startup and
 before new work; do not reuse this observation. At 20% remaining, stop new work
 and finish only the in-flight atomic closeout. Unknown telemetry after one
 bounded refresh also stops new work.

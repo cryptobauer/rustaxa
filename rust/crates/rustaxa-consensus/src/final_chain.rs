@@ -6530,9 +6530,7 @@ impl FinalChain {
             DposTransaction::ClaimAllRewards { delegator, batch } => {
                 self.apply_dpos_claim_all_rewards(dpos_snapshot, accounts, delegator, batch)
             }
-            DposTransaction::PhalaenopsisEscrowTransfer => {
-                Ok(DposApplyOutcome::success(Vec::new()))
-            }
+            DposTransaction::PhalaenopsisEscrowTransfer => Ok(Self::apply_dpos_escrow_transfer()),
             DposTransaction::MethodNotSupported => Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::MethodNotSupported,
             )),
@@ -6543,6 +6541,16 @@ impl FinalChain {
             DposTransaction::MalformedMutation { .. } => Ok(DposApplyOutcome::contract_failure()),
             _ => anyhow::bail!("DPoS mutation kernel received a read transaction"),
         }
+    }
+
+    /// Returns the native result for the exact active Phalaenopsis selector.
+    ///
+    /// Decoder/admission must authenticate selector, activation, depth and gas
+    /// before this pure kernel is called. It takes no state or value, cannot
+    /// fail, and returns successful empty output/logs. The EVM frame owns value
+    /// transfer and rollback; no DPoS semantic or raw mutation is required.
+    fn apply_dpos_escrow_transfer() -> DposApplyOutcome {
+        DposApplyOutcome::success(Vec::new())
     }
 
     fn dpos_total_amount_delegated_u256(

@@ -53,6 +53,9 @@ use serde_json::Value;
 #[path = "native_session_reference/validator_info_frames.rs"]
 mod validator_info_frames;
 
+#[path = "native_session_reference/escrow_transfer_frames.rs"]
+mod escrow_transfer_frames;
+
 const SENDER: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa,
 ];

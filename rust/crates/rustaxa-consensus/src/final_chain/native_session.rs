@@ -3,6 +3,8 @@
 //! This module exposes consensus-owned staged sessions for DPoS reads and the
 //! selected `setCommission`, `delegate`, V1/V2 `undelegate`, and V1/V2
 //! confirmation, cancellation, reward claims and validator metadata mutations.
+//! The exact active Phalaenopsis escrow selector reuses a pure native kernel;
+//! its value transfer remains owned by the ordinary frame.
 //! Metadata updates use selector-first admission, a pinned Go ABI codec and
 //! consistent owner/info/membership rows; sparse/orphan metadata remains a gap.
 //! Sessions reuse existing decoders,
@@ -323,6 +325,7 @@ enum PreparedKind {
     NonPayable,
     InsufficientGas,
     AbiFailure(String),
+    EscrowTransfer,
     SetCommission(Box<PreparedSetCommission>),
     SelectedCustody(DposTransaction),
     Query {
@@ -633,6 +636,7 @@ impl FinalChainNativeSession<'_> {
             | DposTransaction::CancelUndelegateV2 { .. }
             | DposTransaction::ClaimRewards { .. }
             | DposTransaction::ClaimCommissionRewards { .. }
+            | DposTransaction::PhalaenopsisEscrowTransfer
             | DposTransaction::SetValidatorInfo { .. } => None,
             transaction if query::is_query(transaction) => {
                 let admission = match self.final_chain.native_invocation_admission(
@@ -715,7 +719,11 @@ impl FinalChainNativeSession<'_> {
             self.prepared = Some(PreparedCall {
                 request: request.clone(),
                 quote,
-                kind: PreparedKind::SelectedCustody(transaction),
+                kind: if matches!(transaction, DposTransaction::PhalaenopsisEscrowTransfer) {
+                    PreparedKind::EscrowTransfer
+                } else {
+                    PreparedKind::SelectedCustody(transaction)
+                },
             });
             return Ok(quote);
         };
@@ -832,6 +840,29 @@ impl FinalChainNativeSession<'_> {
                 Ok(FinalChainNativeInvocationResult::InsufficientGas {
                     required_gas: quote.required_gas,
                 })
+            }
+            PreparedKind::EscrowTransfer => {
+                // The frame already owns value transfer. This pure shared
+                // kernel does not consult readers or modify either snapshot.
+                let outcome = FinalChain::apply_dpos_escrow_transfer();
+                Ok(FinalChainNativeInvocationResult::Completed(
+                    FinalChainNativeOutcome {
+                        status: FinalChainNativeStatus::Success,
+                        gas_used: quote.required_gas,
+                        output: outcome.code_retval,
+                        account_mutations: Vec::new(),
+                        raw_mutations: Vec::new(),
+                        logs: outcome
+                            .logs
+                            .into_iter()
+                            .map(|log| FinalChainCallLog {
+                                address: log.address,
+                                topics: log.topics,
+                                data: log.data,
+                            })
+                            .collect(),
+                    },
+                ))
             }
             PreparedKind::SetCommission(prepared) => {
                 self.invoke_set_commission(prepared, quote, state)
@@ -1114,6 +1145,8 @@ fn checked_undelegations_count(
 mod tests {
     use super::*;
     mod validator_info_reference_tests;
+
+    mod escrow_transfer_reference_tests;
     use ethereum_types::{H160, H256};
     use rustaxa_storage::Config;
     use rustaxa_types::GenesisValidatorMetadata;
