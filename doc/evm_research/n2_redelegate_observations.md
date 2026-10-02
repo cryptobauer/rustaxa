@@ -89,3 +89,22 @@ No Rust or C++ implementation changed in this reference slice. Reward-bearing,
 new-destination, raw-reader failure/corruption, post-Aspen-zero rejection,
 historical same-validator correction, API simulation and rollback coverage
 remain future gates. N1–N6 and Milestone 10 remain open.
+
+## Account-port dependency
+
+A subsequent narrow refactor changes only the `accounts` parameter of
+`apply_dpos_redelegate` and `apply_dpos_redelegate_destination` to the existing
+`DposAccountPort`, with `?Sized` support at the boundary. Both methods already
+use the generic reward/removal helpers. The existing `HashMap` implementation
+continues to serve FinalChain calls. No business decision, ABI, serializer,
+state ownership or session admission changes. Method documentation states the
+port's role and the caller's responsibility to discard scratch state on hard
+errors. This is a prerequisite, not staged redelegation acceptance.
+
+The ten existing redelegation codec/kernel/finalization/correction tests passed
+after the refactor. Workspace fast, ON consensus bridge build with 12 jobs and
+all 15 bridge tests passed. Independent Sol medium review accepted the corrected
+freeze. Review corrected two documentation claims: future staged integration
+and the historical same-validator exception to principal preservation. Runtime
+code was unchanged by those corrections. These tests exercise
+the existing map path; they do not prove staged account effects for redelegation.

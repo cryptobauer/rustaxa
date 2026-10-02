@@ -9068,11 +9068,17 @@ impl FinalChain {
     ///
     /// Legacy redelegation permits a new destination pair below the minimum,
     /// including a zero-stake pair before Aspen part two. Existing destination
-    /// rewards are claimed before its stake changes.
+    /// rewards are claimed through `accounts` before its stake changes. The
+    /// account port owns reads and reward balance mutations. The legacy map
+    /// uses this kernel; the port also permits future staged native adapters
+    /// to reuse it without a separate business implementation.
+    /// Missing validators and arithmetic or reward-graph errors are hard
+    /// errors. Callers must discard their staged state and account effects on
+    /// error; this helper does not roll back its inputs.
     fn apply_dpos_redelegate_destination(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: U256,
@@ -9129,11 +9135,17 @@ impl FinalChain {
     /// snapshot corruption, and the still-unmodeled repeated reward-bearing
     /// same-validator history remain hard finalization errors so Rust never
     /// publishes a silently divergent historical reward state.
+    /// `accounts` supplies account reads and reward balance effects through
+    /// the shared port. Successful outcomes preserve total principal and carry
+    /// native logs except for the explicitly modeled pre-fix same-validator
+    /// corruption behavior. Hard errors require discarding staged snapshot/account
+    /// changes. This kernel does not authenticate physical rows or provide
+    /// rollback; those remain responsibilities of the calling boundary.
     #[allow(clippy::too_many_arguments)]
     fn apply_dpos_redelegate(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         from: [u8; 20],
         to: [u8; 20],

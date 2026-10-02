@@ -92,7 +92,13 @@ workspace fast checks passed, and frozen independent Astra medium review accepte
 the slice without findings. The first read-count assertion was corrected after
 actual Go showed zero storage reads on the cached repeated call. Storage vectors
 do not prove all API lookups or read/write interleaving. A narrow generic account
-port conversion is now in progress; the staged adapter is still unsupported.
+port conversion is complete: both helper parameters now use `DposAccountPort`.
+Ten existing redelegation tests, workspace fast checks, ON consensus bridge build
+with 12 jobs and all 15 bridge tests passed. Independent Sol medium review
+accepted the corrected method documentation. Staged redelegation remains
+unsupported; the next adapter must settle authenticated reads and excluded
+success branches before wiring. An independent ready N3 gap is actual escrow
+DryRunner parity with fresh sessions over the existing complete persisted seed.
 Root telemetry remained 23% after this review. Read a fresh value on restart.
 
 The user reports that exact producer facts might not be recoverable. Record
