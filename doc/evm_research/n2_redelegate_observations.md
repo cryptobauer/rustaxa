@@ -141,3 +141,54 @@ subject to the fast gate; that gate completed successfully. Requested and
 confirmed routes were Sol medium implementation and Astra medium review, with
 no routing failures or corrections. Logs use the `redelegate-composition-` prefix
 under the existing persistent artifact directory.
+
+## Normal kernel preflight prerequisite
+
+A further test-only step compares seven actual-Go normal failures through the
+same account port: destination cap before insufficient source, missing source
+validator, missing destination validator, missing source delegation, insufficient
+source, remainder below minimum and same validator after the fix. It compares
+status, exact legacy error text, output and empty logs/account effects. The
+working semantic clone and saved committed genesis snapshot remain unchanged.
+The shared synthetic chain constructor preserves the earlier successful test's
+profile and assertions, with maximum stake changed only for the cap case.
+
+This does not exercise the session's raw-read prefixes or scope guards. The
+kernel reads semantic state; no native request was admitted by this test.
+All 12 targeted redelegation tests and workspace fast checks passed. Independent
+Sol medium review accepted both frozen source/report hashes subject to the fast
+gate, which completed successfully. Requested and confirmed routes were Sol
+medium implementation and Sol medium review. No corrections or routing failures
+occurred. Logs use the `redelegate-preflight-` prefix.
+
+## Settled bounded adapter contract
+
+Independent Astra medium contract review accepts fresh authentication on every
+invocation for consistent, complete snapshots. It does not reproduce Go's block
+cache or claim read-count parity for repeated calls. This decision is a contract
+for the next implementation, not completed session behavior.
+
+Use one invocation-local raw trace for preflight, node/membership checks and
+serialization, so later accesses retain the same observed bytes. Preserve cold
+normal-failure prefixes of zero, one, three, four or five reads as listed above;
+authenticate absence as well as present rows. Integrity mismatch or reader error
+aborts without effects or state advancement. The pure semantic preflight result
+must not escape before its required authentication. Return authenticated normal
+failures before rejecting unsupported successful branches.
+
+Success requires Magnolia/Ficus, strictly post-fix distinct validators, positive
+partial source principal, existing positive destination delegation and retained
+positive validator stakes. Authenticate both head/cursor/current reward nodes,
+including expected current-node absence; require zero pools and relevant indices,
+agreement with semantic cursor fields and counts sufficient for exact decrements.
+Authenticate validator and delegation membership positions against complete
+semantic ordering. Run the existing kernel on a clone with no account access or
+effects, serialize source then destination, and advance only after all checks
+pass. Unsupported success branches remain explicit scope errors.
+
+Exit tests must include normal failure read prefixes, repeated authentication,
+bad node/membership rows, reader failure and unsupported successes, all with no
+partial effects or semantic advancement. The existing write-composition tests
+remain applicable. Malformed ABI and historical same-validator behavior are
+outside the adapter contract. No higher-reasoning escalation was needed; the
+requested and confirmed contract route was Astra medium, at 22% allowance.

@@ -1,130 +1,101 @@
-# Restart checkpoint: redelegation write composition complete
+# Restart checkpoint: redelegation prerequisites complete
 
 ## Current state
 
-Branch: `feat/rust/evm-state-db`. Preparation is committed at `4148a1a` after
-separate Sol review and quota-reader corrections. Decoded metadata is committed
-at `86e74ff`. The latest implementation commit includes the completed
-[ABI/admission report](n2_validator_info_abi.md), at `8945453`. The latest local
-commit adds [staged escrow entry](n2_staged_escrow_transfer.md); use `git log`
-for its exact ID.
-No push or production routing is authorized.
+Branch: `feat/rust/evm-state-db`. Run baseline: `5bfdf494c`.
+Use `git log -1` for the checkpoint commit's exact ID. All completed slices below
+have local Conventional Commits. Nothing was pushed. No production routing,
+upstream C++ changes, supplied-data opens or historical-data mutations occurred.
+Milestone 10 and N1–N6 remain open.
 
-The [metadata report](n2_staged_validator_info.md) records the shared pending and
-historical session adapter, actual dual-pin Go corpus, complete logs and frozen
-independent Astra review. Five targeted tests, workspace fast checks, an ON
-consensus bridge build with 12 jobs, and all 15 bridge tests passed. The first
-owner-fixture failure and independent-review gas-funding correction are preserved
-in `/home/fry/artifacts/evm-branch-2026-10-01-2233/`.
+The latest accepted step adds seven normal redelegation kernel failure cases;
+all 12 targeted tests and workspace fast checks passed. Frozen independent Sol
+medium review accepted it without findings, conditional on the fast gate that
+subsequently passed. The new test passed on its first run.
 
-The subsequent ABI/admission slice passed seven targeted Rust tests, both pinned
-21-case Cacti oracles plus diagnostic reproduction, workspace fast checks and a
-rebuilt ON consensus bridge with all 15 tests. Frozen independent Astra review
-accepted it without findings or corrections. Scope is staged metadata over
-consistent snapshots, with exact ABI/admission and synthetic active-Cacti
-evidence. Sparse owner/info distinctions, pre-Cornus session admission, delegate,
-call-code and delayed/nested/OpenEthereum native traces remain open. Historical
-simulation here is synthetic and does not certify real inputs.
-Milestone 10 and N1–N6 remain open. Supplied data and historical copies were not
-opened or changed. The earlier N4 hardening remains complete at `5bfdf494c`;
-its reports and [checkpoint history](n6_restart_checkpoint_history_2026_10_01_post_hardening.md)
-are retained.
+## Completed branch work
 
-## Next action
+| Work | Local commit / evidence |
+| --- | --- |
+| Approved prep docs/tooling and quota-reader correction | `4148a1a4f`; separate Sol review, six Python tests and fast checks |
+| Staged validator metadata | `86e74ff37`; [report](n2_staged_validator_info.md) |
+| Metadata selector-first ABI/admission | `8945453bc`; [report](n2_validator_info_abi.md) |
+| Metadata frame/API composition | `1fe3282f2`; [report](n2_validator_info_frames.md) |
+| Actual metadata DryRunner | `abd7a111d`; [report](n3_metadata_dry_runner.md) |
+| Metadata gas estimation | `33e8002ac`; [report](n3_metadata_estimation.md) |
+| Direct metadata structured trace facade | `1e49be922`; [report](n3_direct_metadata_traces.md) |
+| Exact active escrow entry | `0cdef0e9b`; [report](n2_staged_escrow_transfer.md) |
+| Actual redelegation observations | `c88907de3`; [report](n2_redelegate_observations.md) |
+| Redelegation account-port dependency | `a3951c811`; same report |
+| Actual escrow DryRunner | `d2207e387`; [report](n3_escrow_dry_runner.md) |
+| Escrow gas estimation | `fb3b56e74`; [report](n3_escrow_estimation.md) |
+| Direct escrow structured traces | `b00f6ade2`; [report](n3_direct_escrow_traces.md) |
+| Redelegation kernel/write composition | `32fdf4dbc`; same redelegation report |
+| Seven normal kernel preflight failures | checkpoint commit; same report |
+
+Each linked report records exact scope, checks, corrections and independent
+review. Runtime changes passed relevant ON consensus bridge builds with 12 jobs
+and all 15 bridge tests. Later test-only steps used affected Rust tests and
+workspace fast checks. Escrow API evidence covers 20 DryRunner simulations,
+104 estimation probes and 28 trace runs across physical reader reopens, with
+fixed semantic owners. Do not infer semantic-owner restart or real-history parity.
+
+Complete commands/output/exit files, first failures, source-hash freezes and
+immutable review copies remain in
+`/home/fry/artifacts/evm-branch-2026-10-01-2233/`. Slice measurements and routing
+are in the [scorecard](../codex_slice_scorecard.md). Quota samples are account
+observations, not inferred token usage or billing.
+
+## Next executable slice
 
 Continue the active [root prompt](../../next_executable_slice_prompt.md) and
-[remaining queue](n6_remaining_branch_queue.md) under the
-[slice workflow](../codex_slice_workflow.md). The frame/API slice passed all five
-integration tests, dual-pin fixture reproduction and workspace fast checks.
-Independent frozen Astra review accepted it without findings. It covers eight
-actual frames and sixteen historical probes over synthetic in-memory readers.
-The subsequent metadata DryRunner slice passed all six persisted simulation
-tests, reproduced nine actual dual-pin cases and passed workspace fast checks.
-Independent frozen Astra review accepted it without findings. Thirty-six Rust
-metadata simulations cover two physical reader reopens and fresh sessions for
-each probe. Matching semantic history remains fixed; no network adoption or
-semantic-owner reopen is claimed. The first intrinsic-gas fixture discovery and
-its retained/additional cases are in the report and complete logs.
+[remaining queue](n6_remaining_branch_queue.md), using the
+[slice workflow](../codex_slice_workflow.md). Staged redelegation is still
+unsupported. Its two kernel account parameters now accept `DposAccountPort`.
+The existing kernel plus source/destination serializers match actual Go's
+12/10 writes across two partial calls, including repeated-key expectations,
+logs and zero account effects. Seven normal preflight errors also match Go.
 
-Native metadata estimation also passed targeted tests, actual dual-pin/C++
-reproduction and workspace fast checks; independent frozen Astra review accepted
-it without findings. The unchanged C++ search consumes 24 exact actual-Go probes,
-and Rust runs 96 fresh simulations across reader reopen with matching results.
-The direct native structured facade passed 30 focused tests, dual-pin actual
-TraceRunner reproduction and workspace fast checks. Independent Astra contract
-and frozen final review accepted it without findings. One private real pending
-port, journal and sequence retain live current metadata across prefix/targets;
-28 repeated trace runs span two physical reader reopens. The API explicitly
-requires method-specific live native reader compatibility. Do not infer full
-delayed-query, nested, period-zero or OpenEthereum parity from this coverage.
+Astra medium settled the [bounded adapter contract](n2_redelegate_observations.md#settled-bounded-adapter-contract):
+fresh authentication per invocation over consistent complete snapshots, without
+Go cache/read-count parity. Use one raw trace. Preserve cold normal failure
+prefixes before success-scope guards. Authenticate head/cursor/current reward
+nodes and both membership positions before the kernel. Allow only active
+Magnolia/Ficus, post-fix distinct validators, positive partial principal,
+existing positive destination delegation, zero relevant pools/indices and
+retained positive validators. Run the existing kernel on a clone, permit no
+account access/effects, serialize source then destination, advance only on
+complete success. Integrity/reader errors abort; excluded successes are explicit
+scope errors. Malformed ABI and historical same-validator branches stay outside.
 
-The exact active escrow-entry slice also passed five targeted consensus tests,
-four frame/support tests, 12-case dual-pin reproduction, workspace fast checks
-and an ON consensus bridge build with 12 jobs plus all 15 tests. Independent
-Astra contract and frozen final reviews accepted it without findings. Native
-execution is a shared pure helper; all value transfer/rollback stays in the EVM
-frame. Inactive/trailing input and pre-Cornus session limits remain explicit.
+Own `rust/crates/rustaxa-consensus/src/final_chain/native_session.rs` admission,
+`native_session/custody.rs` dispatch and a narrow redelegation child module/tests.
+Reuse the existing helpers and actual fixtures. Add focused pending/historical
+session tests for repeated authentication, 0/1/3/4/5 normal failure prefixes,
+bad node/membership rows, reader failures and unsupported successful branches,
+all without partial effects or semantic advance. Add real frame/API composition
+before claiming that boundary. Required closeout: affected Rust package tests,
+actual pinned parity reproduction, focused ON consensus bridge build/tests,
+workspace fast, immutable freeze, independent review and local commit.
 
-Continue other ready native-method coverage from the remaining queue. Luna mapped
-`reDelegate(address,address,uint256)` as the next bounded gap: post-fix distinct
-validators, partial principal, zero rewards. Reuse `apply_dpos_redelegate` and
-its destination helper; their account parameters still use `HashMap` while the
-underlying reward/removal kernels already accept `DposAccountPort`. A narrow port
-conversion is needed before session wiring. Existing custody serializers have
-source-removal and destination-delegate primitives, but exact two-validator
-operation ordering needs a new actual-Go dual-pin corpus and semantic review.
-Do not claim same-validator historical corrections or reward-bearing scope.
-Read selected kernel ranges 9072–9330 and the custody serializers only.
+## Capacity and remaining inputs
 
-Current root log confirmed `gpt-6.1-sol` medium. Luna startup map ran on
-`gpt-6-luna` medium; independent metadata review ran on `gpt-6-astra` medium.
-There were no routing failures. Compatible reviewer/helper threads can be reused
-in this session; fresh startup must confirm routing again. Account allowance was
-25% after escrow validation and review. Read fresh telemetry at startup and
-before new work; do not reuse this observation. At 20% remaining, stop new work
-and finish only the in-flight atomic closeout. Unknown telemetry after one
-bounded refresh also stops new work.
+Last fresh root observation: 21% remaining. This is near the user's requested
+approximately 20% reserve; the current atomic test/review/commit is complete.
+Read fresh telemetry before resuming. The repository's exact no-new-work floor
+remains 20%; unknown telemetry after one bounded refresh also stops new work.
 
-The [redelegation reference corpus](n2_redelegate_observations.md) now captures
-12 actual dual-pin cases, 13 attempts, failure read prefixes and repeated exact
-raw writes. Both uninstrumented controls and fixture reproduction passed,
-workspace fast checks passed, and frozen independent Astra medium review accepted
-the slice without findings. The first read-count assertion was corrected after
-actual Go showed zero storage reads on the cached repeated call. Storage vectors
-do not prove all API lookups or read/write interleaving. A narrow generic account
-port conversion is complete: both helper parameters now use `DposAccountPort`.
-Ten existing redelegation tests, workspace fast checks, ON consensus bridge build
-with 12 jobs and all 15 bridge tests passed. Independent Sol medium review
-accepted the corrected method documentation. Staged redelegation remains
-unsupported; the next adapter must settle authenticated reads and excluded
-success branches before wiring. The independent N3 escrow DryRunner gap is now
-complete within its bounded synthetic scope: five actual dual-pin cases,
-20 fresh Rust simulations across two physical reopens, all ten integration tests,
-workspace fast and frozen independent Astra review passed without corrections.
-The semantic owner remains fixed. Escrow estimation is also complete within
-that profile: 26 actual dual-pin probes, unchanged C++ search, 104 fresh Rust
-simulations, workspace fast and independent frozen Astra review passed without
-corrections. Direct escrow default structured traces are also complete within
-the bounded active profile: seven dual-pin sequences, 28 Rust runs, all 12
-integration tests, workspace fast and independent frozen Astra review passed.
-One early compile failure waited for fixture generation; it is retained in logs.
-The bounded N2 write-composition prerequisite is complete: the existing kernel
-through `StagedDposAccountPort` and source/destination serializers match both
-actual calls, exact 12/10 writes and logs. All 11 targeted tests, dual-pin controls
-and reproduction, workspace fast and independent frozen Astra review passed.
-The session API still rejects redelegation. The next contract decision is fresh
-raw-row authentication per invocation, explicitly without Go cache/read-count
-parity. Preserve normal cold-reference failure prefixes; authenticate zero
-reward-node indices/counts before the kernel. Scope guards must follow normal
-preflight errors and exclude unsupported success branches without partial
-effects. Resolve the bounded contract before changing admission or routing.
-Root telemetry remained 23% after this review. Read a fresh value on restart.
+Confirmed runtime: root `gpt-6.1-sol` medium; Luna bounded startup/map
+`gpt-6-luna` medium; independent reviews `gpt-6-astra` medium and
+`gpt-6.1-sol` medium. No routing failures. Reuse existing threads where available;
+fresh startup must confirm routing/capacity and Luna again.
 
-The user reports that exact producer facts might not be recoverable. Record
-executable identity, runtime overrides and capture command as unknown unless
-evidence is found; do not invent them or repeat the request. The likely release
-commit and checked-in reference configuration remain available for bounded
-checks, but do not prove the producer setup. Qualified real-window acceptance
-remains limited by those unknowns and completeness; other ready N2/N3
-work can continue. Broad replay/differential/fault gates still need the authority
-required by repository policy. Nothing has been pushed.
+The user reports that exact producer facts may be unrecoverable. Keep executable
+identity, runtime overrides and capture command unknown unless evidence is found.
+Do not invent facts or repeat the request. The likely release and checked-in
+reference configuration support bounded checks, but do not prove producer setup.
+N4 still needs qualified completeness and real signed-period parity. Broad
+replay/differential/fault gates need the authority required by repository policy.
+Push and production cutover remain separate. Earlier N4 hardening and its
+[checkpoint history](n6_restart_checkpoint_history_2026_10_01_post_hardening.md)
+remain complete and preserved.
