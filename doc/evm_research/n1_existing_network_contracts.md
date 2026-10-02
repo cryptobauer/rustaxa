@@ -95,7 +95,9 @@ Sparse-state, delayed native tracing, nested/OpenEthereum and full coverage
 limits remain open.
 The [actual escrow DryRunner slice](n3_escrow_dry_runner.md) compares five
 dual-pin cases with 20 fresh persisted Rust simulations across physical reopen.
-Estimation, tracing and full-width value funding remain separate gaps.
+[Escrow estimation](n3_escrow_estimation.md) compares 26 actual Go probes with
+the unchanged C++ search and 104 Rust simulations. Tracing and full-width value
+funding remain separate gaps.
 
 The [redelegation observation corpus](n2_redelegate_observations.md) captures
 actual pinned read/write vectors and failure prefixes before staged wiring.

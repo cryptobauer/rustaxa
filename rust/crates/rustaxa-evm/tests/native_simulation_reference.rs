@@ -54,6 +54,9 @@ mod metadata_trace;
 #[path = "native_simulation_reference/escrow.rs"]
 mod escrow;
 
+#[path = "native_simulation_reference/escrow_estimate.rs"]
+mod escrow_estimate;
+
 fn address(last: u8) -> [u8; 20] {
     let mut result = [0; 20];
     result[19] = last;

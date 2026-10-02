@@ -1,4 +1,4 @@
-# Restart checkpoint: escrow DryRunner complete
+# Restart checkpoint: escrow estimation complete
 
 ## Current state
 
@@ -101,8 +101,11 @@ success branches before wiring. The independent N3 escrow DryRunner gap is now
 complete within its bounded synthetic scope: five actual dual-pin cases,
 20 fresh Rust simulations across two physical reopens, all ten integration tests,
 workspace fast and frozen independent Astra review passed without corrections.
-The semantic owner remains fixed. The next ready N3 dependency is escrow gas
-estimation through fresh historical sessions and the unchanged C++ search.
+The semantic owner remains fixed. Escrow estimation is also complete within
+that profile: 26 actual dual-pin probes, unchanged C++ search, 104 fresh Rust
+simulations, workspace fast and independent frozen Astra review passed without
+corrections. The next ready N3 dependency is direct escrow default structured
+traces over retained prefix/target frame state, with bounded values and failures.
 Root telemetry remained 23% after this review. Read a fresh value on restart.
 
 The user reports that exact producer facts might not be recoverable. Record

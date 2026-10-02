@@ -1,0 +1,30 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "cases": [
+    {
+      "consumed": 8,
+      "name": "zero",
+      "result": 22879
+    },
+    {
+      "consumed": 8,
+      "name": "one",
+      "result": 22879
+    },
+    {
+      "consumed": 8,
+      "name": "forty_two",
+      "result": 22879
+    },
+    {
+      "consumed": 1,
+      "error": "out of gas",
+      "name": "insufficient_native_gas"
+    },
+    {
+      "consumed": 1,
+      "error": "intrinsic gas too low",
+      "name": "intrinsic_gas"
+    }
+  ]
+}
