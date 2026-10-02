@@ -21,6 +21,10 @@ use super::*;
 use crate::dpos_reward_graph::{Node, NodeKey};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+#[path = "custody/redelegate_reference_tests.rs"]
+mod redelegate_reference_tests;
+
 #[derive(Clone, Copy)]
 struct V2QueueEntry {
     delegator: [u8; 20],

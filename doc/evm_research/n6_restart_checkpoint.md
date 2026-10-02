@@ -1,4 +1,4 @@
-# Restart checkpoint: direct escrow traces complete
+# Restart checkpoint: redelegation write composition complete
 
 ## Current state
 
@@ -108,10 +108,16 @@ corrections. Direct escrow default structured traces are also complete within
 the bounded active profile: seven dual-pin sequences, 28 Rust runs, all 12
 integration tests, workspace fast and independent frozen Astra review passed.
 One early compile failure waited for fixture generation; it is retained in logs.
-The next bounded N2 dependency is comparing the existing redelegation kernel
-and source/destination serializers with the actual two-call reference, using
-the new account port and zero-reward profile. This can settle exact write
-composition before the larger session admission/authentication adapter.
+The bounded N2 write-composition prerequisite is complete: the existing kernel
+through `StagedDposAccountPort` and source/destination serializers match both
+actual calls, exact 12/10 writes and logs. All 11 targeted tests, dual-pin controls
+and reproduction, workspace fast and independent frozen Astra review passed.
+The session API still rejects redelegation. The next contract decision is fresh
+raw-row authentication per invocation, explicitly without Go cache/read-count
+parity. Preserve normal cold-reference failure prefixes; authenticate zero
+reward-node indices/counts before the kernel. Scope guards must follow normal
+preflight errors and exclude unsupported success branches without partial
+effects. Resolve the bounded contract before changing admission or routing.
 Root telemetry remained 23% after this review. Read a fresh value on restart.
 
 The user reports that exact producer facts might not be recoverable. Record

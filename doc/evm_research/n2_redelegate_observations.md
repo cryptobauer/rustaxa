@@ -108,3 +108,36 @@ freeze. Review corrected two documentation claims: future staged integration
 and the historical same-validator exception to principal preservation. Runtime
 code was unchanged by those corrections. These tests exercise
 the existing map path; they do not prove staged account effects for redelegation.
+
+## Kernel and serializer composition prerequisite
+
+A separate test-only slice now compares the existing kernel and two existing
+serializers with both actual partial calls. It constructs the two-validator
+zero-reward semantic profile, starts a private period-one session, and invokes
+the existing kernel through `StagedDposAccountPort`. Its account reader panics
+on any access; both calls produce no ordinary account effects. This directly
+exercises the new port capability without changing session admission.
+
+One raw trace serializes the entire source transition before the destination.
+Every address/key/value operation matches Go, including all 12 first-call and
+10 repeated-call writes. Each operation's expected classified bytes must match
+the evolving raw overlay before application. Native output and exact event logs
+also match. Principal, aggregate votes and both membership orders remain
+unchanged; final source/destination stakes match Go. Dropping the private session
+leaves the committed genesis principal unchanged.
+
+The [test](../../rust/crates/rustaxa-consensus/src/final_chain/native_session/custody/redelegate_reference_tests.rs)
+seeds raw observations only from the first successful Go call. Absence authority
+is limited to this synthetic fixture, and deletion remains a present-empty
+scratch value to retain repeated-operation expectations. It does not establish
+physical tombstone behavior, account funding, Go cache/read parity, normal
+preflight errors, scope guards or reader corruption handling. Staged redelegation
+remains unsupported. Runtime methods and serializers are unchanged.
+
+The new test passed on its first run. All 11 targeted redelegation tests, reused
+dual-pin observation reproduction and controls, and workspace fast checks passed.
+Independent Astra medium review accepted all three frozen source/report hashes
+subject to the fast gate; that gate completed successfully. Requested and
+confirmed routes were Sol medium implementation and Astra medium review, with
+no routing failures or corrections. Logs use the `redelegate-composition-` prefix
+under the existing persistent artifact directory.
