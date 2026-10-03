@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Read current weekly allowance from one local Codex log without changing it.
 
-Exit 0 permits further work, 2 means the project's 20% floor has been reached,
+Exit 0 permits further work, 2 means the configured remaining-allowance floor
+has been reached,
 and 3 means telemetry is missing or unreliable. Check at startup and at work
 milestones; this is a decision reader, not a background process interrupter.
 This reports account allowance and observed routing, never tokens or billing.
@@ -14,10 +15,16 @@ import math
 import os
 from pathlib import Path
 
-MIN_REMAINING_PERCENT = 20
+MIN_REMAINING_PERCENT = 80
 
 
-def inspect_log(path, *, now=None, max_age_seconds=300, expected_session=None):
+def _valid_floor(value):
+    return (type(value) in (int, float) and math.isfinite(value)
+            and 0 <= value <= 100)
+
+
+def inspect_log(path, *, now=None, max_age_seconds=300, expected_session=None,
+                min_remaining_percent=MIN_REMAINING_PERCENT):
     """Return a quota decision and exit code for a single read-only rollout.
 
     Require weekly primary telemetry, matching session identity, a fresh UTC
@@ -25,14 +32,18 @@ def inspect_log(path, *, now=None, max_age_seconds=300, expected_session=None):
     percentages and future timestamps. Unknown telemetry never permits a start.
     Cached/reasoning counters and reported credit balances are not consulted.
     """
+    valid_floor = _valid_floor(min_remaining_percent)
     now = now or datetime.now(timezone.utc)
     result = {'status': 'unknown', 'session_id': None, 'log': str(path),
               'model': None, 'effort': None,
-              'floor_remaining_percent': MIN_REMAINING_PERCENT}
+              'floor_remaining_percent': min_remaining_percent if valid_floor else None}
     latest = None
 
     def unknown(reason):
         return {**result, 'reason': reason}, 3
+
+    if not valid_floor:
+        return unknown('Minimum remaining percentage must be a finite number from 0 to 100; booleans are invalid.')
 
     try:
         with Path(path).open(encoding='utf-8') as stream:
@@ -83,11 +94,13 @@ def inspect_log(path, *, now=None, max_age_seconds=300, expected_session=None):
     except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
         return unknown('Snapshot fields are missing or invalid.')
 
-    if 100 - used <= MIN_REMAINING_PERCENT:
+    if 100 - used <= min_remaining_percent:
         return {**result, 'status': 'do_not_start',
-                'reason': 'At most 20% remains; stop new work and save a resumable checkpoint.'}, 2
+                'reason': (f'At most {min_remaining_percent:g}% remains; stop new work '
+                          'and save a resumable checkpoint.')}, 2
     return {**result, 'status': 'allow_start',
-            'reason': 'More than 20% remains in this fresh recorded observation.'}, 0
+            'reason': (f'More than {min_remaining_percent:g}% remains in this fresh '
+                       'recorded observation.')}, 0
 
 
 def main():
@@ -102,23 +115,34 @@ def main():
     group.add_argument('--log', type=Path, help='explicit current rollout log')
     parser.add_argument('--sessions-dir', type=Path,
                         default=Path.home() / '.codex' / 'sessions')
+    parser.add_argument('--min-remaining-percent', type=float, default=MIN_REMAINING_PERCENT,
+                        help='minimum weekly allowance that must remain (default: 80)')
     args = parser.parse_args()
+    floor = args.min_remaining_percent
+    if not _valid_floor(floor):
+        result, code = {'status': 'unknown', 'floor_remaining_percent': None,
+                        'reason': 'Minimum remaining percentage must be a finite number from 0 to 100.'}, 3
+        print(json.dumps(result, sort_keys=True))
+        return code
+    base = {'floor_remaining_percent': floor}
     current_session = os.environ.get('CODEX_THREAD_ID')
     session = args.session or current_session
     if args.session and current_session and args.session != current_session:
-        result, code = {'status': 'unknown', 'reason': 'Requested session does not match CODEX_THREAD_ID.'}, 3
+        result, code = {**base, 'status': 'unknown', 'reason': 'Requested session does not match CODEX_THREAD_ID.'}, 3
     elif args.log:
-        result, code = inspect_log(args.log, expected_session=session)
+        result, code = inspect_log(args.log, expected_session=session,
+                                   min_remaining_percent=floor)
     elif not session:
-        result, code = {'status': 'unknown', 'reason': 'Supply --session or --log; CODEX_THREAD_ID is unavailable.'}, 3
+        result, code = {**base, 'status': 'unknown', 'reason': 'Supply --session or --log; CODEX_THREAD_ID is unavailable.'}, 3
     elif not all(c in '0123456789abcdef-' for c in session.lower()) or len(session) != 36:
-        result, code = {'status': 'unknown', 'reason': 'Session UUID is invalid.'}, 3
+        result, code = {**base, 'status': 'unknown', 'reason': 'Session UUID is invalid.'}, 3
     else:
         matches = list(args.sessions_dir.glob(f'**/*-{session}.jsonl'))
         if len(matches) != 1:
-            result, code = {'status': 'unknown', 'reason': 'Current session log is missing or ambiguous.'}, 3
+            result, code = {**base, 'status': 'unknown', 'reason': 'Current session log is missing or ambiguous.'}, 3
         else:
-            result, code = inspect_log(matches[0], expected_session=session)
+            result, code = inspect_log(matches[0], expected_session=session,
+                                       min_remaining_percent=floor)
     print(json.dumps(result, sort_keys=True))
     return code
 

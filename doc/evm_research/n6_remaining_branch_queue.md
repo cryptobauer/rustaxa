@@ -19,7 +19,15 @@ N2/N3 work with settled contracts can progress while external N4 input requests
 are pending. Do not claim the real-window gate is closed by another synthetic
 fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
-## First ready planning action
+## Next ready chunk
+
+The accepted metadata/escrow slices and redelegation prerequisites are in the
+[scorecard](../codex_slice_scorecard.md). Start the
+[staged redelegation chunk](n2_redelegate_next_chunk.md): adapter authentication,
+then ABI/frame composition, then simulation/estimation/traces. Reuse its settled
+contract; do not restart a branch-wide inventory. This does not close N1–N6.
+
+## Contract work for later gaps
 
 Use [N1 contracts](n1_existing_network_contracts.md) and relevant source ranges
 to name one executable stateful-native profile gap, its Rust owner, independent

@@ -18,16 +18,19 @@ and repository validation rules remain authoritative.
    `--session <current-session-uuid>` or `--log <current-rollout-path>`.
    Do not select the latest log or reuse a completed session's observation.
    It reads one log without modifying it and prints allowance separately from
-   tokens and billing. Use one account-wide floor of 20% remaining for all
+   tokens and billing. Use one account-wide floor of 80% remaining for all
    agent activity; do not create separate per-model or per-agent budgets.
-   Check at startup, before spawning, before each new slice or large gate, after
-   validation, review and commit, and about every five minutes at natural
-   milestones during long implementation work. Use a current snapshot no older
+   The lead checks at startup, before spawning, before each new slice or large
+   gate, after validation/review/commit, and at natural milestones no more than
+   about five minutes apart during long work. Combine adjacent checks while the
+   same observation is fresh. Workers use the lead's timestamped decision for
+   their bounded assignment, report completion or blockers, and do not start
+   follow-up work without a fresh lead decision. Use a current snapshot no older
    than five minutes for a new slice or gate. If telemetry is unknown or stale,
    make one bounded refresh or session-identity retry. If it remains unknown,
    stop new work and write a durable checkpoint; do not consume allowance
    blindly. A rounded or delayed value cannot guarantee an exact floor.
-   At 20% remaining or less, start no new slice, delegation or large gate.
+   At 80% remaining or less, start no new slice, delegation or large gate.
    Finish only an in-flight atomic step, then checkpoint and hand off. Do not
    commit an unvalidated slice or claim unchecked gates passed. Just above the
    floor, prefer a small bounded step that leaves closeout capacity; do not add
@@ -44,6 +47,14 @@ and repository validation rules remain authoritative.
 6. Freeze source, outputs and checks. An independent Sol-medium reviewer checks
    settled work; escalate unresolved authority or difficult semantics to Astra.
    Review summaries, hashes and relevant ranges without dumping full large artifacts.
+   Reuse a review thread within one contract family. At a family change, start
+   a fresh explicitly configured reviewer with `fork_turns="none"`; give it only
+   the settled contract, source/configuration pins, current delta and evidence
+   paths. Do not carry metadata, escrow and redelegation history into one Astra
+   thread. Check capacity first and preserve Luna's slot. If a new thread cannot
+   start, record the blocker and complete other authorized work; do not retry an
+   unchanged failure. Use Sol for settled derivatives. Use Astra for new
+   authentication, gas, rollback, trace or historical authority decisions.
 7. Record corrections, accepted scope and actual routing in the
    [scorecard](codex_slice_scorecard.md). Commit locally only when the task authorizes
    it; preserve unrelated work. Close completed slice contracts; keep the branch-run
@@ -53,6 +64,18 @@ and repository validation rules remain authoritative.
 
 These steps reduce repeated context and correction work. They do not reduce
 required validation or turn synthetic results into historical/production acceptance.
+
+The 80% reserve replaces the earlier 20% reserve for the next run. It means
+20% used, not 80% used and not 20% of the startup balance. The quota reader's
+default and active prompt must agree. If startup allowance is already at or
+below 80%, checkpoint and stop; do not change the floor to force a run. An
+explicit reader override is for a separately authorized policy or a test.
+
+The [October 2 audit](../token_usage_audit_01a0f999.md) supports these review
+changes: Astra used 66.8% of estimated credits, with context growth across
+contract families. This is local evidence, not proof of model equivalence.
+The official [OpenAI context guidance](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra)
+also recommends removing stale instructions and loading focused guidance.
 
 ## Autonomous execution
 
