@@ -60,3 +60,5 @@ comparison rows. Tokens and billing are not inferred from quota samples.
 | New-destination native estimation | Sol medium direct lead; independent Sol medium frozen review | None |21 actual dual-pin probes for11requests plus unchanged C++ search;168 Rust simulations,17API tests/clippy/fast pass;11 frozen hashes accepted |87% at 2026-10-03T02:27:28.489Z |
 
 | New-destination direct structured traces | Sol medium direct lead; Astra medium bounded H2 contract; independent Sol medium frozen review | None |Nine actual dual-pin sequences;72Rust oracle runs+eight hard failures/eight retries,18API tests/clippy/fast pass;13 frozen hashes accepted |87% at 2026-10-03T02:30:15.772Z |
+
+| Full caller-source transfer with retained validator | Sol medium direct lead; Luna medium bounded map; Astra medium contract/frozen final review | Export seed-only authentication rows; capture actual removed-delegation follow-up error |Two dual-pin/control shapes with17/15writes, actual follow-up;28targeted,11frame+18API,check/clippy,ONbridge12/all15 andfast pass;11 hashes accepted |85% at2026-10-03T02:43:33.721Z |

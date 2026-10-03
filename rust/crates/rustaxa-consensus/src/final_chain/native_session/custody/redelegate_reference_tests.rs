@@ -168,6 +168,16 @@ fn kernel_chain_destination(
     maximum: u64,
     destination_delegator: [u8; 20],
 ) -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
+    kernel_chain_profile(maximum, destination_delegator, None)
+}
+
+/// Complete zero-reward seed; optional second source delegator retains a
+/// validator after full caller-row removal. Existing helpers retain their seeds.
+fn kernel_chain_profile(
+    maximum: u64,
+    destination_delegator: [u8; 20],
+    retained_source: Option<u8>,
+) -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "redelegate-composition-{}-{}",
         std::process::id(),
@@ -187,7 +197,13 @@ fn kernel_chain_destination(
             .map(|validator| GenesisValidator {
                 address: address(validator),
                 vrf_key: [if validator == 0x31 { 0x44 } else { 0x55 }; 32],
-                total_stake: U256::from(1000).to_big_endian().to_vec(),
+                total_stake: U256::from(if retained_source == Some(validator) {
+                    2000
+                } else {
+                    1000
+                })
+                .to_big_endian()
+                .to_vec(),
                 delegations: vec![(
                     if validator == 0x31 {
                         address(0xd1)
@@ -195,7 +211,13 @@ fn kernel_chain_destination(
                         destination_delegator
                     },
                     U256::from(1000).to_big_endian().to_vec(),
-                )],
+                )]
+                .into_iter()
+                .chain(
+                    (retained_source == Some(validator))
+                        .then_some((address(0xa1), U256::from(1000).to_big_endian().to_vec())),
+                )
+                .collect(),
                 metadata: GenesisValidatorMetadata {
                     owner: address(0xa1),
                     commission: 100,
@@ -918,3 +940,6 @@ fn redelegate_selector_first_admission_and_abi_match_actual_go_frames() {
 
 #[path = "redelegate_new_destination_tests.rs"]
 mod new_destination;
+
+#[path = "redelegate_full_source_tests.rs"]
+mod full_source;

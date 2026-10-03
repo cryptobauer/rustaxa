@@ -33,15 +33,17 @@ New-destination estimation is independently accepted; see
 [new destination estimation](n3_redelegate_new_destination_estimation.md).
 New-destination direct supported traces are independently accepted; see
 [new destination traces](n3_direct_new_destination_redelegate_traces.md).
-Next gap: full caller source transfer with a retained positive source validator;
-Luna map and Astra bounded contract are accepted; actual Go capture is in progress.
+Full caller-source transfer with a retained positive validator is implemented
+and independently accepted. See
+[full source record](n2_redelegate_full_source_retained_validator.md).
+Next: its actual frame and historical API composition.
 Keep excluded success branches explicit.
 Current run artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`.
 Sol medium leads directly; Luna medium maps inputs; fresh Astra medium reviews
 the redelegation family. All routes ran, with no routing failures. Targeted,
 actual pinned Go, ON bridge and serial workspace fast checks pass. First-run
 failures remain recorded. The preparation commit is `5d4da5bc9`.
-Latest lead allowance: 86% remaining at 2026-10-03T02:33:33.397Z; refresh before
+Latest lead allowance: 85% remaining at 2026-10-03T02:43:33.721Z; refresh before
 new starts.
 
 The active [prompt](../../next_executable_slice_prompt.md) and

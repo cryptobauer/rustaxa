@@ -1,15 +1,17 @@
-//! Authenticated staged partial redelegation for complete, consistent snapshots.
+//! Authenticated staged retained-validator redelegation for complete, consistent snapshots.
 //!
 //! Every invocation uses a fresh raw trace. Normal failures authenticate their
 //! cold Go read prefix before returning. Success requires post-fix distinct
-//! validators, active Magnolia/Ficus, positive partial principal, an existing or new
-//! destination delegation and zero reward pools/indices. Head, cursor, current
-//! nodes and membership positions bind the semantic kernel to physical rows.
-//! The kernel runs on a clone without account access. Source serialization
-//! precedes destination serialization; only full success advances the session.
+//! validators, active Magnolia/Ficus, positive principal and zero reward pools
+//! and indices. Partial transfers admit existing or new destination pairs; full
+//! caller-source removal requires an existing positive destination pair. Both
+//! validator stakes remain positive. Head, cursor, current nodes and complete
+//! membership ordering bind the semantic kernel to physical rows. The kernel
+//! runs on a clone without account access. Source serialization precedes
+//! destination serialization; only full success advances the session.
 //! Reader/integrity failures abort through the enclosing session. Unsupported
 //! success branches return an explicit scope error. Go block-cache/read-count
-//! parity, malformed ABI and historical same-validator success are excluded.
+//! parity and historical same-validator success are excluded.
 
 use super::*;
 
@@ -145,7 +147,8 @@ impl FinalChainNativeSession<'_> {
             || self.pending_period <= self.final_chain.rewards_config.fix_redelegate_block_num
             || from == to
             || amount_value.is_zero()
-            || amount_value >= source_principal
+            || amount_value > source_principal
+            || (amount_value == source_principal && delegation(before, to, delegator).is_none())
             || delegation(before, to, delegator).is_some_and(|value| value.is_zero())
             || before
                 .total_stakes
