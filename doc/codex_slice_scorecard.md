@@ -68,3 +68,5 @@ comparison rows. Tokens and billing are not inferred from quota samples.
 | Full caller-source complete historical simulation | Sol medium direct lead; Astra medium bounded4k contract; independent Sol medium frozen review | None |12 dual-pin DryRunner cases,96 fresh Rust sessions;19API tests/clippy/reproduction/fast pass;10 hashes accepted |83% at2026-10-03T02:58:45.801Z |
 
 | Full caller-source native estimation | Sol medium direct lead; independent Sol medium frozen review | None |27 actual dual-pin probes for12requests/unchanged C++ search;216Rust sessions,20API tests/clippy/reproduction/fast pass;11 hashes accepted |83% at2026-10-03T03:05:35.323Z |
+
+| Full caller-source direct structured traces | Sol medium direct lead; Astra medium bounded H2 contract; independent Sol medium corrected frozen review | Add deletion/recreation outcome witnesses required by review; closure type annotation |Nine actual dual-pin sequences;72Rust comparisons+eight hard failures/eight retries,21API tests/clippy/reproduction/fast pass;12 refreshed hashes accepted;runtime ONbridge retained |83% at2026-10-03T03:16:04.370Z |

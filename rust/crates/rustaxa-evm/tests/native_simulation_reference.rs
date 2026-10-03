@@ -571,3 +571,6 @@ mod redelegate_full_source;
 
 #[path = "native_simulation_reference/redelegate_full_source_estimate.rs"]
 mod redelegate_full_source_estimate;
+
+#[path = "native_simulation_reference/redelegate_full_source_trace.rs"]
+mod redelegate_full_source_trace;
