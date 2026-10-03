@@ -556,3 +556,6 @@ fn complete_native_seed_keeps_missing_known_rows_unavailable() {
         Err(ConcreteReadError::HistoryUnavailable(identity))
     );
 }
+
+#[path = "native_simulation_reference/redelegate_new_destination.rs"]
+mod redelegate_new_destination;
