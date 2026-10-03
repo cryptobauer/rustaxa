@@ -1,6 +1,6 @@
 # Restart checkpoint: redelegation composition
 
-Branch: `feat/rust/evm-state-db`. Latest accepted commit: `dd0574e1f`.
+Branch: `feat/rust/evm-state-db`. Latest accepted commit: `8a6735c94`.
 No push, fallback or production routing is authorized. Milestone10 and N1–N6 stay open.
 
 The prepared adapter/ABI/frames/historical simulation/estimation/direct traces
@@ -36,16 +36,18 @@ DB lock collision). No C++ or storage-module change is in this run.
 
 Active [prompt](../../next_executable_slice_prompt.md) and
 [workflow](../codex_slice_workflow.md) use80% weekly allowance remaining.
-Latest fresh lead allowance:82% at2026-10-03T03:25:27.553Z. Refresh before starts;
+Latest fresh lead allowance:81% at2026-10-03T03:33:23.487Z. Refresh before starts;
 at80% or less start no new work, finish only in-flight atomic closeout. Unknown
 telemetry after one bounded refresh also stops new work.
 
 Pre-Aspen-two zero-existing-positive pairs are implemented; targeted31 tests,
 actual dual-pin/control reproduction, EVM regression, check/clippy and ONbridge
 build12/all15 pass. Fast passes; frozen Astra review accepted all12 hashes. See
-[zero record](n2_redelegate_zero_existing_pairs.md). Next: actual zero-success
-frame and API composition. Keep zero+absent destination and present-zero pairs
-excluded; no captured Go account-balance claim at this staged boundary.
+[zero record](n2_redelegate_zero_existing_pairs.md). Actual zero-success frames now match both pins;13 frame/21 API tests and
+clippy pass. Fast passes; frozen Astra review accepted all15 hashes; see
+[frame record](n2_redelegate_zero_frames.md). Next: public historical zero API
+simulation/estimation/direct traces. Keep zero+absent destination and present-zero
+pairs excluded; measured balance evidence is limited to the new frame corpus.
 
 Producer executable identity, runtime overrides and capture command stay unknown.
 Do not repeat the request or invent them. Qualified complete real-window inputs,
