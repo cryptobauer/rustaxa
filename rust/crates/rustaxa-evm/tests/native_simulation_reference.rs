@@ -60,6 +60,9 @@ mod escrow_estimate;
 #[path = "native_simulation_reference/escrow_trace.rs"]
 mod escrow_trace;
 
+#[path = "native_simulation_reference/redelegate.rs"]
+mod redelegate;
+
 fn address(last: u8) -> [u8; 20] {
     let mut result = [0; 20];
     result[19] = last;

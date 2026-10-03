@@ -16,14 +16,16 @@ The authenticated staged partial redelegation adapter is validated under the
 The adapter commit is `93c4c2917`. Selector-first ABI/admission and actual frame
 composition are also validated and independently accepted; see the
 [frame record](n2_redelegate_frames.md). Use `git log -1` for their local commit.
-Next: actual historical DryRunner, then estimation and supported direct structured
-traces through existing owners. Keep excluded success branches explicit.
+Actual historical DryRunner is also tested over reopened physical readers and
+reconstructed semantic owners; see [simulation record](n2_redelegate_simulation.md).
+Next: estimation, then supported direct structured traces through existing owners.
+Keep excluded success branches explicit.
 Current run artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`.
 Sol medium leads directly; Luna medium maps inputs; fresh Astra medium reviews
 the redelegation family. All routes ran, with no routing failures. Targeted,
 actual pinned Go, ON bridge and serial workspace fast checks pass. First-run
 failures remain recorded. The preparation commit is `5d4da5bc9`.
-Latest lead allowance: 98% remaining at 2026-10-03T01:15:13.384Z; refresh before
+Latest lead allowance: 97% remaining at 2026-10-03T01:25:23.559Z; refresh before
 new starts.
 
 The active [prompt](../../next_executable_slice_prompt.md) and
