@@ -1,0 +1,370 @@
+//! Actual Go ABI/frame composition through the staged session and EVM journal.
+//! The touched-row physical seed retains two validators; the caller destination
+//! is absent. It does not prove a complete physical native checkpoint.
+//! Parent reversion removes logs/account transfers but preserves native raw
+//! mutations and semantic advancement. This does not claim DryRunner parity.
+
+use super::*;
+
+/// Records ordered effects before the journal reduces them to final writes.
+struct RecordingPort<'a> {
+    inner: SessionPort<'a>,
+    outcomes: Vec<NativeInvocationResult>,
+}
+impl NativeExecutionPort for RecordingPort<'_> {
+    fn prepare(
+        &mut self,
+        invocation: &NativeInvocation,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeGasQuote, NativePortError> {
+        self.inner.prepare(invocation, journal)
+    }
+    fn invoke(
+        &mut self,
+        invocation: &NativeInvocation,
+        quote: NativeGasQuote,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeInvocationResult, NativePortError> {
+        let result = self.inner.invoke(invocation, quote, journal)?;
+        self.outcomes.push(result.clone());
+        Ok(result)
+    }
+}
+
+fn addr(last: u8) -> [u8; 20] {
+    let mut address = [0; 20];
+    address[19] = last;
+    address
+}
+
+fn corpus() -> Vec<Value> {
+    let public: Value = serde_json::from_str(include_str!(
+        "../../../../../experiments/evm_feasibility/fixtures/native_redelegate_new_destination_frames/public.json"
+    ))
+    .unwrap();
+    let local: Value = serde_json::from_str(include_str!(
+        "../../../../../experiments/evm_feasibility/fixtures/native_redelegate_new_destination_frames/local.json"
+    ))
+    .unwrap();
+    assert_eq!(public, local);
+    public["cases"].as_array().unwrap().clone()
+}
+
+fn state(row: &Value) -> FixtureState {
+    let state = FixtureState::from_case(row);
+    {
+        let mut rows = state.rows.borrow_mut();
+        let mut wrapper = rows.accounts.remove(&TARGET).unwrap();
+        wrapper.balance = ConcreteAccountBalance::new(1_000_000_u64.into());
+        rows.accounts.insert(addr(0xd1), wrapper);
+        rows.accounts.get_mut(&DPOS).unwrap().balance =
+            ConcreteAccountBalance::new(2000_u64.into());
+    }
+    state
+}
+
+fn chain(storage: Arc<Storage>, row: &Value) -> FinalChain {
+    FinalChain::new_with_rewards_config_and_ficus_activation(
+        storage,
+        1_000_000.into(),
+        0,
+        Vec::new(),
+        [0x31, 0x32]
+            .into_iter()
+            .map(|last| GenesisValidator {
+                address: addr(last),
+                vrf_key: [if last == 0x31 { 0x44 } else { 0x55 }; 32],
+                total_stake: ethereum_types::U256::from(1000).to_big_endian().to_vec(),
+                delegations: vec![(
+                    if last == 0x31 { addr(0xd1) } else { addr(0xa1) },
+                    ethereum_types::U256::from(1000).to_big_endian().to_vec(),
+                )],
+                metadata: GenesisValidatorMetadata {
+                    owner: addr(0xa1),
+                    commission: 100,
+                    ..Default::default()
+                },
+            })
+            .collect(),
+        GenesisDposConfig {
+            eligibility_balance_threshold: ethereum_types::U256::from(100).into(),
+            vote_eligibility_balance_step: ethereum_types::U256::from(10).into(),
+            validator_maximum_stake: ethereum_types::U256::from(1_000_000).into(),
+            minimum_deposit: ethereum_types::U256::from(100).into(),
+            delegation_delay: 1,
+            ..Default::default()
+        },
+        FinalChainRewardsConfig {
+            magnolia_period: 0.into(),
+            cornus_period: 0.into(),
+            fix_redelegate_block_num: row["fix"].as_u64().unwrap().into(),
+            aspen_part_two_period: if row["aspen_zero"].as_bool().unwrap() {
+                1.into()
+            } else {
+                FinalChainBlockNumber::MAX
+            },
+            yield_percentage: 0,
+            aspen_max_supply: ethereum_types::U256::from(1_000_000_000).into(),
+            ..Default::default()
+        },
+        0.into(),
+    )
+    .unwrap()
+}
+
+fn transaction(row: &Value) -> ExecutionTransaction {
+    ExecutionTransaction {
+        position: 0.into(),
+        hash: [0x11; 32],
+        sender: if row["direct"].as_bool().unwrap() {
+            addr(0xd1)
+        } else {
+            SENDER
+        },
+        receiver: Some(if row["direct"].as_bool().unwrap() {
+            DPOS
+        } else {
+            addr(0xd1)
+        }),
+        nonce: FinalChainNonce::from_u64(1),
+        gas_price: ExecutionGasPrice::default(),
+        gas_limit: 200_000.into(),
+        value: ExecutionValue::new(row["value"].as_u64().unwrap().into()),
+        input: bytes(&row["input"]),
+        canonical_rlp: None,
+        kind: ExecutionTransactionKind::Call,
+    }
+}
+
+fn block() -> ExecutionBlockContext {
+    ExecutionBlockContext {
+        period: 1.into(),
+        author: [0; 20],
+        timestamp: 0,
+        gas_limit: 1_000_000.into(),
+        chain_id: 666,
+        difficulty: BigUint::default(),
+    }
+}
+
+fn writes_json(ordered: &[&NativeRawMutation]) -> Value {
+    serde_json::json!(ordered.iter().map(|write| {
+        let value = match &write.operation { NativeRawOperation::Put(value) => value.as_bytes(), NativeRawOperation::Delete => &[] };
+        serde_json::json!({"address":hex::encode(write.address),"key":hex::encode(write.key.0),"value":hex::encode(value)})
+    }).collect::<Vec<_>>())
+}
+
+#[test]
+fn new_destination_frames_match_actual_two_call_parent_revert_and_native_membership() {
+    let cases = corpus();
+    assert_eq!(cases.len(), 8);
+    for row in cases {
+        let state = state(&row);
+        let path = temp_db_path("new-destination-frames");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let chain = chain(storage.clone(), &row);
+        let committed = chain
+            .dpos_validators_total_stakes(0.into())
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.address, row.stake))
+            .collect::<Vec<_>>();
+        {
+            let mut port = RecordingPort {
+                inner: SessionPort {
+                    session: chain.begin_native_session(1.into(), 0.into()).unwrap(),
+                    prepared: Vec::new(),
+                    invoked: Vec::new(),
+                },
+                outcomes: Vec::new(),
+            };
+            let mut journal = ExecutionJournal::new(state.clone());
+            let mut sequence = PeriodConsensusSequence::new(1.into());
+            let execution = execute_top_level_call_with_native(
+                &mut journal,
+                &NoHistory,
+                &DposNative,
+                &DposNative,
+                &mut port,
+                &mut sequence,
+                &block(),
+                &transaction(&row),
+                EnvelopeRules { cornus: true },
+                TaraxaProfile::new(false),
+            )
+            .unwrap();
+            let TransactionExecutionResult::Executed(execution) = execution else {
+                panic!("Go admitted {}", row["name"])
+            };
+            assert_eq!(
+                execution.gas_used.as_u64(),
+                row["transaction_gas_used"].as_u64().unwrap(),
+                "{}",
+                row["name"]
+            );
+            assert_eq!(execution.output, bytes(&row["parent_output"]));
+            assert_eq!(execution.logs, fixture_logs(&row["logs"]));
+            match row["parent_error"].as_str().unwrap() {
+                "" => assert_eq!(execution.status, CodeExecutionStatus::Success),
+                "execution reverted" => assert_eq!(
+                    execution.status,
+                    CodeExecutionStatus::Failure(CodeExecutionError::Revert)
+                ),
+                error => panic!("unexpected reference parent error {error}"),
+            }
+            let calls = row["calls"].as_array().unwrap();
+            assert_eq!(
+                calls.len(),
+                if row["two_calls"].as_bool().unwrap() {
+                    2
+                } else {
+                    1
+                }
+            );
+            assert_eq!(port.inner.prepared.len(), calls.len());
+            assert_eq!(port.inner.invoked.len(), calls.len());
+            assert_eq!(port.outcomes.len(), calls.len());
+            assert_eq!(sequence.next_sequence(), calls.len() as u64);
+            let settled = journal.settle_transaction().unwrap();
+            assert_eq!(settled.native_invocations.len(), calls.len());
+            let mut ordered = Vec::new();
+            for (index, call) in calls.iter().enumerate() {
+                let (invocation, quote) = &port.inner.prepared[index];
+                assert_eq!(invocation, &port.inner.invoked[index]);
+                assert_eq!(invocation.id.sequence, index as u64);
+                assert_eq!(quote.as_u64(), call["required_gas"].as_u64().unwrap());
+                assert_eq!(
+                    invocation.supplied_gas.as_u64(),
+                    call["supplied_native_gas"].as_u64().unwrap()
+                );
+                assert_eq!(invocation.depth, call["depth"].as_u64().unwrap() as u16);
+                assert_eq!(invocation.caller, address(call["caller"].as_str().unwrap()));
+                assert_eq!(invocation.input, bytes(&row["input"]));
+                assert_eq!(
+                    invocation.value.value(),
+                    &BigUint::from(row["value"].as_u64().unwrap())
+                );
+                assert_eq!(invocation.is_static, row["static"].as_bool().unwrap());
+                let success =
+                    call["native_called"].as_bool().unwrap() && call["native_error"] == "";
+                let fact = &settled.native_invocations[index];
+                assert_eq!(
+                    fact.disposition,
+                    if !success {
+                        ConsensusNativeDisposition::OwnFrameReverted
+                    } else if row["parent_revert"].as_bool().unwrap() {
+                        ConsensusNativeDisposition::OuterFrameReverted
+                    } else {
+                        ConsensusNativeDisposition::Normal
+                    }
+                );
+                assert_eq!(fact.logs, fixture_logs(&call["logs"]));
+                assert_eq!(fact.output, bytes(&call["native_output"]));
+                assert_eq!(
+                    fact.gas_used,
+                    if call["native_called"].as_bool().unwrap() {
+                        *quote
+                    } else {
+                        FinalChainGas::ZERO
+                    }
+                );
+                if !call["native_called"].as_bool().unwrap() {
+                    assert_eq!(
+                        fact.status,
+                        CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas)
+                    );
+                    assert!(matches!(
+                        port.outcomes[index],
+                        NativeInvocationResult::InsufficientGas { .. }
+                    ));
+                    assert_eq!(call["ordered_raw_writes"], serde_json::json!([]));
+                    continue;
+                }
+                if success {
+                    assert_eq!(fact.status, CodeExecutionStatus::Success);
+                } else {
+                    let CodeExecutionStatus::Failure(CodeExecutionError::Native(error)) =
+                        &fact.status
+                    else {
+                        panic!("expected native failure")
+                    };
+                    assert_eq!(error.error, call["native_error"].as_str().unwrap());
+                }
+                let NativeInvocationResult::Completed(outcome) = &port.outcomes[index] else {
+                    panic!("expected funded native outcome")
+                };
+                assert!(outcome.account_mutations.is_empty());
+                assert_eq!(outcome.output, bytes(&call["native_output"]));
+                assert_eq!(outcome.logs, fixture_logs(&call["logs"]));
+                let current = outcome.raw_mutations.iter().collect::<Vec<_>>();
+                assert_eq!(
+                    writes_json(&current),
+                    call["ordered_raw_writes"],
+                    "{} call{index}",
+                    row["name"]
+                );
+                ordered.extend(current);
+            }
+            assert_eq!(writes_json(&ordered), row["ordered_raw_writes"]);
+            let final_native = ordered
+                .iter()
+                .map(|write| ((write.address, write.key), write.operation.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let final_plan = settled
+                .writes
+                .raw_storage
+                .iter()
+                .map(|write| ((write.address, write.key), write.operation.clone()))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(final_plan, final_native);
+            assert_eq!(settled.logs, fixture_logs(&row["logs"]));
+            assert!(settled.writes.ordinary_storage.is_empty());
+            if row["two_calls"].as_bool().unwrap() {
+                assert_eq!(ordered.len(), 24);
+                assert!(settled.logs.is_empty());
+                assert!(
+                    settled
+                        .native_invocations
+                        .iter()
+                        .all(|fact| fact.disposition
+                            == ConsensusNativeDisposition::OuterFrameReverted)
+                );
+            }
+            state.apply(settled.writes);
+            for (key, value) in row["after_raw"].as_object().unwrap() {
+                let actual = state.storage(DPOS, ConcreteStorageKey(hash(key))).unwrap();
+                let actual = match actual {
+                    ConcreteRead::Present(bytes) => bytes,
+                    ConcreteRead::Absent | ConcreteRead::Tombstone => Vec::new(),
+                };
+                assert_eq!(actual, bytes(value), "{} raw{key}", row["name"]);
+            }
+            for actor in [SENDER, addr(0xd1), DPOS] {
+                let expected = &row["accounts"][hex::encode(actor)];
+                let ConcreteRead::Present(actual) = state.account(actor).unwrap() else {
+                    panic!("missing account")
+                };
+                assert_eq!(
+                    BigUint::from_bytes_be(&actual.account.nonce.to_bytes()),
+                    number(expected["nonce"].as_str().unwrap())
+                );
+                assert_eq!(
+                    actual.account.balance.value(),
+                    &number(expected["balance"].as_str().unwrap())
+                );
+            }
+            assert_eq!(
+                chain
+                    .dpos_validators_total_stakes(0.into())
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| (row.address, row.stake))
+                    .collect::<Vec<_>>(),
+                committed
+            );
+        }
+        drop(chain);
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

@@ -25,14 +25,17 @@ Direct structured traces are also tested over actual Go live sequences; see
 complete and independently accepted. The new-destination partial adapter is
 also tested against actual Go first/repeat writes and membership; see
 [new destination record](n2_redelegate_new_destination.md).
-Next: actual new-destination frame and historical API composition.
+New-destination actual eight-case frame composition is validated; see
+[new destination frames](n2_redelegate_new_destination_frames.md). Frozen corrected review
+accepted all14 files. Complete-seed historical simulation is validated and in
+independent review; next: estimation and direct supported traces.
 Keep excluded success branches explicit.
 Current run artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`.
 Sol medium leads directly; Luna medium maps inputs; fresh Astra medium reviews
 the redelegation family. All routes ran, with no routing failures. Targeted,
 actual pinned Go, ON bridge and serial workspace fast checks pass. First-run
 failures remain recorded. The preparation commit is `5d4da5bc9`.
-Latest lead allowance: 94% remaining at 2026-10-03T02:00:09.275Z; refresh before
+Latest lead allowance: 88% remaining at 2026-10-03T02:24:04.926Z; refresh before
 new starts.
 
 The active [prompt](../../next_executable_slice_prompt.md) and

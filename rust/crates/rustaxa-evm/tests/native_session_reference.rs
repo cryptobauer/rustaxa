@@ -59,6 +59,9 @@ mod escrow_transfer_frames;
 #[path = "native_session_reference/redelegate_frames.rs"]
 mod redelegate_frames;
 
+#[path = "native_session_reference/redelegate_new_destination_frames.rs"]
+mod redelegate_new_destination_frames;
+
 const SENDER: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa,
 ];
