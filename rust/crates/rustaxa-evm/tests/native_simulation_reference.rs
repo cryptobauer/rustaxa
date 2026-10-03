@@ -565,3 +565,6 @@ mod redelegate_new_destination_estimate;
 
 #[path = "native_simulation_reference/redelegate_new_destination_trace.rs"]
 mod redelegate_new_destination_trace;
+
+#[path = "native_simulation_reference/redelegate_full_source.rs"]
+mod redelegate_full_source;

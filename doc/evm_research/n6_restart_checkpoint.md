@@ -1,6 +1,6 @@
 # Restart checkpoint: redelegation composition
 
-Branch: `feat/rust/evm-state-db`. Latest accepted commit: `6b5228ad2`.
+Branch: `feat/rust/evm-state-db`. Latest accepted commit: `65ef42b5b`.
 No push, fallback or production routing is authorized. Milestone10 and N1–N6 stay open.
 
 The prepared adapter/ABI/frames/historical simulation/estimation/direct traces
@@ -14,8 +14,9 @@ Accepted commits, checks, corrections and model routes are in the
 [full source runtime](n2_redelegate_full_source_retained_validator.md),
 [full source frames](n2_redelegate_full_source_frames.md).
 
-Next: actual complete-seed full-source historical simulation, then estimation
-and direct supported traces. Proposed historical profile has both validators
+Full-source complete historical simulation is independently accepted;
+see [record](n3_redelegate_full_source_simulation.md). Next: estimation and direct
+supported traces. The accepted historical profile has both validators
 with aa/bb1,000 each (total4,000), permitting both caller removal shapes while
 both validators stay positive. Separate complete actual Go H1 physical inputs
 from prior touched-row frame maps. Use public H1 finalization once; semantic-owner
@@ -34,7 +35,7 @@ DB lock collision). No C++ or storage-module change is in this run.
 
 Active [prompt](../../next_executable_slice_prompt.md) and
 [workflow](../codex_slice_workflow.md) use80% weekly allowance remaining.
-Latest fresh lead allowance:83% at2026-10-03T02:55:28.581Z. Refresh before starts;
+Latest fresh lead allowance:83% at2026-10-03T02:58:45.801Z. Refresh before starts;
 at80% or less start no new work, finish only in-flight atomic closeout. Unknown
 telemetry after one bounded refresh also stops new work.
 
