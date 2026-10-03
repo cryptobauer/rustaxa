@@ -675,7 +675,7 @@ fn redelegate_staged_reader_and_all_authenticated_row_failures_abort_without_adv
 fn redelegate_staged_excluded_successes_have_no_effects_or_advancement() {
     let oracle = oracle();
     let (chain, storage, path) = kernel_chain(1_000_000);
-    for name in ["zero_before_aspen_two", "full_source"] {
+    for name in ["full_source"] {
         let case = oracle["cases"]
             .as_array()
             .unwrap()
@@ -943,3 +943,6 @@ mod new_destination;
 
 #[path = "redelegate_full_source_tests.rs"]
 mod full_source;
+
+#[path = "redelegate_zero_existing_tests.rs"]
+mod zero_existing;

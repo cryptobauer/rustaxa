@@ -115,8 +115,12 @@ New-destination [frames](n2_redelegate_new_destination_frames.md),
 [estimation](n3_redelegate_new_destination_estimation.md) also have actual bounded
 synthetic parity. [Full caller-source removal](n2_redelegate_full_source_retained_validator.md)
 also has bounded staged parity when another delegator keeps the source validator
-positive and the destination caller pair already exists. Full+new destination,
-source-validator deletion, zero/reward-bearing/new-validator and historical
+positive and the destination caller pair already exists. Its [complete simulation](n3_redelegate_full_source_simulation.md),
+[estimation](n3_redelegate_full_source_estimation.md) and [direct traces](n3_direct_full_source_redelegate_traces.md)
+have bounded actual parity. [Zero before Aspen part two](n2_redelegate_zero_existing_pairs.md)
+admits only two existing positive caller pairs at the staged boundary; its
+frame/API composition and measured account balances remain open. Full+new destination,
+source-validator deletion, zero+absent destination/reward-bearing/new-validator and historical
 same-validator success remain excluded. Real-history and production acceptance
 remain open.
 

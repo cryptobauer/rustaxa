@@ -3,7 +3,9 @@
 //! Every invocation uses a fresh raw trace. Normal failures authenticate their
 //! cold Go read prefix before returning. Success requires post-fix distinct
 //! validators, active Magnolia/Ficus, positive principal and zero reward pools
-//! and indices. Partial transfers admit existing or new destination pairs; full
+//! and indices. Before Aspen part two, zero amount requires both caller pairs
+//! to be positive and present; it still advances reward cursors and emits writes.
+//! Partial transfers admit existing or new destination pairs; full
 //! caller-source removal requires an existing positive destination pair. Both
 //! validator stakes remain positive. Head, cursor, current nodes and complete
 //! membership ordering bind the semantic kernel to physical rows. The kernel
@@ -146,7 +148,8 @@ impl FinalChainNativeSession<'_> {
             || !self.final_chain.ficus_active_at(self.pending_period)
             || self.pending_period <= self.final_chain.rewards_config.fix_redelegate_block_num
             || from == to
-            || amount_value.is_zero()
+            || (amount_value.is_zero()
+                && (source_principal.is_zero() || delegation(before, to, delegator).is_none()))
             || amount_value > source_principal
             || (amount_value == source_principal && delegation(before, to, delegator).is_none())
             || delegation(before, to, delegator).is_some_and(|value| value.is_zero())
