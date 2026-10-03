@@ -809,3 +809,6 @@ fn nonce(value: &str) -> FinalChainNonce {
         FinalChainNonce::from_bytes(&value.to_bytes_be()).unwrap()
     }
 }
+
+#[path = "native_session_reference/redelegate_full_source_frames.rs"]
+mod redelegate_full_source_frames;

@@ -6,6 +6,12 @@ The [observations and settled adapter contract](n2_redelegate_observations.md#se
 are authoritative. Previous kernel/serializer and normal-failure tests are
 accepted prerequisites, not a completed adapter. Do not repeat their discovery.
 
+The prepared three-slice chunk is complete and independently accepted in the
+October3 run. See the [compact checkpoint](n6_restart_checkpoint.md) and
+[scorecard](../codex_slice_scorecard.md) for accepted extensions and the next
+ready bounded gap. The ordered contract below is preserved as its baseline;
+do not repeat its completed discovery or implementation.
+
 ## Ordered slices
 
 1. **Staged adapter.** Own `rust/crates/rustaxa-consensus/src/final_chain/native_session.rs`

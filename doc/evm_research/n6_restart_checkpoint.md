@@ -1,59 +1,44 @@
-# Restart checkpoint: staged redelegation next
+# Restart checkpoint: redelegation composition
 
-Branch: `feat/rust/evm-state-db`. Use `git log -1` for the latest accepted commit.
-Milestone 10 and N1–N6 remain open. No push or production routing is authorized.
+Branch: `feat/rust/evm-state-db`. Latest accepted commit: `6b5228ad2`.
+No push, fallback or production routing is authorized. Milestone10 and N1–N6 stay open.
 
-The previous run completed metadata and escrow execution/API slices plus
-redelegation observations, account-port wiring, kernel/write composition and
-seven normal preflight failures. Targeted checks, required bridge checks and
-workspace fast checks passed; independent reviews accepted their bounded scopes.
-Details: [completed checkpoint](n6_restart_checkpoint_history_2026_10_02_post_branch_run.md),
-[scorecard](../codex_slice_scorecard.md), [usage audit](../../token_usage_audit_01a0f999.md).
-First-run logs and frozen evidence: `/home/fry/artifacts/evm-branch-2026-10-01-2233/`.
+The prepared adapter/ABI/frames/historical simulation/estimation/direct traces
+chunk is complete and independently accepted. New caller destination partial
+execution and all four compositions are also accepted. Full caller-source removal
+with another delegator retaining the source validator is accepted at `6b5228ad2`;
+its actual full-source frames are independently accepted.
+Accepted commits, checks, corrections and model routes are in the
+[scorecard](../codex_slice_scorecard.md). Current bounded scope and exclusions:
+[N1 coverage](n1_existing_network_contracts.md),
+[full source runtime](n2_redelegate_full_source_retained_validator.md),
+[full source frames](n2_redelegate_full_source_frames.md).
 
-The authenticated staged partial redelegation adapter is validated under the
-[settled contract and acceptance record](n2_redelegate_observations.md).
-The adapter commit is `93c4c2917`. Selector-first ABI/admission and actual frame
-composition are also validated and independently accepted; see the
-[frame record](n2_redelegate_frames.md). Use `git log -1` for their local commit.
-Actual historical DryRunner is also tested over reopened physical readers and
-reconstructed semantic owners; see [simulation record](n2_redelegate_simulation.md).
-Estimation is also tested through actual Go probes and the unchanged C++ search;
-see [estimation record](n3_redelegate_estimation.md).
-Direct structured traces are also tested over actual Go live sequences; see
-[trace record](n3_direct_redelegate_traces.md). The prepared bounded chunk is
-complete and independently accepted. The new-destination partial adapter is
-also tested against actual Go first/repeat writes and membership; see
-[new destination record](n2_redelegate_new_destination.md).
-New-destination actual eight-case frame composition is validated; see
-[new destination frames](n2_redelegate_new_destination_frames.md). Frozen corrected review
-accepted all14 files. Complete-seed historical simulation is independently accepted; see
-[new destination simulation](n3_redelegate_new_destination_simulation.md).
-New-destination estimation is independently accepted; see
-[new destination estimation](n3_redelegate_new_destination_estimation.md).
-New-destination direct supported traces are independently accepted; see
-[new destination traces](n3_direct_new_destination_redelegate_traces.md).
-Full caller-source transfer with a retained positive validator is implemented
-and independently accepted. See
-[full source record](n2_redelegate_full_source_retained_validator.md).
-Next: its actual frame and historical API composition.
-Keep excluded success branches explicit.
-Current run artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`.
-Sol medium leads directly; Luna medium maps inputs; fresh Astra medium reviews
-the redelegation family. All routes ran, with no routing failures. Targeted,
-actual pinned Go, ON bridge and serial workspace fast checks pass. First-run
-failures remain recorded. The preparation commit is `5d4da5bc9`.
-Latest lead allowance: 85% remaining at 2026-10-03T02:43:33.721Z; refresh before
-new starts.
+Next: actual complete-seed full-source historical simulation, then estimation
+and direct supported traces. Proposed historical profile has both validators
+with aa/bb1,000 each (total4,000), permitting both caller removal shapes while
+both validators stay positive. Separate complete actual Go H1 physical inputs
+from prior touched-row frame maps. Use public H1 finalization once; semantic-owner
+restart must load H1 without refinalization. Astra contract review is accepted.
+Do not claim private synthetic adapter history is actual DryRunner API evidence.
 
-The active [prompt](../../next_executable_slice_prompt.md) and
-[workflow](../codex_slice_workflow.md) now use **80% allowance remaining**.
-Read fresh current-session telemetry before starting. The previous run's 21%
-remaining is historical. If fresh allowance is at or below 80%, stop new work.
-Unknown telemetry after one bounded refresh also stops new work.
+Reference pins: public `6c7e5338b22d5e596cc2365a88d1f94840e1ee1b`,
+local `bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418`.
+Artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`; retain first failures,
+frozen hashes and independent reviews. Sol medium leads; Luna medium maps;
+Astra medium reviews uncertain contracts/authentication, independent Sol medium
+reviews settled derivatives. All requested routes ran without routing failures.
+Required targeted/parity/ON bridge and serial workspace fast checks passed for
+accepted runtime. Use `RUST_TEST_THREADS=1` for workspace fast (existing temporary
+DB lock collision). No C++ or storage-module change is in this run.
 
-Producer executable identity, runtime overrides and capture command remain
-unknown. Do not invent them or repeat the request. N4 still needs qualified
-complete inputs and real signed-period/root parity. Synthetic checks do not
-close real-history or production acceptance. Broad replay/differential/fault
-gates require prepared commands, data identities, bounds and required approval.
+Active [prompt](../../next_executable_slice_prompt.md) and
+[workflow](../codex_slice_workflow.md) use80% weekly allowance remaining.
+Latest fresh lead allowance:83% at2026-10-03T02:55:28.581Z. Refresh before starts;
+at80% or less start no new work, finish only in-flight atomic closeout. Unknown
+telemetry after one bounded refresh also stops new work.
+
+Producer executable identity, runtime overrides and capture command stay unknown.
+Do not repeat the request or invent them. Qualified complete real-window inputs,
+real signed-period/root parity and N4–N6 acceptance remain open. Broad replay,
+differential and fault gates require exact prepared commands/data/bounds and approval.

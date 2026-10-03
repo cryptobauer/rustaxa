@@ -113,7 +113,10 @@ and [new-destination adapter](n2_redelegate_new_destination.md).
 New-destination [frames](n2_redelegate_new_destination_frames.md),
 [simulation](n3_redelegate_new_destination_simulation.md) and
 [estimation](n3_redelegate_new_destination_estimation.md) also have actual bounded
-synthetic parity. Full/zero/reward-bearing/new-validator and historical
+synthetic parity. [Full caller-source removal](n2_redelegate_full_source_retained_validator.md)
+also has bounded staged parity when another delegator keeps the source validator
+positive and the destination caller pair already exists. Full+new destination,
+source-validator deletion, zero/reward-bearing/new-validator and historical
 same-validator success remain excluded. Real-history and production acceptance
 remain open.
 
