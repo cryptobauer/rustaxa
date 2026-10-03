@@ -103,7 +103,19 @@ Nested/delayed traces and full-width value funding remain separate gaps.
 The [redelegation observation corpus](n2_redelegate_observations.md) captures
 actual pinned read/write vectors and failure prefixes before staged wiring.
 Go caches all native rows on a second partial call in the same block; storage
-observations do not prove all API lookup behavior. Staged redelegation is open.
+observations do not prove all API lookup behavior. The bounded adapter now
+admits positive partial distinct-validator zero-reward redelegation with retained
+positive validator stakes, including an absent caller destination pair. See the
+[existing-pair adapter](n2_redelegate_observations.md),
+[ABI/frames](n2_redelegate_frames.md), [simulation](n2_redelegate_simulation.md),
+[estimation](n3_redelegate_estimation.md), [direct traces](n3_direct_redelegate_traces.md)
+and [new-destination adapter](n2_redelegate_new_destination.md).
+New-destination [frames](n2_redelegate_new_destination_frames.md),
+[simulation](n3_redelegate_new_destination_simulation.md) and
+[estimation](n3_redelegate_new_destination_estimation.md) also have actual bounded
+synthetic parity. Full/zero/reward-bearing/new-validator and historical
+same-validator success remain excluded. Real-history and production acceptance
+remain open.
 
 The [staged escrow-entry slice](n2_staged_escrow_transfer.md) admits exact active
 `44df8e70`, with 1,000 gas, arbitrary-width value and empty native effects.
