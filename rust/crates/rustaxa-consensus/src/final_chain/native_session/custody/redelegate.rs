@@ -2,7 +2,7 @@
 //!
 //! Every invocation uses a fresh raw trace. Normal failures authenticate their
 //! cold Go read prefix before returning. Success requires post-fix distinct
-//! validators, active Magnolia/Ficus, positive partial principal, an existing
+//! validators, active Magnolia/Ficus, positive partial principal, an existing or new
 //! destination delegation and zero reward pools/indices. Head, cursor, current
 //! nodes and membership positions bind the semantic kernel to physical rows.
 //! The kernel runs on a clone without account access. Source serialization
@@ -146,7 +146,7 @@ impl FinalChainNativeSession<'_> {
             || from == to
             || amount_value.is_zero()
             || amount_value >= source_principal
-            || delegation(before, to, delegator).is_none_or(|value| value.is_zero())
+            || delegation(before, to, delegator).is_some_and(|value| value.is_zero())
             || before
                 .total_stakes
                 .get(&from)
@@ -184,13 +184,23 @@ impl FinalChainNativeSession<'_> {
                 .iter()
                 .filter_map(|(validator, rows)| rows.contains_key(&delegator).then_some(*validator))
                 .collect::<Vec<_>>();
-            authenticate_membership(
-                members,
-                &expected,
-                &delegator_validators_prefix(delegator),
-                validator,
-                &mut trace,
-            )?;
+            if delegation(before, validator, delegator).is_some() {
+                authenticate_membership(
+                    members,
+                    &expected,
+                    &delegator_validators_prefix(delegator),
+                    validator,
+                    &mut trace,
+                )?;
+            } else {
+                authenticate_new_membership(
+                    members,
+                    &expected,
+                    &delegator_validators_prefix(delegator),
+                    validator,
+                    &mut trace,
+                )?;
+            }
         }
 
         let mut next = before.clone();
@@ -310,16 +320,49 @@ fn authenticate_reward_scope(
     let graph = &snapshot.reward_reference_graph;
     let current = graph.current_block().map_err(domain)?;
     let head = graph.read_validator_head(&validator).map_err(domain)?;
-    let cursor = graph.read_cursor(&validator, &delegator).map_err(domain)?;
+    let cursor = if delegation(snapshot, validator, delegator).is_some() {
+        Some(graph.read_cursor(&validator, &delegator).map_err(domain)?)
+    } else {
+        // Absence requires complete provenance and both semantic cursor views.
+        // The physical cursor block is part of the authenticated delegation row.
+        match graph.read_cursor(&validator, &delegator) {
+            Err(DposRewardGraphError::MissingCursor {
+                validator: missing_validator,
+                delegator: missing_delegator,
+            }) if missing_validator == validator && missing_delegator == delegator => {}
+            Ok(_) => {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "absent redelegation destination has a graph cursor".to_owned(),
+                ));
+            }
+            Err(error) => return Err(domain(error)),
+        }
+        if snapshot
+            .delegation_reward_cursors
+            .get(&validator)
+            .is_some_and(|rows| rows.contains_key(&delegator))
+        {
+            return Err(FinalChainNativeSessionError::RawIntegrity(
+                "absent redelegation destination has a reward cursor".to_owned(),
+            ));
+        }
+        None
+    };
     let nodes = NodeTrace::new(snapshot)?;
     // A checkpoint creation consumes the old head; both source and existing
-    // destination delegation consume their cursor. Shared nodes need two refs.
+    // destination delegation consume their cursor; a new destination has none.
+    // Shared nodes need two refs.
     let mut decrements = BTreeMap::<u64, u32>::new();
     if !nodes.contains(validator, current) {
         *decrements.entry(head).or_default() += 1;
     }
-    *decrements.entry(cursor).or_default() += 1;
-    for block in [head, cursor, current] {
+    if let Some(cursor) = cursor {
+        *decrements.entry(cursor).or_default() += 1;
+    }
+    for block in std::iter::once(head)
+        .chain(cursor)
+        .chain(std::iter::once(current))
+    {
         let node = nodes.nodes.get(&NodeKey { validator, block });
         let expected = node
             .map(|node| ExpectedRaw::Exact(encode_node(node)))
@@ -393,6 +436,52 @@ fn authenticate_membership(
         iterable_position_key(prefix, &item),
         ExpectedRaw::Exact(position.to_le_bytes().to_vec()),
         "redelegation membership",
+    )
+}
+
+/// Authenticates append authority against a complete semantic caller list.
+/// Existing source membership remains; every new physical slot must be absent.
+/// Reads share the invocation trace with the serializer's second checks.
+fn authenticate_new_membership(
+    order: &[[u8; 20]],
+    expected: &[[u8; 20]],
+    prefix: &[u8],
+    item: [u8; 20],
+    trace: &mut FinalChainNativeRawTrace<'_>,
+) -> Result<(), FinalChainNativeSessionError> {
+    let ordered = order
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if ordered.len() != order.len()
+        || ordered != expected.iter().copied().collect()
+        || ordered.contains(&item)
+    {
+        return Err(FinalChainNativeSessionError::RawIntegrity(
+            "redelegation append ordering is incomplete or already contains destination".to_owned(),
+        ));
+    }
+    let count = u32::try_from(order.len()).map_err(domain)?;
+    let position = count
+        .checked_add(1)
+        .ok_or_else(|| domain("redelegation append position overflow"))?;
+    authenticate(
+        trace,
+        iterable_position_key(prefix, &item),
+        ExpectedRaw::Empty,
+        "new redelegation membership",
+    )?;
+    authenticate(
+        trace,
+        iterable_item_key(prefix, position),
+        ExpectedRaw::Empty,
+        "new redelegation item",
+    )?;
+    authenticate(
+        trace,
+        iterable_count_key(prefix),
+        ExpectedRaw::Exact(count.to_le_bytes().to_vec()),
+        "new redelegation count",
     )
 }
 

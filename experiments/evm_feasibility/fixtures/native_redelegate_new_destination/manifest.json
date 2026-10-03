@@ -1,0 +1,29 @@
+{
+  "control_execution_identical": true,
+  "control_sha256": {
+    "local": "b14a612a9033bc51d0f04c3de9198496872916c68babfe5e686cfc4a1498f3cd",
+    "public": "b14a612a9033bc51d0f04c3de9198496872916c68babfe5e686cfc4a1498f3cd"
+  },
+  "exporter_sha256": "924e7e844865cbe832f8c5e934137997ced6b07e0dfa4b761d4978f95490350c",
+  "harness_sha256": "14ef865b394f2bb95af8debea031c646da7b92f9bef44f8cfdac35345493c071",
+  "observer_support_harness_sha256": "b1083d2ae1a9062cc2ec6a623764f35b86fa229c5dd90247f52022f9e8e07918",
+  "read_observer_sha256": "20345c85a1d9279c41cc64e031e82421f470e22247069a39d3b0b7173e06e660",
+  "read_target": "taraxa/state/contracts/storage/evm_state_storage_adapter.go",
+  "read_target_sha256": "8aaa74d16aa76a0a0a76463f89635ed3b066b84d5d42e986c8ce13e1f447a691",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "local": "cd69491445586a7e1d4a4d2763a0619db4be2e0a32b66206ca9ea69cfffad2ae",
+    "public": "cd69491445586a7e1d4a4d2763a0619db4be2e0a32b66206ca9ea69cfffad2ae"
+  },
+  "support_sha256": {
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
+    "native_v1_custody_reference.go": "4e8227c57133f09354d585367ac9be2fa1baa15ef6e0726d7b42d9089a9f7cec"
+  },
+  "write_observer_sha256": "d6e0276bb4342b886d68168dad0d74e0ae53b39a9bc2456495b010530dfd76ec",
+  "write_target": "taraxa/state/state_evm/account.go",
+  "write_target_sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568"
+}

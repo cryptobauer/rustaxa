@@ -161,6 +161,13 @@ fn redelegate_kernel_and_composed_serializers_match_actual_go_repeat() {
 }
 
 fn kernel_chain(maximum: u64) -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
+    kernel_chain_destination(maximum, address(0xd1))
+}
+
+fn kernel_chain_destination(
+    maximum: u64,
+    destination_delegator: [u8; 20],
+) -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "redelegate-composition-{}-{}",
         std::process::id(),
@@ -181,7 +188,14 @@ fn kernel_chain(maximum: u64) -> (FinalChain, Arc<Storage>, std::path::PathBuf) 
                 address: address(validator),
                 vrf_key: [if validator == 0x31 { 0x44 } else { 0x55 }; 32],
                 total_stake: U256::from(1000).to_big_endian().to_vec(),
-                delegations: vec![(address(0xd1), U256::from(1000).to_big_endian().to_vec())],
+                delegations: vec![(
+                    if validator == 0x31 {
+                        address(0xd1)
+                    } else {
+                        destination_delegator
+                    },
+                    U256::from(1000).to_big_endian().to_vec(),
+                )],
                 metadata: GenesisValidatorMetadata {
                     owner: address(0xa1),
                     commission: 100,
@@ -702,13 +716,22 @@ fn redelegate_staged_excluded_successes_have_no_effects_or_advancement() {
         let before = session.dpos_state.clone();
         let request = staged_request(case, 0);
         let quote = session.prepare(&request, &raw).unwrap();
-        assert!(
-            matches!(
-                session.invoke(&request, quote, &raw),
-                Err(FinalChainNativeSessionError::CustodyScopeUnsupported)
-            ),
-            "scope {scope}"
-        );
+        let result = session.invoke(&request, quote, &raw);
+        if scope == 0 {
+            // Principal deletion alone leaves corrupt aggregate/cursor/order.
+            assert!(
+                matches!(result, Err(FinalChainNativeSessionError::Domain(error))
+                if error.contains("FINAL_CHAIN_DPOS_PRINCIPAL_AGGREGATE_MISMATCH"))
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(FinalChainNativeSessionError::CustodyScopeUnsupported)
+                ),
+                "scope {scope}"
+            );
+        }
         assert_eq!(session.dpos_state, before);
         assert!(session.aborted);
     }
@@ -892,3 +915,6 @@ fn redelegate_selector_first_admission_and_abi_match_actual_go_frames() {
         std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[path = "redelegate_new_destination_tests.rs"]
+mod new_destination;
