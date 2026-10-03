@@ -1,0 +1,21 @@
+{
+  "exporter_sha256": "bb892dda9db36f870e08e5ab6e7856054cb7f28db51e526f9249d3efb1a25939",
+  "harness_sha256": "95b59ffbda1bb75d95aab2bb37f3cbca08d65e4e077006b49584d6d53023ab26",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "seed_sha256": "faffecfc9a6988c26d5b87c0ea7ee7de5a047549d6afbc953d1c0669d0321181",
+  "sha256": {
+    "local": [
+      "4cbffcf6dd4a02293ddcbea6d36e6e6b6937d0ddf8fbfc32fa2035a3685501b2",
+      "04a3d1ec5c74d39f1c97b5d3088dcab62209c9eca1bfdb69c483de911f7a0def"
+    ],
+    "public": [
+      "4cbffcf6dd4a02293ddcbea6d36e6e6b6937d0ddf8fbfc32fa2035a3685501b2",
+      "04a3d1ec5c74d39f1c97b5d3088dcab62209c9eca1bfdb69c483de911f7a0def"
+    ]
+  },
+  "support_sha256": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5"
+}

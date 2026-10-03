@@ -799,3 +799,96 @@ fn redelegate_staged_inactive_or_pre_fix_success_scope_is_explicit() {
         std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[test]
+fn redelegate_selector_first_admission_and_abi_match_actual_go_frames() {
+    let public: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../experiments/evm_feasibility/fixtures/native_redelegate_frames/public.json"
+    )))
+    .unwrap();
+    let local: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../experiments/evm_feasibility/fixtures/native_redelegate_frames/local.json"
+    )))
+    .unwrap();
+    assert_eq!(public, local);
+    for case in public["cases"].as_array().unwrap() {
+        let (mut chain, storage, path) = kernel_chain(1_000_000);
+        chain.rewards_config.fix_redelegate_block_num = case["fix"].as_u64().unwrap().into();
+        if case["aspen_zero"].as_bool().unwrap() {
+            chain.rewards_config.aspen_part_two_period = 1.into();
+        }
+        let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+        let before = session.dpos_state.clone();
+        let raw = AuthenticatedRaw {
+            rows: case["prior_raw"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        ConcreteStorageKey(unhex(key).try_into().unwrap()),
+                        unhex(value.as_str().unwrap()),
+                    )
+                })
+                .collect(),
+            reads: RefCell::new(Vec::new()),
+            fail_at: None,
+        };
+        let mut request = staged_request(case, 0);
+        request.depth = case["depth"].as_u64().unwrap() as u16;
+        request.supplied_gas = case["supplied_native_gas"].as_u64().unwrap().into();
+        request.value = FinalChainNativeValue::new(case["value"].as_u64().unwrap().into());
+        let quote = session.prepare(&request, &raw).unwrap();
+        assert_eq!(
+            quote.required_gas.as_u64(),
+            case["required_gas"].as_u64().unwrap(),
+            "{}",
+            case["name"]
+        );
+        assert!(raw.reads.borrow().is_empty());
+        let result = session.invoke(&request, quote, &raw).unwrap();
+        if !case["native_called"].as_bool().unwrap() {
+            assert!(matches!(
+                result,
+                FinalChainNativeInvocationResult::InsufficientGas { .. }
+            ));
+        } else {
+            let outcome = completed(result);
+            let error = case["native_error"].as_str().unwrap();
+            assert_eq!(
+                outcome.status,
+                if error.is_empty() {
+                    FinalChainNativeStatus::Success
+                } else {
+                    FinalChainNativeStatus::ContractFailure {
+                        error: error.to_owned(),
+                    }
+                },
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                write_json(&outcome.raw_mutations),
+                case["ordered_raw_writes"]
+            );
+            assert_eq!(
+                outcome.output,
+                unhex(case["native_output"].as_str().unwrap())
+            );
+            assert!(outcome.account_mutations.is_empty());
+            if !error.is_empty() {
+                assert!(outcome.logs.is_empty());
+            }
+        }
+        if !case["native_called"].as_bool().unwrap() || case["native_error"] != "" {
+            assert_eq!(session.dpos_state, before);
+        }
+        assert!(!session.aborted);
+        drop(session);
+        drop(chain);
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

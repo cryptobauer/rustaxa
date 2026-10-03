@@ -14,6 +14,55 @@
 use super::*;
 
 impl FinalChainNativeSession<'_> {
+    /// Quotes a recognized redelegation selector before Go-compatible ABI unpack.
+    /// Funding, historical depth and nonpayability precede argument errors. This
+    /// method performs no storage reads; invocation authenticates business facts.
+    pub(in crate::final_chain::native_session) fn prepare_redelegate(
+        &mut self,
+        request: &FinalChainNativeRequest,
+    ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        let selector = DposTransaction::MalformedMutation {
+            selector: DPOS_REDELEGATE_SELECTOR,
+        };
+        let admission = self
+            .final_chain
+            .native_invocation_admission(
+                &selector,
+                request.period,
+                request.depth,
+                request.value.value(),
+                request.supplied_gas,
+                None,
+            )
+            .map_err(|error| {
+                self.aborted = true;
+                map_kernel_error(error)
+            })?;
+        let quote = FinalChainNativeGasQuote {
+            invocation: request.id,
+            required_gas: admission.required_gas,
+        };
+        let kind = if let Some(failure) = admission.failure {
+            use super::super::super::native_admission::NativeAdmissionFailure as Failure;
+            match failure {
+                Failure::InsufficientGas => PreparedKind::InsufficientGas,
+                Failure::NestedBeforeFix => PreparedKind::NestedCallRejected,
+                Failure::NonPayable => PreparedKind::NonPayable,
+            }
+        } else {
+            match decode_redelegate(&request.input, request.caller) {
+                Ok(transaction) => PreparedKind::SelectedCustody(transaction),
+                Err(error) => PreparedKind::AbiFailure(error),
+            }
+        };
+        self.prepared = Some(PreparedCall {
+            request: request.clone(),
+            quote,
+            kind,
+        });
+        Ok(quote)
+    }
+
     /// Authenticates, executes and serializes one prepared redelegation.
     pub(super) fn invoke_redelegate(
         &mut self,
@@ -187,6 +236,36 @@ impl FinalChainNativeSession<'_> {
             "redelegation validator",
         )
     }
+}
+
+/// Fixed-width Go ABI unpack: declaration order, dirty address high bytes and
+/// trailing bytes are accepted. Length errors identify the first missing word.
+fn decode_redelegate(input: &[u8], delegator: [u8; 20]) -> Result<DposTransaction, String> {
+    let data = input
+        .get(4..)
+        .ok_or_else(|| "redelegation selector is absent".to_owned())?;
+    let word = |offset: usize| {
+        data.get(offset..offset + 32).ok_or_else(|| {
+            format!(
+                "abi: cannot marshal in to go type: length insufficient {} require {}",
+                data.len(),
+                offset + 32,
+            )
+        })
+    };
+    let from = word(0)?[12..]
+        .try_into()
+        .expect("ABI address has twenty bytes");
+    let to = word(32)?[12..]
+        .try_into()
+        .expect("ABI address has twenty bytes");
+    let amount = word(64)?.to_vec();
+    Ok(DposTransaction::Redelegate {
+        delegator,
+        from,
+        to,
+        amount,
+    })
 }
 
 fn authenticate(

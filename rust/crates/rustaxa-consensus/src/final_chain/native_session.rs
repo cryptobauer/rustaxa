@@ -3,6 +3,8 @@
 //! This module exposes consensus-owned staged sessions for DPoS reads and the
 //! selected `setCommission`, `delegate`, V1/V2 `undelegate`, and V1/V2
 //! confirmation, cancellation, reward claims and validator metadata mutations.
+//! Partial redelegation authenticates complete zero-reward snapshots; its
+//! selector uses funding/depth/value admission before fixed-word Go ABI unpack.
 //! The exact active Phalaenopsis escrow selector reuses a pure native kernel;
 //! its value transfer remains owned by the ordinary frame.
 //! Metadata updates use selector-first admission, a pinned Go ABI codec and
@@ -612,6 +614,9 @@ impl FinalChainNativeSession<'_> {
 
         if request.input.starts_with(&DPOS_SET_VALIDATOR_INFO_SELECTOR) {
             return self.prepare_validator_info(request);
+        }
+        if request.input.starts_with(&DPOS_REDELEGATE_SELECTOR) {
+            return self.prepare_redelegate(request);
         }
 
         let mut transaction = decode_dpos_transaction_for_execution(
