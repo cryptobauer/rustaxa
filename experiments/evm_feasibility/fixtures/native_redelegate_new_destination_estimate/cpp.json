@@ -1,0 +1,60 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "cases": [
+    {
+      "consumed": 6,
+      "name": "partial_below_minimum",
+      "result": 104915
+    },
+    {
+      "consumed": 6,
+      "name": "partial",
+      "result": 104977
+    },
+    {
+      "consumed": 1,
+      "error": "Validator does not exist",
+      "name": "missing_source"
+    },
+    {
+      "consumed": 1,
+      "error": "Validator does not exist",
+      "name": "missing_destination"
+    },
+    {
+      "consumed": 1,
+      "error": "Insufficient delegation",
+      "name": "insufficient_source"
+    },
+    {
+      "consumed": 1,
+      "error": "Insufficient delegation",
+      "name": "remainder_below_minimum"
+    },
+    {
+      "consumed": 1,
+      "error": "From and to validators are the same",
+      "name": "same_validator"
+    },
+    {
+      "consumed": 1,
+      "error": "abi: cannot marshal in to go type: length insufficient 0 require 32",
+      "name": "malformed"
+    },
+    {
+      "consumed": 1,
+      "error": "Method is not payable",
+      "name": "nonpayable_malformed"
+    },
+    {
+      "consumed": 1,
+      "error": "out of gas",
+      "name": "insufficient_native_gas"
+    },
+    {
+      "consumed": 1,
+      "error": "intrinsic gas too low",
+      "name": "intrinsic_gas"
+    }
+  ]
+}

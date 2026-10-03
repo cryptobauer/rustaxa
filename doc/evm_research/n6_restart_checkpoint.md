@@ -29,14 +29,16 @@ New-destination actual eight-case frame composition is validated; see
 [new destination frames](n2_redelegate_new_destination_frames.md). Frozen corrected review
 accepted all14 files. Complete-seed historical simulation is independently accepted; see
 [new destination simulation](n3_redelegate_new_destination_simulation.md).
-Next: estimation and direct supported traces.
+New-destination estimation is independently accepted; see
+[new destination estimation](n3_redelegate_new_destination_estimation.md).
+Next: direct supported traces; the actual nine-case Go corpus is captured.
 Keep excluded success branches explicit.
 Current run artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`.
 Sol medium leads directly; Luna medium maps inputs; fresh Astra medium reviews
 the redelegation family. All routes ran, with no routing failures. Targeted,
 actual pinned Go, ON bridge and serial workspace fast checks pass. First-run
 failures remain recorded. The preparation commit is `5d4da5bc9`.
-Latest lead allowance: 88% remaining at 2026-10-03T02:24:04.926Z; refresh before
+Latest lead allowance: 87% remaining at 2026-10-03T02:27:28.489Z; refresh before
 new starts.
 
 The active [prompt](../../next_executable_slice_prompt.md) and
