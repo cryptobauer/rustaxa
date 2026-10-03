@@ -20,14 +20,18 @@ Actual historical DryRunner is also tested over reopened physical readers and
 reconstructed semantic owners; see [simulation record](n2_redelegate_simulation.md).
 Estimation is also tested through actual Go probes and the unchanged C++ search;
 see [estimation record](n3_redelegate_estimation.md).
-Next: supported direct structured traces through existing owners.
+Direct structured traces are also tested over actual Go live sequences; see
+[trace record](n3_direct_redelegate_traces.md). The prepared bounded chunk is
+complete and independently accepted. Next ready gap: positive partial
+redelegation to an existing validator with absent caller destination delegation;
+settle its actual observation/authentication contract before implementation.
 Keep excluded success branches explicit.
 Current run artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`.
 Sol medium leads directly; Luna medium maps inputs; fresh Astra medium reviews
 the redelegation family. All routes ran, with no routing failures. Targeted,
 actual pinned Go, ON bridge and serial workspace fast checks pass. First-run
 failures remain recorded. The preparation commit is `5d4da5bc9`.
-Latest lead allowance: 96% remaining at 2026-10-03T01:34:38.337Z; refresh before
+Latest lead allowance: 96% remaining at 2026-10-03T01:41:05.727Z; refresh before
 new starts.
 
 The active [prompt](../../next_executable_slice_prompt.md) and

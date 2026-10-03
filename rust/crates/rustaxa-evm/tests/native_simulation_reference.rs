@@ -66,6 +66,9 @@ mod redelegate;
 #[path = "native_simulation_reference/redelegate_estimate.rs"]
 mod redelegate_estimate;
 
+#[path = "native_simulation_reference/redelegate_trace.rs"]
+mod redelegate_trace;
+
 fn address(last: u8) -> [u8; 20] {
     let mut result = [0; 20];
     result[19] = last;
