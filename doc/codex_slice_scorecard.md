@@ -74,3 +74,5 @@ comparison rows. Tokens and billing are not inferred from quota samples.
 | Pre-Aspen-two zero existing positive caller pairs | Sol medium direct lead; Luna medium bounded map; Astra medium contract/frozen review | Compare numeric principal after canonical encoding, retain exact raw/kernel assertions |31 targeted/actual dual-pin-control/EVM/check/clippy/ONbridge12+15 pass;fast passes/12 frozen hashes accepted |82% at2026-10-03T03:25:27.553Z |
 
 | Zero existing-pair actual frames | Sol medium direct lead; Luna medium bounded map; Astra medium contract/frozen review | Strengthen per-call journal account views before freeze |Eight dual-pin twice repeated cases;twozero success22writes/parentlogsremoved;13frame+21API/clippy/fast pass;15 frozen hashes accepted |81% at2026-10-03T03:33:23.487Z |
+
+| Quota checkpoint and next zero historical contract | Sol medium lead; Luna medium next seam map; Astra medium bounded contract | No implementation started at floor |18 accepted task commits through `752629e9c`; all required slice gates/reviews pass; next one-case completeH1 contract accepted, implementation and final review deferred |80% at2026-10-03T03:41:08.680Z |

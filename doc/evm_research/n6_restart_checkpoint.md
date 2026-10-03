@@ -1,55 +1,49 @@
 # Restart checkpoint: redelegation composition
 
-Branch: `feat/rust/evm-state-db`. Latest accepted commit: `8a6735c94`.
-No push, fallback or production routing is authorized. Milestone10 and N1–N6 stay open.
+Branch: `feat/rust/evm-state-db`. Latest accepted implementation: `752629e9c`.
+Run base: `327d15fa1`. Stop:80% weekly allowance remains at2026-10-03T03:41:08.680Z.
+No push, fallback or production routing. Milestone10 and N1–N6 stay open.
 
-The prepared adapter/ABI/frames/historical simulation/estimation/direct traces
-chunk is complete and independently accepted. New caller destination partial
-execution and all four compositions are also accepted. Full caller-source removal
-with another delegator retaining the source validator is accepted at `6b5228ad2`;
-its actual full-source frames are independently accepted.
-Accepted commits, checks, corrections and model routes are in the
-[scorecard](../codex_slice_scorecard.md). Current bounded scope and exclusions:
-[N1 coverage](n1_existing_network_contracts.md),
-[full source runtime](n2_redelegate_full_source_retained_validator.md),
-[full source frames](n2_redelegate_full_source_frames.md).
+The prepared partial adapter/ABI/frames/historical simulation/estimation/direct
+trace chunk is complete. Partial new caller destination and full caller-source
+removal with another delegator retaining the validator also have independently
+accepted staged, actual frame, complete historical simulation, estimation and
+direct structured trace composition. See [scope](n1_existing_network_contracts.md)
+and [accepted slices/checks/routes/corrections](../codex_slice_scorecard.md).
 
-Full-source complete historical simulation is independently accepted;
-see [record](n3_redelegate_full_source_simulation.md). Estimation is independently accepted; see
-[record](n3_redelegate_full_source_estimation.md). Direct supported traces passed targeted/fast validation and independent corrected review.
-See [trace record](n3_direct_full_source_redelegate_traces.md). The accepted historical profile has both validators
-with aa/bb1,000 each (total4,000), permitting both caller removal shapes while
-both validators stay positive. Separate complete actual Go H1 physical inputs
-from prior touched-row frame maps. Use public H1 finalization once; semantic-owner
-restart must load H1 without refinalization. Astra contract review is accepted.
-Do not claim private synthetic adapter history is actual DryRunner API evidence.
+Pre-Aspen-two zero amount is accepted only with two positive existing caller
+pairs: [staged runtime](n2_redelegate_zero_existing_pairs.md) `8a6735c94`,
+[actual frames](n2_redelegate_zero_frames.md) `752629e9c`. Two actual zero calls
+succeed with22 ordered writes; parent revert removes both logs and retains raw
+state. Per-call/final account parity is measured for the new frame cases only.
+No complete physical or public historical authority comes from touched frame maps.
+
+Next ready slice: one actual zero-success DryRunner case over the existing complete
+2,000-principal H1 profile, then public historical simulation, estimation and traces.
+The in-flight historical contract was accepted before closeout; implementation
+and gates did not start. Resume after a fresh allowance check permits new work.
+Map: `zero-historical-api-map.md`; settled contract/checks:
+`zero-historical-contract-review.md` in the artifact directory below.
+Use unchanged `redelegate::{history,assert_committed}`: public H1 finalization once,
+owner restart without refinalization, complete actual Go seed rows, independent
+reader reopen and eight fresh simulations. Preserve stored heads/cursors and
+DryRunner effective committed nonce+1; no frame seed/root transplant.
+Keep zero+absent/zero caller pairs, full+new destination, source-validator deletion,
+nonzero rewards, new validators and historical same-validator successes excluded.
 
 Reference pins: public `6c7e5338b22d5e596cc2365a88d1f94840e1ee1b`,
 local `bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418`.
 Artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`; retain first failures,
-frozen hashes and independent reviews. Sol medium leads; Luna medium maps;
-Astra medium reviews uncertain contracts/authentication, independent Sol medium
-reviews settled derivatives. All requested routes ran without routing failures.
-Required targeted/parity/ON bridge and serial workspace fast checks passed for
-accepted runtime. Use `RUST_TEST_THREADS=1` for workspace fast (existing temporary
-DB lock collision). No C++ or storage-module change is in this run.
+commands/full outputs/exit codes, reviewed freezes and independent review reports.
+Sol medium led directly; Luna medium mapped; Astra medium reviewed contracts/auth,
+independent Sol medium reviewed settled derivatives. All requested routes ran.
+Accepted affected check/clippy/tests, actual dual-pin parity/control checks,
+ON bridge build12/all15 and serial workspace fast passed. Use
+`RUST_TEST_THREADS=1` for fast (existing temporary DB lock collision).
+No C++ or storage-module change; no new broad/differential/fault gate.
 
 Active [prompt](../../next_executable_slice_prompt.md) and
-[workflow](../codex_slice_workflow.md) use80% weekly allowance remaining.
-Latest fresh lead allowance:81% at2026-10-03T03:33:23.487Z. Refresh before starts;
-at80% or less start no new work, finish only in-flight atomic closeout. Unknown
-telemetry after one bounded refresh also stops new work.
-
-Pre-Aspen-two zero-existing-positive pairs are implemented; targeted31 tests,
-actual dual-pin/control reproduction, EVM regression, check/clippy and ONbridge
-build12/all15 pass. Fast passes; frozen Astra review accepted all12 hashes. See
-[zero record](n2_redelegate_zero_existing_pairs.md). Actual zero-success frames now match both pins;13 frame/21 API tests and
-clippy pass. Fast passes; frozen Astra review accepted all15 hashes; see
-[frame record](n2_redelegate_zero_frames.md). Next: public historical zero API
-simulation/estimation/direct traces. Keep zero+absent destination and present-zero
-pairs excluded; measured balance evidence is limited to the new frame corpus.
-
-Producer executable identity, runtime overrides and capture command stay unknown.
-Do not repeat the request or invent them. Qualified complete real-window inputs,
-real signed-period/root parity and N4–N6 acceptance remain open. Broad replay,
-differential and fault gates require exact prepared commands/data/bounds and approval.
+[workflow](../codex_slice_workflow.md) use80% remaining; at or below this floor
+start no new work. Producer executable identity, runtime overrides and capture
+command remain unknown. Do not repeat requests or invent facts. Qualified real
+network windows, signed-period/root parity and N4–N6 acceptance stay open.
