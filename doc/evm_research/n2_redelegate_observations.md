@@ -1,7 +1,8 @@
 # Redelegation reference observations
 
-This is reference preparation for N2, not staged Rust redelegation acceptance.
-The existing session still rejects `reDelegate(address,address,uint256)`.
+This report records reference preparation and later bounded N2 steps.
+The initial observation slice did not admit staged redelegation. The authenticated
+partial adapter below now admits decoded calls within its stated success scope.
 The [exporter](../../experiments/evm_feasibility/native_redelegate_observation_reference.go)
 executes actual Go `StateTransition` transactions from both pinned archives.
 The [harness](../../experiments/evm_feasibility/native_redelegate_observation_reference.py)
@@ -192,3 +193,46 @@ partial effects or semantic advancement. The existing write-composition tests
 remain applicable. Malformed ABI and historical same-validator behavior are
 outside the adapter contract. No higher-reasoning escalation was needed; the
 requested and confirmed contract route was Astra medium, at 22% allowance.
+
+## Authenticated staged partial adapter — 2026-10-03
+
+The adapter reuses the settled contract above and the existing kernel, account
+port and source/destination serializers. One fresh invocation-local trace binds
+all preflight, reward-node, membership and serialization reads. Semantic normal
+failures return only after their authenticated cold prefix. Success requires
+active Magnolia/Ficus, strictly post-fix distinct validators, positive partial
+principal, an existing positive destination delegation, positive retained stakes,
+complete semantic history/order and zero relevant reward pools/indices. An empty
+account context prevents account access. Source serialization finishes before
+destination serialization, and semantic state advances only on full success.
+
+Six new staged tests exercise pending and disposable finalized historical
+sessions, both actual successful calls, all seven normal preflight failures,
+every authenticated cold-row corruption and each reader-failure position,
+expected absence, all warm-row corruptions, excluded successful zero/full/new
+destination/reward/history branches, and inactive/pre-fix profiles. Every hard
+failure returns no outcome/effects, poisons the session and retains semantic
+state/sequence. Normal failures retain the session and return empty effects.
+The actual 12/10 ordered writes, output and logs match the unchanged Go corpus;
+Rust authentication uses 14/12 distinct reads, without claiming Go warm-cache
+parity. Historical test state is explicitly synthetic and inserted through the
+existing snapshot owner; this does not establish actual DryRunner/API parity.
+
+First-run commands, full output and exit codes are under
+`/home/fry/artifacts/evm-redelegate-2026-10-03/`, with the `adapter-` prefix.
+The first compile exposed local count/index type errors; the first test compile
+exposed a stored-token constructor error. A new pre-fix scope test initially
+entered the earlier nested-call admission failure; its direct depth-zero input
+now isolates the adapter scope. Existing tests and supplied fixtures are unchanged.
+All 18 targeted redelegation tests, affected-package check/clippy, actual dual-pin
+Go reproduction and ON consensus bridge build with 12 jobs plus all 15 bridge
+tests pass. The full workspace fast gate passes with `RUST_TEST_THREADS=1`.
+Its first parallel run had a temporary RocksDB lock collision in an existing
+rewards fixture (1,465 consensus tests passed); no test or source was changed
+for the serial retry. Independent Astra medium review found no blocking issue;
+final acceptance is recorded in `adapter-review.md` under the artifact directory.
+
+ABI error precedence, actual frame rollback/value/gas composition and historical
+DryRunner/estimation/trace composition remain next dependencies. No upstream C++,
+storage module, production route, fallback or supplied data changed. N1–N6 and
+Milestone 10 remain open.

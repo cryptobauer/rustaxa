@@ -1,7 +1,6 @@
 # Restart checkpoint: staged redelegation next
 
-Branch: `feat/rust/evm-state-db`. Latest accepted implementation: `327d15fa1`.
-Use `git log -1` to record the new preparation baseline at startup.
+Branch: `feat/rust/evm-state-db`. Use `git log -1` for the latest accepted commit.
 Milestone 10 and N1–N6 remain open. No push or production routing is authorized.
 
 The previous run completed metadata and escrow execution/API slices plus
@@ -12,12 +11,17 @@ Details: [completed checkpoint](n6_restart_checkpoint_history_2026_10_02_post_br
 [scorecard](../codex_slice_scorecard.md), [usage audit](../../token_usage_audit_01a0f999.md).
 First-run logs and frozen evidence: `/home/fry/artifacts/evm-branch-2026-10-01-2233/`.
 
-Staged redelegation remains unsupported. Implement the
-[next chunk](n2_redelegate_next_chunk.md) under its linked settled adapter
-contract, then add actual frame/API composition. Use existing Rust owners,
-serializers and pinned fixtures. Direct Sol medium implementation; Luna bounded
-map; independent Sol for settled derivatives and a fresh Astra review context
-for authentication/rollback or unresolved semantics.
+The authenticated staged partial redelegation adapter is validated under the
+[settled contract and acceptance record](n2_redelegate_observations.md).
+Next: selector-first redelegation ABI/admission, then actual frame and historical
+API composition through existing Rust owners. Keep unsupported success branches
+explicit. The Luna frame map is complete; do not repeat source discovery.
+Current run artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`.
+Direct lead runtime: Sol medium. Luna map and independent preparation Sol review
+ran; fresh Astra medium adapter review found no blocking issue. Routing succeeded.
+All required adapter checks pass; first-run failures and serial fast retry are
+retained. The preparation commit is `5d4da5bc9`; record the adapter commit with
+`git log -1` after closeout.
 
 The active [prompt](../../next_executable_slice_prompt.md) and
 [workflow](../codex_slice_workflow.md) now use **80% allowance remaining**.

@@ -21,6 +21,8 @@ use super::*;
 use crate::dpos_reward_graph::{Node, NodeKey};
 use std::collections::BTreeMap;
 
+mod redelegate;
+
 #[cfg(test)]
 #[path = "custody/redelegate_reference_tests.rs"]
 mod redelegate_reference_tests;
@@ -45,6 +47,9 @@ impl FinalChainNativeSession<'_> {
         quote: FinalChainNativeGasQuote,
         state: &dyn FinalChainNativeStateRead,
     ) -> std::result::Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        if matches!(transaction, DposTransaction::Redelegate { .. }) {
+            return self.invoke_redelegate(transaction, quote, state);
+        }
         if !self.final_chain.magnolia_active(self.pending_period) {
             return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
         }

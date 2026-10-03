@@ -629,6 +629,7 @@ impl FinalChainNativeSession<'_> {
                 None
             }
             DposTransaction::Undelegate { .. }
+            | DposTransaction::Redelegate { .. }
             | DposTransaction::ConfirmUndelegate { .. }
             | DposTransaction::CancelUndelegate { .. }
             | DposTransaction::UndelegateV2 { .. }
