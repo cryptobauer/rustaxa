@@ -66,3 +66,5 @@ comparison rows. Tokens and billing are not inferred from quota samples.
 | Full caller-source actual frames | Sol medium direct lead; Astra medium bounded rollback contract; independent Sol medium frozen review | Correct copied existing-destination module comment; add explicit Delete assertion |Eight actual dual-pin cases; first17writes/secondnormalmissing-delegation0writes afterparentrevert;final12frame+18API/clippy/reproduction/fast pass;16 hashes accepted |84% at2026-10-03T02:52:16.539Z |
 
 | Full caller-source complete historical simulation | Sol medium direct lead; Astra medium bounded4k contract; independent Sol medium frozen review | None |12 dual-pin DryRunner cases,96 fresh Rust sessions;19API tests/clippy/reproduction/fast pass;10 hashes accepted |83% at2026-10-03T02:58:45.801Z |
+
+| Full caller-source native estimation | Sol medium direct lead; independent Sol medium frozen review | None |27 actual dual-pin probes for12requests/unchanged C++ search;216Rust sessions,20API tests/clippy/reproduction/fast pass;11 hashes accepted |83% at2026-10-03T03:05:35.323Z |
