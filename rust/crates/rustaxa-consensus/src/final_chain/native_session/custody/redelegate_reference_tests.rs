@@ -952,3 +952,6 @@ mod full_new;
 
 #[path = "redelegate_swap_append_tests.rs"]
 mod redelegate_swap_append_tests;
+
+#[path = "redelegate_current_source_tests.rs"]
+mod redelegate_current_source_tests;

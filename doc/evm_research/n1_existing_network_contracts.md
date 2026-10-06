@@ -203,4 +203,6 @@ Only bounded read-only opens of the qualified copy are used for preflight.
 
 [Source-current oracle preparation](n2_redelegate_current_source_oracle.md)
 resolves one live pending observation gap and confirms Go source count2->1->2.
-The narrow Rust semantic repair and source-current staged admission remain open.
+The [bounded Rust repair](n2_redelegate_current_source.md) now passes exact cold/livewarm
+parity, authenticated failure isolation and independent review. Source-current
+frame/history/API derivatives and broader current-node profiles remain open.

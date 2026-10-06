@@ -9129,6 +9129,176 @@ impl FinalChain {
         Ok(logs)
     }
 
+    /// Captures the earlier-loaded Go source node for one bounded full removal.
+    ///
+    /// Inputs are the original snapshot, caller/endpoints/principal and invocation
+    /// block. Returns the exact count2, zero-index current node only for a complete
+    /// source-first two-member, post-fix/pre-Aspen2, retained-validator profile.
+    /// Head/cursor/mirror and absent destination authority must match. Nonmatching
+    /// shapes return None without mutation; required graph/ledger integrity errors
+    /// propagate. The shared staged guard and kernel use this same eligibility.
+    fn bounded_redelegate_loaded_source_node(
+        &self,
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        from: [u8; 20],
+        to: [u8; 20],
+        amount: U256,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<Option<(NodeKey, Node)>, anyhow::Error> {
+        let source = snapshot
+            .delegations
+            .get(&from)
+            .and_then(|rows| rows.get(&delegator));
+        let members = snapshot
+            .delegator_validators
+            .get(&delegator)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let [first, retained] = members else {
+            return Ok(None);
+        };
+        if *first != from
+            || *retained == from
+            || *retained == to
+            || from == to
+            || amount.is_zero()
+            || source.is_none_or(|row| row.as_u256() != amount)
+            || snapshot
+                .delegations
+                .get(&to)
+                .is_some_and(|rows| rows.contains_key(&delegator))
+            || snapshot
+                .delegations
+                .get(retained)
+                .and_then(|rows| rows.get(&delegator))
+                .is_none_or(StoredDposTokenAmount::is_zero)
+            || snapshot
+                .delegations
+                .values()
+                .filter(|rows| rows.contains_key(&delegator))
+                .count()
+                != 2
+            || snapshot
+                .total_stakes
+                .get(&from)
+                .is_none_or(|row| row.as_u256() <= amount)
+            || snapshot
+                .total_stakes
+                .get(&to)
+                .is_none_or(StoredDposTokenAmount::is_zero)
+            || snapshot
+                .total_stakes
+                .get(retained)
+                .is_none_or(StoredDposTokenAmount::is_zero)
+            || block_number <= self.rewards_config.fix_redelegate_block_num
+            || !self.magnolia_active(block_number)
+            || !self.ficus_active_at(block_number)
+            || self.aspen_part_two_active(block_number)
+        {
+            return Ok(None);
+        }
+        if !snapshot.delegation_ledger_history_complete
+            || !snapshot.redelegate_same_validator_history_complete
+        {
+            anyhow::bail!(
+                "bounded source-current redelegation requires complete principal history"
+            );
+        }
+        if [from, to, *retained].iter().any(|validator| {
+            snapshot
+                .redelegate_same_validator_corruption
+                .contains(validator)
+        }) {
+            return Ok(None);
+        }
+        validate_dpos_principal_ledger(snapshot)?;
+        let graph = &snapshot.reward_reference_graph;
+        let current = graph.current_block()?;
+        if current != block_number.as_u64() {
+            return Ok(None);
+        }
+        let key = NodeKey {
+            validator: from,
+            block: current,
+        };
+        let loaded = match graph.load_node(&key) {
+            Ok(node) => node,
+            Err(DposRewardGraphError::MissingNode { validator, block })
+                if validator == from && block == current =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let zero = DposRewardIndex::zero();
+        if loaded.count != 2
+            || loaded.reward_per_stake != zero
+            || graph.read_validator_head(&from)? != current
+            || graph.read_cursor(&from, &delegator)? != current
+            || graph.is_stale_head(&from)?
+            || graph.is_stale_head(&to)?
+            || snapshot
+                .delegation_reward_cursors
+                .get(&from)
+                .and_then(|rows| rows.get(&delegator))
+                .is_none_or(|row| row.index != zero)
+            || snapshot
+                .validator_reward_per_stake
+                .get(&from)
+                .is_none_or(|row| row.index != zero)
+            || snapshot
+                .validator_reward_per_stake
+                .get(&to)
+                .is_some_and(|row| row.index != zero)
+            || snapshot
+                .delegation_reward_cursors
+                .get(&to)
+                .is_some_and(|rows| rows.contains_key(&delegator))
+            || [from, to].iter().any(|validator| {
+                snapshot
+                    .delegator_rewards
+                    .get(validator)
+                    .is_some_and(|row| !row.is_zero())
+                    || snapshot
+                        .commission_rewards
+                        .get(validator)
+                        .is_some_and(|row| !row.is_zero())
+            })
+        {
+            return Ok(None);
+        }
+        let destination_head = graph.read_validator_head(&to)?;
+        if destination_head >= current {
+            return Ok(None);
+        }
+        let destination_node = graph.load_node(&NodeKey {
+            validator: to,
+            block: destination_head,
+        })?;
+        if destination_node.count != 2 || destination_node.reward_per_stake != zero {
+            return Ok(None);
+        }
+        match graph.load_node(&NodeKey {
+            validator: to,
+            block: current,
+        }) {
+            Err(DposRewardGraphError::MissingNode { validator, block })
+                if validator == to && block == current => {}
+            Ok(_) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        match graph.read_cursor(&to, &delegator) {
+            Err(DposRewardGraphError::MissingCursor {
+                validator,
+                delegator: owner,
+            }) if validator == to && owner == delegator => {}
+            Ok(_) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        Ok(Some((key, loaded)))
+    }
+
     /// Applies one legacy redelegation against staged account and DPoS state.
     ///
     /// Expected contract failures return a status-zero outcome. Arithmetic,
@@ -9141,6 +9311,9 @@ impl FinalChain {
     /// corruption behavior. Hard errors require discarding staged snapshot/account
     /// changes. This kernel does not authenticate physical rows or provide
     /// rollback; those remain responsibilities of the calling boundary.
+    /// The original loaded node is additionally restored for the exact bounded
+    /// source-current full-removal profile selected by the shared eligibility
+    /// helper. Other distinct-validator histories retain their existing policy.
     #[allow(clippy::too_many_arguments)]
     fn apply_dpos_redelegate(
         &self,
@@ -9163,6 +9336,17 @@ impl FinalChain {
         )? {
             return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
+        // Restore the actual earlier-loaded current source copy only within the
+        // evidence-bound distinct-validator profile. Other kernel paths retain
+        // their behavior, including the separate pre-fix same-validator repair.
+        let bounded_source_loaded_node = self.bounded_redelegate_loaded_source_node(
+            snapshot,
+            delegator,
+            from,
+            to,
+            amount,
+            block_number,
+        )?;
         let same_validator = from == to;
         let regression_policy = if same_validator
             && block_number == self.rewards_config.fix_redelegate_block_num
@@ -9241,7 +9425,7 @@ impl FinalChain {
             .filter(is_dpos_rewards_claimed_log)
             .collect::<Vec<_>>();
         let total_vote_count_after_source = snapshot.total_vote_count;
-        if let Some((key, loaded)) = repeated_full_loaded_node {
+        if let Some((key, loaded)) = repeated_full_loaded_node.or(bounded_source_loaded_node) {
             snapshot
                 .reward_reference_graph
                 .restore_loaded_node(key, loaded)?;

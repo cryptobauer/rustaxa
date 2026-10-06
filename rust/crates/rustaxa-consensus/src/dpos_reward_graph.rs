@@ -324,8 +324,10 @@ impl DposRewardGraph {
 
     /// Reports the explicitly permitted legacy stale-head state.
     /// Incomplete provenance cannot answer this query.
-    #[cfg(test)]
-    pub fn is_stale_head(&self, validator: &Validator) -> Result<bool, DposRewardGraphError> {
+    pub(crate) fn is_stale_head(
+        &self,
+        validator: &Validator,
+    ) -> Result<bool, DposRewardGraphError> {
         self.ensure_complete()?;
         Ok(self.stale_validator_heads.contains(validator))
     }
@@ -794,7 +796,9 @@ impl DposRewardGraph {
     ///
     /// Pre-fix repeated full same-validator redelegation loaded the current
     /// node before deleting the source cursor, then persisted that earlier
-    /// copy after the deletion. The replacement must retain the exact loaded
+    /// copy after the deletion. The bounded post-fix source-current full removal
+    /// also restores count2 after cursor deletion reduces it to1. The live head
+    /// keeps that node present. The replacement must retain the exact loaded
     /// reward accumulator and count; it may only restore bookkeeping that the
     /// staged mutation reduced, never lower or invent a new node.
     pub fn restore_loaded_node(

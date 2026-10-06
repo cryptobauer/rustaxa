@@ -9,9 +9,12 @@
 //! caller-source removal admits an existing positive destination pair, or a new
 //! pair when the caller has one source membership, or source first followed by
 //! one distinct positive retained membership. New-pair insertion uses the
-//! intermediate membership after swap removal and requires both
-//! current reward nodes absent. Both
-//! validator stakes remain positive. Head, cursor, current nodes and complete
+//! intermediate membership after swap removal. It normally requires both
+//! current reward nodes absent; the exact source-current alias below is the
+//! only additional admitted node topology. Both
+//! validator stakes remain positive. A source-current full/new variant additionally
+//! requires the shared exact count2/current cursor/head/zero-reward predicate; the
+//! destination current node stays absent. Head, cursor, current nodes and complete
 //! membership ordering bind the semantic kernel to physical rows. The kernel
 //! runs on a clone without account access. Source serialization precedes
 //! destination serialization; only full success advances the session.
@@ -198,17 +201,29 @@ impl FinalChainNativeSession<'_> {
         }
         validate_dpos_principal_ledger(before).map_err(map_kernel_error)?;
         if full_new {
-            // The actual bounded oracles create both current nodes. Existing
-            // current nodes need separate composition evidence before admission.
+            // Keep both-absent profiles and admit only the separately measured
+            // source-current alias shape through shared kernel eligibility.
             let current = before
                 .reward_reference_graph
                 .current_block()
                 .map_err(domain)?;
+            let bounded_source = self
+                .final_chain
+                .bounded_redelegate_loaded_source_node(
+                    before,
+                    delegator,
+                    from,
+                    to,
+                    amount_value,
+                    self.pending_period,
+                )
+                .map_err(map_kernel_error)?;
             for validator in [from, to] {
                 match before.reward_reference_graph.load_node(&NodeKey {
                     validator,
                     block: current,
                 }) {
+                    Ok(_) if validator == from && bounded_source.is_some() => {}
                     Ok(_) => return Err(FinalChainNativeSessionError::CustodyScopeUnsupported),
                     Err(DposRewardGraphError::MissingNode { .. }) => {}
                     Err(error) => return Err(domain(error)),
