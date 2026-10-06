@@ -124,7 +124,9 @@ parity; [historical simulation](n3_zero_redelegate_simulation.md),
 [estimation](n3_zero_redelegate_estimation.md) and [direct traces](n3_direct_zero_redelegate_traces.md)
 also have bounded actual parity. [Full source into a new destination](n2_redelegate_full_new.md)
 has bounded staged parity only for a one-member caller, both validators retained
-and both current reward nodes absent. Longer full+new orders, existing current
+and both current reward nodes absent. Its [actual frames](n2_redelegate_full_new_frames.md)
+prove deleted/reused caller membership through parent revert and a second
+source-missing failure. Longer full+new orders, existing current
 node success, source-validator deletion, zero+absent destination/reward-bearing/new-validator and historical
 same-validator success remain excluded. Real-history and production acceptance
 remain open.

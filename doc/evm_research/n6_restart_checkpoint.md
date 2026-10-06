@@ -1,8 +1,8 @@
-# Restart checkpoint: full+new frames in progress
+# Restart checkpoint: full+new historical simulation next
 
 Branch `feat/rust/evm-state-db`; base `049ec5e73`. Accepted local work this run:
 preparation `5a74db354`, zero simulation `1c5de6f75`, estimation `aa6ad522b`,
-direct traces `e4c22cd7f`, and one-member full+new staged slice (see Git history).
+direct traces `e4c22cd7f`, one-member full+new staged slice `ae6035912`, and its frames (see Git history).
 [Scope and checks](n2_redelegate_full_new.md), [scorecard](../codex_slice_scorecard.md).
 No push or production routing. N1–N6/Milestone10 remain open.
 
@@ -20,15 +20,22 @@ order[31], absent32, amount1000, retained validators and absent current nodes ar
 newly admitted. Longer orders, existing current nodes, rewards and deletion remain
 excluded. Details and first logs/reviews are in the run records.
 
-Next accepted mechanical contract: `full-new-frames-contract.md`, seven actual
-frame cases. New disjoint exporter/harness are being recorded. Reuse first-attempt
+Completed mechanical contract: `full-new-frames-contract.md`, seven actual
+frame cases. New exporter/harness and Rust test passed actual reproduction, package/serial
+fast and corrected independent review. Reuse first-attempt
 full-new oracle seed only; frame configuration and accounts differ from that
 StateTransition seed and must be recorded separately. Check every intermediate
 raw expectation, deleted/reused caller item/count, first retained native overlay,
 second missing-source failure, parent account/log rollback and committed head.
-Then reproduce, frame/API/package/Clippy/serial fast, freeze, independent Sol review
-and local commit. Runtime unchanged may retain the accepted ON bridge evidence.
-API/history scope needs a separate bounded contract after frame acceptance.
+Runtime unchanged retains staged ON bridge evidence.
+
+Next accepted one-case contract: `full-new-simulation-contract.md`. Create complete
+actual H1 with d1/a1 balances4000/2000/supply6000, caller only31, a1 both.
+Price0, wide d1 nonce2^264+5 precommit and supplied2^512. Both actual/current
+semantic H1 reward nodes must remain absent; no pendingH2 substitution. Public
+semantic owner finalizes once and loads H1 on restart. Eight disposable probes,
+exact committed caller/other facts and physical byte disposal, required parity/
+package/serial fast/independent Sol review before local commit.
 
 Unknown producer identity, overrides and capture command remain unknown. Do not
 repeat requests or invent facts. Qualified real-window/root parity and N4–N6 remain
