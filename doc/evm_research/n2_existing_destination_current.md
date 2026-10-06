@@ -1,6 +1,7 @@
-# Existing-destination current-node oracle and pending correction
+# Bounded existing-destination current-node removal
 
-Base `61d7b25`; no Rust runtime change in this preparation slice. New producer
+Oracle preparation base `61d7b25`, accepted local commit `4ec89b7c1`.
+The bounded runtime correction uses this accepted oracle. New producer
 `native_redelegate_existing_current_reference.{go,py}` and separate fixture
 `fixtures/native_redelegate_existing_current` preserve all earlier corpora and
 observer/support code. Both unchanged Go pins and uninstrumented controls agree.
@@ -30,29 +31,46 @@ has12 writes/14 backend reads. Warm Go read counts are observations, not Rust
 cache parity requirements.
 
 Fresh Astra medium source contract predicted exactly source2/destination3 and
-was confirmed by this real trace. Current Rust is predicted to retain source1;
-that runtime mismatch is NOT yet accepted or tested here. The old absent-
-destination helper rejects retained==destination and must remain unchanged.
-A separate companion should capture the source node for exactly two positive
+was confirmed by this real trace. Rust before this correction retained source1;
+the new direct kernel and staged parity tests match source2/destination3. The old
+absent-destination helper rejects retained==destination and remains unchanged.
+A separate read-only companion captures the source node for exactly two positive
 caller pairs ordered[source,destination], full positive source removal, retained
 source validator, both current nodes count2/index0, matching current heads and
 cursors, zero mirrors/pools, complete principal/history/graph and valid ledger,
-post-fix/Magnolia/Ficus/pre-Aspen2. Restore only source after removal and before
-destination work; existing destination write_cursor already produces3. Staged
-eligibility must use the same bounds. Do not repair destination to2 or broaden
+post-fix/Magnolia/Ficus/pre-Aspen2. The kernel restores only source after removal and before destination work;
+existing destination write_cursor already produces3. Full/existing staged calls
+with a present source current node use the same companion eligibility. Other
+current-source shapes return explicit unsupported scope; both-current-absent
+existing-destination paths keep their prior behavior. Do not repair destination to2 or broaden
 source-last, extra membership, reward, absent-node or later-state profiles.
 
 The previous order-only source-last candidate is deferred: source review found
 that the accepted full-source fixture already covers source-last removal.
 A reordered identity adds no new semantic branch. It is not implemented.
 
-Oracle acceptance needs dual-pin/control recording and reproduction, Python
+Oracle acceptance passed dual-pin/control recording and reproduction, Python
 compile, serial fast validation, whitespace and fresh frozen independent Sol
-medium review. Runtime acceptance separately needs direct kernel and cold/warm
+medium review (eight hashes). Four new Rust tests cover direct kernel, cold/warm
+sessions and normal missing-source repeat, all ordered writes/deletes/logs and
+frozen final rows; source cursor deletion and destination cursor1/count3; full
+committed owner isolation. Prefix14 and cold/warm target15 unique Rust keys give
+88 independent corruption/reader failures and88 fresh retries. Each failure
+preserves staged state, sequence, raw backing and committed owner, clears
+preparation, and poisons reuse. A direct serializer test fails after the local
+source decrement/restoration and destination decrement, proving no raw, semantic
+or sequence effects escape. Twenty-five predicate exclusions preserve supported
+bounds. All57 redelegation regressions pass.
+
+Initial compile failure (typed gas assertion) and invalid test mutation (count1
+below two live references) remain saved; typed gas and a valid count4 exclusion
+correct them without changing product expectations or old tests.
+Runtime acceptance separately requires direct kernel and cold/warm
 ordered parity, every authentication-key corruption/reader failure plus fresh
 retry and isolation, predicate exclusions, package/check/Clippy regressions,
 Rust-enabled bridge build12/all15 and serial fast, followed by fresh frozen
-independent review. These runtime gates are not implied by oracle acceptance.
+independent review. Gate results and frozen independent acceptance are saved separately from oracle
+acceptance. No required runtime gate is implied solely by the oracle review.
 Evidence is saved under
 `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359-r2-20261006`
 with `existing-current-` prefixes and `existing-current-contract.md`.

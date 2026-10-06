@@ -9306,6 +9306,127 @@ impl FinalChain {
         Ok(Some((key, loaded)))
     }
 
+    /// Captures the earlier-loaded source for bounded full/existing redelegation.
+    ///
+    /// Requires two positive pairs ordered [source, destination], retained source
+    /// stake, complete histories and ledger, post-fix Magnolia/Ficus/pre-Aspen2,
+    /// and BOTH current nodes count2/index0 with exact head/cursor/zero mirrors
+    /// and pools. Returns the source copy without mutation, None for unsupported
+    /// shapes, and propagates required graph or ledger integrity errors. The
+    /// staged boundary and kernel share this eligibility; destination already
+    /// preserves its independently loaded count through write_cursor.
+    fn bounded_existing_destination_loaded_source_node(
+        &self,
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        from: [u8; 20],
+        to: [u8; 20],
+        amount: U256,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<Option<(NodeKey, Node)>, anyhow::Error> {
+        if from == to
+            || amount.is_zero()
+            || snapshot
+                .delegator_validators
+                .get(&delegator)
+                .map(Vec::as_slice)
+                != Some([from, to].as_slice())
+            || snapshot
+                .delegations
+                .get(&from)
+                .and_then(|rows| rows.get(&delegator))
+                .is_none_or(|row| row.as_u256() != amount)
+            || snapshot
+                .delegations
+                .get(&to)
+                .and_then(|rows| rows.get(&delegator))
+                .is_none_or(StoredDposTokenAmount::is_zero)
+            || snapshot
+                .delegations
+                .values()
+                .filter(|rows| rows.contains_key(&delegator))
+                .count()
+                != 2
+            || snapshot
+                .total_stakes
+                .get(&from)
+                .is_none_or(|row| row.as_u256() <= amount)
+            || snapshot
+                .total_stakes
+                .get(&to)
+                .is_none_or(StoredDposTokenAmount::is_zero)
+            || block_number <= self.rewards_config.fix_redelegate_block_num
+            || !self.magnolia_active(block_number)
+            || !self.ficus_active_at(block_number)
+            || self.aspen_part_two_active(block_number)
+        {
+            return Ok(None);
+        }
+        if !snapshot.delegation_ledger_history_complete
+            || !snapshot.redelegate_same_validator_history_complete
+        {
+            anyhow::bail!("bounded full/existing redelegation requires complete principal history");
+        }
+        if [from, to].iter().any(|validator| {
+            snapshot
+                .redelegate_same_validator_corruption
+                .contains(validator)
+        }) {
+            return Ok(None);
+        }
+        validate_dpos_principal_ledger(snapshot)?;
+        let graph = &snapshot.reward_reference_graph;
+        let current = graph.current_block()?;
+        if current != block_number.as_u64() {
+            return Ok(None);
+        }
+        let zero = DposRewardIndex::zero();
+        let mut source = None;
+        for validator in [from, to] {
+            let key = NodeKey {
+                validator,
+                block: current,
+            };
+            let loaded = match graph.load_node(&key) {
+                Ok(node) => node,
+                Err(DposRewardGraphError::MissingNode {
+                    validator: missing,
+                    block,
+                }) if missing == validator && block == current => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            if loaded.count != 2
+                || loaded.reward_per_stake != zero
+                || graph.read_validator_head(&validator)? != current
+                || graph.read_cursor(&validator, &delegator)? != current
+                || graph.is_stale_head(&validator)?
+                || snapshot
+                    .delegation_reward_cursors
+                    .get(&validator)
+                    .and_then(|rows| rows.get(&delegator))
+                    .is_none_or(|row| row.index != zero)
+                || snapshot
+                    .validator_reward_per_stake
+                    .get(&validator)
+                    .is_none_or(|row| row.index != zero)
+                || snapshot
+                    .delegator_rewards
+                    .get(&validator)
+                    .is_some_and(|row| !row.is_zero())
+                || snapshot
+                    .commission_rewards
+                    .get(&validator)
+                    .is_some_and(|row| !row.is_zero())
+            {
+                return Ok(None);
+            }
+            if validator == from {
+                source = Some((key, loaded));
+            }
+        }
+        Ok(source)
+    }
+
     /// Applies one legacy redelegation against staged account and DPoS state.
     ///
     /// Expected contract failures return a status-zero outcome. Arithmetic,
@@ -9319,8 +9440,8 @@ impl FinalChain {
     /// changes. This kernel does not authenticate physical rows or provide
     /// rollback; those remain responsibilities of the calling boundary.
     /// The original loaded node is additionally restored for the exact bounded
-    /// source-current full-removal profile selected by the shared eligibility
-    /// helper. Other distinct-validator histories retain their existing policy.
+    /// source-current full/new or full/existing profiles selected by the shared
+    /// eligibility helpers. Other distinct-validator histories retain their policy.
     #[allow(clippy::too_many_arguments)]
     fn apply_dpos_redelegate(
         &self,
@@ -9354,6 +9475,15 @@ impl FinalChain {
             amount,
             block_number,
         )?;
+        let bounded_source_loaded_node = bounded_source_loaded_node.or(self
+            .bounded_existing_destination_loaded_source_node(
+                snapshot,
+                delegator,
+                from,
+                to,
+                amount,
+                block_number,
+            )?);
         let same_validator = from == to;
         let regression_policy = if same_validator
             && block_number == self.rewards_config.fix_redelegate_block_num

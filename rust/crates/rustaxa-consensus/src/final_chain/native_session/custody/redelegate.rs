@@ -16,7 +16,12 @@
 //! only additional admitted node topology. Both
 //! validator stakes remain positive. A source-current full/new variant additionally
 //! requires the shared exact count2/current cursor/head/zero-reward predicate; the
-//! destination current node stays absent. Head, cursor, current nodes and complete
+//! destination current node stays absent. Full/existing with a source current
+//! node requires the companion exact two-pair [source,destination] predicate:
+//! both current nodes count2, heads/cursors current and zero mirrors/pools.
+//! Only source is restored; destination write_cursor retains its loaded increment.
+//! Other full/existing current-source shapes are unsupported. Head, cursor,
+//! current nodes and complete
 //! membership ordering bind the semantic kernel to physical rows. The kernel
 //! runs on a clone without account access. Source serialization precedes
 //! destination serialization; only full success advances the session.
@@ -246,6 +251,36 @@ impl FinalChainNativeSession<'_> {
                     Err(DposRewardGraphError::MissingNode { .. }) => {}
                     Err(error) => return Err(domain(error)),
                 }
+            }
+        }
+        if amount_value == source_principal && !full_new {
+            let current = before
+                .reward_reference_graph
+                .current_block()
+                .map_err(domain)?;
+            match before.reward_reference_graph.load_node(&NodeKey {
+                validator: from,
+                block: current,
+            }) {
+                Ok(_) => {
+                    if self
+                        .final_chain
+                        .bounded_existing_destination_loaded_source_node(
+                            before,
+                            delegator,
+                            from,
+                            to,
+                            amount_value,
+                            self.pending_period,
+                        )
+                        .map_err(map_kernel_error)?
+                        .is_none()
+                    {
+                        return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
+                    }
+                }
+                Err(DposRewardGraphError::MissingNode { .. }) => {}
+                Err(error) => return Err(domain(error)),
             }
         }
         authenticate_delegation(before, to, delegator, &mut trace)?;
