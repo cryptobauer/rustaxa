@@ -7,8 +7,9 @@
 //! to be positive and present; it still advances reward cursors and emits writes.
 //! Partial transfers admit existing or new destination pairs; full
 //! caller-source removal admits an existing positive destination pair, or a new
-//! pair when the caller has exactly one source membership. New-pair insertion
-//! uses the empty intermediate membership after source removal and requires both
+//! pair when the caller has one source membership, or source first followed by
+//! one distinct positive retained membership. New-pair insertion uses the
+//! intermediate membership after swap removal and requires both
 //! current reward nodes absent. Both
 //! validator stakes remain positive. Head, cursor, current nodes and complete
 //! membership ordering bind the semantic kernel to physical rows. The kernel
@@ -149,6 +150,26 @@ impl FinalChainNativeSession<'_> {
             .ok_or_else(|| domain("redelegation source principal is absent"))?;
         let full_new =
             amount_value == source_principal && delegation(before, to, delegator).is_none();
+        // In the bounded source-first shapes, swap removal leaves the original
+        // tail (empty or one retained member). Borrow it without a new allocation.
+        let original_members = before
+            .delegator_validators
+            .get(&delegator)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let intermediate_members = match original_members {
+            [source] if *source == from => Some(&original_members[1..]),
+            [source, third]
+                if *source == from
+                    && *third != from
+                    && *third != to
+                    && delegation(before, *third, delegator)
+                        .is_some_and(|principal| !principal.is_zero()) =>
+            {
+                Some(&original_members[1..])
+            }
+            _ => None,
+        };
         if !self.final_chain.magnolia_active(self.pending_period)
             || !self.final_chain.ficus_active_at(self.pending_period)
             || self.pending_period <= self.final_chain.rewards_config.fix_redelegate_block_num
@@ -156,11 +177,8 @@ impl FinalChainNativeSession<'_> {
             || (amount_value.is_zero()
                 && (source_principal.is_zero() || delegation(before, to, delegator).is_none()))
             || amount_value > source_principal
-            // Full removal into an absent pair currently admits only the
-            // observed one-member caller shape. Longer swap-remove/append
-            // composition needs its own actual oracle before admission.
-            || (full_new
-                && before.delegator_validators.get(&delegator).is_none_or(|members| members.as_slice() != [from]))
+            // No source-last, duplicate or longer swap/append topology is admitted.
+            || (full_new && intermediate_members.is_none())
             || delegation(before, to, delegator).is_some_and(|value| value.is_zero())
             || before
                 .total_stakes
@@ -180,7 +198,7 @@ impl FinalChainNativeSession<'_> {
         }
         validate_dpos_principal_ledger(before).map_err(map_kernel_error)?;
         if full_new {
-            // The actual one-member oracle creates both current nodes. Existing
+            // The actual bounded oracles create both current nodes. Existing
             // current nodes need separate composition evidence before admission.
             let current = before
                 .reward_reference_graph
@@ -258,15 +276,18 @@ impl FinalChainNativeSession<'_> {
         }
         self.serialize_undelegate_principal(delegator, from, before, &next, &mut trace)?;
         if full_new {
-            // Source removed the only caller membership. Preserve original
-            // delegation absence and reward authority, but append into the
-            // authenticated empty intermediate membership in the same trace.
+            // Source removed its first membership and moved the retained last
+            // member when present. Preserve original delegation/reward authority
+            // while appending into the authenticated intermediate order.
             self.serialize_delegate_with_membership(
                 delegator,
                 to,
                 before,
                 &next,
-                Some(&[]),
+                Some(
+                    intermediate_members
+                        .ok_or(FinalChainNativeSessionError::CustodyScopeUnsupported)?,
+                ),
                 &mut trace,
             )?;
         } else {

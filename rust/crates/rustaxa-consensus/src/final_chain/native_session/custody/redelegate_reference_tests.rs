@@ -949,3 +949,6 @@ mod zero_existing;
 
 #[path = "redelegate_full_new_tests.rs"]
 mod full_new;
+
+#[path = "redelegate_swap_append_tests.rs"]
+mod redelegate_swap_append_tests;
