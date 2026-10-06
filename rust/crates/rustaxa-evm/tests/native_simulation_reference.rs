@@ -607,3 +607,6 @@ mod redelegate_current_source_trace;
 
 #[path = "native_simulation_reference/redelegate_current_source.rs"]
 mod redelegate_current_source;
+
+#[path = "native_simulation_reference/redelegate_current_source_estimate.rs"]
+mod redelegate_current_source_estimate;

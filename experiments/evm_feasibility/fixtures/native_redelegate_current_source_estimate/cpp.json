@@ -1,0 +1,20 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "cases": [
+    {
+      "consumed": 6,
+      "name": "current_source_signed_h1",
+      "result": 104977
+    },
+    {
+      "consumed": 1,
+      "name": "current_source_minimum",
+      "result": 101912
+    },
+    {
+      "consumed": 1,
+      "error": "out of gas",
+      "name": "current_source_below_minimum"
+    }
+  ]
+}
