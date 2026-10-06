@@ -946,3 +946,6 @@ mod full_source;
 
 #[path = "redelegate_zero_existing_tests.rs"]
 mod zero_existing;
+
+#[path = "redelegate_full_new_tests.rs"]
+mod full_new;

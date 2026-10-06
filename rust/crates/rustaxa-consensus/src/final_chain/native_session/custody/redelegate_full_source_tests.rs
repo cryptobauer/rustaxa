@@ -276,7 +276,7 @@ fn redelegate_full_source_all_authentication_and_reader_failures_do_not_advance(
 }
 
 #[test]
-fn redelegate_full_source_keeps_new_destination_and_validator_deletion_excluded() {
+fn redelegate_full_source_rejects_validator_deletion_and_inconsistent_new_destination_seed() {
     let oracle = full_oracle();
     let case = &oracle["cases"][0];
     for retained in [false, true] {
@@ -298,10 +298,18 @@ fn redelegate_full_source_keeps_new_destination_and_validator_deletion_excluded(
         let before = session.dpos_state.clone();
         let request = staged_request(case, 0);
         let quote = session.prepare(&request, &raw).unwrap();
-        assert_eq!(
-            session.invoke(&request, quote, &raw).unwrap_err(),
-            FinalChainNativeSessionError::CustodyScopeUnsupported
-        );
+        let error = session.invoke(&request, quote, &raw).unwrap_err();
+        if retained {
+            // This one-member semantic full+new shape is now admitted, but the
+            // old physical fixture still contains the caller destination pair
+            // and membership. It must fail exact raw authentication.
+            assert!(matches!(
+                error,
+                FinalChainNativeSessionError::RawIntegrity(_)
+            ));
+        } else {
+            assert_eq!(error, FinalChainNativeSessionError::CustodyScopeUnsupported);
+        }
         assert_eq!(session.dpos_state, before);
         assert!(session.aborted);
         assert_eq!(session.next_sequence, 0);

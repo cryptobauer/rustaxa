@@ -26,8 +26,8 @@ impl NativeExecutionPort for ProbePort<'_> {
         invocation: &NativeInvocation,
         journal: &dyn NativeJournalRead,
     ) -> Result<NativeGasQuote, NativePortError> {
-        // Effect expectations name the committed base; the journal names the
-        // current live overlay. Check caller pairs before the next invocation,
+        // Repeated-key expectations follow each intermediate write within a
+        // call; the journal names the current overlay between calls. Check caller pairs before the next invocation,
         // including before an injected target failure.
         if let Some(prior) = self.outcomes.borrow().last() {
             for last in [0x31, 0x32] {

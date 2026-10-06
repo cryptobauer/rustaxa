@@ -23,7 +23,7 @@ buffers and fresh retry. Exact physical bytes, committed head 1, both stakes,
 ordered delegation rows and zero pending rewards stay unchanged.
 
 Corrections: convert NativeRawValue to bytes for the witness; distinguish
-committed-base effect expectations from the live overlay; add head assertions
+per-operation intermediate expectations from the live overlay between calls; add head assertions
 after normal runs, failures, retries and reader cycles. Failed runs and initial
 review are retained. No existing test changed. Actual dual-pin reproduction,
 package check/tests/Clippy and serial fast passed. After the review correction,

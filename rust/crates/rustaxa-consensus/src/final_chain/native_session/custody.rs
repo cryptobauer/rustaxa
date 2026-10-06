@@ -232,6 +232,23 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_delegate_with_membership(delegator, validator, before, after, None, trace)
+    }
+
+    /// Serialize delegation effects using the original principal/reward snapshot.
+    /// An explicit membership order names the intermediate state after a source
+    /// removal in the same trace. All other callers use the original order.
+    /// Checked writes authenticate the current trace, preserve ordered repeated
+    /// keys, and return an error before the enclosing owner publishes effects.
+    fn serialize_delegate_with_membership(
+        &self,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        membership_before: Option<&[[u8; 20]]>,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
         let mut nodes = NodeTrace::new(before)?;
         let current_block = before
             .reward_reference_graph
@@ -254,12 +271,15 @@ impl FinalChainNativeSession<'_> {
                 encode_delegation(after, validator, delegator)?,
                 "new delegation",
             )?;
-            let before_items = before
-                .delegator_validators
-                .get(&delegator)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
+            let before_items = membership_before
+                .unwrap_or_else(|| {
+                    before
+                        .delegator_validators
+                        .get(&delegator)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                })
+                .iter()
                 .map(|address| address.to_vec())
                 .collect::<Vec<_>>();
             create_iterable(

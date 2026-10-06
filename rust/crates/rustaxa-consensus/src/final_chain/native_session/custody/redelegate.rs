@@ -6,7 +6,10 @@
 //! and indices. Before Aspen part two, zero amount requires both caller pairs
 //! to be positive and present; it still advances reward cursors and emits writes.
 //! Partial transfers admit existing or new destination pairs; full
-//! caller-source removal requires an existing positive destination pair. Both
+//! caller-source removal admits an existing positive destination pair, or a new
+//! pair when the caller has exactly one source membership. New-pair insertion
+//! uses the empty intermediate membership after source removal and requires both
+//! current reward nodes absent. Both
 //! validator stakes remain positive. Head, cursor, current nodes and complete
 //! membership ordering bind the semantic kernel to physical rows. The kernel
 //! runs on a clone without account access. Source serialization precedes
@@ -144,6 +147,8 @@ impl FinalChainNativeSession<'_> {
 
         let source_principal = delegation(before, from, delegator)
             .ok_or_else(|| domain("redelegation source principal is absent"))?;
+        let full_new =
+            amount_value == source_principal && delegation(before, to, delegator).is_none();
         if !self.final_chain.magnolia_active(self.pending_period)
             || !self.final_chain.ficus_active_at(self.pending_period)
             || self.pending_period <= self.final_chain.rewards_config.fix_redelegate_block_num
@@ -151,7 +156,11 @@ impl FinalChainNativeSession<'_> {
             || (amount_value.is_zero()
                 && (source_principal.is_zero() || delegation(before, to, delegator).is_none()))
             || amount_value > source_principal
-            || (amount_value == source_principal && delegation(before, to, delegator).is_none())
+            // Full removal into an absent pair currently admits only the
+            // observed one-member caller shape. Longer swap-remove/append
+            // composition needs its own actual oracle before admission.
+            || (full_new
+                && before.delegator_validators.get(&delegator).is_none_or(|members| members.as_slice() != [from]))
             || delegation(before, to, delegator).is_some_and(|value| value.is_zero())
             || before
                 .total_stakes
@@ -170,6 +179,24 @@ impl FinalChainNativeSession<'_> {
             return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
         }
         validate_dpos_principal_ledger(before).map_err(map_kernel_error)?;
+        if full_new {
+            // The actual one-member oracle creates both current nodes. Existing
+            // current nodes need separate composition evidence before admission.
+            let current = before
+                .reward_reference_graph
+                .current_block()
+                .map_err(domain)?;
+            for validator in [from, to] {
+                match before.reward_reference_graph.load_node(&NodeKey {
+                    validator,
+                    block: current,
+                }) {
+                    Ok(_) => return Err(FinalChainNativeSessionError::CustodyScopeUnsupported),
+                    Err(DposRewardGraphError::MissingNode { .. }) => {}
+                    Err(error) => return Err(domain(error)),
+                }
+            }
+        }
         authenticate_delegation(before, to, delegator, &mut trace)?;
         for validator in [from, to] {
             authenticate_reward_scope(before, validator, delegator, &mut trace)?;
@@ -230,7 +257,21 @@ impl FinalChainNativeSession<'_> {
             ));
         }
         self.serialize_undelegate_principal(delegator, from, before, &next, &mut trace)?;
-        self.serialize_delegate(delegator, to, before, &next, &mut trace)?;
+        if full_new {
+            // Source removed the only caller membership. Preserve original
+            // delegation absence and reward authority, but append into the
+            // authenticated empty intermediate membership in the same trace.
+            self.serialize_delegate_with_membership(
+                delegator,
+                to,
+                before,
+                &next,
+                Some(&[]),
+                &mut trace,
+            )?;
+        } else {
+            self.serialize_delegate(delegator, to, before, &next, &mut trace)?;
+        }
         self.dpos_state = next;
         Ok(redelegate_result(outcome, quote, trace.finish()))
     }
