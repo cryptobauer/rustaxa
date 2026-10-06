@@ -205,4 +205,5 @@ Only bounded read-only opens of the qualified copy are used for preflight.
 resolves one live pending observation gap and confirms Go source count2->1->2.
 The [bounded Rust repair](n2_redelegate_current_source.md) now passes exact cold/livewarm
 parity, authenticated failure isolation and independent review. Source-current
-frame/history/API derivatives and broader current-node profiles remain open.
+[frames](n2_redelegate_current_source_frames.md) now pass real two-transaction
+parity. History/API derivatives and broader current-node profiles remain open.

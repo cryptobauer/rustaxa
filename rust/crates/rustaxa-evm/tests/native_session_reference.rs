@@ -819,5 +819,7 @@ mod redelegate_zero_frames;
 #[path = "native_session_reference/redelegate_full_new_frames.rs"]
 mod redelegate_full_new_frames;
 
+#[path = "native_session_reference/redelegate_current_source_frames.rs"]
+mod redelegate_current_source_frames;
 #[path = "native_session_reference/redelegate_swap_append_frames.rs"]
 mod redelegate_swap_append_frames;
