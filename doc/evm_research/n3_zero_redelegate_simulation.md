@@ -1,19 +1,19 @@
 # Zero-success historical simulation
 
-Accepted on 2026-10-06 over runtime8a6735c94 and frames752629e9c. This is one
+Accepted on 2026-10-06 over runtime 8a6735c94 and frames 752629e9c. This is one
 settled complete synthetic H1 derivative, with unchanged Rust owners and prior
 ten-case corpus. No production route or real-network/root-parity acceptance.
 
 The sibling [exporter](../../experiments/evm_feasibility/native_redelegate_zero_simulation_reference.go)
 and [harness](../../experiments/evm_feasibility/native_redelegate_zero_simulation_reference.py)
 compose the existing complete StateTransition seed and run actual DryRunner twice
-on both unchanged public/local pins. Caller aa has1000 on validators31/32; zero
-amount/value, gas200000, price1 and supplied nonce2^512. Fix/Magnolia/Ficus/Cornus
+on both unchanged public/local pins. Caller aa has 1000 on validators 31/32; zero
+amount/value, gas 200000, price 1 and supplied nonce 2^512. Fix/Magnolia/Ficus/Cornus
 are active; Aspen two inactive; rewards zero. Both outputs reproduce byte for byte
 with separate hashed diagnostics. Actual H1 root:
 `896c35f3da23eff33a5769399057ca81883044bbd4b7169e9e718997ac2c2982`.
-All77 physical seed rows are retained. Actual gas101784, empty errors/return,
-effective nonce2^264+6 and one zero-amount Redelegated event.
+All 77 physical seed rows are retained. Actual gas 101784, empty errors/return,
+effective nonce 2^264+6 and one zero-amount Redelegated event.
 
 The [Rust test](../../rust/crates/rustaxa-evm/tests/native_simulation_reference/redelegate_zero.rs)
 uses unchanged materialization, CompleteSeedReader, redelegate::history and
@@ -35,7 +35,7 @@ Run artifacts and first-run command/output/exit records:
 `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/`.
 [Frozen review](/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/zero-simulation-review.md).
 Lead and reviewer used confirmed Sol medium; Luna used confirmed Luna medium.
-Starting allowance66%, target56%; the saved budget is unchanged. Estimation and
+Starting allowance 66%, target 56%; the saved budget is unchanged. Estimation and
 direct traces remain separate. Aspen-two failure, absent/zero pairs, rewards,
 new validators, validator deletion and historical same-validator success remain
-outside this contract. Milestone10 and N1–N6 stay open.
+outside this contract. Milestone 10 and N1–N6 stay open.

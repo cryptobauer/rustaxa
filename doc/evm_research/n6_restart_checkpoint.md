@@ -1,32 +1,43 @@
-# Restart checkpoint: zero-amount historical API next
+# Restart checkpoint: zero-amount direct traces in progress
 
 Branch: `feat/rust/evm-state-db`. Accepted runtime/frame tip: `752629e9c`;
-previous run closeout: `049ec5e73`. Record the new preparation baseline at startup.
+previous run closeout: `049ec5e73`. Preparation commit: `5a74db354`; accepted zero simulation: `1c5de6f75`.
 No push, fallback or production routing. Milestone 10 and N1–N6 stay open.
 
 Partial existing/new caller destination and full caller-source removal with a
 retained validator have accepted adapter, frame, historical simulation, estimation
 and direct trace evidence. Pre-Aspen-two zero amount with positive existing caller
-pairs has accepted runtime and frame evidence; historical API work is unstarted.
+pairs has accepted runtime and frame evidence; historical simulation is accepted; estimation is accepted and direct traces are in progress.
 Details: [completed checkpoint](n6_restart_checkpoint_history_2026_10_03_post_redelegation.md),
 [scorecard](../codex_slice_scorecard.md), [audit](../../token_usage_audit_01a0ff3b.md).
 Artifacts: `/home/fry/artifacts/evm-redelegate-2026-10-03/`.
 
-Start the [next round](n3_zero_redelegate_next_round.md): one actual zero-success
-DryRunner case using complete 2,000-principal H1, then estimation/direct traces.
-The accepted historical contract is linked there. Reuse public H1 finalization
-once, owner restart without refinalization, complete actual Go seed rows,
-independent reader reopen and eight fresh simulations. Preserve heads/cursors
-and effective committed nonce+1; no frame seed/root transplant. Keep excluded
-success branches explicit. Serial workspace fast uses `RUST_TEST_THREADS=1` for
-the existing temporary database lock issue; other required gates remain.
+Current run: lead session `01a10f48-83ee-7a32-8bff-722d10c36359`, actual Sol medium.
+Immutable quota budget:
+`/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/quota-budget.json`.
+Baseline `2026-10-06T03:36:59.581Z`: 34% used / 66% remaining; target 56%.
+Weekly reset `1791584594`. Latest observation 65% at `2026-10-06T03:47:26.190Z`.
+Reuse the saved baseline on resume; do not initialize it again.
 
-The active [prompt](../../next_executable_slice_prompt.md) measures fresh starting
-allowance once and stops after a 10 percentage-point drop. Preserve its durable
-budget across resume. The prior 80% remaining is historical, not the new baseline.
-A missing/stale budget or changed reset window stops new work. Sol medium leads;
-Luna maps bounded inputs; independent Sol reviews settled derivatives. Use a fresh
-Astra context only when a new profile needs uncertain semantic authority.
+[Zero historical simulation](n3_zero_redelegate_simulation.md) passed actual dual-pin
+reproduction, package check/tests/Clippy and serial fast; frozen independent Sol
+review accepted. The unchanged runtime ON bridge evidence is retained. Extra
+strict Clippy failed on existing consensus warnings; required Clippy passed.
+Luna medium and both Sol review routes were confirmed. Starting worker telemetry
+used the lead budget in error; own-session runtime checking corrected it.
+
+[Estimation](n3_zero_redelegate_estimation.md) passed six actual dual-pin probes,
+unchanged C++ search (104853), 48 Rust sessions, package gates and serial fast.
+Frozen independent Sol review accepted without corrections. Commit is recorded in
+Git history and scorecard. Direct trace source/oracle work has started in disjoint
+sibling files; registration was held until estimation acceptance. Four sequences
+cover single zero, partial prefix then zero, repeated zero and stale nonce. Targeted
+checks, package gates, frozen review and commit remain pending. Keep actual H2 over
+H1 and supplied increasing nonces; no DryRunner nonce substitution in traces.
+
+Artifacts and first-run logs are in the current run directory. Serial fast uses
+`RUST_TEST_THREADS=1` for existing temporary database locks. No push, production
+route, broad gate or supplied-data mutation is authorized.
 
 Producer executable identity, runtime overrides and capture command remain unknown.
 Do not invent facts or repeat requests. Qualified real windows, signed-period/root
