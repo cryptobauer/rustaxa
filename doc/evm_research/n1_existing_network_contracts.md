@@ -129,7 +129,9 @@ prove deleted/reused caller membership through parent revert and a second
 source-missing failure. [Complete H1 simulation](n3_redelegate_full_new_simulation.md)
 has bounded actual parity with price0 and exact d1/a1 provenance.
 [Estimation](n3_redelegate_full_new_estimation.md) matches actual probes and the
-unchanged search. Longer full+new orders, existing current
+unchanged search. [Direct traces](n3_direct_full_new_redelegate_traces.md) compare
+actual single-success, retained-prefix missing-source and stale-nonce outcomes.
+Longer full+new orders, existing current
 node success, source-validator deletion, zero+absent destination/reward-bearing/new-validator and historical
 same-validator success remain excluded. Real-history and production acceptance
 remain open.
