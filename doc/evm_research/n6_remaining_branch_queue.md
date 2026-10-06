@@ -21,19 +21,22 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-The source-first/source-last current-node runtime, frames and signed H1 APIs
-are accepted. The exact source-last block-one genesis both-current-absent runtime,
-frames and signed ordinary-prefix H1 simulation/estimate are also accepted; see
-[scorecard](../codex_slice_scorecard.md). Its invocation1 guard excludes H2.
-Next obtain the bounded existing-destination source-LAST full-source H2 trace
-contract: realtwo-validator genesis order[32,31], full31->existing32 with source
-validator retainedbyotherowner. Preserve original full-source config/owner/support
-and allcorpora; a new actual H1identity/root/rows/order andH2 output are required.
-Do not add a signedprefix unless this new contract requires it. This test/evidence
-candidate must use the existing full-removal/existing-positive-destination branch;
-any runtime mismatch requires a named correction before broadening behavior.
-The [checkpoint](n6_restart_checkpoint.md) records budget, paths and checks.
-N1–N6 remainopen.
+Source-first/source-last current-node and block-one source-last both-absent
+runtime/frames/signed H1 APIs are accepted. Bounded full/existing BOTH-current
+runtime `072fc39fb` and publicframes `7531d4dc2` are accepted: sourcecount2 restored,
+destinationcount3 retained, exactly two caller pairs ordered[source,destination].
+The fresh signed-H1 authority contract is settled; newactualcanonicalpartial300
+toexisting32 preservesbothnode1count2 atH1. Its oracle preparation measured105rows/
+roote4781dc8.../101912gas/effective2 withcommittedH1unchanged; oracle preparation is accepted indd0c2f458;
+closeout is recorded in the checkpoint. Next publicRust canonicalfinalize/reopen/session
+proof must use that new physical identity, caller3000 AND ordinaryowner1000,
+native4000, preservebothnodes2 and authenticate every newraw key/fault/retry.
+No publicRust H1test exists for this profile yet. Do not reuse oldthree-validator
+roots or claim H2/production/history acceptance from staged/frame/Go fixtures.
+The order-only existing-destination source-last H2 candidate is deferred because
+accepted single_full_last_item covers the branch. Preservepriorcorpora/support/
+configurations and runtimeguards. The checkpoint records the closed56->46 budget;
+start furtherimplementation only under a new authorized budget. N1–N6 remainopen.
 
 ## Contract work for later gaps
 
