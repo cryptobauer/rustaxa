@@ -200,3 +200,7 @@ The existing independent snapshot copy is
 `/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy`; the workspace-local
 relative spelling in older reproduction examples is not a second existing copy.
 Only bounded read-only opens of the qualified copy are used for preflight.
+
+[Source-current oracle preparation](n2_redelegate_current_source_oracle.md)
+resolves one live pending observation gap and confirms Go source count2->1->2.
+The narrow Rust semantic repair and source-current staged admission remain open.

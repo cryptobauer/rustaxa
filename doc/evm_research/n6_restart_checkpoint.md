@@ -1,49 +1,37 @@
-# Restart checkpoint: two-member staged swap and append accepted
+# Restart checkpoint: source-current repair next
 
-Branch `feat/rust/evm-state-db`; run base `049ec5e73`. Accepted local commits:
-preparation `5a74db354`; zero simulation `1c5de6f75`, estimate `aa6ad522b`,
-traces `e4c22cd7f`; one-member full+new staged `ae6035912`, frames `c9291c2a3`,
-complete H1 simulation `028e316a0`, estimate `78f228a9c`, traces `e289d9bda`; two-member staged swap/append (see Git history).
-[Full+new scope](n2_redelegate_full_new.md), [scorecard](../codex_slice_scorecard.md).
-No push or production route. N1–N6/Milestone10 remain open.
+Branch feat/rust/evm-state-db; base049ec5e73. Fifteen accepted local commits
+through source-current oracle preparation (see Git history); no push. Zero API
+simulation/estimate/traces; one-member full+new staged/frames/H1simulation/estimate/
+traces; two-member swap+append staged/frames/H1simulation/estimate/traces accepted.
+[Scorecard](../codex_slice_scorecard.md), [latest oracle](n2_redelegate_current_source_oracle.md).
+N1–N6/Milestone10 and production cutover remain open.
 
-Lead Sol medium session `01a10f48-83ee-7a32-8bff-722d10c36359`.
-Run records: `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/`.
-Reuse `quota-budget.json` without initialization. Baseline66% remaining at
-`2026-10-06T03:36:59.581Z`; target56%; reset1791584594. Latest60% at
-`2026-10-06T05:07:38.140Z`:6 points consumed,4 remain. No billing inference.
+Lead Sol medium session01a10f48-83ee-7a32-8bff-722d10c36359.
+Run /home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/.
+Reuse immutable quota-budget.json without initialization. Baseline66% remaining
+2026-10-06T03:36:59.581Z; target56%; reset1791584594. Latest59% at
+2026-10-06T05:19:47.778Z:7 points consumed,3 remain; no billing inference.
 
-All listed slices passed required actual parity/package/serial fast/whitespace
-and frozen independent review. Staged full+new also passed ON bridge12/all15;
-unchanged derivatives retain that evidence. First failures and corrections stay
-in run records. Caller[31] and source-first[31,33], absent32, full1000, retained validators and
-absent current nodes are newly admitted. Source-last and longer orders/current nodes/rewards/
-source-validator deletion remain excluded. Complete H1 root/79rows and price0
-configuration are exact; frame accounts/configuration are separate synthetic scope.
+All accepted slices passed required parity/package/serialfast/whitespace and
+independent frozen review. Runtime slices passed ONbridge12/all15; unchanged
+API derivatives retain that evidence. Source-current oracle-only slice passed
+actual dual-pin controls/reproduction/Pythoncompile/fast/whitespace and8-hash
+fresh Sol review. Earlier failures and corrected evidence remain in run records.
 
-Next bounded work: source-current full removal/new destination contract. Reuse settled frame/history contracts with the
-accepted two-member topology and retain original snapshot authority/shared trace.
-Actual new Go controls, exact19-write effects, moved position33/reused item2 and
-live-journal expectations need dedicated corpus/tests. Do not copy unmeasured
-results. Same-profile Sol review can be reused. Staged implementation passed
-package/ONbridge12/all15/serialfast/whitespace; independent11-hash review accepted.
-Evidence prefix `swap-append-`; detailed scope `n2_redelegate_swap_append.md`.
-Actual frame derivative is accepted: seven cases,19writes,15frame/27API/EVM
-package/serialfast/whitespace pass,12-hash independent review; see Git history.
-Complete H1 simulation is accepted:99rows/root fbb05f2ff5298016408edf003d39f99bbfbd4bd84d3f917e44ae04d9114f7a97,
-8sessions/28API/package/fast pass,10-hash independent review.
-Fresh Astra medium source-current contract resolved alias defect: Go count2->1->2,
-Rust count2->1. Guard-only admission rejected. Lead/Astra accepted narrow shared kernel eligibility/capture/restore placement,
-conditional on fresh actual oracle before implementation; `current-node-contract.md` and `current-node-placement-contract.md`.
-Estimation passed29API/package/fast and11-hash review, unchanged search104977/48
-Rustsessions; see Git history.
+Next ready: accepted Astra narrow source-current kernel placement contract.
+Profile d1 partial30031->existing33 then full70031->absent32, caller[31,33]->[33,32],
+aggregate1700/1000/2300 ->1000/1700/2300,total5000,zero rewards. Actual target18writes
+has source currentnode2->1->2. Current Rust leaves1; guard-only change rejected.
+Use ONE shared private eligible-source-node helper for staged admission and
+kernelcapture/restore; preserve old same-validator path. Exact bounds in
+current-node-placement-contract.md; authoritative frozen cache+genesis0 view and
+final committed controls in current-source-oracle-diagnostic.md. Oracle committed,
+no Rust repair started. Required cold/livewarm auth/parity/isolation/exclusions,
+affectedpackages/ONbridge12/all15/serialfast/freshfrozenreview before runtimecommit.
 
-Unknown producer executable/overrides/capture command stay unknown; do not invent
-facts or repeat requests. Real-window/root parity and N4–N6 remain open. Broad
-gates need prepared identities/commands/bounds and approval. Do not mutate supplied
-data/upstream C++, add fallback, push or widen production authority.
-
-Two-member direct traces accepted:30API/package/fast/whitespace,10-hash review;
-24normal/28failure-retry runs, see Git history. New current_source oracle files
-are uncommitted: execution now succeeds after observer tombstone/account capture
-corrections; continuity validation needs exact diagnostic. No Rust repair started.
+Unknown producer executable/overrides/capture command remain unknown. Real
+window/root parity and N4–N6 remain open. Broad gates need prepared identities/
+commands/bounds and approval. Do not alter supplied data/upstream C++, add fallback,
+push or widen production authority. At budget floor stop new work and checkpoint
+unchecked changes with exact remaining gates; do not commit an unvalidated slice.
