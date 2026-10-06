@@ -134,7 +134,8 @@ actual single-success, retained-prefix missing-source and stale-nonce outcomes.
 [Source-first two-member swap and append](n2_redelegate_swap_append.md) adds
 bounded staged parity for caller[31,33] becoming[33,32], both affected current
 nodes absent and a positive retained third pair. [Actual frames](n2_redelegate_swap_append_frames.md) compare moved/reused
-slots and parent rollback. Historical derivatives remain open. Source-last and longer full+new orders, existing current
+slots and parent rollback. [Complete H1 simulation](n3_redelegate_swap_append_simulation.md)
+compares eight disposable sessions and persisted restart; estimate/trace remain open. Source-last and longer full+new orders, existing current
 node success, source-validator deletion, zero+absent destination/reward-bearing/new-validator and historical
 same-validator success remain excluded. Real-history and production acceptance
 remain open.
