@@ -7,7 +7,9 @@ and [bounded source map](/home/fry/artifacts/evm-redelegate-2026-10-03/zero-hist
 name exact owners, inputs and checks. Reuse them; their earlier account snapshots
 are historical. Frozen final implementation review remains required.
 
-## First slice: one-case simulation
+## First slice: one-case simulation (accepted 2026-10-06)
+
+Accepted evidence: [simulation](n3_zero_redelegate_simulation.md). Estimation and direct traces remain next.
 
 Own a separate zero simulation exporter/harness/fixture under
 `experiments/evm_feasibility/` and a sibling test under
