@@ -21,14 +21,15 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-The zero historical API round, one-/two-member full/new derivatives and bounded
-source-current runtime/oracle/frames/directH2trace are accepted in the
-[scorecard](../codex_slice_scorecard.md). The [current checkpoint](n6_restart_checkpoint.md)
-records accepted signed-caller same-height H1 simulation and estimation, using
-real canonical prefix/public finalization and actual pinned Go history. The next
-bounded gap is source-current full removal with source LAST in a two-member caller
-order. Obtain its membership/restoration contract and actual ordered oracle before
-runtime extension. Preserve source-first/signed-H1 corpora and guards. N1–N6 remain open.
+The source-first and source-last current-node runtime, frames and signed H1
+simulation/estimate are accepted in the [scorecard](../codex_slice_scorecard.md).
+The exact source-last block-one genesis both-current-absent runtime is accepted
+at4e14964ae. Its seven-case frame derivative is in progress. Close that frozen
+parity/check/review gate first. Then obtain real signed ordinary-prefix H1
+commit/history authority for the same both-absent topology before historical
+simulation/estimate. Preserve all existing corpora, runtime guards and public
+owners. The [checkpoint](n6_restart_checkpoint.md) records exact budget, paths
+and remaining checks. N1–N6 remain open.
 
 ## Contract work for later gaps
 
