@@ -613,3 +613,6 @@ mod redelegate_current_source_estimate;
 
 #[path = "native_simulation_reference/redelegate_source_last_current.rs"]
 mod redelegate_source_last_current;
+
+#[path = "native_simulation_reference/redelegate_source_last_current_estimate.rs"]
+mod redelegate_source_last_current_estimate;
