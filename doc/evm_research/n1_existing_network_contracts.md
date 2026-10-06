@@ -126,7 +126,8 @@ also have bounded actual parity. [Full source into a new destination](n2_redeleg
 has bounded staged parity only for a one-member caller, both validators retained
 and both current reward nodes absent. Its [actual frames](n2_redelegate_full_new_frames.md)
 prove deleted/reused caller membership through parent revert and a second
-source-missing failure. Longer full+new orders, existing current
+source-missing failure. [Complete H1 simulation](n3_redelegate_full_new_simulation.md)
+has bounded actual parity with price0 and exact d1/a1 provenance. Longer full+new orders, existing current
 node success, source-validator deletion, zero+absent destination/reward-bearing/new-validator and historical
 same-validator success remain excluded. Real-history and production acceptance
 remain open.
