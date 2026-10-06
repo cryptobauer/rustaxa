@@ -958,3 +958,6 @@ mod redelegate_current_source_tests;
 
 #[path = "redelegate_source_last_current_tests.rs"]
 mod redelegate_source_last_current_tests;
+
+#[path = "redelegate_source_last_absent_tests.rs"]
+mod redelegate_source_last_absent_tests;

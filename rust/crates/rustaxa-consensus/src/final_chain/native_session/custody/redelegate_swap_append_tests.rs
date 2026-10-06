@@ -442,10 +442,17 @@ fn redelegate_swap_append_rejects_unobserved_or_incomplete_membership_shapes() {
         let raw = swap_append_raw(case);
         let request = staged_request(case, 0);
         let quote = session.prepare(&request, &raw).unwrap();
-        assert_eq!(
-            session.invoke(&request, quote, &raw).unwrap_err(),
-            FinalChainNativeSessionError::CustodyScopeUnsupported
-        );
+        let error = session.invoke(&request, quote, &raw).unwrap_err();
+        if shape == 7 {
+            // Source-last genesis is now in scope, but these unchanged physical
+            // source-first positions still fail exact raw authentication.
+            assert!(matches!(
+                error,
+                FinalChainNativeSessionError::RawIntegrity(_)
+            ));
+        } else {
+            assert_eq!(error, FinalChainNativeSessionError::CustodyScopeUnsupported);
+        }
         assert_aborted(&session, &before, 0);
         assert_eq!(chain.dpos_snapshot(0.into()).unwrap(), committed);
         assert_eq!(chain.last_block_number_typed().unwrap(), 0.into());

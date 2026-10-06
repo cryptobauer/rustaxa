@@ -8,8 +8,9 @@
 //! Partial transfers admit existing or new destination pairs; full
 //! caller-source removal admits an existing positive destination pair, or a new
 //! pair when the caller has one source membership, or source first followed by
-//! one distinct positive retained membership. Source-last is admitted only for
-//! the measured bounded current-source node. New-pair insertion uses the
+//! one distinct positive retained membership. Source-last admits the measured
+//! bounded current-source node or the exact block-one genesis node topology.
+//! New-pair insertion uses the
 //! intermediate membership after swap removal. It normally requires both
 //! current reward nodes absent; the exact source-current alias below is the
 //! only additional admitted node topology. Both
@@ -228,11 +229,10 @@ impl FinalChainNativeSession<'_> {
                     self.pending_period,
                 )
                 .map_err(map_kernel_error)?;
-            // Source-last is measured only with this exact loaded current node.
-            // Keep source-last with both current nodes absent outside custody.
             if original_members.len() == 2
                 && original_members[1] == from
                 && bounded_source.is_none()
+                && !self.bounded_source_last_absent(delegator, from, to, amount_value)?
             {
                 return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
             }
@@ -346,6 +346,141 @@ impl FinalChainNativeSession<'_> {
             expected,
             "redelegation validator",
         )
+    }
+}
+
+impl FinalChainNativeSession<'_> {
+    /// Admits only the measured source-last genesis shape at block one.
+    /// No graph node is invented or changed. Required history/graph errors
+    /// propagate; complete but different topologies return false. Physical
+    /// authentication and both serializers still run through the shared trace.
+    pub(super) fn bounded_source_last_absent(
+        &self,
+        caller: [u8; 20],
+        source: [u8; 20],
+        destination: [u8; 20],
+        amount: U256,
+    ) -> Result<bool, FinalChainNativeSessionError> {
+        let before = &self.dpos_state;
+        let members = before.delegator_validators.get(&caller).map(Vec::as_slice);
+        let Some([retained, last]) = members else {
+            return Ok(false);
+        };
+        if *last != source
+            || *retained == source
+            || *retained == destination
+            || source == destination
+            || amount.is_zero()
+            || delegation(before, source, caller) != Some(amount)
+            || delegation(before, destination, caller).is_some()
+            || delegation(before, *retained, caller).is_none_or(|value| value.is_zero())
+            || before
+                .delegations
+                .values()
+                .filter(|rows| rows.contains_key(&caller))
+                .count()
+                != 2
+            || before
+                .total_stakes
+                .get(&source)
+                .is_none_or(|row| row.as_u256() <= amount)
+            || [destination, *retained].iter().any(|v| {
+                before
+                    .total_stakes
+                    .get(v)
+                    .is_none_or(StoredDposTokenAmount::is_zero)
+            })
+            || self.pending_period.as_u64() != 1
+            || self.pending_period <= self.final_chain.rewards_config.fix_redelegate_block_num
+            || !self.final_chain.magnolia_active(self.pending_period)
+            || !self.final_chain.ficus_active_at(self.pending_period)
+            || self.final_chain.aspen_part_two_active(self.pending_period)
+        {
+            return Ok(false);
+        }
+        if !before.delegation_ledger_history_complete
+            || !before.redelegate_same_validator_history_complete
+        {
+            return Err(domain(
+                "source-last genesis requires complete principal history",
+            ));
+        }
+        validate_dpos_principal_ledger(before).map_err(map_kernel_error)?;
+        let graph = &before.reward_reference_graph;
+        if graph.current_block().map_err(domain)? != 1 {
+            return Ok(false);
+        }
+        let zero = DposRewardIndex::zero();
+        for (validator, count, has_caller) in [
+            (source, 3, true),
+            (destination, 2, false),
+            (*retained, 3, true),
+        ] {
+            if before
+                .redelegate_same_validator_corruption
+                .contains(&validator)
+                || graph.read_validator_head(&validator).map_err(domain)? != 0
+                || graph.is_stale_head(&validator).map_err(domain)?
+                || before
+                    .validator_reward_per_stake
+                    .get(&validator)
+                    .is_some_and(|row| row.index != zero)
+                || before
+                    .delegator_rewards
+                    .get(&validator)
+                    .is_some_and(|row| !row.is_zero())
+                || before
+                    .commission_rewards
+                    .get(&validator)
+                    .is_some_and(|row| !row.is_zero())
+            {
+                return Ok(false);
+            }
+            let old = graph
+                .load_node(&NodeKey {
+                    validator,
+                    block: 0,
+                })
+                .map_err(domain)?;
+            if old.count != count || old.reward_per_stake != zero {
+                return Ok(false);
+            }
+            match graph.load_node(&NodeKey {
+                validator,
+                block: 1,
+            }) {
+                Err(DposRewardGraphError::MissingNode {
+                    validator: actual,
+                    block: 1,
+                }) if actual == validator => {}
+                Ok(_) => return Ok(false),
+                Err(error) => return Err(domain(error)),
+            }
+            let mirror = before
+                .delegation_reward_cursors
+                .get(&validator)
+                .and_then(|rows| rows.get(&caller));
+            if has_caller {
+                if graph.read_cursor(&validator, &caller).map_err(domain)? != 0
+                    || mirror.is_none_or(|row| row.index != zero)
+                {
+                    return Ok(false);
+                }
+            } else {
+                if mirror.is_some() {
+                    return Ok(false);
+                }
+                match graph.read_cursor(&validator, &caller) {
+                    Err(DposRewardGraphError::MissingCursor {
+                        validator: actual,
+                        delegator,
+                    }) if actual == validator && delegator == caller => {}
+                    Ok(_) => return Ok(false),
+                    Err(error) => return Err(domain(error)),
+                }
+            }
+        }
+        Ok(true)
     }
 }
 

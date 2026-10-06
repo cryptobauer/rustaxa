@@ -693,14 +693,30 @@ fn redelegate_source_last_current_wrong_membership_discards_local_node_restore()
 }
 
 #[test]
-fn redelegate_source_last_current_rejects_both_current_nodes_absent() {
+fn redelegate_source_last_current_rejects_both_absent_wrong_old_count() {
     let case = oracle_case();
     let (chain, storage, path) = swap_append_chain();
     let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+    let key = NodeKey {
+        validator: address(0x31),
+        block: 0,
+    };
+    let mut node = session
+        .dpos_state
+        .reward_reference_graph
+        .load_node(&key)
+        .unwrap();
+    node.count = 4;
+    session
+        .dpos_state
+        .reward_reference_graph
+        .restore_loaded_node(key, node)
+        .unwrap();
     let before = session.dpos_state.clone();
     let raw = raw_view(&case["attempts"][0]["raw_before"]);
     let mut req = request(&case, 1, 0);
     req.input[68..100].copy_from_slice(&U256::from(1000).to_big_endian());
+
     let quote = session.prepare(&req, &raw).unwrap();
     assert!(matches!(
         session.invoke(&req, quote, &raw),
