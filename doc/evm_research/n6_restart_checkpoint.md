@@ -11,7 +11,7 @@ Lead Sol medium session `01a10f48-83ee-7a32-8bff-722d10c36359`.
 Run records: `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/`.
 Reuse `quota-budget.json` without initialization. Baseline66% remaining at
 `2026-10-06T03:36:59.581Z`; target56%; reset1791584594. Latest60% at
-`2026-10-06T05:03:20.225Z`:6 points consumed,4 remain. No billing inference.
+`2026-10-06T05:07:38.140Z`:6 points consumed,4 remain. No billing inference.
 
 All listed slices passed required actual parity/package/serial fast/whitespace
 and frozen independent review. Staged full+new also passed ON bridge12/all15;
@@ -21,7 +21,7 @@ absent current nodes are newly admitted. Source-last and longer orders/current n
 source-validator deletion remain excluded. Complete H1 root/79rows and price0
 configuration are exact; frame accounts/configuration are separate synthetic scope.
 
-Next bounded work: two-member supported direct traces. Reuse settled frame/history contracts with the
+Next bounded work: source-current full removal/new destination contract. Reuse settled frame/history contracts with the
 accepted two-member topology and retain original snapshot authority/shared trace.
 Actual new Go controls, exact19-write effects, moved position33/reused item2 and
 live-journal expectations need dedicated corpus/tests. Do not copy unmeasured
@@ -42,3 +42,8 @@ Unknown producer executable/overrides/capture command stay unknown; do not inven
 facts or repeat requests. Real-window/root parity and N4–N6 remain open. Broad
 gates need prepared identities/commands/bounds and approval. Do not mutate supplied
 data/upstream C++, add fallback, push or widen production authority.
+
+Two-member direct traces accepted:30API/package/fast/whitespace,10-hash review;
+24normal/28failure-retry runs, see Git history. New current_source oracle files
+are uncommitted: execution now succeeds after observer tombstone/account capture
+corrections; continuity validation needs exact diagnostic. No Rust repair started.

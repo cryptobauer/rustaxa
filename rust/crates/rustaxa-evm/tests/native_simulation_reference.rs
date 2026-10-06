@@ -598,3 +598,6 @@ mod redelegate_swap_append;
 
 #[path = "native_simulation_reference/redelegate_swap_append_estimate.rs"]
 mod redelegate_swap_append_estimate;
+
+#[path = "native_simulation_reference/redelegate_swap_append_trace.rs"]
+mod redelegate_swap_append_trace;

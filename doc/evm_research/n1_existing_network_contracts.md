@@ -136,7 +136,8 @@ bounded staged parity for caller[31,33] becoming[33,32], both affected current
 nodes absent and a positive retained third pair. [Actual frames](n2_redelegate_swap_append_frames.md) compare moved/reused
 slots and parent rollback. [Complete H1 simulation](n3_redelegate_swap_append_simulation.md)
 compares eight disposable sessions and persisted restart; [Estimation](n3_redelegate_swap_append_estimation.md) matches six actual
-probes and unchanged search; direct traces remain open. Source-last and longer full+new orders, existing current
+probes and unchanged search; [Direct traces](n3_direct_swap_append_redelegate_traces.md) compare
+actual live prefixes and failure disposal. Source-last and longer full+new orders, existing current
 node success, source-validator deletion, zero+absent destination/reward-bearing/new-validator and historical
 same-validator success remain excluded. Real-history and production acceptance
 remain open.
