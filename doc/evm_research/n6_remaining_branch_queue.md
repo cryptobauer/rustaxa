@@ -21,15 +21,19 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-The source-first and source-last current-node runtime, frames and signed H1
-simulation/estimate are accepted in the [scorecard](../codex_slice_scorecard.md).
-The exact source-last block-one genesis both-current-absent runtime is accepted
-at4e14964ae. Its seven-case frame derivative is in progress. Close that frozen
-parity/check/review gate first. Then obtain real signed ordinary-prefix H1
-commit/history authority for the same both-absent topology before historical
-simulation/estimate. Preserve all existing corpora, runtime guards and public
-owners. The [checkpoint](n6_restart_checkpoint.md) records exact budget, paths
-and remaining checks. N1–N6 remain open.
+The source-first/source-last current-node runtime, frames and signed H1 APIs
+are accepted. The exact source-last block-one genesis both-current-absent runtime,
+frames and signed ordinary-prefix H1 simulation/estimate are also accepted; see
+[scorecard](../codex_slice_scorecard.md). Its invocation1 guard excludes H2.
+Next obtain the bounded existing-destination source-LAST full-source H2 trace
+contract: realtwo-validator genesis order[32,31], full31->existing32 with source
+validator retainedbyotherowner. Preserve original full-source config/owner/support
+and allcorpora; a new actual H1identity/root/rows/order andH2 output are required.
+Do not add a signedprefix unless this new contract requires it. This test/evidence
+candidate must use the existing full-removal/existing-positive-destination branch;
+any runtime mismatch requires a named correction before broadening behavior.
+The [checkpoint](n6_restart_checkpoint.md) records budget, paths and checks.
+N1–N6 remainopen.
 
 ## Contract work for later gaps
 
