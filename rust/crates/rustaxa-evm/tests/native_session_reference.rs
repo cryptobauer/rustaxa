@@ -823,3 +823,6 @@ mod redelegate_full_new_frames;
 mod redelegate_current_source_frames;
 #[path = "native_session_reference/redelegate_swap_append_frames.rs"]
 mod redelegate_swap_append_frames;
+
+#[path = "native_session_reference/redelegate_source_last_current_frames.rs"]
+mod redelegate_source_last_current_frames;

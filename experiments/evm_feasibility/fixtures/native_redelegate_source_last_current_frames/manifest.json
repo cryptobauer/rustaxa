@@ -1,0 +1,63 @@
+{
+  "control_sha256": {
+    "local": [
+      "353618181d99f1e693bc6d651b9a9abf75f42d2e78bcb2943f85ba7b88cbae7e",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "353618181d99f1e693bc6d651b9a9abf75f42d2e78bcb2943f85ba7b88cbae7e",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "exporter_sha256": "29429d67f7801cdfca9d530e6acdf8277b50104c5d9d6d3b2992f858655037bf",
+  "frame_context": {
+    "block_gas": 1000000,
+    "blocks_per_year": 1,
+    "direct_target_nonce": 2,
+    "gas_price": 0,
+    "go_evm_config": "params.TestChainConfig",
+    "log_boundary": "cumulative Go logs plus exact suffix; no clear/commit; refund zero",
+    "max_supply": 1000000000,
+    "maximum_stake": 1000000,
+    "minimum_deposit": 100,
+    "native_balance": 5000,
+    "native_forks": "fix/Magnolia/Ficus/Cornus0; both Aspen disabled",
+    "nonce": 1,
+    "period": 1,
+    "prefix_sender": "d1",
+    "principal": 5000,
+    "rust_chain_id": 666,
+    "seed_scope": "actual source-last current initial frozen42-key view; actual prefix300->33 then target700->32; dirty raw only",
+    "sender": "aa",
+    "sender_wrapper_balance": 1000000,
+    "threshold": 100,
+    "timestamp": 0,
+    "transaction_gas": 200000,
+    "vote_step": 10,
+    "votes": 500,
+    "wrapper": "d1"
+  },
+  "harness_sha256": "9923f10b7e400cefb41e1d6103c5c727cb1f16129ddae8dd42ffa6b9feafea4b",
+  "implementation_base": "b5d61a8f1",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "seed_sha256": "609b1429ec8f340cda0d03bda261a2bf16bcf491e9fac3ce4fcf73a79b06c035",
+  "sha256": {
+    "local": [
+      "dac675a4ba1780ec5bb1d306df74cdb9d3c7736e649b96708be44cf2bce6d4da",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "dac675a4ba1780ec5bb1d306df74cdb9d3c7736e649b96708be44cf2bce6d4da",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "support_sha256": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5"
+}
