@@ -1,51 +1,68 @@
-# Next round preparation
+# Next round preparation: 10-point quota budget
 
-Prepared on 2026-10-03 after the
-[multi-slice audit](token_usage_audit_01a0f999.md). Implementation baseline:
-`327d15fa1`. These changes prepare a new run; they do not execute the next EVM
-chunk or resume an audited session. Preparation changes remain uncommitted.
+Prepared after [the October 3 audit](token_usage_audit_01a0ff3b.md).
+Branch base: `049ec5e73`. Preparation changes remain uncommitted. No new EVM
+implementation or audited-session resume is part of this preparation.
 
-## Applied changes
+## Budget and next work
 
-- Default quota floor is **80% weekly allowance remaining**, or 20% used.
-  The active workflow, prompt and checkpoint agree. The reader accepts a
-  validated explicit override, but the next run must keep the authorized 80%
-  floor. Missing, stale or wrong-session telemetry cannot permit a start.
-- The lead coordinates quota decisions. Adjacent decisions can share a fresh
-  observation; workers cannot extend an assignment on stale telemetry.
-- Astra review contexts now stay within one contract family. Start a fresh
-  bounded reviewer at family changes. Use independent Sol for settled
-  derivatives and Astra for uncertain authority, authentication or rollback.
-  All required validation and independent review remain in place.
-- The startup checkpoint is compact again. Completed evidence and the prior
-  prompt are preserved in linked history. AGENTS.md did not need more text.
-- The next chunk is [staged redelegation](doc/evm_research/n2_redelegate_next_chunk.md),
-  followed by ABI/frame and API composition in accepted commits. The settled
-  contract, owned paths, invariants, evidence and exit checks are ready.
+Measure fresh weekly allowance at the new session's startup, before delegation,
+preparation commits or implementation. Save that observation once in a persistent
+session-specific budget file. Stop after **10 percentage points** of allowance
+have been consumed. Example: start at 80% remaining, stop at 70%; start at 57%,
+stop at 47%. This replaces the fixed 80% reserve. It is not 10% of the remaining
+balance and not a token or billing estimate.
 
-The review changes address the largest measured cost: Astra was 66.8% of
-estimated credits in the last run. They are a measured workflow change, not a
-claim that cheaper models have equal quality. See the audit for deduplicated
-token totals and pricing assumptions; allowance percentages remain separate.
+The saved baseline must survive resume and retries. Do not overwrite it, pick an
+old session observation or increase the budget after a weekly reset. Missing,
+malformed, stale, wrong-session or changed-window telemetry stops new work after
+one bounded refresh. The allowance is shared: concurrent account use also affects
+the observed drop. Rounded telemetry and in-flight closeout mean the limit is
+approximate. No separate agent budgets are used.
 
-## Checks and launch
+The next ready work is the settled one-case zero-amount historical simulation,
+then estimation and supported direct traces. The
+[next-round contract](doc/evm_research/n3_zero_redelegate_next_round.md) links the
+accepted source map and historical contract and names owned paths and gates.
+Completed partial/new/full adapter/API work and zero runtime/frames are historical.
+Real-window qualification and N4–N6 stay open.
 
-Ten quota tests pass, including the 80% boundary, explicit 20% override,
-invalid floors, CLI behavior and existing telemetry protections. Whitespace,
-local Markdown links and archived-content preservation are checked. No Rust or
-C++ source changed, so no EVM build was needed for this preparation.
+## Cost changes
 
-Fresh current-session telemetry at `2026-10-03T00:31:43.532Z` reported 100%
-remaining and permitted startup. This is an account observation, not a current
-guarantee or a task token budget. Read it again at launch.
+- Keep direct Sol medium implementation and independent Sol for settled derivatives.
+- Ask Astra only a named unresolved semantic question. Reuse settled contracts.
+- Start fresh bounded reviewer contexts at semantic profile changes, not just
+  contract-family changes. Preserve Luna capacity and record capacity blockers.
+- Use complete assignments, result/blocker messages and correction handoffs;
+  avoid routine polling and duplicated quota narration.
+- Keep actual oracle read buffers isolated and require stateful-prefix effect
+  witnesses where downstream rollback/failure depends on those effects.
+- Preserve all required checks and independent reviews. Record comparable
+  derivative scopes, tokens, estimated credits and correction batches separately
+  from the account allowance drop.
 
-Select **gpt-6.1-sol, medium**, start a new session in this repo, and send:
+## Launch
 
-> Execute `next_executable_slice_prompt.md`. Continue the prepared redelegation
-> chunk autonomously. Stop at about 80% weekly allowance remaining. Keep all
-> required validation and independent review, make accepted local commits,
-> and leave a compact checkpoint. Do not push.
+Select **gpt-6.1-sol, medium** in a new session in this repository and send:
 
-The full [run prompt](next_executable_slice_prompt.md) authorizes the preparation
-commit and accepted implementation commits. No production routing or broad
-approval-required gate is authorized. Real-window qualification remains open.
+> Execute `next_executable_slice_prompt.md`. Measure and save fresh starting
+> weekly allowance, then work autonomously until 10 percentage points have been
+> consumed. Keep required validation and independent review, make accepted local
+> commits, and leave a compact checkpoint. Do not push.
+
+The full [prompt](next_executable_slice_prompt.md) includes the exact quota-reader
+command, preparation commit authority, budget resume rules and remaining limits.
+Do not initialize the next run's budget in this preparation session.
+
+Previous prompt and checkpoint are preserved byte-for-byte in linked history.
+AGENTS.md now points to the active budget policy instead of a stale fixed reserve.
+
+## Validation
+
+All 26 quota tests pass. Coverage includes relative 80→70 and 57→47 budgets,
+immutable resume baselines, exclusive initialization, stale/unknown telemetry,
+session/window mismatch, same-window usage regression, contradictory values and CLI flag conflicts. Local
+Markdown links, byte-exact archives and whitespace checks pass. Final test output
+and command/exit metadata are saved under
+`/home/fry/artifacts/codex-relative-budget-prep-2026-10-03/`.
+No Rust/C++ runtime code changed. The next run's baseline has not been initialized.

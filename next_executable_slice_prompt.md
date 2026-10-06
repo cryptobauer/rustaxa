@@ -1,44 +1,54 @@
-Continue authorized Milestone 10 work on this branch. Read AGENTS.md,
-`doc/codex_slice_workflow.md`, the compact restart checkpoint, and
-`doc/evm_research/n2_redelegate_next_chunk.md`. Read only relevant source ranges
-and linked evidence needed for a decision. Do not resume any audited session.
+Continue authorized Milestone 10 work on this branch. Read AGENTS.md, the compact
+restart checkpoint, `doc/codex_slice_workflow.md`, and
+`doc/evm_research/n3_zero_redelegate_next_round.md`. Do not resume audited sessions.
+Use gpt-6.1-sol medium for direct implementation and confirm actual runtime.
 
-Use `gpt-6.1-sol` medium as the direct implementation lead. Confirm actual
-runtime. Check allowance with `rtk proxy python3 scripts/codex_quota.py`.
-Stop at about 80% WEEKLY ALLOWANCE REMAINING (20% used). This replaces the
-previous 20% reserve. If startup is already at or below 80%, do not start work.
-Unknown/stale telemetry permits one bounded refresh, then checkpoint and stop.
-The shared floor applies to the whole team. Finish only an in-flight atomic
-step at the floor; never commit unvalidated changes.
+Before delegation, preparation commits or implementation, measure fresh weekly
+allowance and save the run baseline once:
 
-Inventory, validate and locally commit the approved preparation docs/tooling
-as a separate Conventional Commit before implementation. Preserve unrelated
-work. This prompt authorizes these local commits, including the prior audit
-report. No push is authorized.
+```sh
+rtk proxy python3 scripts/codex_quota.py --budget-file "/home/fry/artifacts/evm-round-${CODEX_THREAD_ID}/quota-budget.json" --init-budget
+```
 
-Confirm Luna first for a bounded source/fixture map. Implement the staged
-redelegation adapter under the settled contract, then its ABI/frame and API
-composition through existing owners, in small independently accepted commits.
-Continue ready authorized work without stopping after each slice. Correct
-failures, run required targeted/parity/bridge/fast checks, freeze source and
-evidence, and obtain independent review before each implementation commit.
-Keep source and evidence changes visible to the reviewer. Store first-run
-commands, full output and exit codes under persistent artifacts.
+Use the same path without `--init-budget` at all later checkpoints. If
+CODEX_THREAD_ID is unavailable, obtain the current session UUID, select that UUID
+for the directory and use explicit --session. Never guess from the newest log.
+Stop when **10 percentage points of weekly allowance have been consumed since
+startup**. Example: 80% remaining initially means stop at 70%, not 72%. This
+replaces the fixed 80% reserve. The shared account drop counts all agent activity
+and concurrent account use. Do not reset the baseline on resume or after a retry.
+Reject stale/unknown telemetry, missing/invalid budget, identity mismatch or a
+changed weekly window. One bounded telemetry refresh is permitted, then stop new
+work if unresolved. At the limit finish only an in-flight atomic step and minimal
+checkpoint; do not commit unvalidated changes or claim unchecked gates passed.
 
-Use independent Sol medium for settled derivatives. Use a fresh Astra medium
-thread for redelegation authentication/rollback or new uncertain semantics;
-do not import the earlier metadata/escrow review thread. Reuse within the same
-contract family. Do not reopen settled decisions without contradictory evidence.
-Use one writer per module, preserve Luna's slot, and avoid agent status polling.
-The lead coordinates fresh quota decisions before starts and at milestones
-about five minutes apart; workers do not start new assignments on stale quota.
+Validate and locally commit approved preparation docs/tooling and audit reports
+as a separate Conventional Commit. Preserve unrelated work. This prompt authorizes
+accepted local commits, not a push. Confirm Luna first for one bounded next-seam
+check; reuse the accepted map rather than repeating branch discovery.
 
-Follow the remaining branch queue after this chunk if capacity and authority
-permit. Record exact blockers and continue independent approved work. Do not
-repeat producer-provenance requests or invent missing facts. Prepare commands,
-data identities and bounds for approval-required broad gates; continue other
-work while awaiting a decision. Do not change upstream C++ without required
-authority, mutate supplied data, change protocol rules, enable fallback or
-route to production. Stop when the allowance floor is reached, authorized work
-is complete, or all ready work is blocked. Update the compact checkpoint and
-scorecard; report accepted commits, checks, review and remaining limits.
+Start the settled one-case zero-amount historical simulation, then estimation
+and supported direct traces. Use existing Rust owners and actual pinned Go
+outputs. Preserve prior corpora and runtime guards. Continue other ready approved
+queue work if capacity remains; do not invent work to consume quota. Run required
+checks, retain first-run output/exit codes, freeze source/evidence, obtain
+independent review, correct findings and commit each accepted slice.
+
+Use independent Sol medium for settled derivatives. Do not ask Astra to repeat
+settled contracts. Request Astra only for a named unresolved authority,
+authentication, gas or rollback question. Start fresh bounded review contexts at
+semantic profile changes; do not carry old partial/new/full/zero history into the
+next profile. Check capacity and preserve Luna's slot; record any routing blocker.
+Send complete assignments and result/blocker/correction messages without routine
+status polling. Workers use fresh timestamped lead quota decisions and do not
+start follow-ups independently. The lead checks before starts, after closeout
+milestones and about every five minutes; reuse adjacent fresh observations.
+
+Keep required parity, package, bridge and serial fast checks. No push, production
+routing, fallback, protocol change, supplied-data mutation or upstream C++ exception.
+Prepare commands, data identities and bounds before approval-required broad gates;
+continue independent approved work while awaiting a decision. Do not repeat missing
+producer-fact requests or invent facts. Stop at the run budget, authorized work
+completion or a blocker affecting all ready work. Record baseline, target, final
+allowance, observed consumption and reset identity separately from tokens/billing.
+Leave a compact checkpoint, accepted commits, checks, review and remaining limits.

@@ -11,15 +11,22 @@ and repository validation rules remain authoritative.
 2. Check the current account allowance from the current session log:
 
    ```sh
-   rtk proxy python3 scripts/codex_quota.py
+   rtk proxy python3 scripts/codex_quota.py --budget-file "$run_budget" --init-budget
    ```
 
    The reader uses `CODEX_THREAD_ID` when available. Otherwise supply
    `--session <current-session-uuid>` or `--log <current-rollout-path>`.
    Do not select the latest log or reuse a completed session's observation.
    It reads one log without modifying it and prints allowance separately from
-   tokens and billing. Use one account-wide floor of 80% remaining for all
-   agent activity; do not create separate per-model or per-agent budgets.
+   tokens and billing. Set `run_budget` to a unique file under the persistent
+   run artifact directory. Initialize it once, before delegation and preparation
+   commits; thereafter use the same command without `--init-budget`.
+   Save the fresh starting allowance and stop after **10 percentage points**
+   have been consumed. Starting at 80% remaining means stopping at 70%, not 72%.
+   Use one lead-session budget for all agents; no separate agent/model budgets.
+   Do not overwrite or rebase it on resume. A missing or malformed budget,
+   session mismatch, changed weekly reset or decreased cumulative used value
+   cannot permit a new start. Record exact baseline and final observations.
    The lead checks at startup, before spawning, before each new slice or large
    gate, after validation/review/commit, and at natural milestones no more than
    about five minutes apart during long work. Combine adjacent checks while the
@@ -30,7 +37,8 @@ and repository validation rules remain authoritative.
    make one bounded refresh or session-identity retry. If it remains unknown,
    stop new work and write a durable checkpoint; do not consume allowance
    blindly. A rounded or delayed value cannot guarantee an exact floor.
-   At 80% remaining or less, start no new slice, delegation or large gate.
+   When 10 percentage points have been consumed, or allowance is exhausted,
+   start no new slice, delegation or large gate.
    Finish only an in-flight atomic step, then checkpoint and hand off. Do not
    commit an unvalidated slice or claim unchecked gates passed. Just above the
    floor, prefer a small bounded step that leaves closeout capacity; do not add
@@ -47,7 +55,7 @@ and repository validation rules remain authoritative.
 6. Freeze source, outputs and checks. An independent Sol-medium reviewer checks
    settled work; escalate unresolved authority or difficult semantics to Astra.
    Review summaries, hashes and relevant ranges without dumping full large artifacts.
-   Reuse a review thread within one contract family. At a family change, start
+   Reuse a review thread within one settled profile. At a profile/family change, start
    a fresh explicitly configured reviewer with `fork_turns="none"`; give it only
    the settled contract, source/configuration pins, current delta and evidence
    paths. Do not carry metadata, escrow and redelegation history into one Astra
@@ -65,15 +73,20 @@ and repository validation rules remain authoritative.
 These steps reduce repeated context and correction work. They do not reduce
 required validation or turn synthetic results into historical/production acceptance.
 
-The 80% reserve replaces the earlier 20% reserve for the next run. It means
-20% used, not 80% used and not 20% of the startup balance. The quota reader's
-default and active prompt must agree. If startup allowance is already at or
-below 80%, checkpoint and stop; do not change the floor to force a run. An
-explicit reader override is for a separately authorized policy or a test.
+The relative 10-point run budget replaces the previous fixed 80% reserve.
+Always use `--budget-file` for this run. The reader's legacy bare-command floor
+and `--min-remaining-percent` mode are not this run's budget; do not combine them.
+If less than 10 points remain at startup, available allowance is the upper bound.
+Account-wide use by other sessions also counts toward the observed drop. Rounded
+or delayed telemetry cannot ensure an exact stop. A weekly reset invalidates the
+saved window; checkpoint instead of creating a larger budget automatically.
 
-The [October 2 audit](../token_usage_audit_01a0f999.md) supports these review
-changes: Astra used 66.8% of estimated credits, with context growth across
-contract families. This is local evidence, not proof of model equivalence.
+The [latest audit](../token_usage_audit_01a0ff3b.md) supports these review
+changes: Astra still used 66.8% of estimated credits and grew to about 238K input
+tokens before compaction within one family. Use focused profile contexts,
+independent Sol for settled derivatives, complete assignments and correction
+handoffs without routine status polling. This is local evidence, not proof of
+model equivalence.
 The official [OpenAI context guidance](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra)
 also recommends removing stale instructions and loading focused guidance.
 

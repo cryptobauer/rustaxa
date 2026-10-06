@@ -214,7 +214,10 @@ and the real-window gap must stay separate.
 ## Reproducibility
 
 The audit found **468 unique `(thread_id, response_id)` records**, no duplicates,
-**490 cumulative snapshots with 24 repeats**, and no explicit compaction markers.
+**490 cumulative snapshots with 24 repeats**. A follow-up audit on October 3
+found two top-level root `compacted` records, at `2026-10-01T23:16:42.529Z` and
+`2026-10-02T00:08:58.841Z`. The initial scanner missed this top-level type.
+This corrects the earlier no-marker statement; usage totals are unchanged.
 Every thread and turn reconciles against its cumulative counters. The root has
 three runtime-context records, all Sol medium; those are not evidence of three
 separate user-started tasks. Displayed snapshots were not added to usage totals.

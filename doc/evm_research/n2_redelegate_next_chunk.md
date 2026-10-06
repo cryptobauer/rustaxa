@@ -1,5 +1,9 @@
 # Next chunk: staged redelegation and API composition
 
+Completed for its bounded partial profile in the October 3 run. The active next
+work is [zero-amount historical API](n3_zero_redelegate_next_round.md). The contract
+below remains historical evidence, not a request to repeat the adapter.
+
 Preparation baseline: `327d15fa1` on `feat/rust/evm-state-db`.
 This advances N2/N3 within [Milestone 10](10_existing_network_milestone.md).
 The [observations and settled adapter contract](n2_redelegate_observations.md#settled-bounded-adapter-contract)

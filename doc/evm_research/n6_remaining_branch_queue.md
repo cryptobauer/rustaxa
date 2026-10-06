@@ -21,11 +21,12 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-The accepted metadata/escrow slices and redelegation prerequisites are in the
+The accepted metadata/escrow and redelegation slices are in the
 [scorecard](../codex_slice_scorecard.md). Start the
-[staged redelegation chunk](n2_redelegate_next_chunk.md): adapter authentication,
-then ABI/frame composition, then simulation/estimation/traces. Reuse its settled
-contract; do not restart a branch-wide inventory. This does not close N1–N6.
+[zero-amount historical API round](n3_zero_redelegate_next_round.md): settled
+one-case simulation, then estimation/direct traces. Partial/new/full composition
+and zero runtime/frames are complete for their bounded profiles. Do not repeat
+them or restart a branch-wide inventory. This does not close N1–N6.
 
 ## Contract work for later gaps
 

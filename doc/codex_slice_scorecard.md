@@ -17,6 +17,17 @@ Usage comes from deduplicated local response records. Estimated credits use the
 recorded model rates; they are not billed usage. Read the current quota reader
 at startup. Do not use historical snapshots as current allowance.
 
+## Next run measurement
+
+The next prompt uses a saved startup allowance and a 10 percentage-point run
+budget. Record the budget path, lead session UUID, initial observation UTC,
+weekly reset, initial used/remaining percentage, target remaining percentage,
+final observation and observed consumed points. Keep this account-wide record
+separate from deduplicated per-model/agent tokens and estimated credits. Resume
+uses the original baseline; never add a second budget row as a fresh allowance.
+Compare zero-amount simulation/estimation/trace derivatives by accepted corpus
+and risk, including correction batches and review context, not commit count alone.
+
 ## Other bounded branch work
 
 These scopes are not comparable to fixture hardening and do not fill its blank
