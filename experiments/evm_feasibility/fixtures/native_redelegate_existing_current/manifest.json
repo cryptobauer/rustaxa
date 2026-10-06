@@ -1,0 +1,48 @@
+{
+  "baseline_period": 0,
+  "control_execution_identical": true,
+  "control_sha256": {
+    "local": "f4e171a9dae616915e3a8a67cdbc77d460ea058553f1417ea1bb13e673b27529",
+    "public": "f4e171a9dae616915e3a8a67cdbc77d460ea058553f1417ea1bb13e673b27529"
+  },
+  "exporter_sha256": "a3b1bf49bd040824285dc7460546925efaa839b9e4482381f0ffbc21ae460f0d",
+  "harness_sha256": "547c6b21bfe2f230832dbb85409654d49e76499caace7b91cd0b81fda03c2daa",
+  "observer_support_harness_sha256": "b1083d2ae1a9062cc2ec6a623764f35b86fa229c5dd90247f52022f9e8e07918",
+  "pending_authority": "frozen live DPoS cache plus immutable committed genesis0; no pending trie/root claim",
+  "read_observer_sha256": "20345c85a1d9279c41cc64e031e82421f470e22247069a39d3b0b7173e06e660",
+  "read_target": "taraxa/state/contracts/storage/evm_state_storage_adapter.go",
+  "read_target_sha256": "8aaa74d16aa76a0a0a76463f89635ed3b066b84d5d42e986c8ce13e1f447a691",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "local": "507543d4451f9ffcffb54a7ee42c886acc95f44a20b4437142c6b89501ef0c26",
+    "public": "507543d4451f9ffcffb54a7ee42c886acc95f44a20b4437142c6b89501ef0c26"
+  },
+  "snapshot_helper_sha256": {
+    "taraxa/state/contracts/dpos/precompiled/current_source_snapshot_observer.go": "ece5bcc0f26d89132372246fdc049314526ee8c9897b314368eb7793cbb43ae3",
+    "taraxa/state/contracts/storage/current_source_snapshot_observer.go": "01eea62789ac608b602734ebd6025ef061522325f16bf0c653a950b7686356d2",
+    "taraxa/state/state_transition/current_source_snapshot_observer.go": "4ee2632d310eadefc098f75ef2b7d0579b237129f794f910955c14636f037d0c"
+  },
+  "snapshot_target_sha256": {
+    "local": {
+      "taraxa/state/contracts/dpos/precompiled/dpos_contract.go": "71e6f9e7063a9bdc89d318d13e520b390db7590e04349b7d14e43d83da739934",
+      "taraxa/state/contracts/storage/storage.go": "2f56b13597e9b24e022e496a2be650c65938f951e619ab958a986a24971d7d2c",
+      "taraxa/state/state_transition/state_transition.go": "68b81cac809486ba593813d1e1e1743a5a38069c1c0aa7e5af233b10f683094c"
+    },
+    "public": {
+      "taraxa/state/contracts/dpos/precompiled/dpos_contract.go": "28bb58adb9d99d604fdacf0c284deea49c6887eee789381a5c5a231b5c89f565",
+      "taraxa/state/contracts/storage/storage.go": "2f56b13597e9b24e022e496a2be650c65938f951e619ab958a986a24971d7d2c",
+      "taraxa/state/state_transition/state_transition.go": "d447ac4599f0107ccad4379f95a7269a6d5729283d8dcf00db850ea8fe119e90"
+    }
+  },
+  "support_sha256": {
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
+    "native_v1_custody_reference.go": "4e8227c57133f09354d585367ac9be2fa1baa15ef6e0726d7b42d9089a9f7cec"
+  },
+  "write_observer_sha256": "d6e0276bb4342b886d68168dad0d74e0ae53b39a9bc2456495b010530dfd76ec",
+  "write_target": "taraxa/state/state_evm/account.go",
+  "write_target_sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568"
+}
