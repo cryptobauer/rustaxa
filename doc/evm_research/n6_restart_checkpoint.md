@@ -1,4 +1,4 @@
-# Restart checkpoint: quota floor / trace closeout
+# Restart checkpoint: run2 historical authority
 
 Branch feat/rust/evm-state-db; base049ec5e73. Nineteen accepted local commits
 through bounded source-current runtime/oracle/frames/directH2trace; see Git history. No push.
@@ -7,11 +7,17 @@ accepted. Source-current actual oracle and exact runtime cold/livewarm repair
 and two-transaction frames accepted. [Scorecard](../codex_slice_scorecard.md), [repair](n2_redelegate_current_source.md).
 N1–N6/Milestone10 and production cutover remain open.
 
-Lead Sol medium session01a10f48-83ee-7a32-8bff-722d10c36359; run records
-/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/.
-Reuse immutable quota-budget.json without initialization. Baseline66% remaining
-2026-10-06T03:36:59.581Z; target56%; reset1791584594. Floor56% at
-2026-10-06T05:47:40.488Z:10 points consumed; no new work/delegation; no billing inference.
+New user-authorized run2 starts at fd6a7313c on the same lead session
+01a10f48-83ee-7a32-8bff-722d10c36359; actual gpt-6.1-sol medium confirmed.
+Run /home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359-r2-20261006/.
+Its quota-budget.json initialized once at2026-10-06T12:51:46.374Z:56% remaining,
+target46%,0/10 consumed,reset1791584594. Preserve this baseline across resume.
+Previous run directory without r2 suffix is immutable historical evidence:
+66->56%,19 accepted commits,all required checks/reviews passed,no push.
+New run has no implementation yet; Luna startup check completed and runtime
+gpt-6-luna medium confirmed in session01a11145-b33e-77c2-807e-70f7a46e1880.
+Fresh Astra medium same-height H1 authority contract is in progress. Root is sole
+source writer and /build owner. New authority contract before changed-history code.
 
 Current repair: real partial300 source31->existing33 then full70031->absent32;
 caller[31,33]->[33,32],aggregate1700/1000/2300 ->1000/1700/2300,total5000.
@@ -37,13 +43,13 @@ prefix12/target18/BLOCK2source2->1->2/intermediate/cumulativeLAST witnesses.
 Check/Clippy/API31/frame16/EVMpackage/correctedtarget/serialfast/whitespace pass.
 Prepareerror text and Call/nonstatic assertions added after review; all10corrected
 frozen hashes Sol accepted. current-source-trace-closeout.json and review.md.
-Only already in-flight validation/review/minimal closeout finished after floor.
-No new work/delegation/gates may start in this run. No unchecked source remains.
+Previous run finished only in-flight validation/review/minimal closeout after its
+floor. No unchecked source remained at run2 startup.
 
 Remaining: historical same-height current-source simulation/estimation requires a
 new explicit history authority contract; H1finalizedprefix then H2target exercises
 an absentcurrentnode and cannot prove this profile. Broader node/reward/order
-profiles and production acceptance remain open; no new slice started afterfloor.
+profiles and production acceptance remain open. No production authority granted.
 
 Unknown producer executable/overrides/capture command remain unknown. Real
 window/root parity and N4–N6 remain open. Broad gates require approval. Do not

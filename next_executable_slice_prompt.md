@@ -3,16 +3,19 @@ restart checkpoint, `doc/codex_slice_workflow.md`, and
 `doc/evm_research/n3_zero_redelegate_next_round.md`. Do not resume audited sessions.
 Use gpt-6.1-sol medium for direct implementation and confirm actual runtime.
 
-Before delegation, preparation commits or implementation, measure fresh weekly
-allowance and save the run baseline once:
+Before delegation, preparation commits or implementation, select a unique
+persistent run directory, measure fresh weekly allowance and save its baseline
+once. A newly authorized run may share the session UUID; give it a unique suffix
+and preserve every completed run budget. Reuse the same budget during this run:
 
 ```sh
-rtk proxy python3 scripts/codex_quota.py --budget-file "/home/fry/artifacts/evm-round-${CODEX_THREAD_ID}/quota-budget.json" --init-budget
+rtk proxy python3 scripts/codex_quota.py --budget-file "${RUN_ARTIFACT_DIR}/quota-budget.json" --init-budget
 ```
 
 Use the same path without `--init-budget` at all later checkpoints. If
 CODEX_THREAD_ID is unavailable, obtain the current session UUID, select that UUID
-for the directory and use explicit --session. Never guess from the newest log.
+for the directory and use explicit --session. Set RUN_ARTIFACT_DIR under
+/home/fry/artifacts with that UUID and a unique run suffix. Never guess from the newest log.
 Stop when **10 percentage points of weekly allowance have been consumed since
 startup**. Example: 80% remaining initially means stop at 70%, not 72%. This
 replaces the fixed 80% reserve. The shared account drop counts all agent activity
@@ -27,8 +30,10 @@ as a separate Conventional Commit. Preserve unrelated work. This prompt authoriz
 accepted local commits, not a push. Confirm Luna first for one bounded next-seam
 check; reuse the accepted map rather than repeating branch discovery.
 
-Start the settled one-case zero-amount historical simulation, then estimation
-and supported direct traces. Use existing Rust owners and actual pinned Go
+The zero API round and bounded one-/two-member full/new derivatives are accepted.
+Continue from the current checkpoint, without rerunning completed slices. Resolve
+the source-current same-height historical simulation/estimation authority before
+implementation; continue other ready approved queue work when that gap is blocked. Use existing Rust owners and actual pinned Go
 outputs. Preserve prior corpora and runtime guards. Continue other ready approved
 queue work if capacity remains; do not invent work to consume quota. Run required
 checks, retain first-run output/exit codes, freeze source/evidence, obtain

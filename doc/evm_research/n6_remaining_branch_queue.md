@@ -21,12 +21,14 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-The accepted metadata/escrow and redelegation slices are in the
-[scorecard](../codex_slice_scorecard.md). Start the
-[zero-amount historical API round](n3_zero_redelegate_next_round.md): settled
-one-case simulation, then estimation/direct traces. Partial/new/full composition
-and zero runtime/frames are complete for their bounded profiles. Do not repeat
-them or restart a branch-wide inventory. This does not close N1–N6.
+The zero historical API round, one-/two-member full/new derivatives and bounded
+source-current runtime/oracle/frames/directH2trace are accepted in the
+[scorecard](../codex_slice_scorecard.md). The [current checkpoint](n6_restart_checkpoint.md)
+names the next unresolved authority: source-current historical simulation and
+estimation at the same committed height. Obtain a bounded contract before
+building a changed H1; do not relabel finalized-prefix H1 plus H2 execution as a
+current-source proof. Continue other named native profile gaps if this authority
+cannot be supplied through existing public owners. N1–N6 remain open.
 
 ## Contract work for later gaps
 
