@@ -8,7 +8,8 @@
 //! Partial transfers admit existing or new destination pairs; full
 //! caller-source removal admits an existing positive destination pair, or a new
 //! pair when the caller has one source membership, or source first followed by
-//! one distinct positive retained membership. New-pair insertion uses the
+//! one distinct positive retained membership. Source-last is admitted only for
+//! the measured bounded current-source node. New-pair insertion uses the
 //! intermediate membership after swap removal. It normally requires both
 //! current reward nodes absent; the exact source-current alias below is the
 //! only additional admitted node topology. Both
@@ -153,8 +154,8 @@ impl FinalChainNativeSession<'_> {
             .ok_or_else(|| domain("redelegation source principal is absent"))?;
         let full_new =
             amount_value == source_principal && delegation(before, to, delegator).is_none();
-        // In the bounded source-first shapes, swap removal leaves the original
-        // tail (empty or one retained member). Borrow it without a new allocation.
+        // Removal leaves a borrowed empty slice or the single retained member.
+        // Source-last still needs the shared current-node predicate below.
         let original_members = before
             .delegator_validators
             .get(&delegator)
@@ -171,6 +172,15 @@ impl FinalChainNativeSession<'_> {
             {
                 Some(&original_members[1..])
             }
+            [third, source]
+                if *source == from
+                    && *third != from
+                    && *third != to
+                    && delegation(before, *third, delegator)
+                        .is_some_and(|principal| !principal.is_zero()) =>
+            {
+                Some(&original_members[..1])
+            }
             _ => None,
         };
         if !self.final_chain.magnolia_active(self.pending_period)
@@ -180,7 +190,7 @@ impl FinalChainNativeSession<'_> {
             || (amount_value.is_zero()
                 && (source_principal.is_zero() || delegation(before, to, delegator).is_none()))
             || amount_value > source_principal
-            // No source-last, duplicate or longer swap/append topology is admitted.
+            // Duplicate and longer removal/append topologies remain excluded.
             || (full_new && intermediate_members.is_none())
             || delegation(before, to, delegator).is_some_and(|value| value.is_zero())
             || before
@@ -218,6 +228,14 @@ impl FinalChainNativeSession<'_> {
                     self.pending_period,
                 )
                 .map_err(map_kernel_error)?;
+            // Source-last is measured only with this exact loaded current node.
+            // Keep source-last with both current nodes absent outside custody.
+            if original_members.len() == 2
+                && original_members[1] == from
+                && bounded_source.is_none()
+            {
+                return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
+            }
             for validator in [from, to] {
                 match before.reward_reference_graph.load_node(&NodeKey {
                     validator,
@@ -291,8 +309,8 @@ impl FinalChainNativeSession<'_> {
         }
         self.serialize_undelegate_principal(delegator, from, before, &next, &mut trace)?;
         if full_new {
-            // Source removed its first membership and moved the retained last
-            // member when present. Preserve original delegation/reward authority
+            // Source removal leaves the retained member in the intermediate
+            // order. Preserve original delegation/reward authority
             // while appending into the authenticated intermediate order.
             self.serialize_delegate_with_membership(
                 delegator,

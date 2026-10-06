@@ -15,7 +15,7 @@ fn swap_append_chain() -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
         1_000_000.into(),
         0,
         Vec::new(),
-        [0x31, 0x32, 0x33]
+        [0x33, 0x31, 0x32]
             .into_iter()
             .map(|validator| GenesisValidator {
                 address: address(validator),
@@ -117,10 +117,10 @@ fn assert_aborted(session: &FinalChainNativeSession<'_>, before: &DposSnapshot, 
 }
 
 fn oracle_case() -> Value {
-    let public:Value=serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"),"/../../../experiments/evm_feasibility/fixtures/native_redelegate_current_source/public.json"))).unwrap();
+    let public:Value=serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"),"/../../../experiments/evm_feasibility/fixtures/native_redelegate_source_last_current/public.json"))).unwrap();
     let local: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../experiments/evm_feasibility/fixtures/native_redelegate_current_source/local.json"
+        "/../../../experiments/evm_feasibility/fixtures/native_redelegate_source_last_current/local.json"
     )))
     .unwrap();
     assert_eq!(public, local);
@@ -160,11 +160,14 @@ fn invoke(
     raw: &AuthenticatedRaw,
 ) -> FinalChainNativeOutcome {
     let quote = session.prepare(request, raw).unwrap();
-    completed(session.invoke(request, quote, raw).unwrap())
+    assert_eq!(quote.required_gas.as_u64(), 80000);
+    let outcome = completed(session.invoke(request, quote, raw).unwrap());
+    assert_eq!(outcome.gas_used.as_u64(), 80000);
+    outcome
 }
 
 #[test]
-fn redelegate_current_source_kernel_and_cold_warm_ordered_parity() {
+fn redelegate_source_last_current_kernel_and_cold_warm_ordered_parity() {
     let case = oracle_case();
     let (chain, storage, path) = swap_append_chain();
     let committed = chain.dpos_snapshot(0.into()).unwrap();
@@ -269,6 +272,12 @@ fn redelegate_current_source_kernel_and_cold_warm_ordered_parity() {
         }
         raw.reads.borrow_mut().clear();
         let seq = u64::from(!cold);
+        let membership = delegator_validators_prefix(address(0xd1));
+        let retained_keys = [
+            iterable_item_key(&membership, 1),
+            iterable_position_key(&membership, &address(0x33)),
+        ];
+        let retained = retained_keys.map(|key| raw.rows.get(&key).cloned());
         let outcome = invoke(&mut session, &request(&case, 1, seq), &raw);
         assert_eq!(outcome.status, FinalChainNativeStatus::Success);
         assert_eq!(session.dpos_state, kernel);
@@ -278,7 +287,7 @@ fn redelegate_current_source_kernel_and_cold_warm_ordered_parity() {
         );
         assert_eq!(log_json(&outcome.logs), case["attempts"][1]["logs"]);
         assert!(outcome.output.is_empty() && outcome.account_mutations.is_empty());
-        assert_eq!(outcome.raw_mutations.len(), 18);
+        assert_eq!(outcome.raw_mutations.len(), 16);
         println!(
             "current-source cold={cold}: {} Rust reads",
             raw.reads.borrow().len()
@@ -286,6 +295,17 @@ fn redelegate_current_source_kernel_and_cold_warm_ordered_parity() {
         raw.apply(&outcome.raw_mutations);
         assert_raw(&raw, &case["attempts"][1]["raw_after"]);
         assert_raw(&raw, &case["final_raw"]);
+        assert_eq!(
+            retained_keys.map(|key| raw.rows.get(&key).cloned()),
+            retained
+        );
+        assert!(
+            outcome
+                .raw_mutations
+                .iter()
+                .all(|write| !retained_keys.contains(&write.key))
+        );
+
         for (node_key, node) in session
             .dpos_state
             .reward_reference_graph
@@ -350,7 +370,7 @@ fn setup<'a>(
 }
 
 #[test]
-fn redelegate_current_source_every_prefix_cold_warm_auth_failure_is_atomic() {
+fn redelegate_source_last_current_every_prefix_cold_warm_auth_failure_is_atomic() {
     let case = oracle_case();
     let (chain, storage, path) = swap_append_chain();
     let committed = chain.dpos_snapshot(0.into()).unwrap();
@@ -364,16 +384,9 @@ fn redelegate_current_source_every_prefix_cold_warm_auth_failure_is_atomic() {
             keys.len()
         );
         if mode > 0 {
-            assert_eq!(keys.len(), 18);
+            assert_eq!(keys.len(), 16);
             let prefix = delegator_validators_prefix(address(0xd1));
-            assert_eq!(
-                &keys[15..],
-                &[
-                    iterable_position_key(&prefix, &address(0x33)),
-                    iterable_item_key(&prefix, 1),
-                    iterable_item_key(&prefix, 2)
-                ]
-            );
+            assert_eq!(&keys[15..], &[iterable_item_key(&prefix, 2)]);
         }
         println!(
             "current-source mode={mode}: {} unique Rust auth keys",
@@ -417,7 +430,7 @@ fn redelegate_current_source_every_prefix_cold_warm_auth_failure_is_atomic() {
 }
 
 #[test]
-fn redelegate_current_source_shared_predicate_excludes_unmeasured_authority() {
+fn redelegate_source_last_current_shared_predicate_excludes_unmeasured_authority() {
     let case = oracle_case();
     let (chain, storage, path) = swap_append_chain();
     let (session, _, _, _) = setup(&chain, &case, 2);
@@ -527,7 +540,7 @@ fn redelegate_current_source_shared_predicate_excludes_unmeasured_authority() {
             12 => {
                 state
                     .delegator_validators
-                    .insert(caller, vec![address(0x33), source]);
+                    .insert(caller, vec![source, address(0x33)]);
             }
             13 => {
                 state
@@ -636,7 +649,7 @@ fn redelegate_current_source_shared_predicate_excludes_unmeasured_authority() {
 }
 
 #[test]
-fn redelegate_current_source_wrong_membership_discards_local_node_restore() {
+fn redelegate_source_last_current_wrong_membership_discards_local_node_restore() {
     let case = oracle_case();
     let (chain, storage, path) = swap_append_chain();
     let (session, raw, _, seq) = setup(&chain, &case, 2);
@@ -673,6 +686,28 @@ fn redelegate_current_source_wrong_membership_discards_local_node_restore() {
     assert_eq!(session.dpos_state, before);
     assert_eq!(session.next_sequence, seq);
     assert_eq!(raw.rows, original);
+    drop(session);
+    drop(chain);
+    drop(storage);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn redelegate_source_last_current_rejects_both_current_nodes_absent() {
+    let case = oracle_case();
+    let (chain, storage, path) = swap_append_chain();
+    let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+    let before = session.dpos_state.clone();
+    let raw = raw_view(&case["attempts"][0]["raw_before"]);
+    let mut req = request(&case, 1, 0);
+    req.input[68..100].copy_from_slice(&U256::from(1000).to_big_endian());
+    let quote = session.prepare(&req, &raw).unwrap();
+    assert!(matches!(
+        session.invoke(&req, quote, &raw),
+        Err(FinalChainNativeSessionError::CustodyScopeUnsupported)
+    ));
+    assert_aborted(&session, &before, 0);
+    assert_eq!(chain.last_block_number_typed().unwrap(), 0.into());
     drop(session);
     drop(chain);
     drop(storage);

@@ -9133,7 +9133,8 @@ impl FinalChain {
     ///
     /// Inputs are the original snapshot, caller/endpoints/principal and invocation
     /// block. Returns the exact count2, zero-index current node only for a complete
-    /// source-first two-member, post-fix/pre-Aspen2, retained-validator profile.
+    /// two-member, post-fix/pre-Aspen2 retained-validator profile, with source
+    /// first or last. The retained member is selected by source identity.
     /// Head/cursor/mirror and absent destination authority must match. Nonmatching
     /// shapes return None without mutation; required graph/ledger integrity errors
     /// propagate. The shared staged guard and kernel use this same eligibility.
@@ -9155,11 +9156,17 @@ impl FinalChain {
             .get(&delegator)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        let [first, retained] = members else {
+        let [first, second] = members else {
             return Ok(None);
         };
-        if *first != from
-            || *retained == from
+        let retained = if *first == from {
+            second
+        } else if *second == from {
+            first
+        } else {
+            return Ok(None);
+        };
+        if *retained == from
             || *retained == to
             || from == to
             || amount.is_zero()
