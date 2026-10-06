@@ -1,0 +1,10 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "cases": [
+    {
+      "consumed": 6,
+      "name": "swap_append",
+      "result": 104977
+    }
+  ]
+}

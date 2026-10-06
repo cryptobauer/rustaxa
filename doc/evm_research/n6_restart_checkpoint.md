@@ -11,7 +11,7 @@ Lead Sol medium session `01a10f48-83ee-7a32-8bff-722d10c36359`.
 Run records: `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/`.
 Reuse `quota-budget.json` without initialization. Baseline66% remaining at
 `2026-10-06T03:36:59.581Z`; target56%; reset1791584594. Latest60% at
-`2026-10-06T04:59:56.445Z`:6 points consumed,4 remain. No billing inference.
+`2026-10-06T05:03:20.225Z`:6 points consumed,4 remain. No billing inference.
 
 All listed slices passed required actual parity/package/serial fast/whitespace
 and frozen independent review. Staged full+new also passed ON bridge12/all15;
@@ -21,8 +21,7 @@ absent current nodes are newly admitted. Source-last and longer orders/current n
 source-validator deletion remain excluded. Complete H1 root/79rows and price0
 configuration are exact; frame accounts/configuration are separate synthetic scope.
 
-Next bounded work: two-member historical estimation,
-estimation and direct traces. Reuse settled frame/history contracts with the
+Next bounded work: two-member supported direct traces. Reuse settled frame/history contracts with the
 accepted two-member topology and retain original snapshot authority/shared trace.
 Actual new Go controls, exact19-write effects, moved position33/reused item2 and
 live-journal expectations need dedicated corpus/tests. Do not copy unmeasured
@@ -34,8 +33,10 @@ package/serialfast/whitespace pass,12-hash independent review; see Git history.
 Complete H1 simulation is accepted:99rows/root fbb05f2ff5298016408edf003d39f99bbfbd4bd84d3f917e44ae04d9114f7a97,
 8sessions/28API/package/fast pass,10-hash independent review.
 Fresh Astra medium source-current contract resolved alias defect: Go count2->1->2,
-Rust count2->1. Guard-only admission rejected. Lead must settle narrow kernel
-placement and actual new oracle before implementation; `current-node-contract.md`.
+Rust count2->1. Guard-only admission rejected. Lead/Astra accepted narrow shared kernel eligibility/capture/restore placement,
+conditional on fresh actual oracle before implementation; `current-node-contract.md` and `current-node-placement-contract.md`.
+Estimation passed29API/package/fast and11-hash review, unchanged search104977/48
+Rustsessions; see Git history.
 
 Unknown producer executable/overrides/capture command stay unknown; do not invent
 facts or repeat requests. Real-window/root parity and N4–N6 remain open. Broad

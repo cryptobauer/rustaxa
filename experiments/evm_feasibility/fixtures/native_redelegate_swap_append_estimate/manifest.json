@@ -1,0 +1,26 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "harness_sha256": "4c172827d90153d8e9b1a0b214b6c15ab0eee68d4d95712dd9717ed877c3a62b",
+  "input_sha256": "ca867d2df0c477365468d7b602b241f586be8d65dd0290d53a48bc6102220110",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "cpp": "6545083832c6022aedaeff887c403ef92a9b86707b5813b299c30d5d426dfc4e",
+    "local": "b7b559b9ff9d97ad6c65969f68e786d63aa148a611e47b981ce595fa2bf95f90",
+    "public": "b7b559b9ff9d97ad6c65969f68e786d63aa148a611e47b981ce595fa2bf95f90"
+  },
+  "source_sha256": {
+    "native_redelegate_simulation_reference.go": "9ce77d652c4e99cf881e67b14eed10b394168f2409cd1b80e15ef616ac889392",
+    "native_redelegate_swap_append_estimate_reference.go": "ddc1382c309439142ff9d44680eb2312ddfb10d1547cb31c646ef63df3c76359",
+    "native_redelegate_swap_append_simulation_reference.go": "2fcbae7360e55fe50ee54849767111c275be4864f4411582d51540bc83f6829c",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60"
+  },
+  "stderr_sha256": {
+    "local": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "public": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "support_harness_sha256": "6f6feb78cea4eba35b9078fda79bfa1d79e46fbe04e988bc1ebaac33d7437200"
+}
