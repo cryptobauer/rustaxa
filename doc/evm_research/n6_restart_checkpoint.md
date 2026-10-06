@@ -1,7 +1,7 @@
-# Restart checkpoint: source-current direct trace next
+# Restart checkpoint: quota floor / trace closeout
 
-Branch feat/rust/evm-state-db; base049ec5e73. Eighteen accepted local commits
-through bounded source-current runtime/oracle/public-session frames; see Git history. No push.
+Branch feat/rust/evm-state-db; base049ec5e73. Nineteen accepted local commits
+through bounded source-current runtime/oracle/frames/directH2trace; see Git history. No push.
 Zero API and one-/two-member full+new staged/frames/H1simulation/estimate/traces
 accepted. Source-current actual oracle and exact runtime cold/livewarm repair
 and two-transaction frames accepted. [Scorecard](../codex_slice_scorecard.md), [repair](n2_redelegate_current_source.md).
@@ -10,8 +10,8 @@ N1–N6/Milestone10 and production cutover remain open.
 Lead Sol medium session01a10f48-83ee-7a32-8bff-722d10c36359; run records
 /home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359/.
 Reuse immutable quota-budget.json without initialization. Baseline66% remaining
-2026-10-06T03:36:59.581Z; target56%; reset1791584594. Latest57% at
-2026-10-06T05:42:55.763Z:9 points consumed,1 remains; no billing inference.
+2026-10-06T03:36:59.581Z; target56%; reset1791584594. Floor56% at
+2026-10-06T05:47:40.488Z:10 points consumed; no new work/delegation; no billing inference.
 
 Current repair: real partial300 source31->existing33 then full70031->absent32;
 caller[31,33]->[33,32],aggregate1700/1000/2300 ->1000/1700/2300,total5000.
@@ -29,17 +29,21 @@ Oracle16 and Rust3hashes independent Sol accepted; corrected reproduction,
 Pythoncompile/16frameregressions/EVM/check/Clippy/serialfast/whitespace pass.
 current-source-frames-{oracle,rust}-closeout.json; old corpora/runtime unchanged.
 
-Next ready: accepted Astra current-source-history-next-contract.md. ONE direct
-H2 structured trace over existing complete99-row swapappend H1/rootfbb05f...;
-real partial30031->33 prefix then full70031->absent32 target in SAMEperiod2
-session/journal. No settlement/newtargetjournal/DryRunner/poststate injection.
-Preserve suppliedN=2^512/N+1, original committednonce2^264+5 provenance. Actual
-traceJSON alone proves result; hidden writes use accepted staged/frame authority
-plus exact livejournal prefix/target witnesses including BLOCK2source2->1->2.
-Measure all targetauthreadkeys before per-key livejournal faults/retries; normal
-runs across semantic restart/physical reopen. Contract records exactauthority,
-required capture/package/regression/serialfast/frozenreview gates. No new trace
-producer/test started yet. H1finalizedprefix then H2target is not current-source.
+Final trace accepted: ONE direct H2 over unchanged complete99-rowH1/rootfbb05f...,
+realpartial30031->33 thenfull70031->32 sameperiod2/session/journal. SuppliedN=2^512/
+N+1 retained. Actual bothpins/record/reproduction/Pythoncompile pass. Eightnormal/
+80hardfailures+80freshretries, measured18targetauthreads/late moved33/item1/item2;
+prefix12/target18/BLOCK2source2->1->2/intermediate/cumulativeLAST witnesses.
+Check/Clippy/API31/frame16/EVMpackage/correctedtarget/serialfast/whitespace pass.
+Prepareerror text and Call/nonstatic assertions added after review; all10corrected
+frozen hashes Sol accepted. current-source-trace-closeout.json and review.md.
+Only already in-flight validation/review/minimal closeout finished after floor.
+No new work/delegation/gates may start in this run. No unchecked source remains.
+
+Remaining: historical same-height current-source simulation/estimation requires a
+new explicit history authority contract; H1finalizedprefix then H2target exercises
+an absentcurrentnode and cannot prove this profile. Broader node/reward/order
+profiles and production acceptance remain open; no new slice started afterfloor.
 
 Unknown producer executable/overrides/capture command remain unknown. Real
 window/root parity and N4–N6 remain open. Broad gates require approval. Do not

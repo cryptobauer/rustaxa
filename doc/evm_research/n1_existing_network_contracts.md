@@ -206,4 +206,6 @@ resolves one live pending observation gap and confirms Go source count2->1->2.
 The [bounded Rust repair](n2_redelegate_current_source.md) now passes exact cold/livewarm
 parity, authenticated failure isolation and independent review. Source-current
 [frames](n2_redelegate_current_source_frames.md) now pass real two-transaction
-parity. History/API derivatives and broader current-node profiles remain open.
+parity. One [direct H2 trace](n3_direct_current_source_redelegate_trace.md) now
+passes real same-period prefix/target execution over complete H1. Historical
+simulation/estimation, broader API and current-node profiles remain open.
