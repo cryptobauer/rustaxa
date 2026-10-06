@@ -120,7 +120,9 @@ positive and the destination caller pair already exists. Its [complete simulatio
 have bounded actual parity. [Zero before Aspen part two](n2_redelegate_zero_existing_pairs.md)
 admits only two existing positive caller pairs at the staged boundary; its
 [frame composition](n2_redelegate_zero_frames.md) has actual account/cursor/rollback
-parity; public historical API composition remains open. Full+new destination,
+parity; [historical simulation](n3_zero_redelegate_simulation.md),
+[estimation](n3_zero_redelegate_estimation.md) and [direct traces](n3_direct_zero_redelegate_traces.md)
+also have bounded actual parity. Full+new destination,
 source-validator deletion, zero+absent destination/reward-bearing/new-validator and historical
 same-validator success remain excluded. Real-history and production acceptance
 remain open.

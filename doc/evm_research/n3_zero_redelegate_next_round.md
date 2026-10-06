@@ -9,7 +9,7 @@ are historical. Frozen final implementation review remains required.
 
 ## First slice: one-case simulation (accepted 2026-10-06)
 
-Accepted evidence: [simulation](n3_zero_redelegate_simulation.md). Estimation is also accepted: [estimate](n3_zero_redelegate_estimation.md). Direct traces remain next.
+Accepted evidence: [simulation](n3_zero_redelegate_simulation.md). Estimation is also accepted: [estimate](n3_zero_redelegate_estimation.md). Direct traces are accepted: [trace](n3_direct_zero_redelegate_traces.md). This bounded round is complete.
 
 Own a separate zero simulation exporter/harness/fixture under
 `experiments/evm_feasibility/` and a sibling test under
@@ -38,7 +38,7 @@ rows before/after disposal and both validator stakes, ordered delegation rows an
 zero pending rewards through unchanged public assertions. No touched frame seed,
 H2 relabel, guessed absence or aggregate-only disposal assertion.
 
-## Follow-ups
+## Follow-ups (accepted 2026-10-06)
 
 After simulation acceptance, name narrow estimation and direct structured trace
 slices using the same accepted profile and existing owners. Capture actual Go
