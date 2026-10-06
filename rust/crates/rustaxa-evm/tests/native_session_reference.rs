@@ -829,3 +829,6 @@ mod redelegate_source_last_current_frames;
 
 #[path = "native_session_reference/redelegate_source_last_absent_frames.rs"]
 mod redelegate_source_last_absent_frames;
+
+#[path = "native_session_reference/redelegate_existing_current_frames.rs"]
+mod redelegate_existing_current_frames;
