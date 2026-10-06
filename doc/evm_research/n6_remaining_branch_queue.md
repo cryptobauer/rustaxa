@@ -24,11 +24,11 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 The zero historical API round, one-/two-member full/new derivatives and bounded
 source-current runtime/oracle/frames/directH2trace are accepted in the
 [scorecard](../codex_slice_scorecard.md). The [current checkpoint](n6_restart_checkpoint.md)
-names the next unresolved authority: source-current historical simulation and
-estimation at the same committed height. Obtain a bounded contract before
-building a changed H1; do not relabel finalized-prefix H1 plus H2 execution as a
-current-source proof. Continue other named native profile gaps if this authority
-cannot be supplied through existing public owners. N1–N6 remain open.
+records accepted signed-caller same-height H1 simulation and estimation, using
+real canonical prefix/public finalization and actual pinned Go history. The next
+bounded gap is source-current full removal with source LAST in a two-member caller
+order. Obtain its membership/restoration contract and actual ordered oracle before
+runtime extension. Preserve source-first/signed-H1 corpora and guards. N1–N6 remain open.
 
 ## Contract work for later gaps
 
