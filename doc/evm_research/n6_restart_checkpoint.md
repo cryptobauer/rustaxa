@@ -21,7 +21,7 @@ absent current nodes are newly admitted. Source-last and longer orders/current n
 source-validator deletion remain excluded. Complete H1 root/79rows and price0
 configuration are exact; frame accounts/configuration are separate synthetic scope.
 
-Next bounded work: two-member actual frame parity, then complete H1 simulation,
+Next bounded work: two-member complete H1 simulation,
 estimation and direct traces. Reuse settled frame/history contracts with the
 accepted two-member topology and retain original snapshot authority/shared trace.
 Actual new Go controls, exact19-write effects, moved position33/reused item2 and
@@ -29,7 +29,10 @@ live-journal expectations need dedicated corpus/tests. Do not copy unmeasured
 results. Same-profile Sol review can be reused. Staged implementation passed
 package/ONbridge12/all15/serialfast/whitespace; independent11-hash review accepted.
 Evidence prefix `swap-append-`; detailed scope `n2_redelegate_swap_append.md`.
-No derivative implementation started yet.
+Actual frame derivative is accepted: seven cases,19writes,15frame/27API/EVM
+package/serialfast/whitespace pass,12-hash independent review; see Git history.
+A fresh Astra medium source-current-node contract task is in progress; no runtime
+implementation for that gap is authorized until contract acceptance.
 
 Unknown producer executable/overrides/capture command stay unknown; do not invent
 facts or repeat requests. Real-window/root parity and N4–N6 remain open. Broad

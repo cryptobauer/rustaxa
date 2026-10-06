@@ -1,0 +1,47 @@
+{
+  "exporter_sha256": "b29a557ae35ff6f94c6f3f12094f1073db0a55dd4b915dba550aa6cb9fca5493",
+  "frame_context": {
+    "block_gas": 1000000,
+    "blocks_per_year": 1,
+    "gas_price": 0,
+    "go_evm_config": "params.TestChainConfig",
+    "max_supply": 1000000000,
+    "maximum_stake": 1000000,
+    "minimum_deposit": 100,
+    "native_balance": 5000,
+    "native_forks": "fix/Magnolia/Ficus/Cornus0; both Aspen disabled",
+    "nonce": 1,
+    "period": 1,
+    "principal": 5000,
+    "rust_chain_id": 666,
+    "seed_scope": "first-attempt observed plus seed inspection rows; touched-row only",
+    "sender": "aa",
+    "sender_wrapper_balance": 1000000,
+    "threshold": 100,
+    "timestamp": 0,
+    "transaction_gas": 200000,
+    "vote_step": 10,
+    "votes": 500,
+    "wrapper": "d1"
+  },
+  "harness_sha256": "0acb921b3997b417b96448cb254ec32701235da443e745e7c454d6575d47ce64",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "seed_sha256": "03ed15e93c338a2bab057c6ebb6154b5aa50d63cae6f5bb06719f963c5fcb887",
+  "sha256": {
+    "local": [
+      "0168b32f4dc2d6bc6a6c4093153e1656b85b712a6aa855694a47ae2e4f722163",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "0168b32f4dc2d6bc6a6c4093153e1656b85b712a6aa855694a47ae2e4f722163",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "support_sha256": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5"
+}
