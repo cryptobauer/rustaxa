@@ -11,11 +11,11 @@ New user-authorized run2 starts at fd6a7313c on the same lead session
 01a10f48-83ee-7a32-8bff-722d10c36359; actual gpt-6.1-sol medium confirmed.
 Run /home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359-r2-20261006/.
 Its quota-budget.json initialized once at2026-10-06T12:51:46.374Z:56% remaining,
-target46%,2/10 consumed,reset1791584594. Preserve this baseline across resume.
+target46%,3/10 consumed,reset1791584594. Preserve this baseline across resume.
 Previous run directory without r2 suffix is immutable historical evidence:
 66->56%,19 accepted commits,all required checks/reviews passed,no push.
 Run2 prep `e0fe4e125` and signed H1 simulation `e9fb32012` accepted locally.
-Latest quota54% at2026-10-06T13:22:45.750Z;8points remain. Luna startup completed and runtime
+Latest quota53% at2026-10-06T13:39:53.049Z;7points remain. Luna startup completed and runtime
 gpt-6-luna medium confirmed in session01a11145-b33e-77c2-807e-70f7a46e1880.
 Fresh Astra medium signed H1 authority accepted and measured by both Go pins.
 Root is sole source writer and /build owner. See current-source-h1-authority-contract.md
@@ -56,8 +56,17 @@ Old d1 corpora/runtime unchanged. See n3_current_source_signed_h1_simulation.md.
 Estimation accepted `01060d04e`: actualdualpin8probes/unchangedC++search104977,
 minimum101912success/below101911OOG21912;64Rustfreshsessions/checkstateeveryprobe;
 allrequiredchecks/11hashreviewpassed. signed-h1-estimate-closeout.json/review.md.
-Next source-last current-node contract in progress, fresh Astra medium confirmed.
-No source-last implementation started; no unchecked derivative acceptance.
+Source-last bounded runtime accepted `da7357032`: actualgenesis[33,31,32],
+caller[33,31]->[33,32], prefix12/target16writes,count2->1->2;5tests/92authfailures
+and92retries/old48redelegation/1496consensus/EVM/check/Clippy/ONbridge12+15/serialfast
+allpass;13correctedhashesSolaccepted. Addedgasassertionsafterreview. Sharedhelper
+handleseitherorder;source-laststillrequirescurrentnodeSome, bothabsentrejected.
+Source-last frames accepted `681a4e9af`: actual7dualpin/controlcases, prefix12/target16
+orderedwrites/retaineditem1position33noeffects/LASTcumulativewitness/newjournal;
+all17frameregressions/EVM/check/Clippy/Python/reproduction/serialfast/whitespacepass;
+18hashesSolaccepted. source-last-current-frames-closeout.json/review.md.
+Next freshAstra signedsource-lastH1 authority inprogress; Luna nextboth-absent seam
+read-onlymap inprogress. No signedsource-lastH1 implementation yet.
 Remaining: Broader node/reward/order
 profiles and production acceptance remain open. No production authority granted.
 
