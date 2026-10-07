@@ -622,3 +622,6 @@ mod redelegate_source_last_absent;
 
 #[path = "native_simulation_reference/redelegate_source_last_absent_estimate.rs"]
 mod redelegate_source_last_absent_estimate;
+
+#[path = "native_simulation_reference/redelegate_existing_current.rs"]
+mod redelegate_existing_current;
