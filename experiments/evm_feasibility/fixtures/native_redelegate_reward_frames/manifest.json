@@ -1,0 +1,65 @@
+{
+  "balance_helper_sha256": "884dae58564aa04052195518d202d98aafd4c6ca390c2b0463da47e16976b66c",
+  "balance_helper_source_sha256": "2c10f9cab99a9e9326c1a8e6ff85c7590f9d97a47e43586df62c848009dd6fc4",
+  "balance_target": "taraxa/state/state_evm/account.go",
+  "balance_target_sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+  "control_execution_identical": true,
+  "control_sha256": {
+    "local": [
+      "4e6771cffdcfe1884aa93e2edf0ba4ce23cdea41a950952a1c5a3e56c0bfbebe",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "4e6771cffdcfe1884aa93e2edf0ba4ce23cdea41a950952a1c5a3e56c0bfbebe",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "exporter_sha256": "83111f0d79b4a3f02d3068e79ad1635820184c4a99bdc4787376cf7417509736",
+  "frame_context": {
+    "block_gas": 1000000,
+    "code_overlay": "existing caller d1 code fields only; actual account nonce/balance unchanged",
+    "committed_seed_period": 1,
+    "gas_price": 0,
+    "go_evm_config": "params.TestChainConfig",
+    "native_config": "exact accepted reward seed configuration.chain_config",
+    "native_gas": 80000,
+    "period": 2,
+    "physical_rows": 91,
+    "rust_chain_id": 666,
+    "scope": "leaf EVM.Main frame experiment; no StateTransition lifecycle/reopen/root/production claim",
+    "seed_entries": 50,
+    "seed_unique_keys": 48,
+    "selected_keys": 52,
+    "timestamp": 0,
+    "transaction_gas": 200000,
+    "two_call_amounts": [
+      300,
+      701
+    ],
+    "underfunded_native_gas": 79999
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "guard_source_sha256": "b1083d2ae1a9062cc2ec6a623764f35b86fa229c5dd90247f52022f9e8e07918",
+  "harness_sha256": "2c7be2001efc66e1cd04841d0ba5777e10e4a14783486f2f00d159b124af4322",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "seed_sha256": "369a37a0db240cd78d40b5e027bfd4dc565e66b8c25d8e17cadd3cb05ff0792e",
+  "sha256": {
+    "local": [
+      "46c8102b36cb23c32e3edd74d48d3197b7c2716bdefdee3af89ada5bbc631754",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "46c8102b36cb23c32e3edd74d48d3197b7c2716bdefdee3af89ada5bbc631754",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "support_sha256": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5"
+}
