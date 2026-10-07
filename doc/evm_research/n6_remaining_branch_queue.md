@@ -21,22 +21,22 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-Source-first/source-last current-node and block-one source-last both-absent
-runtime/frames/signed H1 APIs are accepted. Bounded full/existing BOTH-current
-runtime `072fc39fb` and publicframes `7531d4dc2` are accepted: sourcecount2 restored,
-destinationcount3 retained, exactly two caller pairs ordered[source,destination].
-The fresh signed-H1 authority contract is settled; newactualcanonicalpartial300
-toexisting32 preservesbothnode1count2 atH1. Its oracle preparation measured105rows/
-roote4781dc8.../101912gas/effective2 withcommittedH1unchanged; oracle preparation is accepted indd0c2f458;
-closeout is recorded in the checkpoint. Next publicRust canonicalfinalize/reopen/session
-proof must use that new physical identity, caller3000 AND ordinaryowner1000,
-native4000, preservebothnodes2 and authenticate every newraw key/fault/retry.
-No publicRust H1test exists for this profile yet. Do not reuse oldthree-validator
-roots or claim H2/production/history acceptance from staged/frame/Go fixtures.
-The order-only existing-destination source-last H2 candidate is deferred because
-accepted single_full_last_item covers the branch. Preservepriorcorpora/support/
-configurations and runtimeguards. The checkpoint records the closed56->46 budget;
-start furtherimplementation only under a new authorized budget. N1–N6 remainopen.
+Accepted runtime072fc39fb covers the exact full/existing BOTH-current count2
+profile. Its canonical105-row signedH1 public simulation and estimation, plus
+one H2 partial300/full400 live trace, are now accepted; see the checkpoint and
+linked closeout records. Old source-first/source-last/full-new profiles remain
+covered. Preserve their corpora, support, exclusions and runtime guards.
+
+The next named N2 gap is a real callerpartial300 followed by ownerpartial100
+sameperiod1 at the same two genesis validators, creating BOTHcurrent count3
+with head plus both cursors. Callerfull700 then needs source3->2->3 and
+ destination3->2->4 according to source predictions; no actual measurement or
+runtime acceptance exists yet. The count2 helper rejects this shape. A fresh
+bounded contract and separate actualdualpin/control producer are required before
+Rust implementation. Do not generalize count2 to count>=2 or assume oldcount4
+exclusions are superseded. The active run3 budget is99->89; latest97%,8pointsremain,
+with prior completed budgets preserved. No new prompt is needed for authorized
+ready work within that budget. N1–N6 remain open.
 
 ## Contract work for later gaps
 

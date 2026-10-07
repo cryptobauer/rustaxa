@@ -1,74 +1,60 @@
-# Restart checkpoint: run2 bounded native work
+# Restart checkpoint: run3 active
 
-Branch `feat/rust/evm-state-db`; current accepted runtime `072fc39fb`.
-No push. N1–N6/Milestone10 and production cutover remain open.
-Previous run is closed:66->56%,10 points,19 accepted commits
-049ec5e73..fd6a7313c; its unsuffixed artifact directory is immutable.
+Branch `feat/rust/evm-state-db`; accepted runtime `072fc39fb`. No push.
+N1–N6/Milestone10 and production cutover remain open.
 
-Run2 lead session01a10f48-83ee-7a32-8bff-722d10c36359, actualgpt-6.1-sol medium.
-Persistent artifacts:
-`/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359-r2-20261006`.
-quota-budget.json initialized once2026-10-06T12:51:46.374Z:baseline56%,target46%,
-reset1791584594. Final46% at2026-10-06T15:04:05.135Z:10 points consumed; run closed.
-See final-quota.json. No new work may start under this completed budget.
-Preserve baseline on resume; check fresh telemetry before any new work/gate.
-At46 start no new implementation, delegation or large gate. Finish only in-flight
-atomic work and minimal checkpoint; never commit unchecked work.
+Active run3 lead session01a10f48-83ee-7a32-8bff-722d10c36359, actualgpt-6.1-sol medium.
+Artifacts: `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359-r3-20261007`.
+quota-budget.json initialized once2026-10-07T12:55:05.674Z:baseline99%,stop89%,
+reset1791948695. Latest97% at2026-10-07T13:23:01.652Z:2points consumed,8remain.
+Preserve this baseline across resume. Check fresh telemetry before each start/gate
+and about5minutes during work. At89 stop new work/delegation/large gates; finish
+only in-flight atomic work and minimal checkpoint. Do not commit unchecked work.
+Previous run1 closed66->56/10points/19commits and run2 closed56->46/10points/
+20commits through3b8d2e31e. Their budgets/artifacts/reset1791584594 are immutable.
+The user authorized this third run after the weekly reset; no prior budget was reset.
 
-Accepted run2 work through `072fc39fb`: signed source-first H1 simulation/estimate;
-source-last current-node runtime/frames/signed H1 APIs; exact block-one source-last
-both-current-absent runtime/genesisframes/signed ordinary-prefix H1 APIs; bounded
-existing-destination BOTH-current oracle `4ec89b7c1` and runtime `072fc39fb`.
-Accepted local commits include preparation/checkpoints. Exact commits,
-corrections/checks/routes are in [scorecard](../codex_slice_scorecard.md), Git and
-per-slice closeout JSON/review files. Root is sole source writer/build owner;
-Luna medium startup confirmed, named fresh Astra medium contracts and independent
-Sol medium frozen reviews confirmed. A stale reviewer telemetry event was resolved
-once; no model substitution or billing inference.
+Run3 accepted local commits:
+- bae1774ed: public canonical existing-current H1 simulation, separate105-row Go
+  identity;15actualauthenticationkeys/everykeycorruption+readererror/freshretry;
+ 248sessions/120faults120retries. Public finalize once/reopen/header/semantic/full
+  physical isolation. [Simulation](n3_existing_current_signed_h1_simulation.md).
+- 8d2d7bcec: sameH1 estimation,8actualdualpinprobes/unchangedC++search104977/
+  minimum101912/below101911OOGused21912;64Rustsessions/24searchcalls/perprobe
+  isolation. [Estimation](n3_existing_current_signed_h1_estimate.md).
+- 621596acc: one direct H2 partial300/full400 trace over samecompleteH1. ActualGo
+  defaultJSON101912/failedfalse/emptyreturnstructLogs/diagnostics; Rustinternal
+  prefix12writes/target15/source2->1->2/dst2->1->3/H1node1deletions/ownerpreservation/
+  cumulativeLASTlivejournal;15targetauthreads/264sessions/128faults128freshretries.
+  [Trace](n3_direct_existing_current_redelegate_trace.md).
 
-Current runtime: real two-validator genesis [31,32], caller and other each1000 at
-both validators; partial30031->existing32 then full700 sameperiod1. Both current
-nodes count2 beforetarget. Go/Rust target15writes/101912gas, source2->1->2 and
-destination2->1->3; sourcecaller deleted/destination2000, memberships[31,32]->[32],
-aggregates1000/3000/principal4000. Separate bounded source-copy helper preserves
-full/new helper and generic serializers; shared staged eligibility rejects other
-current-source full/existing shapes. Fourtests/88corruption+reader failures and
-88freshretries/25exclusions/late local-serialization rollback. All57redelegation,
-1505consensus/EVM/check/Clippy/ONbridge12+15/serialfast/Python/reproduction/whitespace
-pass;12frozenhashes accepted. See [runtime](n2_existing_destination_current.md),
-existing-current-runtime-closeout.json/review.md. Earlier accepted profiles remain
-covered; prior corpora/support/upstream C++/storage owners unchanged.
+Allthree slices pass actualdualpin reproduction/Pythoncompile/targeted+EVMpackage/
+check/Clippy/serialfast/whitespace, frozenindependentSolmediumreview. Runtimeunchanged:
+accepted072fc39fbONbridgebuild12/all15 inherited separately, without newbridgeclaim.
+Records existing-current-h1-, existing-current-h1-estimate-, existing-current-h2-trace-
+closeout.json/review.md bind exactchecks/hashes/corrections. Firstfailures retained:
+missingaddresshelper and newprefix14expectation correctedto12; trace error-message
+claim correctedtofragmentchecks. Rootsolewriter/buildowner. Luna startupconfirmed
+medium; nextcount3sourcecheck workertelemetrystale/unknown recordedwithoutretry;
+freshleadbudget authorized read-only check. FreshAstraH2contract+freshSolH2review
+confirmed; historicalrouting and priorrecords preserved, no billinginference.
 
-Accepted existing-current frames `7531d4dc2`: sevenactualdualpin/controlcases,
-realprefix12/target15writes/source2/destination3/caller swap, CALL/STATICCALL/
-parentrawsurvival/logrollback/twochildren/nonpayable/underfunded. Review corrected
-RustAspen1DefaultGENESIS toMAX matching Go. All19frameregressions/EVM/Clippy/
-serialfast/Python/reproduction/whitespacepass;18correctedhashesaccepted, inherited
-unchangedruntimeONbridge12+15. See [frames](n2_existing_destination_current_frames.md)
-and existing-current-frames-closeout.json/review.md.
+Currentcount2profile: genesis[31,32], caller+owner1000eachatboth. CanonicalC key31
+prefixpartial30031->existing32 committedH1, bothnode1count2; caller7001300,
+owner10001000, totals17002300/principal4000; C3000nonce1/owner1000nonce0/native4000
+nonce1/supply8000. DPOS2/Cornus3/disabledCacti7, explicitforks. CompleteGoH1root
+e4781dc89abf0c3ff461290bc536b5ed807a39ded5c23cf9525349e07727e8b7,105rows.
+No Rust/Go root equality; DryRunnernativeinvocation1/effective2 differsfromH2trace.
 
-Fresh Astra medium H1 contract is settled: existing-current-h1-contract.md.
-NewactualcanonicalC nativepartial30031->existing32 preserves BOTHnode1count2
-throughEndBlockCommit. Oracle preparation has105completeH1rows/root
-e4781dc89abf0c3ff461290bc536b5ed807a39ded5c23cf9525349e07727e8b7,
-prefixhashcfc88dd3.../gas101912/event300; sameH1DryRunnerfull700 repeats unchanged
-H1/effective2/101912/event700. Caller3000nonce1/owner1000nonce0/native4000nonce1.
-Review found inheritedlocking1; newproducer explicitlysetsDPOS2/Cornus3/Cacti7
-matchingtop-level profile. Correctedrecord/reproduction/Python/whitespacepass;
-Rustsourceunchangedserialfastpass. Eightcorrectedhashesaccepted by freshSolmedium, localcommitdd0c2f458; do not claim publicRust history acceptance from this oracle.
-See [oracle preparation](n3_existing_current_signed_h1_oracle.md) and
-existing-current-h1-oracle-closeout.json/review.md.
+Nextnamedgap: realCpartial300 thenownerpartial100 sameperiod1 createsbothcurrent
+count3/head+two cursors; thenCfull700->existing32. Currenthelperrequiresboth2 and
+rejects this profile. Luna bounded source map is luna-both-current-three-seam.md;
+freshAstra both-current-three-contract.md is complete; bothpins source authority agrees. Predictions only:
+source3->2->3/dst3->2->4, retainedowner900/dstowner1100, finaltotals9003100.
+First measure separatedualpin/control realthree-invocation producer. Do not alter
+oldcorpora/guards or implement dependentcount3runtime before contract+measurement.
 
-Next work needs a new authorized budget: add publicRust canonicalH1 finalize/
-reopen using the new105row physical identity and caller3000 AND ordinaryowner1000
-accounts, native4000. Preserve BOTHcurrentnode1count2 before disposable simulation;
-measure actual newauthenticationsequence and inject everykey corruption/reader
-failure withfreshretry/isolation. No newRustH1code yet. Nativeinvocation1 is not
-H2. Estimate/trace remain separate. The prior order-only source-last H2 proposal
-is deferred because accepted full-source single_full_last_item covers its branch.
-
-Unknown real producer overrides/configuration/capture facts and real-window/root
-parity/N4–N6 remain open. Synthetic fixtures cannot close these gates. No push,
-production route, fallback, supplied-data/upstream exception or broad differential
-gate is authorized. This run is complete. Do not reset its budget or continue implementation without
-a newly authorized run.
+Unknownrealproducerconfiguration/override/capturefacts, qualifiedrealwindow/root
+parity, recovery/integratedN4–N6 remainopen. No supplied-data/upstreamC++/storageowner
+exception, protocol/fallback, productionroute, expensivebroad/differentialgate orpush.
+The active branch-run prompt remains valid; no newprompt is needed within this run.
