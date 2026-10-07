@@ -210,6 +210,14 @@ fn reward_setup<'a>(
     chain: &'a FinalChain,
     case: &Value,
 ) -> (FinalChainNativeSession<'a>, RewardState) {
+    reward_setup_at(chain, case, 2)
+}
+/// Private unpublished kernel composition only; public finalized H1 is tested in EVM.
+fn reward_setup_at<'a>(
+    chain: &'a FinalChain,
+    case: &Value,
+    period: u64,
+) -> (FinalChainNativeSession<'a>, RewardState) {
     let id = [0x81; 32];
     let mut session = chain
         .begin_native_session_bound(id, 1.into(), 0.into())
@@ -253,10 +261,15 @@ fn reward_setup<'a>(
     }
     // Advance the real, complete unpublished reward-kernel snapshot. This grants
     // no historical/publication authority; the P2 reader is independently Go P1.
-    chain
-        .advance_reward_reference_graph_block(&mut session.dpos_state, 2.into())
-        .unwrap();
-    session.pending_period = 2.into();
+    if period == 2 {
+        chain
+            .advance_reward_reference_graph_block(&mut session.dpos_state, 2.into())
+            .unwrap();
+    } else {
+        assert_eq!(period, 1);
+        session.origin = NativeSessionOrigin::HistoricalSimulation;
+    }
+    session.pending_period = period.into();
     session.eligibility_period = 1.into();
     session.eligibility_state = session.dpos_state.clone();
     session.period_start_total_vote_count = session.dpos_state.total_vote_count;
@@ -690,6 +703,165 @@ fn rewarded_partial_destination_codec_error_after_completed_payout_discards_scra
     assert_eq!(session.next_sequence, 0);
     assert!(state.overlay.borrow().is_empty());
     assert_eq!(state.accounts, original_accounts);
+    drop(session);
+    drop(chain);
+    drop(storage);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn rewarded_h1_faults_and_fresh_retries_discard_scratch() {
+    let case = reward_case();
+    let (chain, storage, path) = reward_chain();
+    let mut request = reward_request(&case);
+    request.period = 1.into();
+    let (mut probe, read) = reward_setup_at(&chain, &case, 1);
+    let out = completed(reward_invoke(&mut probe, &read, &request).unwrap());
+    assert_eq!(out.raw_mutations.len(), 12);
+    assert_eq!(out.account_mutations.len(), 2);
+    let keys = read.reads.borrow().clone();
+    assert_eq!(keys.len(), 29);
+    assert_eq!(
+        keys.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        29
+    );
+    let present=keys.iter().copied().filter(|k|matches!(read.physical_read(DPOS_CONTRACT_ADDRESS,*k),ConcreteRead::Present(ref v) if !v.is_empty())).collect::<Vec<_>>();
+    assert_eq!(present.len(), 27);
+    for fault in 0..89 {
+        let (mut session, mut state) = reward_setup_at(&chain, &case, 1);
+        let before = session.dpos_state.clone();
+        if fault < 29 {
+            state.fail_raw = Some(fault + 1)
+        } else if fault < 58 {
+            state.corrupt_raw = Some(keys[fault - 29])
+        } else if fault < 85 {
+            state.missing_raw = Some(present[fault - 58])
+        } else {
+            match fault - 85 {
+                0 => state.fail_account = Some(DPOS_CONTRACT_ADDRESS),
+                1 => state.fail_account = Some(address(0xd1)),
+                2 => {
+                    state
+                        .accounts
+                        .get_mut(&DPOS_CONTRACT_ADDRESS)
+                        .unwrap()
+                        .balance = BigInt::from(395)
+                }
+                _ => {
+                    state.accounts.remove(&address(0xd1));
+                }
+            }
+        }
+        let accounts = state.accounts.clone();
+        assert!(
+            reward_invoke(&mut session, &state, &request).is_err(),
+            "H1 fault{fault}"
+        );
+        assert_eq!(session.dpos_state, before);
+        assert!(session.aborted && session.prepared.is_none());
+        assert_eq!(session.next_sequence, 0);
+        assert!(state.overlay.borrow().is_empty());
+        assert_eq!(state.accounts, accounts);
+        assert!(reward_invoke(&mut session, &state, &request).is_err());
+        let (mut retry, clean) = reward_setup_at(&chain, &case, 1);
+        let success = completed(reward_invoke(&mut retry, &clean, &request).unwrap());
+        assert_eq!(success, out);
+    }
+    drop(probe);
+    drop(chain);
+    drop(storage);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn rewarded_h1_requires_historical_origin_and_current_account_authority() {
+    let case = reward_case();
+    let (chain, storage, path) = reward_chain();
+    let mut request = reward_request(&case);
+    request.period = 1.into();
+    for bad in 0..4 {
+        let (mut session, state) = reward_setup_at(&chain, &case, 1);
+        match bad {
+            0 => session.origin = NativeSessionOrigin::PendingPeriod,
+            1 => chain
+                .advance_reward_reference_graph_block(&mut session.dpos_state, 2.into())
+                .unwrap(),
+            2 => session.dpos_state.delegation_ledger_history_complete = false,
+            _ => {
+                session
+                    .dpos_state
+                    .validator_reward_per_stake
+                    .insert(address(0x31), StoredDposRewardIndex::default());
+            }
+        }
+        let before = session.dpos_state.clone();
+        assert!(reward_invoke(&mut session, &state, &request).is_err());
+        assert_eq!(session.dpos_state, before);
+        assert!(state.account_reads.borrow().is_empty());
+        assert!(session.aborted);
+    }
+    let (mut session, mut state) = reward_setup_at(&chain, &case, 1);
+    state
+        .accounts
+        .get_mut(&DPOS_CONTRACT_ADDRESS)
+        .unwrap()
+        .balance = BigInt::from(9000);
+    state.accounts.get_mut(&address(0xd1)).unwrap().balance = BigInt::from(7000);
+    let original = state.accounts.clone();
+    let out = completed(reward_invoke(&mut session, &state, &request).unwrap());
+    for (m, (a, before, after)) in out.account_mutations.iter().zip([
+        (DPOS_CONTRACT_ADDRESS, 9000, 8604),
+        (address(0xd1), 7000, 7396),
+    ]) {
+        assert!(
+            matches!(m,FinalChainNativeOrdinaryMutation::BalanceReplace{address,expected,replacement,..} if *address==a&&*expected==BigInt::from(before)&&*replacement==BigInt::from(after))
+        );
+    }
+    assert_eq!(state.accounts, original);
+    drop(session);
+    drop(chain);
+    drop(storage);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn rewarded_h1_late_destination_codec_error_discards_completed_payout_scratch() {
+    let case = reward_case();
+    let (chain, storage, path) = reward_chain();
+    let (session, state) = reward_setup_at(&chain, &case, 1);
+    let before = session.dpos_state.clone();
+    let original = state.accounts.clone();
+    let mut next = before.clone();
+    let mut accounts = StagedDposAccountPort::from_state(&state);
+    let result = chain
+        .apply_dpos_redelegate(
+            &mut next,
+            &mut accounts,
+            address(0xd1),
+            address(0x31),
+            address(0x32),
+            U256::from(300).to_big_endian().to_vec(),
+            1.into(),
+        )
+        .unwrap();
+    assert_eq!(result.status_code, 1);
+    assert_eq!(accounts.into_mutations().len(), 2);
+    next.delegations
+        .get_mut(&address(0x32))
+        .unwrap()
+        .remove(&address(0xd1));
+    let mut trace = FinalChainNativeRawTrace::new(&state);
+    session
+        .serialize_undelegate_principal(address(0xd1), address(0x31), &before, &next, &mut trace)
+        .unwrap();
+    assert!(
+        session
+            .serialize_delegate(address(0xd1), address(0x32), &before, &next, &mut trace)
+            .is_err()
+    );
+    assert_eq!(trace.finish().len(), 8);
+    assert_eq!(session.dpos_state, before);
+    assert_eq!(session.next_sequence, 0);
+    assert_eq!(state.accounts, original);
+    assert!(state.overlay.borrow().is_empty());
     drop(session);
     drop(chain);
     drop(storage);

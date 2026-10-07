@@ -4,7 +4,8 @@
 //! cold Go read prefix before returning. Success requires post-fix distinct
 //! validators, active Magnolia/Ficus and positive principal. Existing profiles
 //! require zero reward pools and indices; the finite P2 partial below admits a
-//! positive source pool with an untouched genesis graph. Before Aspen part two, zero amount requires both caller pairs
+//! positive source pool with an untouched genesis graph. Historical H1 uses the
+//! same finite graph only through an explicit simulation constructor. Before Aspen part two, zero amount requires both caller pairs
 //! to be positive and present; it still advances reward cursors and emits writes.
 //! Partial transfers admit existing or new destination pairs; full
 //! caller-source removal admits an existing positive destination pair, or a new
@@ -33,7 +34,7 @@
 //! current nodes and complete
 //! membership ordering bind the semantic kernel to physical rows. The kernel
 //! runs on a clone without account access for zero-reward routes. A separate
-//! finite P2 partial profile authenticates a positive source pool and complete
+//! finite P2 or historical H1 partial profile authenticates a positive source pool and complete
 //! retained-owner genesis graph, then uses lazy current account authority.
 //! Source serialization precedes
 //! destination serialization; only full success advances the session.
@@ -952,7 +953,8 @@ fn redelegate_result_with_accounts(
 }
 
 impl FinalChainNativeSession<'_> {
-    /// Executes only the measured P2 positive-source-pool partial topology.
+    /// Executes the measured P2 or historical H1 positive-source-pool partial topology.
+    /// H1 requires explicit historical constructor provenance and absent current NODE1.
     /// Complete two-validator/common-owner authority is authenticated before
     /// lazy account access. The existing kernel and source/destination codecs
     /// produce separate ordered account and raw vectors; their mixed publication
@@ -1010,7 +1012,7 @@ impl FinalChainNativeSession<'_> {
             )?;
             authenticate(
                 &mut trace,
-                reward_node_key(validator, 2),
+                reward_node_key(validator, self.pending_period.as_u64()),
                 ExpectedRaw::Empty,
                 "rewarded partial absent current node",
             )?;
@@ -1093,8 +1095,12 @@ impl FinalChainNativeSession<'_> {
             return Err(unsupported());
         }
         validate_dpos_principal_ledger(s).map_err(map_kernel_error)?;
-        if self.pending_period.as_u64() != 2
-            || !self.final_chain.magnolia_active(self.pending_period)
+        let current = match (self.origin, self.pending_period.as_u64()) {
+            (NativeSessionOrigin::PendingPeriod, 2) => 2,
+            (NativeSessionOrigin::HistoricalSimulation, 1) => 1,
+            _ => return Err(unsupported()),
+        };
+        if !self.final_chain.magnolia_active(self.pending_period)
             || !self.final_chain.ficus_active_at(self.pending_period)
             || self.pending_period < self.final_chain.rewards_config.aspen_part_one_period
             || self.final_chain.aspen_part_two_active(self.pending_period)
@@ -1159,7 +1165,7 @@ impl FinalChainNativeSession<'_> {
             return Err(unsupported());
         }
         let graph = &s.reward_reference_graph;
-        if graph.current_block().map_err(domain)? != 2
+        if graph.current_block().map_err(domain)? != current
             || graph.live_nodes().map_err(domain)?.len() != 2
         {
             return Err(unsupported());
@@ -1181,7 +1187,7 @@ impl FinalChainNativeSession<'_> {
             }
             match graph.load_node(&NodeKey {
                 validator,
-                block: 2,
+                block: current,
             }) {
                 Err(DposRewardGraphError::MissingNode { .. }) => {}
                 Ok(_) => return Err(unsupported()),

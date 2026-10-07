@@ -343,14 +343,23 @@ struct PreparedCall {
     kind: PreparedKind,
 }
 
+/// Constructor provenance for bounded historical mutation authority.
+/// An unbound pending session is not a historical simulation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeSessionOrigin {
+    PendingPeriod,
+    HistoricalSimulation,
+}
+
 /// Single-period staged native kernel state.
 ///
-/// The session begins from an exact finalized DPoS snapshot, advances the
-/// reward-reference graph to the pending period, and never publishes its
-/// state. Successful raw mutations advance this state even when a surrounding
+/// The session begins from an exact finalized DPoS snapshot. Pending sessions
+/// advance the reward-reference graph; historical simulation retains its exact
+/// finalized period. Neither constructor publishes state. Successful raw mutations advance this state even when a surrounding
 /// ordinary EVM frame later rolls back.
 pub struct FinalChainNativeSession<'a> {
     final_chain: &'a FinalChain,
+    origin: NativeSessionOrigin,
     request_id: Option<[u8; 32]>,
     /// Immutable process-local cleanup timer issued by this FinalChain. It is
     /// present only for execution bound to a live StateAPI epoch.
@@ -498,8 +507,13 @@ impl FinalChain {
         let dpos_state = self
             .dpos_snapshot_at_finalized_block(period)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        self.native_session_from_state(None, period, dpos_state)
-            .map(|session| FinalChainNativeSimulation { session })
+        self.native_session_from_state(
+            None,
+            period,
+            dpos_state,
+            NativeSessionOrigin::HistoricalSimulation,
+        )
+        .map(|session| FinalChainNativeSimulation { session })
     }
 
     fn begin_native_session_inner(
@@ -528,7 +542,12 @@ impl FinalChain {
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         self.advance_reward_reference_graph_block(&mut dpos_state, pending_period)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        self.native_session_from_state(request_id, pending_period, dpos_state)
+        self.native_session_from_state(
+            request_id,
+            pending_period,
+            dpos_state,
+            NativeSessionOrigin::PendingPeriod,
+        )
     }
 
     fn native_session_from_state(
@@ -536,6 +555,7 @@ impl FinalChain {
         request_id: Option<[u8; 32]>,
         period: FinalChainBlockNumber,
         dpos_state: DposSnapshot,
+        origin: NativeSessionOrigin,
     ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
         let eligibility_period =
             FinalChainBlockNumber::new(period.as_u64().saturating_sub(self.dpos_delegation_delay));
@@ -550,6 +570,7 @@ impl FinalChain {
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         Ok(FinalChainNativeSession {
             final_chain: self,
+            origin,
             request_id,
             reward_scheduler_basis: None,
             pending_period: period,
