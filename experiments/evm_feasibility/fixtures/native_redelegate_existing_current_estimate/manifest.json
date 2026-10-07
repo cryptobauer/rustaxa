@@ -1,0 +1,45 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "harness_sha256": "f2aec05452ff29a5ac8ededaf2cc60f6f6e674ef9ee9bf1d86c8d0686d470b46",
+  "input_sha256": "e6d0dc4f863465567446b69706612a0cf621e14a8042efb32489661991ce7f32",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "cpp": "9641493293786de845b811ef24225b4ec8fb72e4c028718bdf8dcdf43d256842",
+    "local": "95845959c209ef8f693a124c390be0232f8f9d8869bf201169820e524c172898",
+    "public": "95845959c209ef8f693a124c390be0232f8f9d8869bf201169820e524c172898"
+  },
+  "snapshot_harness_sha256": "547c6b21bfe2f230832dbb85409654d49e76499caace7b91cd0b81fda03c2daa",
+  "snapshot_helper_sha256": {
+    "taraxa/state/contracts/dpos/precompiled/current_source_snapshot_observer.go": "ece5bcc0f26d89132372246fdc049314526ee8c9897b314368eb7793cbb43ae3",
+    "taraxa/state/contracts/storage/current_source_snapshot_observer.go": "01eea62789ac608b602734ebd6025ef061522325f16bf0c653a950b7686356d2",
+    "taraxa/state/state_transition/current_source_snapshot_observer.go": "4ee2632d310eadefc098f75ef2b7d0579b237129f794f910955c14636f037d0c"
+  },
+  "snapshot_target_sha256": {
+    "local": {
+      "taraxa/state/contracts/dpos/precompiled/dpos_contract.go": "71e6f9e7063a9bdc89d318d13e520b390db7590e04349b7d14e43d83da739934",
+      "taraxa/state/contracts/storage/storage.go": "2f56b13597e9b24e022e496a2be650c65938f951e619ab958a986a24971d7d2c",
+      "taraxa/state/state_transition/state_transition.go": "68b81cac809486ba593813d1e1e1743a5a38069c1c0aa7e5af233b10f683094c"
+    },
+    "public": {
+      "taraxa/state/contracts/dpos/precompiled/dpos_contract.go": "28bb58adb9d99d604fdacf0c284deea49c6887eee789381a5c5a231b5c89f565",
+      "taraxa/state/contracts/storage/storage.go": "2f56b13597e9b24e022e496a2be650c65938f951e619ab958a986a24971d7d2c",
+      "taraxa/state/state_transition/state_transition.go": "d447ac4599f0107ccad4379f95a7269a6d5729283d8dcf00db850ea8fe119e90"
+    }
+  },
+  "source_sha256": {
+    "native_redelegate_existing_current_estimate_reference.go": "2b23b3143a68f13924d9952a4ab396288875579ffb72d593c8c9360e967556fb",
+    "native_redelegate_existing_current_simulation_reference.go": "fa0d134ffc4681f2e40e815638552d1dd8e6497809c8d8272badebb29f160715",
+    "native_redelegate_simulation_reference.go": "9ce77d652c4e99cf881e67b14eed10b394168f2409cd1b80e15ef616ac889392",
+    "native_redelegate_swap_append_simulation_reference.go": "2fcbae7360e55fe50ee54849767111c275be4864f4411582d51540bc83f6829c",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60"
+  },
+  "stderr_sha256": {
+    "local": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "public": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "support_harness_sha256": "6f6feb78cea4eba35b9078fda79bfa1d79e46fbe04e988bc1ebaac33d7437200"
+}
