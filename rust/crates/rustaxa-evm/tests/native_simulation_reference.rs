@@ -646,3 +646,6 @@ mod redelegate_both_current_four;
 
 #[path = "native_simulation_reference/redelegate_both_current_four_estimate.rs"]
 mod redelegate_both_current_four_estimate;
+
+#[path = "native_simulation_reference/redelegate_both_current_four_trace.rs"]
+mod redelegate_both_current_four_trace;
