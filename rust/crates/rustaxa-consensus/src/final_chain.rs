@@ -9589,6 +9589,168 @@ impl FinalChain {
         Ok(source)
     }
 
+    /// Captures the source copy for the separately measured both-count4 profile.
+    ///
+    /// Inputs identify one full, distinct-validator transfer in the current graph
+    /// period. Exactly two validators share one retained owner; caller and owner
+    /// have positive pairs and ordered [source, destination] memberships. Both
+    /// nodes have count4/index0, current heads and both current cursors, exact zero
+    /// mirrors/pools, and no other live nodes or identities. Complete principal
+    /// and same-validator history, post-fix Magnolia/Ficus and pre-Aspen2 are
+    /// required. This does not alter the separate count2 eligibility.
+    ///
+    /// Returns the earlier-loaded source without mutation, None for an excluded
+    /// shape, and a hard error for required graph or principal integrity failure.
+    /// The kernel and staged boundary use this same predicate; serialization and
+    /// the destination's independent loaded-copy increment remain unchanged.
+    fn bounded_both_current_four_loaded_source_node(
+        &self,
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        from: [u8; 20],
+        to: [u8; 20],
+        amount: U256,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<Option<(NodeKey, Node)>, anyhow::Error> {
+        if from == to
+            || delegator == from
+            || delegator == to
+            || amount.is_zero()
+            || snapshot.validator_order.as_slice() != [from, to].as_slice()
+            || snapshot.total_stakes.len() != 2
+            || snapshot.validator_metadata.len() != 2
+            || snapshot.vrf_keys.len() != 2
+            || snapshot.delegations.len() != 2
+            || snapshot.delegator_validators.len() != 2
+            || snapshot.validator_reward_per_stake.len() != 2
+            || snapshot.delegation_reward_cursors.len() != 2
+            || !snapshot.redelegate_same_validator_corruption.is_empty()
+            || snapshot
+                .delegations
+                .get(&from)
+                .and_then(|rows| rows.get(&delegator))
+                .is_none_or(|row| row.as_u256() != amount)
+            || snapshot
+                .total_stakes
+                .get(&from)
+                .is_none_or(|row| row.as_u256() <= amount)
+            || block_number <= self.rewards_config.fix_redelegate_block_num
+            || !self.magnolia_active(block_number)
+            || !self.ficus_active_at(block_number)
+            || self.aspen_part_two_active(block_number)
+        {
+            return Ok(None);
+        }
+        let Some(metadata) = snapshot.validator_metadata.get(&from) else {
+            return Ok(None);
+        };
+        let owner = metadata.owner;
+        if owner == delegator
+            || owner == from
+            || owner == to
+            || snapshot
+                .validator_metadata
+                .get(&to)
+                .is_none_or(|row| row.owner != owner)
+            || [delegator, owner].iter().any(|account| {
+                snapshot
+                    .delegator_validators
+                    .get(account)
+                    .map(Vec::as_slice)
+                    != Some([from, to].as_slice())
+            })
+            || [from, to].iter().any(|validator| {
+                !snapshot.vrf_keys.contains_key(validator)
+                    || snapshot
+                        .redelegate_same_validator_corruption
+                        .contains(validator)
+                    || snapshot.delegations.get(validator).is_none_or(|rows| {
+                        rows.len() != 2
+                            || [delegator, owner].iter().any(|account| {
+                                rows.get(account).is_none_or(StoredDposTokenAmount::is_zero)
+                            })
+                    })
+                    || snapshot
+                        .delegation_reward_cursors
+                        .get(validator)
+                        .is_none_or(|rows| rows.len() != 2)
+            })
+            || snapshot
+                .delegator_rewards
+                .keys()
+                .chain(snapshot.commission_rewards.keys())
+                .any(|validator| *validator != from && *validator != to)
+        {
+            return Ok(None);
+        }
+        if !snapshot.delegation_ledger_history_complete
+            || !snapshot.redelegate_same_validator_history_complete
+        {
+            anyhow::bail!("bounded both-count4 redelegation requires complete principal history");
+        }
+        validate_dpos_principal_ledger(snapshot)?;
+        let graph = &snapshot.reward_reference_graph;
+        let current = graph.current_block()?;
+        if current != block_number.as_u64() {
+            return Ok(None);
+        }
+        let zero = DposRewardIndex::zero();
+        let mut source = None;
+        for validator in [from, to] {
+            let key = NodeKey {
+                validator,
+                block: current,
+            };
+            let loaded = match graph.load_node(&key) {
+                Ok(node) => node,
+                Err(DposRewardGraphError::MissingNode {
+                    validator: missing,
+                    block,
+                }) if missing == validator && block == current => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            if loaded.count != 4
+                || loaded.reward_per_stake != zero
+                || graph.read_validator_head(&validator)? != current
+                || graph.is_stale_head(&validator)?
+                || snapshot
+                    .validator_reward_per_stake
+                    .get(&validator)
+                    .is_none_or(|row| row.index != zero)
+                || snapshot
+                    .delegator_rewards
+                    .get(&validator)
+                    .is_some_and(|row| !row.is_zero())
+                || snapshot
+                    .commission_rewards
+                    .get(&validator)
+                    .is_some_and(|row| !row.is_zero())
+            {
+                return Ok(None);
+            }
+            for account in [delegator, owner] {
+                if graph.read_cursor(&validator, &account)? != current
+                    || snapshot
+                        .delegation_reward_cursors
+                        .get(&validator)
+                        .and_then(|rows| rows.get(&account))
+                        .is_none_or(|row| row.index != zero)
+                {
+                    return Ok(None);
+                }
+            }
+            if validator == from {
+                source = Some((key, loaded));
+            }
+        }
+        // The real second prefix and repeated owner partial removes both old nodes. Reject historical or
+        // unrelated nodes rather than treating count4 alone as sufficient proof.
+        if graph.live_nodes()?.len() != 2 {
+            return Ok(None);
+        }
+        Ok(source)
+    }
+
     /// Applies one legacy redelegation against staged account and DPoS state.
     ///
     /// Expected contract failures return a status-zero outcome. Arithmetic,
@@ -9648,6 +9810,15 @@ impl FinalChain {
             )?);
         let bounded_source_loaded_node = bounded_source_loaded_node.or(self
             .bounded_both_current_three_loaded_source_node(
+                snapshot,
+                delegator,
+                from,
+                to,
+                amount,
+                block_number,
+            )?);
+        let bounded_source_loaded_node = bounded_source_loaded_node.or(self
+            .bounded_both_current_four_loaded_source_node(
                 snapshot,
                 delegator,
                 from,

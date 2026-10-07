@@ -24,6 +24,9 @@
 //! owner pairs and identities, complete caller/owner/validator membership ordering,
 //! and deleted genesis nodes. It does not extend count2 eligibility or claim
 //! physical enumeration of unrelated orphan nodes.
+//! A separate exact count4 route admits the measured repeated owner partial
+//! topology, with the same explicit retained-owner physical proof. It does not
+//! widen count2/count3 eligibility or accept general higher counts.
 //! Only source is restored; destination write_cursor retains its loaded increment.
 //! Other full/existing current-source shapes are unsupported. Head, cursor,
 //! current nodes and complete
@@ -272,6 +275,20 @@ impl FinalChainNativeSession<'_> {
                 )
                 .map_err(map_kernel_error)?
                 .is_some();
+        let both_current_four = amount_value == source_principal
+            && !full_new
+            && self
+                .final_chain
+                .bounded_both_current_four_loaded_source_node(
+                    before,
+                    delegator,
+                    from,
+                    to,
+                    amount_value,
+                    self.pending_period,
+                )
+                .map_err(map_kernel_error)?
+                .is_some();
         if amount_value == source_principal && !full_new {
             let current = before
                 .reward_reference_graph
@@ -295,6 +312,7 @@ impl FinalChainNativeSession<'_> {
                         .map_err(map_kernel_error)?
                         .is_none()
                         && !both_current_three
+                        && !both_current_four
                     {
                         return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
                     }
@@ -383,6 +401,51 @@ impl FinalChainNativeSession<'_> {
                     reward_node_key(validator, 0),
                     ExpectedRaw::Empty,
                     "count3 deleted genesis node",
+                )?;
+            }
+        }
+
+        if both_current_four {
+            // Bind the extra identities and current cursors used only by the
+            // count4 predicate. Existing profiles keep their authentication stream.
+            let owner = before.validator_metadata[&from].owner;
+            for prefix in [&[0, 5][..], &delegator_validators_prefix(owner)] {
+                authenticate(
+                    &mut trace,
+                    iterable_count_key(prefix),
+                    ExpectedRaw::Exact(2_u32.to_le_bytes().to_vec()),
+                    "count4 ordered membership count",
+                )?;
+                for (position, validator) in [(1, from), (2, to)] {
+                    authenticate(
+                        &mut trace,
+                        iterable_item_key(prefix, position),
+                        ExpectedRaw::Exact(validator.to_vec()),
+                        "count4 ordered membership item",
+                    )?;
+                }
+            }
+            for validator in [from, to] {
+                authenticate(
+                    &mut trace,
+                    validator_owner_key(validator),
+                    ExpectedRaw::Exact(owner.to_vec()),
+                    "count4 validator owner",
+                )?;
+                authenticate_delegation(before, validator, owner, &mut trace)?;
+                authenticate_reward_scope(before, validator, owner, &mut trace)?;
+                authenticate_membership(
+                    &[from, to],
+                    &[from, to],
+                    &delegator_validators_prefix(owner),
+                    validator,
+                    &mut trace,
+                )?;
+                authenticate(
+                    &mut trace,
+                    reward_node_key(validator, 0),
+                    ExpectedRaw::Empty,
+                    "count4 deleted genesis node",
                 )?;
             }
         }
