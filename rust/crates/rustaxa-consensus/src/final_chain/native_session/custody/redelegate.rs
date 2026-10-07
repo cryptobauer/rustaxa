@@ -13,12 +13,17 @@
 //! New-pair insertion uses the
 //! intermediate membership after swap removal. It normally requires both
 //! current reward nodes absent; the exact source-current alias below is the
-//! only additional admitted node topology. Both
+//! separately bounded additional node topology for full/new transfers. Both
 //! validator stakes remain positive. A source-current full/new variant additionally
 //! requires the shared exact count2/current cursor/head/zero-reward predicate; the
 //! destination current node stays absent. Full/existing with a source current
 //! node requires the companion exact two-pair [source,destination] predicate:
 //! both current nodes count2, heads/cursors current and zero mirrors/pools.
+//! A separate exact count3 predicate admits two validators with one common owner,
+//! two positive delegators and both cursors current. It additionally authenticates
+//! owner pairs and identities, complete caller/owner/validator membership ordering,
+//! and deleted genesis nodes. It does not extend count2 eligibility or claim
+//! physical enumeration of unrelated orphan nodes.
 //! Only source is restored; destination write_cursor retains its loaded increment.
 //! Other full/existing current-source shapes are unsupported. Head, cursor,
 //! current nodes and complete
@@ -253,6 +258,20 @@ impl FinalChainNativeSession<'_> {
                 }
             }
         }
+        let both_current_three = amount_value == source_principal
+            && !full_new
+            && self
+                .final_chain
+                .bounded_both_current_three_loaded_source_node(
+                    before,
+                    delegator,
+                    from,
+                    to,
+                    amount_value,
+                    self.pending_period,
+                )
+                .map_err(map_kernel_error)?
+                .is_some();
         if amount_value == source_principal && !full_new {
             let current = before
                 .reward_reference_graph
@@ -275,6 +294,7 @@ impl FinalChainNativeSession<'_> {
                         )
                         .map_err(map_kernel_error)?
                         .is_none()
+                        && !both_current_three
                     {
                         return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
                     }
@@ -318,6 +338,51 @@ impl FinalChainNativeSession<'_> {
                     &delegator_validators_prefix(delegator),
                     validator,
                     &mut trace,
+                )?;
+            }
+        }
+
+        if both_current_three {
+            // Bind the extra identities and current cursors used only by the
+            // count3 predicate. Existing profiles keep their authentication stream.
+            let owner = before.validator_metadata[&from].owner;
+            for prefix in [&[0, 5][..], &delegator_validators_prefix(owner)] {
+                authenticate(
+                    &mut trace,
+                    iterable_count_key(prefix),
+                    ExpectedRaw::Exact(2_u32.to_le_bytes().to_vec()),
+                    "count3 ordered membership count",
+                )?;
+                for (position, validator) in [(1, from), (2, to)] {
+                    authenticate(
+                        &mut trace,
+                        iterable_item_key(prefix, position),
+                        ExpectedRaw::Exact(validator.to_vec()),
+                        "count3 ordered membership item",
+                    )?;
+                }
+            }
+            for validator in [from, to] {
+                authenticate(
+                    &mut trace,
+                    validator_owner_key(validator),
+                    ExpectedRaw::Exact(owner.to_vec()),
+                    "count3 validator owner",
+                )?;
+                authenticate_delegation(before, validator, owner, &mut trace)?;
+                authenticate_reward_scope(before, validator, owner, &mut trace)?;
+                authenticate_membership(
+                    &[from, to],
+                    &[from, to],
+                    &delegator_validators_prefix(owner),
+                    validator,
+                    &mut trace,
+                )?;
+                authenticate(
+                    &mut trace,
+                    reward_node_key(validator, 0),
+                    ExpectedRaw::Empty,
+                    "count3 deleted genesis node",
                 )?;
             }
         }
