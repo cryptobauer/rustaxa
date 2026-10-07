@@ -21,31 +21,27 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-Accepted runtimea16acef1e adds separate exact BOTH-current count4 beside
-unchanged count2/count3. Repeated owner partial is measured: AA300/O100/O100
-leaves both nodes4; fullcaller700 preserves source4 and raises destination5.
-Oracle0cea670f9, runtime370faults/freshretries46exclusions and sevenfourjournal
-frames b4f62f303 are accepted. Canonical two-signer H1 with C0/O0/O1 is accepted
-be90ad91f:108completeGo rows, publicfinalize/reopen/sameH1 simulation and complete
-public owner physical inventory isolation. Preserve prior corpora/support/tests.
+Run4 accepted positive-reward partial oraclec652fc315, isolatedadapter4c82359,
+actualframeoraclefff3c4e and publicRustframes e14922b. RealP1 mint800/sourcepool792/
+commission8/native4800, P2 partial300 pays396 with12raw/2account/2logs. Public
+FinalChain P1 finalize/reopen and boundP2 frames pass allrequiredchecks/reviews.
+Go parentREVERT restores payout accounts/logs while native raw writes survive.
+The corrected frame view has52unique keys, including actual minted_tokens and
+absent total_supply; allrawvalues are resolved from complete physicalP1.
+Prior zero/count2/count3/count4 corpora and guards remain unchanged.
 
-Count4 H1 estimate67f422b5e and retained-excess H2 trace05e92e685 are accepted.
-Actual H2 partial300 leaves old1count2 for owner, then full400 uses unchanged
-count2 helper. Actual default trace and a separate live witness prove state;
-target authentication excludes old1/owner pairs. Required targeted/package/
-bridge evidence, independent reviews and exact hashes are in the checkpoint.
+Next: actual canonical positive-reward P1 same-H1 DryRunner measurement before
+historical adapter work. Fresh Astra source contract and corrected Luna map live
+in run4 artifacts. Go andRustsameH1 use literalblock/nativeperiod1; nonce is
+separate. New historical admission needs explicit constructor origin and current1
+selection, absentNODE1, exactgraph/auth/account authority. Do not silently admit
+arbitraryperiods or inferhistory from request_id=None. Actualnewoutputs/root/rows
+and per-vector effects are required before implementation/acceptance.
 
-Next ready dependency is the source-only
-[positive-reward partial contract](n2_rewarded_partial_redelegate_contract.md).
-Measure actual dual-pin P1 reward/commit and P2 partial300 first. Source predicts
-payout396; no new oracle, positive-reward adapter or runtime acceptance exists.
-Preserve all earlier zero-reward profiles and tests. Reuse existing reward graph
-and account owners only after exact account/raw/log ordering is measured.
-
-Run3 is closed: baseline99%, floor89%,10points consumed, reset1791948695.
-No new starts with that saved budget. A later authorized run must save a fresh
-baseline in a new directory. Previous closed budgets remain immutable.
-General rewards, N1–N6, real-window/root parity and production cutover remain open.
+Run4 is active: savedbaseline89%,floor79%,reset1791948695;85% observed at
+2026-10-07T23:33:08.937Z (4points used,6remain). Preserve this exact budget.
+Runs1/2/3 are closed and must not resume. Generalreward/history shapes, N1–N6,
+producer inputs, real-window/root parity and production cutover remain open.
 Nothing was pushed.
 
 ## Contract work for later gaps

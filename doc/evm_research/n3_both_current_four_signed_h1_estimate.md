@@ -21,8 +21,8 @@ Rust runs64 fresh simulations in24 searches across two public owner opens,
 two independent complete concrete readers and two repetitions. Public H1 uses
 all three canonical envelopes, persisted receipts and reopen without refinalize
 or semantic raw injection. Each actual probe checks gas/error/output/logs,
-identity and supplied wide nonce preservation with private effective2/native
-invocation1/EVMcontext2. Before/after every probe and reader disposal it compares
+identity and supplied wide nonce preservation with private effective nonce2/native
+invocation1/EVMcontext1. Before/after every probe and reader disposal it compares
 all108 Go concrete rows plus ALL public owner database Column rows, committed
 height/header, accounts, pairs/order/rewards, all three receipt RLPs and full
 public validator metadata. Public owner rows are also compared across reopen.
@@ -37,3 +37,9 @@ build12/all15 is inherited separately. H2 retained-excess trace remains a source
 contract awaiting actual measurement. General counts/rewards, qualified real
 window, recovery/integratedN4–N6 and production cutover remain open. No fallback,
 supplied-data or upstream/storage-owner change, broad gate or push is included.
+
+Run4 source correction: same-H1 Go DryRunner and public Rust simulation use literal
+EVM block/native period1. Effective nonce2 in this older caller-nonce1 profile is
+independent of block identity. The original prose bytes are frozen in run4
+h1-context-before; previous checks, routing and historical report bytes remain
+unchanged. The new source-only reward-h1-contract records exact source evidence.

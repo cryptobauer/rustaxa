@@ -27,7 +27,7 @@ the measured graph. Actual measurement supplies the new root and nonce facts.
 
 Same-H1 DryRunner full700 returns101912 gas and event700, no error/output.
 Supplied nonce2^512 is unchanged; private effective nonce2, native invocation
-period1 and EVM context2 follow measured DryRunner behavior. Repeated probes
+period1 and EVM context1 follow measured DryRunner behavior. Repeated probes
 leave complete H1 rows/accounts/raw/facts/root unchanged. The root belongs to
 Go's separate concrete reader; no Rust/Go root equality is claimed.
 
@@ -59,3 +59,9 @@ The first correction used the concrete seed path/column layout for the app and
 failed before simulation. The dedicated read-only app helper uses Config's db
 path and every public Column descriptor, including existing comparators. It
 checks the complete public owner inventory without changing storage modules.
+
+Run4 source correction: same-H1 Go DryRunner and public Rust simulation use literal
+EVM block/native period1. Effective nonce2 in this older caller-nonce1 profile is
+independent of block identity. The original prose bytes are frozen in run4
+h1-context-before; previous checks, routing and historical report bytes remain
+unchanged. The new source-only reward-h1-contract records exact source evidence.

@@ -34,6 +34,12 @@ existing-current-h1-estimate prefix. Runtime remains072fc39fb; its accepted
 Rust-enabled bridge build12/all15 is inherited separately, without a new run.
 
 This is bounded same-H1 historical estimation, native invocation1 and effective
-EVM context2. Direct H2 trace, real-window root parity and production acceptance
+EVM context1. Direct H2 trace, real-window root parity and production acceptance
 remain open. No Rust/Go root equality, supplied-data mutation, C++/storage owner
 change, protocol/fallback, broad gate or push is included.
+
+Run4 source correction: same-H1 Go DryRunner and public Rust simulation use literal
+EVM block/native period1. Effective nonce2 in this older caller-nonce1 profile is
+independent of block identity. The original prose bytes are frozen in run4
+h1-context-before; previous checks, routing and historical report bytes remain
+unchanged. The new source-only reward-h1-contract records exact source evidence.

@@ -27,7 +27,7 @@ all105complete seed rows/accountRLP/configuration/current/delayed API facts are 
 Actual same-H1 DryRunner full700 target repeats from fresh execution state with
 supplied2^512 nonce, effective2, gas101912/noerrors/emptyreturn/event700. Complete
 committed H1 state is byte-identical before/after both probes. Native invocation1
-is separate from effectiveEVMcontext2. No H2 acceptance, Rust/Go root equality,
+is separate from EVMcontext1. No H2 acceptance, Rust/Go root equality,
 DryRunner raw-write measurement or new uninstrumented DryRunner control is claimed.
 The accepted staged oracle has15targetwrites; that count is not a new historical
 write/read measurement. Manifest binds actual root/config/producer/support,
@@ -46,3 +46,9 @@ historicalestimate/trace and production remain open. The next public owner must
 retain caller3000 AND ordinaryownera11000, native4000; prior absent-owner setup
 must not be copied. New H1 measurements do not close those unexecuted gates.
 No supplied-data/upstream C++/storage mutation, fallback, broad gate or push.
+
+Run4 source correction: same-H1 Go DryRunner and public Rust simulation use literal
+EVM block/native period1. Effective nonce2 in this older caller-nonce1 profile is
+independent of block identity. The original prose bytes are frozen in run4
+h1-context-before; previous checks, routing and historical report bytes remain
+unchanged. The new source-only reward-h1-contract records exact source evidence.
