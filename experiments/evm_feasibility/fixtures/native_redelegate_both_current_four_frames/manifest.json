@@ -1,0 +1,69 @@
+{
+  "control_sha256": {
+    "local": [
+      "5d566521300062070ecd86fe3357df9820405933d6997ba2631f08e8756aec81",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "5d566521300062070ecd86fe3357df9820405933d6997ba2631f08e8756aec81",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "exporter_sha256": "d02f390fe90473d9587c349e8619530b1fe1d0b5c6cda89aad3fddeb15852be6",
+  "frame_context": {
+    "block_gas": 1000000,
+    "blocks_per_year": 1,
+    "direct_target_nonce": 2,
+    "gas_price": 0,
+    "go_evm_config": "params.TestChainConfig",
+    "log_boundary": "cumulative Go logs plus exact suffix; no clear/commit; refund zero",
+    "max_supply": 8000,
+    "maximum_stake": 1000000,
+    "minimum_deposit": 100,
+    "native_balance": 4000,
+    "native_forks": "fix/Magnolia/Ficus/Cornus0; Aspen1=0 Aspen2 disabled",
+    "nonce": 1,
+    "owner": "a1",
+    "owner_balance": 1000,
+    "period": 1,
+    "prefix_senders": [
+      "aa",
+      "a1",
+      "a1"
+    ],
+    "principal": 4000,
+    "rust_chain_id": 666,
+    "seed_scope": "accepted current-source initial actual AA genesis42-key view; actual caller300 then owner100 twice then fullcaller700->existing32; dirty raw only",
+    "sender": "d1",
+    "sender_wrapper_balance": 1000000,
+    "threshold": 100,
+    "timestamp": 0,
+    "transaction_gas": 200000,
+    "vote_step": 10,
+    "votes": 400,
+    "wrapper": "aa"
+  },
+  "harness_sha256": "a7ef713bce72896b76628b2070e0e87ac5fc8aaf5d45a76842633c0832e676a6",
+  "implementation_base": "a16acef1e",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "seed_sha256": "8d79c8063ee6c8f3c5a882a11c7d42b803d20f3a00dc4119f1df1be400014c6a",
+  "sha256": {
+    "local": [
+      "f2059b05943a31c94d29da3e4554ec818c5024103e42f83217de4af310fd8256",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "f2059b05943a31c94d29da3e4554ec818c5024103e42f83217de4af310fd8256",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "support_sha256": "db09ad3d4ea97a5496efead862771b9863ac1866a28c56e18c9c93a859bc7df5"
+}

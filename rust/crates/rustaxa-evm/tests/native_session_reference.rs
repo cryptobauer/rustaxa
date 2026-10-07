@@ -835,3 +835,6 @@ mod redelegate_existing_current_frames;
 
 #[path = "native_session_reference/redelegate_both_current_three_frames.rs"]
 mod redelegate_both_current_three_frames;
+
+#[path = "native_session_reference/redelegate_both_current_four_frames.rs"]
+mod redelegate_both_current_four_frames;
