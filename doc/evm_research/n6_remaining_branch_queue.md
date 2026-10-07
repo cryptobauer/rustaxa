@@ -29,18 +29,24 @@ frames b4f62f303 are accepted. Canonical two-signer H1 with C0/O0/O1 is accepted
 be90ad91f:108completeGo rows, publicfinalize/reopen/sameH1 simulation and complete
 public owner physical inventory isolation. Preserve prior corpora/support/tests.
 
-Next ready is count4 H1 estimation with actual pinned probes, unchanged C++
-search and per-probe isolation. Then new count4 retained-excess H2 trace can use
-fresh source contract both-current-four-h2-contract.md: unchangedcount2 helper
-admits old1count2 retained for owner after H2partial300, then full400. Actual H2
-trace/state-witness measurement remains open. Target authentication does not
-reauthenticate old1/owner pairs; preservation needs separate state authority.
+Count4 H1 estimate67f422b5e and retained-excess H2 trace05e92e685 are accepted.
+Actual H2 partial300 leaves old1count2 for owner, then full400 uses unchanged
+count2 helper. Actual default trace and a separate live witness prove state;
+target authentication excludes old1/owner pairs. Required targeted/package/
+bridge evidence, independent reviews and exact hashes are in the checkpoint.
 
-See the compact checkpoint for accepted count2/count3 derivatives and exact
-routing/check records. Active run3 baseline99->89, latest90at15:39:17.604Z;
-9consumed1remains. Check fresh telemetry; preserve previous closed budgets.
-General reward graphs, N1–N6 and production cutover remain open. No new prompt
-is needed for ready authorized work within the saved budget.
+Next ready dependency is the source-only
+[positive-reward partial contract](n2_rewarded_partial_redelegate_contract.md).
+Measure actual dual-pin P1 reward/commit and P2 partial300 first. Source predicts
+payout396; no new oracle, positive-reward adapter or runtime acceptance exists.
+Preserve all earlier zero-reward profiles and tests. Reuse existing reward graph
+and account owners only after exact account/raw/log ordering is measured.
+
+Run3 is closed: baseline99%, floor89%,10points consumed, reset1791948695.
+No new starts with that saved budget. A later authorized run must save a fresh
+baseline in a new directory. Previous closed budgets remain immutable.
+General rewards, N1–N6, real-window/root parity and production cutover remain open.
+Nothing was pushed.
 
 ## Contract work for later gaps
 

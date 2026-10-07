@@ -1,4 +1,4 @@
-# Restart checkpoint: run3 active
+# Restart checkpoint: run3 closed
 
 Branch `feat/rust/evm-state-db`; accepted runtime `a16acef1e`. No push.
 N1–N6/Milestone10 and production cutover remain open.
@@ -6,10 +6,12 @@ N1–N6/Milestone10 and production cutover remain open.
 Run3 session01a10f48-83ee-7a32-8bff-722d10c36359, actualgpt-6.1-sol medium.
 Artifacts: `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359-r3-20261007`.
 Saved quota-budget.json baseline99% at2026-10-07T12:55:05.674Z, stop89%,
-reset1791948695. Latest90% at2026-10-07T15:39:17.604Z:9points consumed,1remains.
-Preserve baseline across resume; check fresh telemetry before starts/gates and
-about5minutes during work. At89 stop new work/delegation/large gates, finish only
-in-flight atomic work/minimal checkpoint. Never commit unchecked work.
+reset1791948695. Floor reached at2026-10-07T16:08:04.993Z:99->89%,
+10percentage points consumed. Saved floor observation at16:08:52.757Z confirms89%.
+No new work, delegation or large gates started after the floor. Only the in-flight
+source report, assigned review and minimal checkpoint closeout continued.
+Preserve this baseline. A later authorized run needs a new run directory and fresh
+baseline; do not reset or resume this closed budget. Nothing was pushed.
 Run1 closed66->56/10points/19commits; run2 closed56->46/10points/20commits through
 3b8d2e31e. Their budgets/reset1791584594 stay immutable. User authorized run3
 after weekly reset; no prior budget was reset. Consumption is separate from billing.
@@ -31,6 +33,9 @@ Run3 accepted work:
 | Exact count4 runtime | a16acef1e | 370faults370retries46exclusions;consensus1515/ONbridge12all15 |
 | Count4 public frames | b4f62f303 | Sevenactualcases/fourjournals;18frozen paths including8diagnostics |
 | Count4 signed H1 simulation | be90ad91f | Twosigners/threetx/108rows;472sessions232faults232retries |
+
+| Count4 H1 estimate | 67f422b5e | 8actualGo probes/64Rust probes/24search calls; full public-owner isolation |
+| Count4 retained-excess H2 trace | 05e92e685 | 488sessions240faults240freshretries; old1count2 retained |
 
 All named slices pass required actualdualpin reproduction/Python/targeted and
 package/check/Clippy/serialfast/whitespace gates and independent frozen Sol
@@ -60,16 +65,25 @@ Review closed a new physical isolation gap: every public owner Column row and
 all three receipts/metadata are checked after every attempt/disposal/reopen,
 separately from complete Go seed rows. Initial wrong-path correction is retained.
 
-Next ready: count4 H1 estimation from the accepted new108rowH1, actual pinned
-probes/unchanged C++ search, per-probe physical/public isolation. After that,
-count4 retained-excess H2 trace needs new actual default trace plus separate
-live-state witness. Fresh Astra medium both-current-four-h2-contract.md confirms
-unchanged count2 helper accepts the predicted intermediate: old1count4->3->2
-retained for O, current2count2; full400 source2->1->2/destination2->1->3 while
-old1count2/O8001200 remain. Target authentication excludes old1 and O pairs;
-state witnesses must prove preservation separately. These H2 results remain
-source predictions, not measured acceptance. No new prompt is needed within
-this active run budget.
+Count4 H1 estimate is accepted: unchanged C++ search returns104977, minimum
+101912, OOG101911. Every probe preserves all public owner column rows, three
+receipts, metadata and complete Go H1 seed authority.
+Count4 H2 trace is accepted: actual default JSON plus a separate identical-H1
+live StateTransition witness. H2 partial300 reduces old1count4->3->2, retaining
+owner800/1200, then full400 uses unchanged count2 helper. Target current2 source
+count2->1->2/destination2->1->3; old1count2 stays unchanged. The 15 target
+keys exclude old1 and owner pairs; separate state witnesses prove preservation.
+No exported Go ordered H2 write-vector or broader runtime admission is claimed.
+
+Next dependency: measure the positive-reward partial source contract in
+[n2_rewarded_partial_redelegate_contract.md](n2_rewarded_partial_redelegate_contract.md).
+It proposes yield20, P1 reward distribution/commit, then P2 partial300. Payout396
+is a source prediction, not an actual measured result. Exact dual-pin reward,
+account, raw-write, log and committed-state evidence comes before adapter work.
+The source-only report and its review were assigned before the floor; actual
+Astra startup was90%, Sol was assigned at90% and observed89% at startup. No
+producer, runtime change or test follows from preparation alone. Review and
+hash records are in the run3 directory. New execution needs a new authorized run.
 
 General counts/rewards, producer configuration/override/capture inputs, qualified
 real-window receipts/outputs/root parity, recovery and integratedN4–N6 remain
