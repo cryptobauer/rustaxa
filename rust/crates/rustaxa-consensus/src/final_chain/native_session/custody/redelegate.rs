@@ -2,8 +2,9 @@
 //!
 //! Every invocation uses a fresh raw trace. Normal failures authenticate their
 //! cold Go read prefix before returning. Success requires post-fix distinct
-//! validators, active Magnolia/Ficus, positive principal and zero reward pools
-//! and indices. Before Aspen part two, zero amount requires both caller pairs
+//! validators, active Magnolia/Ficus and positive principal. Existing profiles
+//! require zero reward pools and indices; the finite P2 partial below admits a
+//! positive source pool with an untouched genesis graph. Before Aspen part two, zero amount requires both caller pairs
 //! to be positive and present; it still advances reward cursors and emits writes.
 //! Partial transfers admit existing or new destination pairs; full
 //! caller-source removal admits an existing positive destination pair, or a new
@@ -31,7 +32,10 @@
 //! Other full/existing current-source shapes are unsupported. Head, cursor,
 //! current nodes and complete
 //! membership ordering bind the semantic kernel to physical rows. The kernel
-//! runs on a clone without account access. Source serialization precedes
+//! runs on a clone without account access for zero-reward routes. A separate
+//! finite P2 partial profile authenticates a positive source pool and complete
+//! retained-owner genesis graph, then uses lazy current account authority.
+//! Source serialization precedes
 //! destination serialization; only full success advances the session.
 //! Reader/integrity failures abort through the enclosing session. Unsupported
 //! success branches return an explicit scope error. Go block-cache/read-count
@@ -162,6 +166,26 @@ impl FinalChainNativeSession<'_> {
                 quote,
                 Vec::new(),
             ));
+        }
+
+        // The measured reward-bearing partial has its own finite authority
+        // profile. Every zero-reward path retains its existing authentication.
+        if before
+            .delegator_rewards
+            .get(&from)
+            .is_some_and(|pool| !pool.is_zero())
+        {
+            return self.invoke_rewarded_partial(
+                DposTransaction::Redelegate {
+                    delegator,
+                    from,
+                    to,
+                    amount,
+                },
+                quote,
+                state,
+                trace,
+            );
         }
 
         let source_principal = delegation(before, from, delegator)
@@ -889,6 +913,15 @@ fn redelegate_result(
     quote: FinalChainNativeGasQuote,
     raw_mutations: Vec<FinalChainNativeRawMutation>,
 ) -> FinalChainNativeInvocationResult {
+    redelegate_result_with_accounts(outcome, quote, raw_mutations, Vec::new())
+}
+
+fn redelegate_result_with_accounts(
+    outcome: DposApplyOutcome,
+    quote: FinalChainNativeGasQuote,
+    raw_mutations: Vec<FinalChainNativeRawMutation>,
+    account_mutations: Vec<FinalChainNativeOrdinaryMutation>,
+) -> FinalChainNativeInvocationResult {
     let status = if outcome.status_code == 1 {
         FinalChainNativeStatus::Success
     } else {
@@ -904,7 +937,7 @@ fn redelegate_result(
         status,
         gas_used: quote.required_gas,
         output: outcome.code_retval,
-        account_mutations: Vec::new(),
+        account_mutations,
         raw_mutations,
         logs: outcome
             .logs
@@ -916,4 +949,274 @@ fn redelegate_result(
             })
             .collect(),
     })
+}
+
+impl FinalChainNativeSession<'_> {
+    /// Executes only the measured P2 positive-source-pool partial topology.
+    /// Complete two-validator/common-owner authority is authenticated before
+    /// lazy account access. The existing kernel and source/destination codecs
+    /// produce separate ordered account and raw vectors; their mixed publication
+    /// order and parent-frame behavior are outside this method's parity scope.
+    /// Errors discard scratch state and effects. A publication error must abort
+    /// the enclosing session; this method is not a journal rollback owner.
+    fn invoke_rewarded_partial(
+        &mut self,
+        transaction: DposTransaction,
+        quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
+        mut trace: FinalChainNativeRawTrace<'_>,
+    ) -> Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        let DposTransaction::Redelegate {
+            delegator,
+            from,
+            to,
+            amount,
+        } = transaction
+        else {
+            return Err(FinalChainNativeSessionError::UnsupportedOperation);
+        };
+        let before = &self.dpos_state;
+        let owner =
+            self.rewarded_partial_owner(delegator, from, to, u256_from_big_endian(&amount))?;
+        for validator in [from, to] {
+            self.authenticate_redelegate_validator(validator, &mut trace)?;
+            authenticate(
+                &mut trace,
+                rewards_key(validator),
+                ExpectedRaw::Exact(encode_rewards(before, validator)),
+                "rewarded partial pool/commission",
+            )?;
+            authenticate(
+                &mut trace,
+                validator_owner_key(validator),
+                ExpectedRaw::Exact(owner.to_vec()),
+                "rewarded partial owner",
+            )?;
+            for account in [delegator, owner] {
+                authenticate_delegation(before, validator, account, &mut trace)?;
+            }
+            let node = before
+                .reward_reference_graph
+                .load_node(&NodeKey {
+                    validator,
+                    block: 0,
+                })
+                .map_err(domain)?;
+            authenticate(
+                &mut trace,
+                reward_node_key(validator, 0),
+                ExpectedRaw::Exact(encode_node(&node)),
+                "rewarded partial genesis node",
+            )?;
+            authenticate(
+                &mut trace,
+                reward_node_key(validator, 2),
+                ExpectedRaw::Empty,
+                "rewarded partial absent current node",
+            )?;
+        }
+        for prefix in [
+            &[0, 5][..],
+            &delegator_validators_prefix(delegator),
+            &delegator_validators_prefix(owner),
+        ] {
+            authenticate(
+                &mut trace,
+                iterable_count_key(prefix),
+                ExpectedRaw::Exact(2_u32.to_le_bytes().to_vec()),
+                "rewarded partial membership count",
+            )?;
+            for (position, validator) in [(1, from), (2, to)] {
+                authenticate(
+                    &mut trace,
+                    iterable_item_key(prefix, position),
+                    ExpectedRaw::Exact(validator.to_vec()),
+                    "rewarded partial membership item",
+                )?;
+                authenticate(
+                    &mut trace,
+                    iterable_position_key(prefix, &validator),
+                    ExpectedRaw::Exact(position.to_le_bytes().to_vec()),
+                    "rewarded partial membership position",
+                )?;
+            }
+        }
+        let mut next = before.clone();
+        let mut accounts = StagedDposAccountPort::from_state(state);
+        let outcome = self
+            .final_chain
+            .apply_dpos_redelegate(
+                &mut next,
+                &mut accounts,
+                delegator,
+                from,
+                to,
+                amount,
+                self.pending_period,
+            )
+            .map_err(map_kernel_error)?;
+        if outcome.status_code != 1 {
+            return Err(domain(
+                "authenticated rewarded partial kernel violated success scope",
+            ));
+        }
+        self.serialize_undelegate_principal(delegator, from, before, &next, &mut trace)?;
+        self.serialize_delegate(delegator, to, before, &next, &mut trace)?;
+        let account_mutations = accounts.into_mutations();
+        self.dpos_state = next;
+        Ok(redelegate_result_with_accounts(
+            outcome,
+            quote,
+            trace.finish(),
+            account_mutations,
+        ))
+    }
+
+    /// Returns the retained owner only for the complete measured finite graph.
+    /// Values and addresses remain domain inputs; missing provenance or mirrors
+    /// are hard errors. Complete but unsupported topology returns a scope error.
+    fn rewarded_partial_owner(
+        &self,
+        caller: [u8; 20],
+        from: [u8; 20],
+        to: [u8; 20],
+        amount: U256,
+    ) -> Result<[u8; 20], FinalChainNativeSessionError> {
+        let s = &self.dpos_state;
+        let unsupported = || FinalChainNativeSessionError::CustodyScopeUnsupported;
+        if !s.delegation_ledger_history_complete || !s.redelegate_same_validator_history_complete {
+            return Err(domain(
+                "rewarded partial requires complete principal and reward history",
+            ));
+        }
+        if !s.redelegate_same_validator_corruption.is_empty() {
+            return Err(unsupported());
+        }
+        validate_dpos_principal_ledger(s).map_err(map_kernel_error)?;
+        if self.pending_period.as_u64() != 2
+            || !self.final_chain.magnolia_active(self.pending_period)
+            || !self.final_chain.ficus_active_at(self.pending_period)
+            || self.pending_period < self.final_chain.rewards_config.aspen_part_one_period
+            || self.final_chain.aspen_part_two_active(self.pending_period)
+            || self.pending_period <= self.final_chain.rewards_config.fix_redelegate_block_num
+            || from == to
+            || caller == from
+            || caller == to
+            || caller == DPOS_CONTRACT_ADDRESS
+            || amount.is_zero()
+            || delegation(s, from, caller).is_none_or(|v| amount >= v)
+            || delegation(s, to, caller).is_none_or(|v| v.is_zero())
+            || s.validator_order.as_slice() != [from, to].as_slice()
+            || s.total_stakes.len() != 2
+            || s.validator_metadata.len() != 2
+            || s.vrf_keys.len() != 2
+            || s.delegations.len() != 2
+            || s.delegator_validators.len() != 2
+            || !s.validator_reward_per_stake.is_empty()
+            || s.delegation_reward_cursors.len() != 2
+            || !s.undelegations.is_empty()
+            || !s.undelegations_v2.is_empty()
+            || !s.undelegation_v2_last_ids.is_empty()
+            || !s.slashing_jailed_validators.is_empty()
+            || !s.slashing_jail_blocks.is_empty()
+            || !s.slashing_double_voting_proofs.is_empty()
+            || s.delegator_rewards
+                .keys()
+                .chain(s.commission_rewards.keys())
+                .any(|v| *v != from && *v != to)
+        {
+            return Err(unsupported());
+        }
+        let owner = s
+            .validator_metadata
+            .get(&from)
+            .ok_or_else(|| domain("rewarded partial source metadata absent"))?
+            .owner;
+        if owner == caller
+            || owner == from
+            || owner == to
+            || owner == DPOS_CONTRACT_ADDRESS
+            || s.validator_metadata
+                .get(&to)
+                .is_none_or(|row| row.owner != owner)
+            || [from, to].iter().any(|v| !s.vrf_keys.contains_key(v))
+            || [caller, owner].iter().any(|a| {
+                s.delegator_validators.get(a).map(Vec::as_slice) != Some([from, to].as_slice())
+            })
+            || [from, to].iter().any(|v| {
+                s.delegations.get(v).is_none_or(|rows| {
+                    rows.len() != 2
+                        || [caller, owner]
+                            .iter()
+                            .any(|a| rows.get(a).is_none_or(StoredDposTokenAmount::is_zero))
+                })
+            })
+            || s.delegator_rewards.get(&from).is_none_or(|v| v.is_zero())
+            || s.commission_rewards.get(&from).is_none_or(|v| v.is_zero())
+            || s.delegator_rewards.get(&to).is_some_and(|v| !v.is_zero())
+            || s.commission_rewards.get(&to).is_some_and(|v| !v.is_zero())
+        {
+            return Err(unsupported());
+        }
+        let graph = &s.reward_reference_graph;
+        if graph.current_block().map_err(domain)? != 2
+            || graph.live_nodes().map_err(domain)?.len() != 2
+        {
+            return Err(unsupported());
+        }
+        let zero = DposRewardIndex::zero();
+        for validator in [from, to] {
+            let node = graph
+                .load_node(&NodeKey {
+                    validator,
+                    block: 0,
+                })
+                .map_err(domain)?;
+            if node.count != 3
+                || node.reward_per_stake != zero
+                || graph.read_validator_head(&validator).map_err(domain)? != 0
+                || graph.is_stale_head(&validator).map_err(domain)?
+            {
+                return Err(unsupported());
+            }
+            match graph.load_node(&NodeKey {
+                validator,
+                block: 2,
+            }) {
+                Err(DposRewardGraphError::MissingNode { .. }) => {}
+                Ok(_) => return Err(unsupported()),
+                Err(e) => return Err(domain(e)),
+            }
+            // Genesis has no checkpointed validator-index mirrors. Require
+            // that exact absence above; node/head authority supplies index0.
+            let cursors = s
+                .delegation_reward_cursors
+                .get(&validator)
+                .ok_or_else(|| domain("rewarded partial cursor mirrors absent"))?;
+            if cursors.len() != 2 {
+                return Err(unsupported());
+            }
+            for account in [caller, owner] {
+                if graph.read_cursor(&validator, &account).map_err(domain)? != 0 {
+                    return Err(unsupported());
+                }
+                let mirror = cursors
+                    .get(&account)
+                    .ok_or_else(|| domain("rewarded partial cursor mirror absent"))?;
+                if mirror.index != zero {
+                    return Err(unsupported());
+                }
+            }
+        }
+        let stake = s.delegations[&from][&caller].amount();
+        if self
+            .final_chain
+            .pending_delegator_reward(s, from, caller, stake)
+            .map_err(map_kernel_error)?
+            .is_zero()
+        {
+            return Err(unsupported());
+        }
+        Ok(owner)
+    }
 }
