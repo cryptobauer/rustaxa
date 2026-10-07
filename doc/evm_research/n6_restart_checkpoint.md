@@ -1,78 +1,77 @@
 # Restart checkpoint: run3 active
 
-Branch `feat/rust/evm-state-db`; accepted runtime `70399811f`. No push.
+Branch `feat/rust/evm-state-db`; accepted runtime `a16acef1e`. No push.
 N1–N6/Milestone10 and production cutover remain open.
 
-Active run3 lead session01a10f48-83ee-7a32-8bff-722d10c36359, actualgpt-6.1-sol medium.
+Run3 session01a10f48-83ee-7a32-8bff-722d10c36359, actualgpt-6.1-sol medium.
 Artifacts: `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c36359-r3-20261007`.
-quota-budget.json initialized once2026-10-07T12:55:05.674Z:baseline99%,stop89%,
-reset1791948695. Latest95% at2026-10-07T14:16:49.043Z:4points consumed,6remain.
-Preserve this baseline across resume. Check fresh telemetry before each start/gate
-and about5minutes during work. At89 stop new work/delegation/large gates; finish
-only in-flight atomic work and minimal checkpoint. Do not commit unchecked work.
-Previous run1 closed66->56/10points/19commits and run2 closed56->46/10points/
-20commits through3b8d2e31e. Their budgets/artifacts/reset1791584594 are immutable.
-The user authorized this third run after the weekly reset; no prior budget was reset.
+Saved quota-budget.json baseline99% at2026-10-07T12:55:05.674Z, stop89%,
+reset1791948695. Latest90% at2026-10-07T15:39:17.604Z:9points consumed,1remains.
+Preserve baseline across resume; check fresh telemetry before starts/gates and
+about5minutes during work. At89 stop new work/delegation/large gates, finish only
+in-flight atomic work/minimal checkpoint. Never commit unchecked work.
+Run1 closed66->56/10points/19commits; run2 closed56->46/10points/20commits through
+3b8d2e31e. Their budgets/reset1791584594 stay immutable. User authorized run3
+after weekly reset; no prior budget was reset. Consumption is separate from billing.
 
-Run3 accepted local commits:
-- bae1774ed: public canonical existing-current H1 simulation, separate105-row Go
-  identity;15actualauthenticationkeys/everykeycorruption+readererror/freshretry;
- 248sessions/120faults120retries. Public finalize once/reopen/header/semantic/full
-  physical isolation. [Simulation](n3_existing_current_signed_h1_simulation.md).
-- 8d2d7bcec: sameH1 estimation,8actualdualpinprobes/unchangedC++search104977/
-  minimum101912/below101911OOGused21912;64Rustsessions/24searchcalls/perprobe
-  isolation. [Estimation](n3_existing_current_signed_h1_estimate.md).
-- 621596acc: one direct H2 partial300/full400 trace over samecompleteH1. ActualGo
-  defaultJSON101912/failedfalse/emptyreturnstructLogs/diagnostics; Rustinternal
-  prefix12writes/target15/source2->1->2/dst2->1->3/H1node1deletions/ownerpreservation/
-  cumulativeLASTlivejournal;15targetauthreads/264sessions/128faults128freshretries.
-  [Trace](n3_direct_existing_current_redelegate_trace.md).
+Run3 accepted work:
 
-Allthree slices pass actualdualpin reproduction/Pythoncompile/targeted+EVMpackage/
-check/Clippy/serialfast/whitespace, frozenindependentSolmediumreview. Runtimeunchanged:
-accepted072fc39fbONbridgebuild12/all15 inherited separately, without newbridgeclaim.
-Records existing-current-h1-, existing-current-h1-estimate-, existing-current-h2-trace-
-closeout.json/review.md bind exactchecks/hashes/corrections. Firstfailures retained:
-missingaddresshelper and newprefix14expectation correctedto12; trace error-message
-claim correctedtofragmentchecks. Rootsolewriter/buildowner. Luna startupconfirmed
-medium; nextcount3sourcecheck workertelemetrystale/unknown recordedwithoutretry;
-freshleadbudget authorized read-only check. FreshAstraH2contract+freshSolH2review
-confirmed; historicalrouting and priorrecords preserved, no billinginference.
+| Scope | Commit | Evidence |
+| --- | --- | --- |
+| Count2 signed H1 simulation | bae1774ed | 105-row identity;248sessions/120faults120freshretries |
+| Count2 H1 estimate | 8d2d7bcec | 8actualGo probes/64Rust probes/24search calls |
+| Count2 H2 trace | 621596acc | 264sessions/128faults128freshretries;old1 deleted |
+| Count3 oracle | 38b5a4498 | RealAA300/O100/full700;dualpin/control114rows |
+| Exact count3 runtime | 70399811f | 322faults322retries44exclusions;consensus1510/ONbridge12all15 |
+| Count3 public frames | e8e439ab0 | Sevenactualcases/threejournals;complete diagnostics ff4086218 |
+| Count3 signed H1 simulation | 85f846521 | Two canonical signers/twotx/108rows;472sessions232faults232retries |
+| Count3 H1 estimate | c9aa6ca72 | 8actualGo probes/64Rust probes/24search calls |
+| Count3 retained-owner H2 trace | e9cc1b24d | 488sessions240faults240retries;old1count1 retained |
+| Count4 repeated-owner oracle | 0cea670f9 | RealAA300/O100/O100/full700;dualpin/control114rows |
+| Exact count4 runtime | a16acef1e | 370faults370retries46exclusions;consensus1515/ONbridge12all15 |
+| Count4 public frames | b4f62f303 | Sevenactualcases/fourjournals;18frozen paths including8diagnostics |
+| Count4 signed H1 simulation | be90ad91f | Twosigners/threetx/108rows;472sessions232faults232retries |
 
-Currentcount2profile: genesis[31,32], caller+owner1000eachatboth. CanonicalC key31
-prefixpartial30031->existing32 committedH1, bothnode1count2; caller7001300,
-owner10001000, totals17002300/principal4000; C3000nonce1/owner1000nonce0/native4000
-nonce1/supply8000. DPOS2/Cornus3/disabledCacti7, explicitforks. CompleteGoH1root
-e4781dc89abf0c3ff461290bc536b5ed807a39ded5c23cf9525349e07727e8b7,105rows.
-No Rust/Go root equality; DryRunnernativeinvocation1/effective2 differsfromH2trace.
+All named slices pass required actualdualpin reproduction/Python/targeted and
+package/check/Clippy/serialfast/whitespace gates and independent frozen Sol
+medium review. Runtime changes pass ON consensus bridge build12/all15; tests
+inherit exact unchanged runtime bridge evidence separately. Closeout.json,
+review.md and freeze.json records in run3 bind commands/exits/identities/failures.
+Root is sole source/gate/producer/commit writer. Luna startup was confirmed;
+Astra handles only named unsettled contracts; actual routing and earlier failures
+stay in reports, without billing inference. Completed audited runs are not resumed.
 
-Count3 is now measured and accepted:
--38b5a4498 actual callerAA300 then ownerA1 100 then fullcaller700, dualpin and
- uninstrumented controls; complete114 genesis/history rows; source3->2->3 and
- destination3->2->4, prefix12/10 and target15 writes; gas101912/101848/101912.
--70399811f separate exact count3 eligibility/source-copy restoration, count2 and
- generic graph unchanged; owner raw identity/pairs/order and old0 absence bound.
- Five tests,322faults+322freshretries,44exclusions; consensus1510/EVM/check/Clippy/
- ONbridgebuild12/all15/serialfast/whitespace0; corrected12hashesSolACCEPT. Initial
- physicalfaultcoverage finding closed; firstfailures retained.
--e8e439ab0 seven actual count3 frames with AA wrapper/D1outer/A1owner, two real
- prefixes and one target inthree journals/onesession, exactpercall and live raw/
- cumulative logs/gas/accounts/dispositions;20frameregressions andallrequiredgates0,
- 10hashesSolACCEPT. Parent REVERT removes targetlogs while native raw effects
- retain measured Go behavior. Unchanged70399811f runtime bridge inherited.
- See[n2 runtime](n2_both_current_three.md),[oracle](n2_both_current_three_oracle.md)
- and[frames](n2_both_current_three_frames.md), artifactcloseout/review records.
+Count4 profile: actual genesis31/32 with commonowner, caller+owner1000 each.
+Three period1 partials caller300/owner100/owner100 leave caller700/1300,
+owner800/1200, totals1500/2500, current nodes4, all heads/four cursors1, old0
+absent. Fullcaller700 preserves source4 and raises destination5. Exact dynamic
+count4 helper is separate from unchanged count2/count3; no general higher counts.
+Public frames compare all four journals, ordered intermediate/LAST raw, gas/logs,
+accounts and dispositions. Parent REVERT drops targetlogs while native raw effects
+retain measured Go behavior. STATICCALL route is distinct from native read_only.
 
-Nextnamedgap: canonical two-signer committedH1 forcount3. Ckey31repeat32 and
- OkeyA1repeat32 must independently recover; update owneridentity inall fourpairs,
- metadata/memberships. RealC300 thenO100 signednonce0 inoneH1/EndBlock/Commit.
- FreshAstra both-current-three-h1-contract.md confirmsdynamichelpereligibility/
- EndBlockcursorpreservation fromsource, actualruntimeconfirmed. Newdualpin
- gas/count/root/completeclosure measurement remains required beforeRustpublic
- finalize/reopen/sameH1full700simulation. Do notreuseold105root/rows/orgas asproof.
- Count3 historicalestimation/H2trace remain separate, notacceptedbyframeevidence.
+Canonical Ckey31/OkeyA1 derive77952ce83ca3cad9f7adcfabeda85bd2f1f52008 and
+5d5c99edf529335160ff180fa141dd4967fc00d2. Signed noncesC0/O0/O1 finalize once
+in H1. Cnonce1/Ononce2/native1, balances3000/1000/4000, supply8000, locking2/3/7.
+Complete Go root a8ea1ecbd354137b6ed5d14084c673eb9bd959979175f110b24cd20a56903b71
+has108rows. SameH1 DryRunner full700 uses native invocation1/EVMcontext2 and
+private effective2, preserving supplied2^512. No Rust/Go root equality is claimed.
+Review closed a new physical isolation gap: every public owner Column row and
+all three receipts/metadata are checked after every attempt/disposal/reopen,
+separately from complete Go seed rows. Initial wrong-path correction is retained.
 
-Unknownrealproducerconfiguration/override/capturefacts, qualifiedrealwindow/root
-parity, recovery/integratedN4–N6 remainopen. No supplied-data/upstreamC++/storageowner
-exception, protocol/fallback, productionroute, expensivebroad/differentialgate orpush.
-The active branch-run prompt remains valid; no newprompt is needed within this run.
+Next ready: count4 H1 estimation from the accepted new108rowH1, actual pinned
+probes/unchanged C++ search, per-probe physical/public isolation. After that,
+count4 retained-excess H2 trace needs new actual default trace plus separate
+live-state witness. Fresh Astra medium both-current-four-h2-contract.md confirms
+unchanged count2 helper accepts the predicted intermediate: old1count4->3->2
+retained for O, current2count2; full400 source2->1->2/destination2->1->3 while
+old1count2/O8001200 remain. Target authentication excludes old1 and O pairs;
+state witnesses must prove preservation separately. These H2 results remain
+source predictions, not measured acceptance. No new prompt is needed within
+this active run budget.
+
+General counts/rewards, producer configuration/override/capture inputs, qualified
+real-window receipts/outputs/root parity, recovery and integratedN4–N6 remain
+open. No supplied-data/upstreamC++/storageowner exception, protocol/fallback,
+production route, broad/differential gate or push is authorized.
