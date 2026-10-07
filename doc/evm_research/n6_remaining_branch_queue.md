@@ -21,22 +21,22 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-Accepted runtime072fc39fb covers the exact full/existing BOTH-current count2
-profile. Its canonical105-row signedH1 public simulation and estimation, plus
-one H2 partial300/full400 live trace, are now accepted; see the checkpoint and
-linked closeout records. Old source-first/source-last/full-new profiles remain
-covered. Preserve their corpora, support, exclusions and runtime guards.
+Accepted runtime70399811f adds exact BOTH-current count3 alongside unchanged
+count2 runtime072fc39fb and its canonical105-row H1 simulation/estimation/H2trace.
+Count3 real caller300+owner100+fullcaller700 oracle38b5a4498, runtime322faults/
+freshretries44exclusions and sevenpublicframes e8e439ab0 are accepted. See the
+checkpoint and[n2 count3](n2_both_current_three.md). Preserve all oldcorpora,
+support, exclusions and runtime guards; count>=2/generalreward behavior is open.
 
-The next named N2 gap is a real callerpartial300 followed by ownerpartial100
-sameperiod1 at the same two genesis validators, creating BOTHcurrent count3
-with head plus both cursors. Callerfull700 then needs source3->2->3 and
- destination3->2->4 according to source predictions; no actual measurement or
-runtime acceptance exists yet. The count2 helper rejects this shape. A fresh
-bounded contract and separate actualdualpin/control producer are required before
-Rust implementation. Do not generalize count2 to count>=2 or assume oldcount4
-exclusions are superseded. The active run3 budget is99->89; latest97%,8pointsremain,
-with prior completed budgets preserved. No new prompt is needed for authorized
-ready work within that budget. N1–N6 remain open.
+The next named gap is two canonical signers inone committedH1 with count3, then
+sameH1 callerfull700 simulation. Use Ckey31repeat32 and derived OkeyA1repeat32,
+real300/100 signednonce0 prefixes, exactidentity-updatedgenesis/metadata/membership.
+FreshAstra sourceauthority is complete in both-current-three-h1-contract.md.
+Newdualpin count/gas/root/completeH1rows remain unmeasured. Then publicRust
+finalize/reopen/semantic/concreteisolation can follow. Estimation/H2trace follow
+only their separate measured authorities. Active run3 baseline99->89,latest95
+at2026-10-07T14:16:49.043Z/4consumed6remain. Preserve prior completed budgets.
+No new prompt is needed for authorized ready work within that budget; N1–N6 open.
 
 ## Contract work for later gaps
 
