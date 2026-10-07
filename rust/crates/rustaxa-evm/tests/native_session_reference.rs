@@ -838,3 +838,6 @@ mod redelegate_both_current_three_frames;
 
 #[path = "native_session_reference/redelegate_both_current_four_frames.rs"]
 mod redelegate_both_current_four_frames;
+
+#[path = "native_session_reference/redelegate_rewarded_partial_frames.rs"]
+mod redelegate_rewarded_partial_frames;
