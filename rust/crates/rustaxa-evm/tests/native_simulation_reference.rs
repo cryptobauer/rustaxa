@@ -631,3 +631,6 @@ mod redelegate_existing_current_estimate;
 
 #[path = "native_simulation_reference/redelegate_existing_current_trace.rs"]
 mod redelegate_existing_current_trace;
+
+#[path = "native_simulation_reference/redelegate_both_current_three.rs"]
+mod redelegate_both_current_three;
