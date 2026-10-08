@@ -682,3 +682,6 @@ mod reward_claims_h1_failure;
 
 #[path = "native_simulation_reference/reward_commission_sequence.rs"]
 mod reward_commission_sequence;
+
+#[path = "native_simulation_reference/reward_delegator_sequence.rs"]
+mod reward_delegator_sequence;
