@@ -222,7 +222,7 @@ pub(super) fn history(path: &FixturePath, initialize: bool, public: &Value) -> F
     chain
 }
 
-fn committed(chain: &FinalChain, public: &Value) -> Value {
+pub(super) fn committed(chain: &FinalChain, public: &Value) -> Value {
     let accounts = public["state_before"]["accounts"]
         .as_array()
         .unwrap()
