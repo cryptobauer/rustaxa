@@ -1,0 +1,65 @@
+{
+  "balance_helper_sha256": "884dae58564aa04052195518d202d98aafd4c6ca390c2b0463da47e16976b66c",
+  "balance_helper_source_sha256": "2c10f9cab99a9e9326c1a8e6ff85c7590f9d97a47e43586df62c848009dd6fc4",
+  "balance_target": "taraxa/state/state_evm/account.go",
+  "balance_target_sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+  "baseline_sha256": {
+    "fixtures/native_redelegate_reward_h1/public.json": "ca6025893ec6cbaea981dfb22a4cd4707c8bf7673f80da8ab0446fcd359df7ea",
+    "native_redelegate_reward_h1_reference.go": "02fa9f74a2f5a7f5185d69a4c8f46f95f32c364feb248cc854046cbbb282137c",
+    "native_redelegate_reward_h1_reference.py": "425ce2241b0f11cdc5c7944ca705f836180506cf1bf95defc2b046613302bc5d"
+  },
+  "control_execution_identical": true,
+  "control_sha256": {
+    "local": [
+      "fa9491b026fe99aebcb3b883b3a2b449e7325f749e02d22d586cd362996399d0",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "fa9491b026fe99aebcb3b883b3a2b449e7325f749e02d22d586cd362996399d0",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "dry_runner_sha256": {
+    "local": "abc2b1ace3669007190f901fea2da144bcc00167468d02939b847c7fdac506ed",
+    "public": "abc2b1ace3669007190f901fea2da144bcc00167468d02939b847c7fdac506ed"
+  },
+  "exporter_sha256": "8f2f41c653c314a12e1d68df2155b9340ad77ce8763b007782ba49aa548ceb28",
+  "go_version": "go version go1.24.4 linux/amd64",
+  "guard_source_sha256": "b1083d2ae1a9062cc2ec6a623764f35b86fa229c5dd90247f52022f9e8e07918",
+  "harness_sha256": "795db82c601e6cec6b7de3d30d5326f173f6098afe5ee326800267891d46138b",
+  "profile": "reward_only_P1_mixed_claims_pending2_trace",
+  "raw_observer_sha256": "d6e0276bb4342b886d68168dad0d74e0ae53b39a9bc2456495b010530dfd76ec",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "root": "0f3680f4c7acd788e123aa95831050f369b605730dd71c7cd4fb6a1d1ae8c21b",
+  "schema": 1,
+  "sha256": {
+    "local": [
+      "6914b3a29a549a98602fde1a9ca4d0e91b28ae294b75aeb1bfa9e199dae9516a",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "6914b3a29a549a98602fde1a9ca4d0e91b28ae294b75aeb1bfa9e199dae9516a",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "support_sha256": {
+    "native_redelegate_reward_h1_reference.go": "02fa9f74a2f5a7f5185d69a4c8f46f95f32c364feb248cc854046cbbb282137c",
+    "native_redelegate_simulation_reference.go": "9ce77d652c4e99cf881e67b14eed10b394168f2409cd1b80e15ef616ac889392",
+    "native_redelegate_swap_append_simulation_reference.go": "2fcbae7360e55fe50ee54849767111c275be4864f4411582d51540bc83f6829c",
+    "native_redelegate_trace_reference.go": "e3607ed7f09ce6618665d887d73832015f074222b2c0d427519613a2720767ce",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60"
+  },
+  "trace_log_helper_sha256": "6fc9d6e0b1bca3664a67af696ee88440646c29b258a7c6f5f9078c8f05981c24",
+  "trace_log_target_sha256": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd",
+  "trace_runner_sha256": {
+    "local": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd",
+    "public": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd"
+  }
+}
