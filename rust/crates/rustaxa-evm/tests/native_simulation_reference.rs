@@ -661,3 +661,6 @@ mod redelegate_rewarded_partial_trace;
 
 #[path = "native_simulation_reference/reward_commission_trace.rs"]
 mod reward_commission_trace;
+
+#[path = "native_simulation_reference/reward_delegator_trace.rs"]
+mod reward_delegator_trace;
