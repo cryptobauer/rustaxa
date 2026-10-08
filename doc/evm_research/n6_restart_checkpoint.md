@@ -1,4 +1,4 @@
-# Restart checkpoint: run4 active
+# Restart checkpoint: run4 quota handoff
 
 Branch `feat/rust/evm-state-db`; run4 base28abfdec9f. No push.
 Run4 follows next_executable_slice_prompt.md. Root is sole source, producer,
@@ -8,7 +8,7 @@ Run directory `/home/fry/artifacts/evm-round-01a10f48-83ee-7a32-8bff-722d10c3635
 Root session01a10f48-83ee-7a32-8bff-722d10c36359, actualgpt-6.1-sol medium.
 Saved quota-budget.json baseline89% at2026-10-07T22:22:57.349Z, stop79%,
 reset1791948695. Reuse this exact budget without --init-budget. Latest reading
-82% at2026-10-08T00:21:48.367Z:7points consumed,3remain. Refresh before new work.
+80% at2026-10-08T01:02:40.469Z:9points consumed,1remains. Refresh before new work.
 At79% stop new work/delegation/large gates; finish atomic work and minimal closeout.
 Completed budgets remain immutable: run1 66->56,run2 56->46,run3 99->89.
 
@@ -28,6 +28,10 @@ Accepted run4 local commits:
 | Actual direct P2 Go trace oracle | b3a32cb77 |
 | Public rewarded trace/352 disposable sessions | f57dc561a |
 | Positive owner commission trace/24 disposable sessions | 1aff45096 |
+| Positive delegator trace/68 disposable sessions | 15532e4ce |
+| Same-H1 positive delegator claim/68 sessions | 8583fb692 |
+| Same-H1 delegator gas estimate/72 probes | ae9516a27 |
+| Same-H1 owner commission claim/24 sessions | c10975c58 |
 
 Each accepted slice has required checks, explicit frozen paths, matching live
 hashes and independent Sol medium ACCEPT. Exact commands, outputs, exits,
@@ -56,4 +60,17 @@ inputs, real-window/root parity, recovery, integratedN4–N6 and cutover remain 
 No supplied-data/upstreamC++/storageowner exception, protocol/fallback,
 production route, broad/differential gate or push is authorized.
 
-Next active bounded profile: actual positive delegator claim trace measured (gas61464/payout396/6raw/1log); Rust derivative, required gates and fresh review are pending. Producer has complete canonicalP1 and controls; no producer seed is missing. Continue same saved run4 budget.
+Current atomic slice: owner commission H1 gas estimation. Actual10Go probes and unchanged C++ search measure42702/8, minimum41464/1, below41463outofgas/1. Public Rust target passes80freshsimulations/24searches. Full checks/frozen independent review/localcommit are pending until commission-h1-estimate-closeout.json exists. That file records final accepted commit and evidence; a target pass alone is not acceptance.
+
+Read the run directory's final-closeout.json first when it exists. Its closed
+status and final-quota.json are the final run authority; the80% above is an interim
+observation. accepted-commits.json records the complete accepted list after
+closeout. Do not resume a closed run or initialize its budget again. Start another
+run only with fresh authorization and a unique persistent suffix/baseline.
+
+Next ready dependency after this slice: actual positive claim frame or sequential
+claim witnesses on the same publicP1. Existing claim owners and seed APIs are ready;
+no external producer seed is missing for these synthetic tests. Each new profile
+needs actual dual-pin output, exact state/mutation/rollback checks and independent
+review. General reward/history shapes and qualified real-window/root parity remain
+open. At quota floor, only finish in-flight atomic work and minimal closeout.

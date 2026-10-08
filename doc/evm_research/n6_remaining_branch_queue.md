@@ -29,17 +29,23 @@ Literal H1 simulation/native period is1; trace executes2 over reader1 with an
 unpublished pending session and unchanged wide nonce. Earlier nonce/context errors
 and first failures are retained, not erased. General reward/history shapes stay open.
 
-Next bounded ready profile: ClaimRewards(C,validator31) on the same canonical P1.
-Actual Go direct trace is measured: gas61464/payout396/sixraw/one log; Rust tests,
-required gates and fresh independent review remain pending. Existing claims adapter
-is ready; no new seed or private graph advance is required. Follow the frozen
-profile contract and quota in the run4 directory. Further claim frames/history and
-sequences need their own measured witnesses; no production acceptance follows.
+Positive delegator direct P2 trace, literal-H1 simulation and gas estimation are
+accepted at15532e4ce/8583fb692/ae9516a27. Positive owner commission H1 is accepted
+atc10975c58. Actual P1/public finalize/reopen and both claims owners are ready.
+The current atomic owner commission H1 estimate has measured10Go probes,
+C++result42702/min41464/below41463outofgas and passing80-probe Rust target.
+Final acceptance requires its own frozen review, full gates and closeout record.
 
-Run4 remains active with saved89% baseline/79%floor/reset1791948695. Latest
-82% at2026-10-08T00:31:09.762Z means7points used,3remain; refresh before new work.
-Runs1/2/3 remain closed. Producer inputs, qualified real-window/root parity,
-recovery, integratedN4–N6 and production cutover remain open. Nothing was pushed.
+The next synthetic gap is a positive claim frame or sequential claim witness.
+Use existing owners, exact canonicalP1 and new measured dual-pin outputs; do not
+advance a private snapshot or reuse old vectors as measurements. Generic claim
+frames/history, producer inputs, real windows/root parity, recovery, integrated
+N4–N6 and cutover remain open.
+
+Run4 baseline89%,floor79%,reset1791948695 is immutable. Interim80% at
+2026-10-08T01:02:40.469Z means9points used/1remain. See final-closeout.json and
+final-quota.json in the compact checkpoint's run directory when they exist;
+closed runs must not resume. Runs1/2/3 remain closed. Nothing was pushed.
 
 ## Contract work for later gaps
 
