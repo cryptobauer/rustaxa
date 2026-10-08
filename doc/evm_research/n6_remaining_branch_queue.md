@@ -21,31 +21,31 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-Run4 accepts finite positive-reward P2 partial execution/frames, explicit-origin
-same-H1 simulation and gas estimation, direct P2 public trace, and positive owner
-commission trace. Accepted commits and exact evidence are in the compact checkpoint.
-Canonical rewardP1 is measured and public FinalChain finalize/reopen works.
-Literal H1 simulation/native period is1; trace executes2 over reader1 with an
-unpublished pending session and unchanged wide nonce. Earlier nonce/context errors
-and first failures are retained, not erased. General reward/history shapes stay open.
+The fresh run closed the pending malformed-claim slice first, then commission,
+delegator and mixed claim sequences, positive claim CALL/STATICCALL/revert
+frames, read-free low-gas/nonpayable guards and repeated two-call frames.
+Exact accepted commits and gates are in the [checkpoint](n6_restart_checkpoint.md)
+and its run directory. Old run4 is closed; its interim pending facts are stale.
 
-Positive delegator direct P2 trace, literal-H1 simulation and gas estimation are
-accepted at15532e4ce/8583fb692/ae9516a27. Positive owner commission H1 is accepted
-atc10975c58. Actual P1/public finalize/reopen and both claims owners are ready.
-The current atomic owner commission H1 estimate has measured10Go probes,
-C++result42702/min41464/below41463outofgas and passing80-probe Rust target.
-Final acceptance requires its own frozen review, full gates and closeout record.
+Positive noarg claim-all oracle preparation and runtime/public parity are
+accepted separately at3ded1a88a590/546ac3eeb129. The runtime closeout has all11
+fresh gates and independent frozen acceptance. It preserves count-only gas
+preparation, ordered two-item traversal, shared private scalar views, twelve
+writes and one396payout. Public parity covers168ports across fresh/reopened
+owners. Broader claim-all failure/topology/call profiles remain excluded.
 
-The next synthetic gap is a positive claim frame or sequential claim witness.
-Use existing owners, exact canonicalP1 and new measured dual-pin outputs; do not
-advance a private snapshot or reuse old vectors as measurements. Generic claim
-frames/history, producer inputs, real windows/root parity, recovery, integrated
-N4–N6 and cutover remain open.
+The next settled derivative is a direct public API trace over canonicalP1 with
+empty/ordinary self-transfer prefixes and original wide nonce. Luna's bounded
+`claim-all-next-trace-map.md` identifies the existing producer, trace runner and
+public owner. Confirm actual dual-pin measurement before implementation. A
+prior native prefix, historical period1, nested/static or repeated claim-all
+requires separate scope/source authority and new evidence. No new producer
+input is missing for the selected synthetic derivative.
 
-Run4 baseline89%,floor79%,reset1791948695 is immutable. Interim80% at
-2026-10-08T01:02:40.469Z means9points used/1remain. See final-closeout.json and
-final-quota.json in the compact checkpoint's run directory when they exist;
-closed runs must not resume. Runs1/2/3 remain closed. Nothing was pushed.
+Fresh budget77%,floor67%,reset1791948695 is immutable. Latest interim72% means
+5points used/5left; refresh the same run budget before further work. Run final
+records supersede interim observations. Stop new work at the floor; checkpoint
+pending bytes and gates without claiming acceptance. No push.
 
 ## Contract work for later gaps
 

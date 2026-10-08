@@ -198,3 +198,27 @@ record exists. The run directory final-closeout.json/final-quota.json and
 accepted-commits.json hold the final status, allowance and complete commit list
 when written. Existing routing and first-failure evidence stays intact; no billing
 or per-model quota inference. No production or broad milestone closure is claimed.
+
+
+## Fresh pending-closeout and positive-claim run
+
+Lead session01a11b9c-47e5-7f92-a0f8-c4b9d7725b34, confirmed gpt-6.1-sol medium.
+Baseline77/floor67/reset1791948695; interim72 (5points used). Exact elapsed gate
+metadata and acceptance records are in the current checkpoint's run directory.
+Requested reviewers ran after gate completion and freeze; runtime identity was
+not independently available for worker threads. No billing inference.
+
+| Scope | Routing and corrections | Accepted behavior and checks |
+| --- | --- | --- |
+| Pending selector-only claim failure | Luna startup/hash check; direct Sol implementation; fresh Sol review | Six actual Go cases/48ports, unit/public1 matched, consensus1524/EVM/checkClippy/ON12all15/serialfast/white; e940e9419 |
+| Commission sequences | Direct Sol; fresh profile reviewer then reuse; no duplicate payout | Actual41464each, one8payout, retained zero event;72ports; full derivative gates;2f510107/36e54f03 |
+| Delegator sequences | Direct Sol/fresh Sol; copied scope label corrected, original evidence retained | Actual61464each, raw6+3, one396payout, node2count3;184ports; gates0;651f6f38/05d30b18 |
+| Mixed claim orders | Direct Sol/fresh Sol; read/presence/boundary assertions corrected from observed keys | Both actual orders, total404payout,7raw;160ports;gates0;b8721e19/c7d902f0 |
+| Positive claim frames | Luna map/direct Sol/fresh Sol; compile/error type fixes, strengthen both controls to retain raw snapshots | Six actual nested CALL/STATICCALL/revert cases;252ports;EVM60/checkClippy/fast/white0;36f28f21/f71c75a2 |
+| Read-free frame guards | Luna/direct Sol/same-profile review | Four actual low-gas/nonpayable cases, zero native reads/effects;48ports;EVM61/derivative gates0;a769621c/35e92734 |
+| Repeated claim frames | Luna/direct Sol/same-profile review | Six actual two-call frames, commission2writes/one8payout; delegator9writes/one396payout;384ports;EVM62/derivative gates0;bff5de35/f2c13303 |
+| Claim-all oracle preparation | Luna map/fresh Astra source contract/direct Sol/fresh Sol review; suffix2 alias and whole raw controls corrected, failed attempts retained | Actual both pins/repeats/controls,90000native/111272transaction/12writes/one396payout;record-r3/repro/Python/serialfast/white0;3ded1a88 |
+| Claim-all runtime/public | Direct Sol/same-profile Sol review; older-head flag, absent mirror and repeated-count error classification corrections retained | 168ports/unit1/consensus1525/EVMpublic63/checkClippy/ON12all15/serialfast/white0;8source/22evidence ACCEPT;546ac3eeb;579.2s final gates |
+
+Synthetic results leave general histories/claim-all failures, qualified producer
+inputs, real-window/root parity, recovery, N4-N6 and production cutover open.
