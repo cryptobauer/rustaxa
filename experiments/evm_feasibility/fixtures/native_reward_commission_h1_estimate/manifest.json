@@ -1,0 +1,37 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "balance_harness_sha256": "2c10f9cab99a9e9326c1a8e6ff85c7590f9d97a47e43586df62c848009dd6fc4",
+  "balance_helper_sha256": "884dae58564aa04052195518d202d98aafd4c6ca390c2b0463da47e16976b66c",
+  "balance_target_sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+  "cpp_source_sha256": "a90f607e2c2d65d283eb7784174016916431a7c33dca76363777c3642fef640e",
+  "dry_runner_sha256": {
+    "local": "abc2b1ace3669007190f901fea2da144bcc00167468d02939b847c7fdac506ed",
+    "public": "abc2b1ace3669007190f901fea2da144bcc00167468d02939b847c7fdac506ed"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "guard_harness_sha256": "b1083d2ae1a9062cc2ec6a623764f35b86fa229c5dd90247f52022f9e8e07918",
+  "harness_sha256": "0d389f658381ee89b0fd8b6ce9244893c2868e5f4da7bbe9a90e71fae17aea3e",
+  "input_sha256": "a02ed196b480f517c86fd2367445b3d60dadbe20237ea3ba295fce70d0496607",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "cpp": "52918c004c6a7328bb84d30ddd428616c16bc521451d0a89f82ac937b59077a3",
+    "local": "0e140605acbea842c3b7937cba076db54d0b8f9a462d43d072308cfd3b8c41de",
+    "public": "0e140605acbea842c3b7937cba076db54d0b8f9a462d43d072308cfd3b8c41de"
+  },
+  "source_sha256": {
+    "native_redelegate_reward_h1_reference.go": "02fa9f74a2f5a7f5185d69a4c8f46f95f32c364feb248cc854046cbbb282137c",
+    "native_redelegate_simulation_reference.go": "9ce77d652c4e99cf881e67b14eed10b394168f2409cd1b80e15ef616ac889392",
+    "native_redelegate_swap_append_simulation_reference.go": "2fcbae7360e55fe50ee54849767111c275be4864f4411582d51540bc83f6829c",
+    "native_reward_commission_h1_estimate_reference.go": "b03be3c5ba53e86d120cac482c1c37d5b5eab8245f814c9a9e7db8cee40fe4a3",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60"
+  },
+  "stderr_sha256": {
+    "local": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "public": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "support_harness_sha256": "6f6feb78cea4eba35b9078fda79bfa1d79e46fbe04e988bc1ebaac33d7437200"
+}
