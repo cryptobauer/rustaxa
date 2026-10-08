@@ -685,3 +685,6 @@ mod reward_commission_sequence;
 
 #[path = "native_simulation_reference/reward_delegator_sequence.rs"]
 mod reward_delegator_sequence;
+
+#[path = "native_simulation_reference/reward_mixed_claims.rs"]
+mod reward_mixed_claims;
