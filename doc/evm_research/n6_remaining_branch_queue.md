@@ -21,28 +21,25 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-Run4 accepted positive-reward partial oraclec652fc315, isolatedadapter4c82359,
-actualframeoraclefff3c4e and publicRustframes e14922b. RealP1 mint800/sourcepool792/
-commission8/native4800, P2 partial300 pays396 with12raw/2account/2logs. Public
-FinalChain P1 finalize/reopen and boundP2 frames pass allrequiredchecks/reviews.
-Go parentREVERT restores payout accounts/logs while native raw writes survive.
-The corrected frame view has52unique keys, including actual minted_tokens and
-absent total_supply; allrawvalues are resolved from complete physicalP1.
-Prior zero/count2/count3/count4 corpora and guards remain unchanged.
+Run4 accepts finite positive-reward P2 partial execution/frames, explicit-origin
+same-H1 simulation and gas estimation, direct P2 public trace, and positive owner
+commission trace. Accepted commits and exact evidence are in the compact checkpoint.
+Canonical rewardP1 is measured and public FinalChain finalize/reopen works.
+Literal H1 simulation/native period is1; trace executes2 over reader1 with an
+unpublished pending session and unchanged wide nonce. Earlier nonce/context errors
+and first failures are retained, not erased. General reward/history shapes stay open.
 
-Next: actual canonical positive-reward P1 same-H1 DryRunner measurement before
-historical adapter work. Fresh Astra source contract and corrected Luna map live
-in run4 artifacts. Go andRustsameH1 use literalblock/nativeperiod1; nonce is
-separate. New historical admission needs explicit constructor origin and current1
-selection, absentNODE1, exactgraph/auth/account authority. Do not silently admit
-arbitraryperiods or inferhistory from request_id=None. Actualnewoutputs/root/rows
-and per-vector effects are required before implementation/acceptance.
+Next bounded ready profile: ClaimRewards(C,validator31) on the same canonical P1.
+Actual Go direct trace is measured: gas61464/payout396/sixraw/one log; Rust tests,
+required gates and fresh independent review remain pending. Existing claims adapter
+is ready; no new seed or private graph advance is required. Follow the frozen
+profile contract and quota in the run4 directory. Further claim frames/history and
+sequences need their own measured witnesses; no production acceptance follows.
 
-Run4 is active: savedbaseline89%,floor79%,reset1791948695;85% observed at
-2026-10-07T23:33:08.937Z (4points used,6remain). Preserve this exact budget.
-Runs1/2/3 are closed and must not resume. Generalreward/history shapes, N1–N6,
-producer inputs, real-window/root parity and production cutover remain open.
-Nothing was pushed.
+Run4 remains active with saved89% baseline/79%floor/reset1791948695. Latest
+82% at2026-10-08T00:31:09.762Z means7points used,3remain; refresh before new work.
+Runs1/2/3 remain closed. Producer inputs, qualified real-window/root parity,
+recovery, integratedN4–N6 and production cutover remain open. Nothing was pushed.
 
 ## Contract work for later gaps
 
