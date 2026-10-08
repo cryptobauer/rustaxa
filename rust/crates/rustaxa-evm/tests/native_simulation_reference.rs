@@ -655,3 +655,6 @@ mod redelegate_rewarded_partial;
 
 #[path = "native_simulation_reference/redelegate_rewarded_partial_estimate.rs"]
 mod redelegate_rewarded_partial_estimate;
+
+#[path = "native_simulation_reference/redelegate_rewarded_partial_trace.rs"]
+mod redelegate_rewarded_partial_trace;
