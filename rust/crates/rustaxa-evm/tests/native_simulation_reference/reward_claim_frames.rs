@@ -20,10 +20,10 @@ use std::{
 
 /// Immutable execution-only code view. It cannot implement the committed-query
 /// interface. The zero root marks this experimental view, not the canonical root.
-struct CodeView<'a> {
-    base: &'a CompleteSeedReader,
-    wrapper: [u8; 20],
-    code: Vec<u8>,
+pub(super) struct CodeView<'a> {
+    pub(super) base: &'a CompleteSeedReader,
+    pub(super) wrapper: [u8; 20],
+    pub(super) code: Vec<u8>,
 }
 impl ConcreteExecutionRead for CodeView<'_> {
     fn identity(&self) -> ConcreteStateIdentity {

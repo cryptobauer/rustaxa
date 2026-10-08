@@ -691,3 +691,6 @@ mod reward_mixed_claims;
 
 #[path = "native_simulation_reference/reward_claim_frames.rs"]
 mod reward_claim_frames;
+
+#[path = "native_simulation_reference/reward_claim_frame_failures.rs"]
+mod reward_claim_frame_failures;
