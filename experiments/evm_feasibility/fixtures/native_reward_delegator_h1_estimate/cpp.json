@@ -1,0 +1,20 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "cases": [
+    {
+      "consumed": 7,
+      "name": "delegator_claim",
+      "result": 63628
+    },
+    {
+      "consumed": 1,
+      "name": "delegator_h1_minimum",
+      "result": 61464
+    },
+    {
+      "consumed": 1,
+      "error": "out of gas",
+      "name": "delegator_h1_below_minimum"
+    }
+  ]
+}

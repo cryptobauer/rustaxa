@@ -667,3 +667,6 @@ mod reward_delegator_trace;
 
 #[path = "native_simulation_reference/reward_delegator_h1.rs"]
 mod reward_delegator_h1;
+
+#[path = "native_simulation_reference/reward_delegator_h1_estimate.rs"]
+mod reward_delegator_h1_estimate;

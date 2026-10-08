@@ -1,0 +1,9 @@
+# Positive delegator H1 gas estimation parity
+
+This test-only derivative uses the accepted same-H1 positive delegator claim and exact canonical reward-only P1. Actual pinned DryRunner calls execute each gas probe first/repeat and check complete92-row state/root unchanged. No observation hook is installed; an unused shared main requires the compiled nil balance helper only.
+
+Three measured profiles: cap200000 produces actual caps200000/130732/96098/78781/70122/65793/63628, each success gas61464; cap61464 succeeds in one probe; cap61463 reports outofgas/gas21464. The unchanged compiled C++ eth_estimateGas search body (algorithm7136e3d4...be7759) checks each callback cap and complete consumption. Results are63628/7,61464/1,outofgas/1. Nine actual Go probes perpin are measured; the search result was not predicted into fixtures. Source/support/input/harness/DryRunner/C++/diagnostic/output hashes remain in the manifest.
+
+Public Rust estimate_gas consumes actual transcripts with a fresh explicit historicalSimulation1 port perprobe. Two owners/two authenticated reader opens/two searches produce72 fresh simulations and24 searches. Each probe checks gas/error/return/log/stateidentity, sendercurrentnonce+1 authority, original nonce, full concrete physical inventory, semantic publicowner header/accounts/principal4000/stakes2000, and exact C++ result/fullconsumption. There is no returned native nonce witness or terminal publication.
+
+Required producer record/reproduce/Python, targeted/fullEVM/checkClippy/serialfast/explicitwhite/freeze/hash and same-profile independent Sol medium review apply. Production source remains unchanged; retain6fe consensus1523/ON12-job/all15bridge evidence explicitly. This synthetic bounded estimate does not establish RPCpresentation, general claims/history/headadvance, root/realwindow/recovery/cutover or production admission. No push.
