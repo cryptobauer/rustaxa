@@ -676,3 +676,6 @@ mod reward_commission_h1;
 
 #[path = "native_simulation_reference/reward_commission_h1_estimate.rs"]
 mod reward_commission_h1_estimate;
+
+#[path = "native_simulation_reference/reward_claims_h1_failure.rs"]
+mod reward_claims_h1_failure;

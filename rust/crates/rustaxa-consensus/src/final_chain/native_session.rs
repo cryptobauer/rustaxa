@@ -616,7 +616,9 @@ impl FinalChainNativeSession<'_> {
     /// `setCommission` validates and retains its validator and owner observations
     /// during preparation. Selected custody calls defer raw and ordinary-account
     /// reads until invocation so business preflight errors preserve the
-    /// reference read order.
+    /// reference read order. A selector-only `claimRewards` request binds its
+    /// measured ABI failure after gas, depth and nonpayability admission; this
+    /// path reads no state and does not admit other malformed claim shapes.
     pub fn prepare(
         &mut self,
         request: &FinalChainNativeRequest,
@@ -665,6 +667,9 @@ impl FinalChainNativeSession<'_> {
             | DposTransaction::ClaimCommissionRewards { .. }
             | DposTransaction::PhalaenopsisEscrowTransfer
             | DposTransaction::SetValidatorInfo { .. } => None,
+            DposTransaction::MalformedMutation {
+                selector: DPOS_CLAIM_REWARDS_SELECTOR,
+            } if request.input.len() == 4 => None,
             transaction if query::is_query(transaction) => {
                 let admission = match self.final_chain.native_invocation_admission(
                     transaction,
@@ -748,6 +753,18 @@ impl FinalChainNativeSession<'_> {
                 quote,
                 kind: if matches!(transaction, DposTransaction::PhalaenopsisEscrowTransfer) {
                     PreparedKind::EscrowTransfer
+                } else if matches!(
+                    transaction,
+                    DposTransaction::MalformedMutation {
+                        selector: DPOS_CLAIM_REWARDS_SELECTOR,
+                    }
+                ) {
+                    // Only the selector-only request passed the finite match above.
+                    // Go quotes the selector before ABI unpack; no state is read.
+                    PreparedKind::AbiFailure(
+                        "abi: cannot marshal in to go type: length insufficient 0 require 32"
+                            .into(),
+                    )
                 } else {
                     PreparedKind::SelectedCustody(transaction)
                 },
@@ -1577,6 +1594,85 @@ mod tests {
             input,
             supplied_gas: supplied_gas.into(),
         }
+    }
+
+    #[test]
+    fn selector_only_claim_admission_is_read_free_and_finite() {
+        with_chain(
+            "selector-only-claim",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut state = RawState::fixture();
+                state.fail_reads = true;
+                for value in [0_u8, 1] {
+                    let mut simulation = chain
+                        .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+                        .unwrap();
+                    let before = simulation.session.dpos_state.clone();
+                    let mut request = simulation_request(
+                        FinalChainBlockNumber::GENESIS,
+                        0,
+                        DPOS_CLAIM_REWARDS_SELECTOR.to_vec(),
+                        40000,
+                    );
+                    request.value = FinalChainNativeValue::new(value.into());
+                    let quote = simulation.prepare(&request, &state).unwrap();
+                    assert_eq!(
+                        quote.required_gas,
+                        if value == 0 {
+                            40000.into()
+                        } else {
+                            FinalChainGas::ZERO
+                        }
+                    );
+                    let outcome = completed(simulation.invoke(&request, quote, &state).unwrap());
+                    assert_eq!(outcome.status, FinalChainNativeStatus::ContractFailure { error: if value == 0 { "abi: cannot marshal in to go type: length insufficient 0 require 32" } else { "Method is not payable" }.into() });
+                    assert_eq!(
+                        outcome.gas_used,
+                        if value == 0 {
+                            40000.into()
+                        } else {
+                            FinalChainGas::ZERO
+                        }
+                    );
+                    assert!(
+                        outcome.account_mutations.is_empty()
+                            && outcome.raw_mutations.is_empty()
+                            && outcome.logs.is_empty()
+                    );
+                    assert_eq!(simulation.session.dpos_state, before);
+                }
+                let mut simulation = chain
+                    .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let request = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    0,
+                    DPOS_CLAIM_REWARDS_SELECTOR.to_vec(),
+                    39999,
+                );
+                let quote = simulation.prepare(&request, &state).unwrap();
+                assert!(matches!(
+                    simulation.invoke(&request, quote, &state).unwrap(),
+                    FinalChainNativeInvocationResult::InsufficientGas { .. }
+                ));
+                for input in [
+                    [DPOS_CLAIM_REWARDS_SELECTOR.as_slice(), &[0]].concat(),
+                    DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR.to_vec(),
+                ] {
+                    let mut simulation = chain
+                        .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+                        .unwrap();
+                    let request =
+                        simulation_request(FinalChainBlockNumber::GENESIS, 0, input, 40000);
+                    assert_eq!(
+                        simulation.prepare(&request, &state),
+                        Err(FinalChainNativeSessionError::UnsupportedOperation)
+                    );
+                }
+                assert_eq!(state.reads.get(), 0);
+            },
+        );
     }
 
     #[test]
