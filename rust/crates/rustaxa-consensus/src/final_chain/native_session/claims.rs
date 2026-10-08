@@ -140,7 +140,9 @@ impl FinalChainNativeSession<'_> {
         }
     }
 
-    fn serialize_delegator_claim(
+    /// Serializes one successful scalar claim into a shared ordered raw trace.
+    /// Before/after views belong to this one step; mismatches abort the session.
+    pub(super) fn serialize_delegator_claim(
         &self,
         delegator: [u8; 20],
         validator: [u8; 20],

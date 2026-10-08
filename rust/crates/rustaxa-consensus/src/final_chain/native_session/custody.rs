@@ -1209,7 +1209,9 @@ fn undelegation_v1_key(delegator: [u8; 20], validator: [u8; 20]) -> ConcreteStor
     ConcreteStorageKey(concrete_storage_key(&[&[3, 0], &validator, &delegator]))
 }
 
-fn delegator_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
+/// Returns the pinned caller-validator iterable prefix for one exact address.
+/// Pure layout construction; no storage read, mutation or failure is possible.
+pub(super) fn delegator_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
     [&[2, 1][..], &delegator].concat()
 }
 
@@ -1225,7 +1227,10 @@ fn undelegation_ids_prefix(delegator: [u8; 20], validator: [u8; 20]) -> Vec<u8> 
     [&[3, 3][..], &delegator, &validator].concat()
 }
 
-fn iterable_item_key(prefix: &[u8], position: u32) -> ConcreteStorageKey {
+/// Hashes a prefix and LE32 one-based item position using effective suffix2.
+/// The pinned Go slice alias determines this layout. Callers validate bounds;
+/// this pure key builder accepts any u32 and has no state or error path.
+pub(super) fn iterable_item_key(prefix: &[u8], position: u32) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[
         prefix,
         &[2],
@@ -1237,7 +1242,9 @@ fn iterable_position_key(prefix: &[u8], item: &[u8]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[prefix, &[2], item]))
 }
 
-fn iterable_count_key(prefix: &[u8]) -> ConcreteStorageKey {
+/// Returns the suffix1 count key for an already selected iterable prefix.
+/// The stored value is LE32; this pure builder neither reads nor validates it.
+pub(super) fn iterable_count_key(prefix: &[u8]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[prefix, &[1]]))
 }
 

@@ -697,3 +697,6 @@ mod reward_claim_frame_failures;
 
 #[path = "native_simulation_reference/reward_claim_frame_sequences.rs"]
 mod reward_claim_frame_sequences;
+
+#[path = "native_simulation_reference/reward_claim_all.rs"]
+mod reward_claim_all;

@@ -20,6 +20,7 @@ use super::*;
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
 
 pub(super) mod account;
+mod claim_all;
 pub(super) mod claims;
 mod concrete_checkpoint;
 pub(super) mod context_replay;
@@ -33,6 +34,8 @@ pub mod vote_inputs;
 
 #[cfg(test)]
 mod cancel_custody_reference_tests;
+#[cfg(test)]
+mod claim_all_reference_tests;
 #[cfg(test)]
 mod claims_reference_tests;
 #[cfg(test)]
@@ -330,6 +333,7 @@ enum PreparedKind {
     EscrowTransfer,
     SetCommission(Box<PreparedSetCommission>),
     SelectedCustody(DposTransaction),
+    ClaimAll(claim_all::PreparedClaimAll),
     Query {
         transaction: DposTransaction,
         abi_data_len: usize,
@@ -619,6 +623,8 @@ impl FinalChainNativeSession<'_> {
     /// reference read order. A selector-only `claimRewards` request binds its
     /// measured ABI failure after gas, depth and nonpayability admission; this
     /// path reads no state and does not admit other malformed claim shapes.
+    /// The finite positive claim-all profile authenticates only its count for
+    /// gas; invocation authenticates ordered items and both scalar transitions.
     pub fn prepare(
         &mut self,
         request: &FinalChainNativeRequest,
@@ -637,6 +643,13 @@ impl FinalChainNativeSession<'_> {
 
         if request.input.starts_with(&DPOS_SET_VALIDATOR_INFO_SELECTOR) {
             return self.prepare_validator_info(request);
+        }
+        if request.input.starts_with(&DPOS_CLAIM_ALL_REWARDS_SELECTOR) {
+            let result = self.prepare_claim_all(request, state);
+            if result.is_err() {
+                self.aborted = true;
+            }
+            return result;
         }
         if request.input.starts_with(&DPOS_REDELEGATE_SELECTOR) {
             return self.prepare_redelegate(request);
@@ -911,6 +924,7 @@ impl FinalChainNativeSession<'_> {
             PreparedKind::SetCommission(prepared) => {
                 self.invoke_set_commission(prepared, quote, state)
             }
+            PreparedKind::ClaimAll(prepared) => self.invoke_claim_all(prepared, quote, state),
             PreparedKind::SelectedCustody(transaction) => {
                 if matches!(transaction, DposTransaction::SetValidatorInfo { .. }) {
                     self.invoke_validator_info(transaction, quote, state)
