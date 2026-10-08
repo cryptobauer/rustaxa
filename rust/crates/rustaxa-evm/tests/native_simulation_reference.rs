@@ -664,3 +664,6 @@ mod reward_commission_trace;
 
 #[path = "native_simulation_reference/reward_delegator_trace.rs"]
 mod reward_delegator_trace;
+
+#[path = "native_simulation_reference/reward_delegator_h1.rs"]
+mod reward_delegator_h1;

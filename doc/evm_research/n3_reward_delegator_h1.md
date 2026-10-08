@@ -1,0 +1,11 @@
+# Positive delegator same-H1 simulation parity
+
+Actual pinned DryRunner ClaimRewards(C,validator31) executes at literal block/native1 over canonical reward-only committed P1. Both pins, first/repeat probes and hook-free controls preserve complete92-row P1/root. Supplied nonce2^512 is replaced by authoritative sendernonce0+1; this is source/request/output evidence, not a returned native nonce witness.
+
+Measured gas61464/payout396/oneRewardsClaimed log match P2 amounts, but exact H1 bytes are measured separately: six writes/five keys, sourceN0count3->2->1, validatorhead1, unchanged principal1000/cursor1, NODE1index396000/count2, rewards0/commission8. Ordered raw/account vectors stay separate. FE4800->4404 and C3000->3396 are actual Go observations. Controls omit both hooks. Manifest pins support/helper/source/DryRunner/diagnostic/output hashes.
+
+Public Rust FinalChain rewardP1finalize/reopen and independent authenticated completeGoP1 reader compose simulate_with_native with explicit begin_native_simulation(1)/SimulationNativeExecutionPort. Checks cover full identity, actual gas/status/output/log/raw/account vectors, native40000, invocationmetadata/supplied178536, nonce immutability and port disposal. No pending-session substitute or terminal publication is used.
+
+Two owner states exercise68 constructed sessions: five read faults, five corruptions, four missing-present faults plus prepare failure perowner, each with fresh successful retry. Period/factory qualification failures create no port and each gets a clean retry. Every attempt preserves full concrete rows/root and public owner header/accounts/principal4000/stakes2000; final reopen is checked. Exact key/count assertions must pass targeted validation.
+
+Required record/reproduce/Python/target/fullEVM/checkClippy/serialfast/explicitwhite/freeze/hash and fresh independent Sol medium review remain required. Production bytes are unchanged; retain6fe consensus1523/ON12-job/all15bridge evidence explicitly. General historicalclaims, ownerheadadvance, root/realwindow/claimframes/sequences/OE/RPC/cutover remain open. No push. First producer alias compile failure and preparation assertion are retained. The first target selected zero tests and cannot establish acceptance; corrected target must select and pass the new test.
