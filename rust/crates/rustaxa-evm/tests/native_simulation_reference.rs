@@ -700,6 +700,8 @@ mod reward_claim_frame_sequences;
 
 #[path = "native_simulation_reference/reward_claim_all.rs"]
 mod reward_claim_all;
+#[path = "native_simulation_reference/reward_claim_all_h1.rs"]
+mod reward_claim_all_h1;
 
 #[path = "native_simulation_reference/reward_claim_all_trace.rs"]
 mod reward_claim_all_trace;

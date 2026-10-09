@@ -1,5 +1,7 @@
 //! Finite positive noarg claim-all execution over the canonical P1 topology.
 //!
+//! Admission permits only HistoricalSimulation1 and PendingPeriod2, with the
+//! reward graph bound to that selected execution block.
 //! Gas preparation authenticates only the caller's LE32 count. Invocation binds
 //! that observation and materializes ordered item rows before executing two
 //! scalar claims on shared private account, semantic and raw views. The first
@@ -31,16 +33,19 @@ fn scope<T>() -> Result<T, FinalChainNativeSessionError> {
 
 impl FinalChainNativeSession<'_> {
     /// Binds the measured direct, first-in-session, funded noarg request.
-    /// Reads only the exact present count; excluded shapes poison preparation
+    /// Origin/period is exactly historical1 or pending2, with no cross-pair
+    /// admission. Reads only the exact present count; excluded shapes poison preparation
     /// through the caller, while unavailable/mismatched rows remain hard errors.
     pub(super) fn prepare_claim_all(
         &mut self,
         request: &FinalChainNativeRequest,
         state: &dyn FinalChainNativeStateRead,
     ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
-        if self.origin != NativeSessionOrigin::PendingPeriod
-            || self.pending_period != 2.into()
-            || self.next_sequence != 0
+        if !matches!(
+            (self.origin, self.pending_period.as_u64()),
+            (NativeSessionOrigin::PendingPeriod, 2)
+                | (NativeSessionOrigin::HistoricalSimulation, 1)
+        ) || self.next_sequence != 0
             || request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
             || request.depth != 0
             || request.kind != FinalChainNativeCallKind::Call
@@ -129,7 +134,7 @@ impl FinalChainNativeSession<'_> {
         let graph = &s.reward_reference_graph;
         let graph_error =
             |e: DposRewardGraphError| FinalChainNativeSessionError::Domain(e.to_string());
-        if graph.current_block().map_err(graph_error)? != 2
+        if graph.current_block().map_err(graph_error)? != self.pending_period.as_u64()
             || graph.live_nodes().map_err(graph_error)?.len() != 2
         {
             return scope();

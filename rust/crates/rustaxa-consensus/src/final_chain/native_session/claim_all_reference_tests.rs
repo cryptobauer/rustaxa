@@ -96,9 +96,17 @@ fn temp_db_path(test_name: &str) -> PathBuf {
 }
 
 fn with_claim_all_chain(test_name: &str, test: impl FnOnce(&FinalChain)) {
+    with_claim_all_chain_config(test_name, |_, _| {}, test);
+}
+
+fn with_claim_all_chain_config(
+    test_name: &str,
+    configure: impl FnOnce(&mut FinalChainRewardsConfig, &mut FinalChainBlockNumber),
+    test: impl FnOnce(&FinalChain),
+) {
     let path = temp_db_path(test_name);
     let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
-    let rewards = FinalChainRewardsConfig {
+    let mut rewards = FinalChainRewardsConfig {
         magnolia_period: FinalChainBlockNumber::GENESIS,
         fix_claim_all_block_num: FinalChainBlockNumber::GENESIS,
         fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
@@ -117,6 +125,8 @@ fn with_claim_all_chain(test_name: &str, test: impl FnOnce(&FinalChain)) {
         dag_proposers_reward_percent: 0,
         ..Default::default()
     };
+    let mut ficus = FinalChainBlockNumber::GENESIS;
+    configure(&mut rewards, &mut ficus);
     let chain = FinalChain::new_with_rewards_config_and_ficus_activation(
         storage.clone(),
         1_000_000.into(),
@@ -148,7 +158,7 @@ fn with_claim_all_chain(test_name: &str, test: impl FnOnce(&FinalChain)) {
             ..Default::default()
         },
         rewards,
-        FinalChainBlockNumber::GENESIS,
+        ficus,
     )
     .unwrap();
     test(&chain);
@@ -346,4 +356,209 @@ fn claim_all_binding_and_scope_reject_without_partial_effects() {
         assert_eq!(s.dpos_state, before);
         assert!(s.aborted);
     });
+}
+
+/// Synthetic renamed H1 topology is constructed at graph1 without regressing a
+/// graph2 view. Public integration separately owns exact finalized P1 authority.
+fn historical_session(chain: &FinalChain) -> FinalChainNativeSession<'_> {
+    let mut s = chain.begin_native_session(1.into(), 0.into()).unwrap();
+    s.origin = NativeSessionOrigin::HistoricalSimulation;
+    s.dpos_state.delegator_rewards.insert(
+        VALIDATOR,
+        StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(792)),
+    );
+    s.dpos_state.commission_rewards.insert(
+        VALIDATOR,
+        StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(8)),
+    );
+    s
+}
+
+#[test]
+fn historical_claim_all_binds_exact_origin_period_graph_and_guards() {
+    with_claim_all_chain("h1-binding", |chain| {
+        let mut s = historical_session(chain);
+        let state = ReferenceState::from_snapshot(&s.dpos_state);
+        let mut r = request();
+        r.period = 1.into();
+        let q = s.prepare(&r, &state).unwrap();
+        let mut wrong = q;
+        wrong.required_gas = 89999.into();
+        assert_eq!(
+            s.invoke(&r, wrong, &state),
+            Err(FinalChainNativeSessionError::QuoteMismatch)
+        );
+        let mut wrong_request = r.clone();
+        wrong_request.input.push(0);
+        assert_eq!(
+            s.invoke(&wrong_request, q, &state),
+            Err(FinalChainNativeSessionError::QuoteMismatch)
+        );
+        let FinalChainNativeInvocationResult::Completed(out) = s.invoke(&r, q, &state).unwrap()
+        else {
+            panic!("funded H1")
+        };
+        assert_eq!(out.status, FinalChainNativeStatus::Success);
+        assert_eq!(
+            (
+                out.raw_mutations.len(),
+                out.account_mutations.len(),
+                out.logs.len()
+            ),
+            (12, 2, 1)
+        );
+        assert_eq!(
+            s.dpos_state.reward_reference_graph.current_block().unwrap(),
+            1
+        );
+        assert_eq!(
+            s.dpos_state
+                .reward_reference_graph
+                .read_validator_head(&VALIDATOR)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            s.dpos_state
+                .reward_reference_graph
+                .read_validator_head(&SECOND)
+                .unwrap(),
+            1
+        );
+        let mut repeat = r.clone();
+        repeat.id.sequence = 1;
+        assert_eq!(
+            s.prepare(&repeat, &state),
+            Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+        );
+        assert!(s.aborted);
+        for kind in 0..21 {
+            let mut s = historical_session(chain);
+            let mut r = request();
+            r.period = 1.into();
+            match kind {
+                0 => s.origin = NativeSessionOrigin::PendingPeriod,
+                1 => {
+                    s.pending_period = 2.into();
+                    r.period = 2.into();
+                }
+                2 => {
+                    s.pending_period = 3.into();
+                    r.period = 3.into();
+                }
+                3 => chain
+                    .advance_reward_reference_graph_block(&mut s.dpos_state, 2.into())
+                    .unwrap(),
+                4 => {
+                    s.origin = NativeSessionOrigin::PendingPeriod;
+                    s.pending_period = 2.into();
+                    r.period = 2.into();
+                }
+                5 => r.is_static = true,
+                6 => r.depth = 1,
+                7 => r.kind = FinalChainNativeCallKind::DelegateCall,
+                8 => r.value = FinalChainNativeValue::new(BigUint::from(1u8)),
+                9 => r.input.push(0),
+                10 => r.supplied_gas = 89999.into(),
+                11 => {
+                    s.next_sequence = 1;
+                    r.id.sequence = 1;
+                }
+                12 => r.caller = OWNER,
+                13 => s.dpos_state.validator_order.swap(0, 1),
+                14 => {
+                    s.dpos_state.delegation_ledger_history_complete = false;
+                }
+                15 => {
+                    s.dpos_state.validator_reward_per_stake.insert(
+                        VALIDATOR,
+                        StoredDposRewardIndex::canonical_after_mutation(DposRewardIndex::zero()),
+                    );
+                }
+                16 => {
+                    s.dpos_state.reward_reference_graph = DposRewardGraph::incomplete();
+                }
+                20 => r.kind = FinalChainNativeCallKind::StaticCall,
+                17 => {
+                    s.dpos_state.delegator_rewards.insert(
+                        SECOND,
+                        StoredDposTokenAmount::canonical_u256_after_mutation(U256::one()),
+                    );
+                }
+                _ => {}
+            }
+            let state = ReferenceState::from_snapshot(&historical_session(chain).dpos_state);
+            let before = s.dpos_state.clone();
+            if kind == 18 {
+                state
+                    .accounts
+                    .borrow_mut()
+                    .get_mut(&DPOS_CONTRACT_ADDRESS)
+                    .unwrap()
+                    .balance = BigInt::from(0);
+            }
+            if kind == 19 {
+                state
+                    .accounts
+                    .borrow_mut()
+                    .get_mut(&DELEGATOR)
+                    .unwrap()
+                    .exists = false;
+            }
+            let raw = state.rows.borrow().clone();
+            if kind == 7 {
+                // The outer request validator rejects this shape before claim
+                // preparation and leaves the session available for a valid call.
+                assert_eq!(
+                    s.prepare(&r, &state),
+                    Err(FinalChainNativeSessionError::UnsupportedCallKind)
+                );
+                assert!(!s.aborted);
+                assert!(s.prepared.is_none());
+                assert_eq!(s.dpos_state, before);
+                assert_eq!(*state.rows.borrow(), raw);
+                r.kind = FinalChainNativeCallKind::Call;
+                let q = s.prepare(&r, &state).unwrap();
+                assert!(s.invoke(&r, q, &state).is_ok());
+                continue;
+            }
+            if let Ok(q) = s.prepare(&r, &state) {
+                assert!(s.invoke(&r, q, &state).is_err(), "H1 excluded {kind}");
+            }
+            assert!(s.aborted, "H1 excluded {kind}");
+            assert_eq!(s.dpos_state, before);
+            assert_eq!(*state.rows.borrow(), raw);
+            assert_eq!(
+                s.prepare(&r, &state),
+                Err(FinalChainNativeSessionError::Aborted)
+            );
+        }
+    });
+    // Each required fork is evaluated at literal1, not the accepted pending2.
+    for kind in 0..5 {
+        with_claim_all_chain_config(
+            "h1-fork",
+            |rewards, ficus| match kind {
+                0 => rewards.fix_claim_all_block_num = 2.into(),
+                1 => rewards.aspen_part_one_period = 2.into(),
+                2 => rewards.magnolia_period = 2.into(),
+                3 => *ficus = 2.into(),
+                4 => {
+                    rewards.aspen_part_two_period = 1.into();
+                    rewards.aspen_max_supply = U256::from(8000).into();
+                }
+                _ => unreachable!(),
+            },
+            |chain| {
+                let mut s = historical_session(chain);
+                let state = ReferenceState::from_snapshot(&s.dpos_state);
+                let before = s.dpos_state.clone();
+                let mut r = request();
+                r.period = 1.into();
+                assert!(s.prepare(&r, &state).is_err());
+                assert!(s.aborted);
+                assert_eq!(s.dpos_state, before);
+            },
+        );
+    }
 }
