@@ -222,3 +222,21 @@ not independently available for worker threads. No billing inference.
 
 Synthetic results leave general histories/claim-all failures, qualified producer
 inputs, real-window/root parity, recovery, N4-N6 and production cutover open.
+
+
+## October 9 claim-all derivatives
+
+These records extend the fresh run above; historical routing is unchanged.
+The same immutable baseline is 77%, floor 67%, reset 1791948695. Latest interim
+observation is 69% (8 points consumed). Final run artifacts own the final quota.
+
+| Scope | Routing and corrections | Behavior and validation record |
+| --- | --- | --- |
+| Claim-all public trace | Sol medium lead; Luna bounded resume check; fresh Sol review blocked incomplete owner rows, then accepted corrected freeze | Actual dual-pin/control trace, full owner columns/rows and 92-row P1;336 ports; target/EVM/check/clippy/fast/white passed;148fcb325/9755e29cb; first review/comparator failure retained |
+| Literal H1 claim-all oracle | Sol lead/fresh Sol review; copied quote observer source guard corrected before final record | Actual period 1/nonce 1, native90000/transaction111272/12 raw/2 balance/one396 log;23 watched keys/full92P1/both controls; all preparation gates passed;fc5de00da |
+| Finite H1 runtime/public | Direct Sol/fresh Sol review; delegate-kind nonpoison semantics and valid Aspen2 negative constructor corrected | 176 ports/consensus1526/public65/check/clippy/ON12all15/serialfast/white; all12 gates and frozen review passed;23e859793;649.8s final gates |
+| Funded H1 estimate oracle | Direct Sol; bounded Astra source contract; fresh Sol review | Actual dual-pin/repeats/controls, unchanged C++ search, caps200000/111272/111273, results116817/111272/111273, probes5/1/1; all5 checks and frozen review passed;b8a14fa44 |
+| Funded H1 public estimate derivative | Direct Sol; same-profile independent Sol review after gates/freeze | Append-only test;572 attempts/1788 callbacks/1774 ports; per-probe raw/preparation/account/factory failures stop with typed callback error, immediate clean retry, all reader/owner rows unchanged. Final acceptance, gates and elapsed time are owned by claim-all-h1-estimate-public-closeout.json; until then current-pending.json records open work. |
+
+No worker runtime or billing is inferred from requested model routing. Broader
+claim-all, underfunded estimates, production, roots, recovery and N4–N6 stay open.

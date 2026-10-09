@@ -21,31 +21,33 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-The fresh run closed the pending malformed-claim slice first, then commission,
-delegator and mixed claim sequences, positive claim CALL/STATICCALL/revert
-frames, read-free low-gas/nonpayable guards and repeated two-call frames.
-Exact accepted commits and gates are in the [checkpoint](n6_restart_checkpoint.md)
-and its run directory. Old run4 is closed; its interim pending facts are stale.
+The original pending malformed-claim slice is closed as `e940e9419`. Subsequent
+accepted work includes claim sequences and frames, finite pending claim-all,
+its public trace, and finite literal H1 claim-all. Read the current
+[checkpoint](n6_restart_checkpoint.md) and its run artifacts for exact commits,
+required gates and limits. Old interim run 4 and earlier run facts are stale.
 
-Positive noarg claim-all oracle preparation and runtime/public parity are
-accepted separately at3ded1a88a590/546ac3eeb129. The runtime closeout has all11
-fresh gates and independent frozen acceptance. It preserves count-only gas
-preparation, ordered two-item traversal, shared private scalar views, twelve
-writes and one396payout. Public parity covers168ports across fresh/reopened
-owners. Broader claim-all failure/topology/call profiles remain excluded.
+H1 runtime `23e859793` retains exact HistoricalSimulation 1/PendingPeriod 2
+admission and has all 12 required gates plus frozen independent acceptance.
+Funded H1 estimate oracle `b8a14fa44` measures caps 200000/111272/111273 and
+5/1/1 probes with estimates 116817/111272/111273. The public estimation derivative
+uses unchanged runtime and fresh disposable sessions for each callback.
+Its closeout, when accepted, owns final test/review/commit status; otherwise
+finish the exact pending files and checks in `current-pending.json` first.
 
-The next settled derivative is a direct public API trace over canonicalP1 with
-empty/ordinary self-transfer prefixes and original wide nonce. Luna's bounded
-`claim-all-next-trace-map.md` identifies the existing producer, trace runner and
-public owner. Confirm actual dual-pin measurement before implementation. A
-prior native prefix, historical period1, nested/static or repeated claim-all
-requires separate scope/source authority and new evidence. No new producer
-input is missing for the selected synthetic derivative.
+After that derivative closes, the next distinct profile must first have an
+available fresh reviewer context. Underfunded claim-all boundary measurement
+can follow the settled source contract in `claim-all-underfunded-contract.md`.
+The proposed probes are 21271/21272/21273/90000/111271/111272/111273. Actual
+quote/run behavior must be measured before runtime design. Simply removing the
+preparation gas check would permit scalar execution before a late failure.
+A public H1 trace is another separate derivative; obtain its source contract
+and actual dual-pin trace before implementation. Neither is already accepted.
 
-Fresh budget77%,floor67%,reset1791948695 is immutable. Latest interim72% means
-5points used/5left; refresh the same run budget before further work. Run final
-records supersede interim observations. Stop new work at the floor; checkpoint
-pending bytes and gates without claiming acceptance. No push.
+The run budget remains 77% baseline and 67% floor, reset 1791948695. Latest
+interim 69% means 8 points used and 2 left. Refresh the same saved budget before
+new work. Final records supersede this observation. At the floor stop new
+work, delegation and gates; checkpoint exact pending bytes and checks. No push.
 
 ## Contract work for later gaps
 
