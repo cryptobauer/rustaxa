@@ -1,14 +1,16 @@
 # Next N4 run checkpoint — October 10
 
-Branch: `feat/rust/evm-state-db`. Accepted implementation/evidence base:
-`1838694c6d9089c497a824a82c120044183553ee`. Reconcile any newer preparation-only
-commit. Nothing was pushed. No owned implementation, validation, review or process
-is pending. Existing unrelated workflow, queue, old checkpoint, skill and audit
+Branch: `feat/rust/evm-state-db`. Accepted implementation/evidence base before this run:
+`1838694c6d9089c497a824a82c120044183553ee`; preparation commit `1256a3e26` was reconciled.
+Accepted implementation HEAD `0ce68a6815f6e81f23722b6b2e20493efc902c38`.
+Nine reviewed implementation slices are listed below. Nothing was pushed.
+No owned implementation, validation, review or process is pending. Existing unrelated workflow, queue, old checkpoint, skill and audit
 edits remain in the working tree; preserve them.
 
-Use `next_executable_slice_prompt.md` for the next explicitly authorized new
-10-percentage-point session. Record its fresh quota baseline at startup, not in
-this preparation session. Earlier session budgets remain immutable. The old
+This run followed `next_executable_slice_prompt.md` with one saved budget.
+Same-session resume must reuse that budget without initialization. The ten-point floor has now been reached; do not resume implementation under
+this exhausted budget. A later new run requires explicit authorization and a fresh
+baseline. Earlier budgets remain immutable. The old
 `n6_restart_checkpoint.md` and branch queue still describe an earlier P0 next
 action; this checkpoint and the current prompt supersede that action.
 
@@ -73,14 +75,107 @@ Detailed accepted records:
   `35b767e1005787c39c859a370c980225be3c2c4625743101aef718fd5ba5e545`,
   review and checkpoint.
 
-First: Luna maps precise decoder/storage/import seams. Astra settles a bounded
-reconstruction contract before completeness or historical-owner changes. The lead
-then implements and validates the smallest useful native decoder/catalog family,
-with independent review and local commits. Extend coverage from justified retained
-indexes/addresses/history without claiming a complete semantic snapshot prematurely.
+## October 10 run results
 
-Proceed to a historical test owner and the same 19-transfer real period only when
-complete dependencies and owner/cache authority are reviewed. No input head rewrite,
-expected-root injection, production cutover or N4 closure is accepted. Additional
-external information is not currently required to begin this work; name an exact
-missing record if bounded reconstruction later proves one unavailable.
+Run artifacts: `/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010`.
+Lead UUID `01a126b2-3ae0-7883-a5e3-b4618ade8cd5`, confirmed Sol medium.
+Luna medium ran first; fresh Astra medium contracts and independent Sol medium
+reviews ran for each new profile. `runtime-routing.json` records exact thread IDs,
+confirmed models and outcomes. No routing failure was observed. Historical maps
+remain historical evidence; delegation-count unavailability does not imply
+unavailability of distinct undelegation slots.
+
+Accepted local implementation commits:
+
+- `a05b3c23b`: 20 H-transfer address hypotheses; every parent delegation count
+  returned HistoryUnavailable. No new live partition or numeric count.
+- `bcfaa3cbb`: slashing jail catalog. The list and 20 expired live jail entries
+  explain 21 of 54 rows; 33 residual rows remain opaque.
+- `f3cfda618`: complete raw H ordered lists, signed transactions and receipts
+  authenticated against persisted FinalChain and PBFT metadata; 19 transfers.
+- `f7b0267ce`: linked P ordered lists and both hash domains authenticated;
+  one ordinary transaction, no native call.
+- `2d7ef482f`: fixed 48-period predecessor chain, 25,706,901..25,706,948,
+  authenticated with 296 fixed reads. All 583 signed envelopes and typed receipts
+  authenticate; zero direct DPoS/slashing calls and 23 unique envelope addresses.
+- `2733b385d`: exact old-20 subtraction yields three new addresses and 34 role
+  occurrences. Three distinct delegation count points are HistoryUnavailable.
+- `a569b97d0`: nine independent V1/V2 count and V2 last-ID points for those
+  three addresses all returned HistoryUnavailable. No numeric decoding or expansion.
+  Source/probe pins match; 35 library and three binary tests, fmt/check/Clippy
+  and independent Sol/Astra reviews passed.
+- `a3d8ad3`: 60 V1/V2 count and V2 last-ID points for the older 20 H-transfer
+  addresses all returned HistoryUnavailable, retaining all 38 provenance records.
+  One call-limit test failure was fixed before probing; a review-required test-only
+  addition then passed five binary tests/Clippy/format. Runtime code and captured
+  bytes remain identical. Independent authority and implementation reviews accepted.
+- `0ce68a681`: one authenticated P/DPoS raw inventory capture, closing the raw
+  artifact-retention gap. 23,278 rows/259,077 bytes/31,164 nodes retained; pure
+  offline digest verification and targeted checks pass. Fresh Sol/Astra accepted.
+  One review-required test-only hex correction passed; runtime source unchanged.
+
+The interval has fixed lower bounds. It does not establish the retained-history
+boundary, all older native calls, delegation roles or complete historical catalogs.
+The C++ ordered-root reference matches H/P raw lists and fixed root vectors.
+No upstream C++ source changed. Per-family documents, source captures, freezes,
+first-run gate/probe logs and independent closeouts hold exact source/report hashes.
+Targeted checks passed; full scope is recorded in each closeout. No production or
+storage module changed, so bridge, broad and differential gates did not apply.
+No writable historical owner or real one-period reward transition was built.
+
+## Exact next action and limits
+
+The complete live native bytes remain available. Earlier saved inventory reports contain summaries/digests. The accepted raw-retention
+slice is: `parent_raw_inventory.rs` plus its document,
+`parent-raw-inventory.json` (2,894,865 bytes; SHA-256
+`63dc30da528d294418f237e24e580d78d17653de643847140dedfac4faf51056`).
+One guarded inventory captured 23,278 rows/259,077 bytes/31,164 nodes and
+pure offline verification passed. Format/check/Clippy, 35 library and two binary
+tests passed. Independent Sol/Astra final reviews accepted. The exact post-capture diff
+contains only added negative hex tests; their affected checks passed.
+The raw artifact is digest-verifiable against prior authenticated evidence,
+not a standalone Merkle proof. No second inventory is needed for verification. Address hypotheses outside the fixed interval and older reward
+node keys have no complete justified catalog. Parent cache generation and runtime
+authority also remain unestablished. No absent/tombstone/unavailable result supplies
+zero, no root substitutes for semantic reconstruction, and no completeness guard
+may be weakened.
+
+Before another useful slice, obtain explicit new-run authorization and record
+a fresh session baseline. Do not reset or transfer this exhausted budget. Obtain a fixed
+source/key/identity/call/byte contract and fresh review for a changed profile.
+Both the three new and older 20 addresses have now been observed for their
+V1/V2 count and V2 last-ID keys: 69 HistoryUnavailable outcomes. These cover
+only that justified sample and exact P/root; no global absence follows.
+Next useful source-only audit: derive the exact accepted validator/record-owner
+address union, preserve source positions and subtract previously observed
+(P/account/logical-key) tuples. Existing inverse may already cover these keys;
+check exact records before proposing any probe. A nonempty unobserved set needs
+its own fixed contract and fresh review. Accepted saved raw entries can now support offline analyzer work without
+another live inventory.
+For slashing proof keys, exact missing inputs are authenticated paired-vote
+records (or successful commitDoubleVotingProof calldata); jail logs alone do
+not supply ordered vote hashes. Non-head reward nodes need justified historical
+cursor/head references, not a block-number sweep.
+Larger graph,
+cache or owner work needs its own exact authority contract. Proceed to the
+historical owner and the 19-transfer real period only after complete dependencies
+and cache/owner authority are independently accepted. N4 remains open.
+
+## Run closeout and exact allowance
+
+Lead startup baseline: 53% remaining at 2026-10-10T16:43:22.225Z.
+Run floor: 43%; reset window: 1791948695. Floor reached at
+2026-10-10T18:12:47.204Z. Final observation: 43% remaining at
+2026-10-10T18:13:24.777000+00:00; consumed 10 percentage points.
+These are account-wide allowance observations, separate from token or billing claims.
+`quota-budget.json` was initialized once and preserved through resume.
+No new work/delegation started after the floor; only in-flight review/commit and
+checkpoint closeout continued. All useful next work is deferred because of this
+budget limit, not a claim that every native source is blocked.
+
+All nine source/probe/check/review freezes and actual model routing are in the
+run directory. `progress-checkpoint.md` and `quota-final.json` give final state.
+The only remaining working-tree changes are the unrelated initial workflow,
+queue, old checkpoint, skill and token-audit edits. Preserve them. No supplied
+data mutation, writable owner, one-period reward execution, production route,
+standalone Merkle proof or complete logical/semantic snapshot is accepted.

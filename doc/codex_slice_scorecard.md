@@ -457,19 +457,19 @@ Baseline53%, floor43%, reset1791948695; latest44% at18:06:40 is separate from to
 ## October 10 N4 parent raw inventory retention
 
 Fresh Astra medium authority and independent Sol medium review accepted one
-bounded P/DPoS raw capture. All23,278 rows and259,077 physical value bytes are
-retained in strict path order;31,164 nodes visited. Both reviewers independently
+bounded P/DPoS raw capture. All 23,278 rows and 259,077 physical value bytes are
+retained in strict path order; 31,164 nodes visited. Both reviewers independently
 recomputed counts, order, uniqueness and the accepted raw digest. Artifact
-SHA63dc30da528d294418f237e24e580d78d17653de643847140dedfac4faf51056,
+SHA-256 63dc30da528d294418f237e24e580d78d17653de643847140dedfac4faf51056,
 2,894,865 bytes. The standalone offline verifier passed without opening state.
 This closes the raw-artifact gap; it is not a standalone Merkle proof or logical
 catalog/semantic completeness. No inventory repetition or point probes occurred.
 
-Format/check/Clippy,35 library and two binary tests passed. Sol required direct
+Format/check/Clippy, 35 library and two binary tests passed. Sol required direct
 negative value-hex cases and equal-width malformed path-hex cases; test-only
 correction passed binary tests/Clippy/format. Captured runtime source is unchanged.
 Prior evidence locators were made absolute. No storage-module/production change
 or broad gate applied. [Document](evm_research/n4_parent_raw_inventory.md), run
 original/final freezes, exact capture diff and independent closeouts retain pins.
-The shared budget reached43% from53% at18:12:47; floor43%, reset1791948695.
+The shared budget reached 43% from 53% at 18:12:47; floor 43%, reset 1791948695.
 No new work started after that observation; only in-flight closeout continued.
