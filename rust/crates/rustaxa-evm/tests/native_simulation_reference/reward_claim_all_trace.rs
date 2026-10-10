@@ -1,6 +1,7 @@
 //! Direct claim-all API trace preserves ordinary-prefix and wide nonce context.
 //! Physical reader and public FinalChain owner stay fixed after every attempt.
 use super::metadata_trace::{block, requests};
+use super::owner_snapshot::owner_rows;
 use super::*;
 use rustaxa_evm::contracts::{
     ExecutionLog, NativeCallKind, NativeExecutionPort, NativeGasQuote, NativeInvocation,
@@ -156,40 +157,6 @@ impl NativeExecutionPort for Port<'_> {
         self.outcomes.borrow_mut().push(result.clone());
         Ok(result)
     }
-}
-
-/// Copies every column name and ordered logical row from the public owner's
-/// RocksDB, including receipts and metadata. Opening a fresh read-only view
-/// replays its WAL without flushing or changing the live owner. Empty columns
-/// remain part of the comparison; the Go concrete reader is checked separately.
-fn owner_rows(path: &FixturePath) -> Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)> {
-    let path = path.0.join("db");
-    let options = rocksdb::Options::default();
-    let mut columns = rocksdb::DB::list_cf(&options, &path).unwrap();
-    columns.sort();
-    let descriptors = columns.iter().map(|name| {
-        rustaxa_storage::Column::from_name(name)
-            .unwrap()
-            .descriptor(&options)
-    });
-    let db =
-        rocksdb::DB::open_cf_descriptors_read_only(&options, &path, descriptors, false).unwrap();
-    columns
-        .into_iter()
-        .map(|column| {
-            let rows = db
-                .iterator_cf(
-                    &db.cf_handle(&column).unwrap(),
-                    rocksdb::IteratorMode::Start,
-                )
-                .map(|row| {
-                    let (key, value) = row.unwrap();
-                    (key.to_vec(), value.to_vec())
-                })
-                .collect();
-            (column, rows)
-        })
-        .collect()
 }
 
 /// Empty and ordinary-prefix traces use one disposable port. Every target

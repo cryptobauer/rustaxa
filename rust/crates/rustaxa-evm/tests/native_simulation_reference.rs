@@ -698,6 +698,9 @@ mod reward_claim_frame_failures;
 #[path = "native_simulation_reference/reward_claim_frame_sequences.rs"]
 mod reward_claim_frame_sequences;
 
+#[path = "native_simulation_reference/owner_snapshot.rs"]
+mod owner_snapshot;
+
 #[path = "native_simulation_reference/reward_claim_all.rs"]
 mod reward_claim_all;
 #[path = "native_simulation_reference/reward_claim_all_h1.rs"]

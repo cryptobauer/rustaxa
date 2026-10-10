@@ -1,5 +1,6 @@
 //! Literal H1 public simulation compares actual ordered claim-all effects.
 //! Physical reader and public FinalChain owner stay fixed after every attempt.
+use super::owner_snapshot::owner_rows;
 use super::*;
 use rustaxa_evm::{
     contracts::{
@@ -168,39 +169,6 @@ impl NativeExecutionPort for Port<'_> {
         self.outcomes.borrow_mut().push(result.clone());
         Ok(result)
     }
-}
-
-type OwnerRows = Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>;
-/// Compares all public owner columns/logical rows without flushing its live DB.
-/// Descriptors keep the configured numeric comparator; empty columns are kept.
-fn owner_rows(path: &FixturePath) -> OwnerRows {
-    let path = path.0.join("db");
-    let options = rocksdb::Options::default();
-    let mut columns = rocksdb::DB::list_cf(&options, &path).unwrap();
-    columns.sort();
-    let descriptors = columns.iter().map(|name| {
-        rustaxa_storage::Column::from_name(name)
-            .unwrap()
-            .descriptor(&options)
-    });
-    let db =
-        rocksdb::DB::open_cf_descriptors_read_only(&options, &path, descriptors, false).unwrap();
-    columns
-        .into_iter()
-        .map(|column| {
-            let rows = db
-                .iterator_cf(
-                    &db.cf_handle(&column).unwrap(),
-                    rocksdb::IteratorMode::Start,
-                )
-                .map(|row| {
-                    let (k, v) = row.unwrap();
-                    (k.to_vec(), v.to_vec())
-                })
-                .collect();
-            (column, rows)
-        })
-        .collect()
 }
 
 /// Exact P1 owner and concrete reader are independent and unchanged. Every raw
