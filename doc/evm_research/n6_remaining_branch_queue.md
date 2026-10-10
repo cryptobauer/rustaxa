@@ -21,33 +21,29 @@ fixture. Do not repeat the completed cold lifecycle or its hardening task.
 
 ## Next ready chunk
 
-The original pending malformed-claim slice is closed as `e940e9419`. Subsequent
-accepted work includes claim sequences and frames, finite pending claim-all,
-its public trace, and finite literal H1 claim-all. Read the current
-[checkpoint](n6_restart_checkpoint.md) and its run artifacts for exact commits,
-required gates and limits. Old interim run 4 and earlier run facts are stale.
+Accepted local source HEAD is `c07d5495a`. The shared owner snapshot helper,
+underfunded P1 boundaries/runtime/H1 estimates, H1/P0 funded and gas trace,
+P2/P1 gas trace and value1 nonpayable oracle/runtime are closed finite scopes.
+Use [the current checkpoint](n6_restart_checkpoint.md) and named run closeouts;
+do not repeat those slices or infer general profile/root acceptance.
 
-H1 runtime `23e859793` retains exact HistoricalSimulation 1/PendingPeriod 2
-admission and has all 12 required gates plus frozen independent acceptance.
-Funded H1 estimate oracle `b8a14fa44` measures caps 200000/111272/111273 and
-5/1/1 probes with estimates 116817/111272/111273. The public estimation derivative
-uses unchanged runtime and fresh disposable sessions for each callback.
-Its closeout, when accepted, owns final test/review/commit status; otherwise
-finish the exact pending files and checks in `current-pending.json` first.
+The same-profile H1 initial-cap nonpayable estimate derivative is accepted at
+`c07d5495a` after all11 frozen gates and independent Sol ACCEPT. Public EVM81,
+serial fast507.46s and exact retained consensus1538/ON12all15 are recorded.
+Its unchanged C++ search consumes actual accepted Go initial responses;
+each cap stops at one failed probe, with no midpoint or successful estimate.
 
-After that derivative closes, the next distinct profile must first have an
-available fresh reviewer context. Underfunded claim-all boundary measurement
-can follow the settled source contract in `claim-all-underfunded-contract.md`.
-The proposed probes are 21271/21272/21273/90000/111271/111272/111273. Actual
-quote/run behavior must be measured before runtime design. Simply removing the
-preparation gas check would permit scalar execution before a late failure.
-A public H1 trace is another separate derivative; obtain its source contract
-and actual dual-pin trace before implementation. Neither is already accepted.
+Then update and independently review the compact checkpoint/scorecard facts in
+a separate docs commit. Preserve user-owned workflow, prompt, skills and audits.
+Use the current run's immutable baseline68/floor58 and fresh telemetry; do not
+start a new gate or delegation at the ten-point limit.
 
-The run budget remains 77% baseline and 67% floor, reset 1791948695. Latest
-interim 69% means 8 points used and 2 left. Refresh the same saved budget before
-new work. Final records supersede this observation. At the floor stop new
-work, delegation and gates; checkpoint exact pending bytes and checks. No push.
+The next uncovered P0 ordinary-prefix claim-all trace is a separate profile.
+Name its source/context and first-native transaction binding, settle the source
+contract, confirm fresh reviewer capacity and measure both pins before code.
+Preserve exact178728 and empty-prefix gas origins. Do not remove guards or infer
+prefix effects from source predictions. Real producer facts remain a separate
+N4 dependency; do not repeat requests or invent missing inputs.
 
 ## Contract work for later gaps
 

@@ -240,3 +240,26 @@ observation is 69% (8 points consumed). Final run artifacts own the final quota.
 
 No worker runtime or billing is inferred from requested model routing. Broader
 claim-all, underfunded estimates, production, roots, recovery and N4–N6 stay open.
+
+
+## October10 bounded snapshot and claim-all run
+
+Lead01a12418-dc34-7013-a51b-57b6ef22163b confirmed gpt-6.1-sol medium. Fresh startup68%, floor58%, reset1791948695; same saved budget throughout. Requested Luna medium startup bounded map ran; Sol medium lead implemented serially; independent Sol medium reviewed after required gates and freeze. Astra medium handled only named bootstrap and H1/value1 authority questions. Workers ran; independent runtime identity and billing were unavailable. No routing failure observed. Historical evidence stays unchanged. Gate elapsed below is the sum of frozen accepted gate commands, not wall-clock or quota.
+
+| Scope / local commit | Behavior, correction causes and accepted checks | Frozen gate seconds |
+| --- | --- | --- |
+| Shared complete owner snapshots / c86273bb2 | WAL, empty columns/comparators, non-account and numeric1/256 regression; focused1/public67/check/clippy/serialfast/white; Sol ACCEPT |589.12|
+| P1 gas oracle / f044b50f8 | Bothpins14cases/repeats/controls/92P1; bootstrap-before-count source correction and nonce correction retained; record/repro/Python/gofmt/white; Sol ACCEPT |31.47|
+| P1 underfunded runtime /752b15f25 | Qualified positiveP1/count-once/read-free terminal; public3328attempts/368typedfaults; consensus1529/public69/check/clippy/serialfast/ON12all15/white; Sol ACCEPT |626.20|
+| H1 initial-cap estimate /22d0ad803 | Actual7Go caps and unchangedC++ search;1012estimates/74callbackfaults/970drops; public70/derivativegates; unchangedruntime retained; Sol ACCEPT |616.45|
+| H1/P0 funded trace oracle /648d60f | Actual captured82P0/root58a5... and92P1, zero payout; source graphcontext contract; record/repro/Python/gofmt/white; Sol ACCEPT |30.95|
+| H1/P0 gas trace oracle /e40d55abe | Bothpinssevencaps/fourfirstcaptures/no fabricated outcome; quote90000/noRun middle4, funded12rawzero payout; repeat/control gates; Sol ACCEPT |47.69|
+| H1/P0 funded runtime /b114c4dec | Separate origin/exact178728/privatecontextonly;168faultattempts/sourcefactory16; path/faultkey/fmt corrections retained; consensus1532/public72/serialfast/ON12all15 +packagewhite; Sol ACCEPT |685.09|
+| H1/P0 gas runtime /198f7b151 | Distinct finitecaps preserves178728 origin;1232attempts/204hardfaults +16sourcefactory +14driver; key/presence/Tombstone test corrections retained; consensus1535/public75/check/clippy/serialfast/ON12all15/white; Sol ACCEPT |755.08|
+| P2/P1 gas trace oracle /64fb77df6 | Bothpins14 empty/ordinary-prefix cases xrepeat2/control; wide nonce and entire92P1 preserved; source/finalSol ACCEPT; unchangedruntime retained |46.95|
+| P2/P1 public gas trace /25cee0e3d | Append-only483lines;840attempts/392hardfaults +28drivercalls; no correction; public77/check/clippy/serialfast498.21/white; exactunchanged198f consensus1535/ON12all15 retained; Sol ACCEPT |678.10|
+| Value1 nonpayable Go oracle /2423f10f6 | Bothpins14cases/controls/repeats; admittedquote0/RunNonPayable/21272txgas/native0; frame transfer thenrollback;8bootstrap reads/noCount; no corrections;7gates/Sol ACCEPT; unchangedRust77/1535/ON12all15 retained |47.08|
+| Value1 nonpayable Rust guard /85dce63ef | Separate qualifiedP1/value1/execution1or2 origin, quote0/read-free terminal;252driverattempts/76hardfaults +42H1factoryattempts/14errors +14identitymismatches +2affordabilitycases;3units/public80/consensus1538/check/clippy/serialfast517.16/ON12all15/white; newtest API/preflight/zero-nonce corrections retained; Sol ACCEPT |769.45|
+| Value1 H1 initial estimate /c07d5495a | Actual accepted Go initial failures/unchangedCPP;126callbacks/52typederrors/98drops; firststdout filename and new Value-comparison corrections retained; focused1/public81/check/clippy/serialfast507.46/CPP/retainedruntime/white;11gates/Sol ACCEPT |679.57|
+
+All thirteen source slices above are accepted locally. No production route, general profiles, qualified real-window/root parity, recovery, N4-N6 or cutover is closed. Current pending source/gates and exact acceptance are in current-pending.json and named freeze/review/closeout records. Quota final observation remains separate from tokens and billing.
