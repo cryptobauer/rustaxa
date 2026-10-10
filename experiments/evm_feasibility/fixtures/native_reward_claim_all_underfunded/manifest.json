@@ -1,0 +1,79 @@
+{
+  "baseline_sha256": {
+    "fixtures/native_redelegate_reward_h1/public.json": "ca6025893ec6cbaea981dfb22a4cd4707c8bf7673f80da8ab0446fcd359df7ea",
+    "fixtures/native_reward_claim_all/public.json": "a878a0df9a6b5bdedf28dfff26251ef1bf28c52181fb75db18873de0d4ad24eb",
+    "fixtures/native_reward_claim_all_h1/public.json": "83abbc0548ef7ce147e76f358316030bc6cc70ce0fcd8d53f13430e80268f269"
+  },
+  "caps": [
+    21271,
+    21272,
+    21273,
+    90000,
+    111271,
+    111272,
+    111273
+  ],
+  "control_execution_identical": true,
+  "copy_helpers": {
+    "balance": "884dae58564aa04052195518d202d98aafd4c6ca390c2b0463da47e16976b66c",
+    "post": "253ea2ac35615e519cf62340cec3b6bcc7d0d0e2e8b91f303f14f43c598fcf15",
+    "raw": "d6e0276bb4342b886d68168dad0d74e0ae53b39a9bc2456495b010530dfd76ec",
+    "read": "3563da2c9e338998953904ad721edd36cdbb85eac29f9f9389bcd6a0850680ca",
+    "vm": "d86a703bc4a62bb3cb011be62f2d87fa1c6e6f4e2278d47cb8ff2ccda249b5a8"
+  },
+  "copy_targets": {
+    "core/vm/evm.go": {
+      "local": "9d63e0f58b3c2b32987f0979b88a30cccd294787eb7f5c8d45cc2ca1cbe5882f",
+      "public": "4389d46cc6fef3159c0da9fb3f548d9515aa555a2af85124824625c2c3f3e121"
+    },
+    "taraxa/state/contracts/storage/storage.go": "2f56b13597e9b24e022e496a2be650c65938f951e619ab958a986a24971d7d2c",
+    "taraxa/state/state_dry_runner/dry_runner.go": "abc2b1ace3669007190f901fea2da144bcc00167468d02939b847c7fdac506ed",
+    "taraxa/state/state_evm/account.go": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "guard_source_sha256": {
+    "native_redelegate_reward_reference.py": "2c10f9cab99a9e9326c1a8e6ff85c7590f9d97a47e43586df62c848009dd6fc4",
+    "native_reward_claim_all_h1_reference.py": "da9eff6d022a28a4495dab7ebe669349e1033a7e8a99c3cb7bc0d6414018a60b",
+    "native_v1_custody_reference.py": "b1083d2ae1a9062cc2ec6a623764f35b86fa229c5dd90247f52022f9e8e07918"
+  },
+  "native_gas_derivation": "actual Main transaction gas used minus measured intrinsic21272 for direct first native; leftover is transaction cap minus actual gas used; null below intrinsic",
+  "outputs": {
+    "local": [
+      "04b34be3381db40363dd585adb901405a827b18f1d8abc607f9f86cd7d0a7079",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "local.control": [
+      "b90394c6168294d4365a7f5cbd0b6888e127e9b4852c5c5f0538f591619cdeb2",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "04b34be3381db40363dd585adb901405a827b18f1d8abc607f9f86cd7d0a7079",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public.control": [
+      "b90394c6168294d4365a7f5cbd0b6888e127e9b4852c5c5f0538f591619cdeb2",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "profile": "canonical92P1_H1_DryRunner_pending2_Main_lazy_setup_then_count_gas_terminal",
+  "quote_and_run_taps_in_controls": true,
+  "read_lanes": "logical wrapper requests plus backend requests, only during quote/Run; post-state and outer envelope reads excluded",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "source_sha256": {
+    "native_redelegate_reward_h1_reference.go": "02fa9f74a2f5a7f5185d69a4c8f46f95f32c364feb248cc854046cbbb282137c",
+    "native_redelegate_simulation_reference.go": "9ce77d652c4e99cf881e67b14eed10b394168f2409cd1b80e15ef616ac889392",
+    "native_redelegate_swap_append_simulation_reference.go": "2fcbae7360e55fe50ee54849767111c275be4864f4411582d51540bc83f6829c",
+    "native_reward_claim_all_h1_reference.go": "37b7e211dd5886fba921cf3d93b4a9a5516a5d76964ea8044b5ffc0965c30ba0",
+    "native_reward_claim_all_underfunded_reference.go": "51b12b1103ca2c44648f959fb17b5c365e79eb2d530a90e809fa8646f66f3449",
+    "native_reward_claim_all_underfunded_reference.py": "bfcd3442ad650b71f6054e3c7e0e5772c0de497a27bf0ccd1e24cd2cd4886d76",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60"
+  }
+}
