@@ -920,6 +920,13 @@ fn delegator_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
     [&[2, 1][..], &delegator].concat()
 }
 
+/// Derives the observed Go delegation iterable count's logical key only.
+/// Input is one justified address; output is Keccak([2,1] || address || [1]).
+/// This pure helper grants no membership, count, history or expansion authority.
+pub fn delegation_count_key(address: [u8; 20]) -> ConcreteStorageKey {
+    iterable_count_key_for(&delegator_validators_prefix(address))
+}
+
 fn storage_key(parts: &[&[u8]]) -> ConcreteStorageKey {
     let mut hasher = Keccak::v256();
     for part in parts {

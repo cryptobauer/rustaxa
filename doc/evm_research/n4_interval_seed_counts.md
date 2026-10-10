@@ -1,0 +1,21 @@
+# N4 interval-derived physical count-slot observations
+
+The authenticated fixed interval supplies 23 unique signed-envelope sender/receiver addresses. Exact subtraction of the accepted 20 H-transfer seeds gives three new lookup hypotheses, with 34 address-role occurrences. These are factual ordinary-envelope seeds, not semantic delegators or successful native-call evidence.
+
+`interval_seed_counts` reads byte-pinned interval and old-catalog reports outside the database trees, with 8 MiB/1 MiB input caps. Paths, file type, size and filenames are checked before reads; bounded reading detects growth. The interval's captured rows are reauthenticated offline through `authenticate_interval`. The pure seed loader checks identity and exact subtraction and preserves every period/position/hash/role/status/raw-witness reference. Source/hash/shape errors occur before DB access. The old catalog fixture preserves the exact accepted exclusion report for offline tests.
+
+The experimental pure `native_inverse::delegation_count_key` wraps the existing observed Go helper: Keccak([2,1] || twenty-byte address || [1]). Its output is a logical key before another trie hash. It grants no membership, count or expansion authority. Existing catalog behavior remains unchanged.
+
+After existing exact-copy guards and unchanged pair qualification, the diagnostic reads only these three count keys at P=25,706,948 in lexicographic address order, at DPoS receiver 00fe and state root `926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2`:
+
+- `7d06cc8210228365896a3cc8aac88c5551529112`: receiver in two authenticated envelopes.
+- `873415f6633a0c42b8717bc898354638f52b13f3`: recovered sender in those two envelopes.
+- `8dcc94cc57c72eaa6609ee77cb50c84141fa39bd`: receiver in 30 envelopes.
+
+The observation function records Present with exact raw bytes/digest, Absent, Tombstone, HistoryUnavailable and Pruned separately. Expected unavailable/pruned outcomes permit the remaining fixed reads. Unexpected errors or exceeded byte limits stop before another read and save a rejected report. Values never trigger children or decoded counts. Present caps are 4 KiB per row/12 KiB total. Rejected rows retain size/digest and no accepted raw-value claim. Output is encoded within 1 MiB before exclusive file creation; overflow publishes only a rejected report. Existing qualification has four application point reads and separate owner descriptor/root checks, outside the three-call diagnostic budget.
+
+The guarded probe completed exactly three storage points; all returned HistoryUnavailable. Present/rejected bytes are zero, every decoded count is null, and all 34 provenance records are retained. No zero, live/orphan membership or new partition was inferred. Output is 23,120 bytes. Inherited storage root `c62767fbe35b09e45975d25132970f8bc5e6614b41e3f3ea51e1f25b77dcf504` is accepted prior-report evidence, not a fresh measurement. No inventory, iterator, expansion or history fallback occurred.
+
+Format/check/Clippy, 35 library tests and two binary tests passed. Tests cover source/hash/identity drift, exact subtraction/provenance, the shared key algorithm, all five physical outcomes, deterministic fixed reads, no expansion, error stop, exact/overflow bytes and no semantic count. Interval and path/output-cap checks reuse accepted helpers. No production or storage-module behavior changed; no broad, bridge or differential gate applied.
+
+Evidence: `/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010`, seed contract, source capture, probe/log, freeze and independent reviews. Interval report SHA-256 `3513c1720759ed3dd07784ab66d69661742af82ceeee56d0c527c835da594aa5`; old catalog `4dac8c162b532ae8a5328c40c6045bd7eb7186db844025ae02ded34af4cce7ba`. Full analyzer reuse is blocked because those reports contain inventory summaries/digests, not all raw path/value rows. The copy's prior complete inventory remains available evidence; this is an artifact-retention gap, not a request for a full snapshot. All native key/semantic completeness, historical owner, reward execution, adoption and production authority remain false. Owner-supplied default-mainnet/likely-v1.14.1 remains distinct from the unverified producer identity.

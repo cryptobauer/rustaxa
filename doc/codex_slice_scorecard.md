@@ -387,17 +387,36 @@ freezes/reviews, source comparisons and logs retain full evidence.
 
 Fresh Astra-medium and Sol-medium contexts ran and accepted the frozen interval;
 exact runtime evidence is in the run routing record. The sealed chain context
-advances only after full period authentication and stops at25,706,901. One pass
-made296reads, authenticated48periods/583signed transactions and both ordered roots
-plus both predecessor hash domains. Accepted input420,457bytes; output2,766,744bytes.
+advances only after full period authentication and stops at 25,706,901. One pass
+made 296 reads, authenticated 48 periods / 583 signed transactions and both ordered roots
+plus both predecessor hash domains. Accepted input 420,457 bytes; output 2,766,744 bytes.
 Zero direct native calls is a bounded result, not all-history or internal-call absence.
 
-Format/check/Clippy,35library tests and three adapter tests passed. Capture sources
+Format/check/Clippy, 35 library tests and three adapter tests passed. Capture sources
 are pinned; final additions are tests only. Existing C++ root parity remains.
 Initial Clippy required direct row struct initialization, fixed before capture.
 No behavior-test or final-review correction; no repeated DB probe, production/storage
 module change or broad/differential gate. Native completeness, cache-generation,
 reward-graph authority, owner readiness and N4 execution remain false. Fixed budget
-baseline53/floor43/reset1791948695; allowance47% at17:43:30 is separate from tokens.
+baseline 53% / floor 43% / reset 1791948695; allowance 47% at17:43:30 is separate from tokens.
 [Document](evm_research/n4_interval_history_authentication.md), run interval freezes,
 first logs and authority/implementation closeouts hold detailed evidence.
+
+
+## October 10 N4 three interval-derived count-slot observations
+
+Fresh Astra-medium authority and Sol-medium final review accepted the frozen slice.
+Exact runtime confirmation is in the routing record. Offline reauthentication of
+48 periods gives three novel envelope lookup seeds, retaining all 34 role records.
+The guarded probe performed exactly three P/DPoS count-slot reads, all
+HistoryUnavailable, with zero present/rejected bytes and null decoded counts.
+No membership, fresh inventory, partition, child expansion or semantic claim.
+Qualification's four metadata reads and owner root checks remain separately stated.
+
+Format/check/Clippy, 35 library tests and two binary tests passed. No first-run or
+review correction. Probe/capture source pins match final code. Existing key logic
+is exposed through one pure experimental wrapper; no production/storage module
+change or broad gate. The full analyzer cannot reuse summary-only raw inventory
+artifacts. [Document](evm_research/n4_interval_seed_counts.md) and run seed freezes,
+probe/gates and authority/implementation reviews retain exact evidence. Same budget
+baseline 53%, floor 43%, reset 1791948695; latest allowance is recorded separately.
