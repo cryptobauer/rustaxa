@@ -1,4 +1,4 @@
-//! Three new signed-envelope lookup seeds; physical slot observations only.
+//! Fixed signed-envelope lookup seeds; physical slot observations only.
 use anyhow::{Context, Result, ensure};
 use rustaxa_snapshot_qualifier::{
     interval_history as interval, native_inverse as inverse, parent_history as parent, paths,
@@ -28,8 +28,55 @@ const EXPECTED: [&str; 3] = [
     "8dcc94cc57c72eaa6609ee77cb50c84141fa39bd",
 ];
 const ROW_CAP: usize = 4096;
+#[cfg(test)]
 const TOTAL_CAP: usize = 3 * ROW_CAP;
 const OUTPUT_CAP: usize = 1024 * 1024;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Profile {
+    Delegation,
+    Undelegations,
+}
+impl Profile {
+    fn calls(self) -> usize {
+        if self == Self::Delegation { 3 } else { 9 }
+    }
+    fn status(self) -> &'static str {
+        if self == Self::Delegation {
+            "three_physical_outcomes_observed"
+        } else {
+            "nine_physical_outcomes_observed"
+        }
+    }
+    fn slots(self, seed: [u8; 20]) -> Vec<(&'static str, ConcreteStorageKey)> {
+        if self == Self::Delegation {
+            vec![("delegation_count", inverse::delegation_count_key(seed))]
+        } else {
+            vec![
+                (
+                    "v1_validator_count",
+                    inverse::undelegation_v1_count_key(seed),
+                ),
+                (
+                    "v2_validator_count",
+                    inverse::undelegation_v2_count_key(seed),
+                ),
+                (
+                    "v2_last_allocated_id",
+                    inverse::undelegation_v2_last_id_key(seed),
+                ),
+            ]
+        }
+    }
+}
+/// Accept only the explicit nine-read mode; reject unknown or extra flags before I/O.
+fn profile(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Profile> {
+    let values: Vec<_> = args.into_iter().collect();
+    match values.as_slice() {
+        [] => Ok(Profile::Delegation),
+        [flag] if flag == "--undelegation-counts" => Ok(Profile::Undelegations),
+        _ => anyhow::bail!("unexpected argument"),
+    }
+}
 type Seeds = BTreeMap<[u8; 20], Vec<Value>>;
 fn sha(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -161,6 +208,17 @@ fn identity() -> Result<ConcreteStateIdentity> {
 /// Returned values never trigger child reads or semantic decoding.
 fn observe_counts(
     seeds: &Seeds,
+    read: impl FnMut(
+        ConcreteStorageKey,
+    ) -> std::result::Result<ConcreteRead<Vec<u8>>, ConcreteReadError>,
+) -> Result<Value> {
+    observe_profile(seeds, Profile::Delegation, read)
+}
+/// Observe only the predeclared keys, in address then slot order. Raw classes and
+/// partial errors are retained; no result can authorize child reads or decoding.
+fn observe_profile(
+    seeds: &Seeds,
+    profile: Profile,
     mut read: impl FnMut(
         ConcreteStorageKey,
     ) -> std::result::Result<ConcreteRead<Vec<u8>>, ConcreteReadError>,
@@ -178,15 +236,23 @@ fn observe_counts(
     let mut rejected = 0usize;
     let mut rows = Vec::new();
     let mut error = None;
-    for seed in seeds.keys() {
-        ensure!(calls < 3, "storage point cap exceeded");
+    let queries: Vec<_> = seeds
+        .keys()
+        .flat_map(|seed| {
+            profile
+                .slots(*seed)
+                .into_iter()
+                .map(move |(family, key)| (*seed, family, key))
+        })
+        .collect();
+    for (seed, family, key) in queries {
+        ensure!(calls < profile.calls(), "storage point cap exceeded");
         calls += 1;
-        let key = inverse::delegation_count_key(*seed);
         let mut path = [0; 32];
         let mut hash = Keccak::v256();
         hash.update(&key.0);
         hash.finalize(&mut path);
-        let mut row = json!({"address_hex":hex::encode(seed),"logical_key_hex":hex::encode(key.0),"trie_path_hex":hex::encode(path),"decoded_count":null});
+        let mut row = json!({"address_hex":hex::encode(seed),"slot_role":family,"decoded_last_id":null,"logical_key_hex":hex::encode(key.0),"trie_path_hex":hex::encode(path),"decoded_count":null});
         match read(key) {
             Ok(ConcreteRead::Present(value)) => {
                 row["returned_bytes"] = json!(value.len());
@@ -194,7 +260,7 @@ fn observe_counts(
                 let total = accepted
                     .checked_add(value.len())
                     .context("point byte overflow")?;
-                if value.len() > ROW_CAP || total > TOTAL_CAP {
+                if value.len() > ROW_CAP || total > profile.calls() * ROW_CAP {
                     rejected = rejected
                         .checked_add(value.len())
                         .context("rejected byte overflow")?;
@@ -224,7 +290,7 @@ fn observe_counts(
         }
     }
     Ok(
-        json!({"status":if error.is_none(){"three_physical_outcomes_observed"}else{"observations_rejected"},
+        json!({"status":if error.is_none(){profile.status()}else{"observations_rejected"},
         "error":error,"point_calls":calls,"accepted_present_bytes":accepted,"rejected_present_bytes":rejected,"observations":rows}),
     )
 }
@@ -237,7 +303,7 @@ fn main() -> Result<()> {
     let interval_path = PathBuf::from(args.next().context("missing interval report")?);
     let old_path = PathBuf::from(args.next().context("missing old catalog")?);
     let output = PathBuf::from(args.next().context("missing output")?);
-    ensure!(args.next().is_none(), "unexpected argument");
+    let profile = profile(args)?;
     let guarded = paths::validate(&input, &output)?;
     let source = seeds(
         &evidence(
@@ -249,17 +315,19 @@ fn main() -> Result<()> {
     )?;
     let (readers, _, pair) = qualification::qualify(&guarded.application, &guarded.state)?;
     let identity = identity()?;
-    let observations = observe_counts(&source, |key| {
-        readers.storage_at(identity, inverse::DPOS_CONTRACT_ADDRESS, key)
-    })?;
-    let successful = observations["status"] == "three_physical_outcomes_observed";
-    let report = json!({"schema":1,"input_copy":guarded.input,"period":parent::P,"state_root_hex":ROOT,
+    let read = |key| readers.storage_at(identity, inverse::DPOS_CONTRACT_ADDRESS, key);
+    let observations = match profile {
+        Profile::Delegation => observe_counts(&source, read),
+        Profile::Undelegations => observe_profile(&source, profile, read),
+    }?;
+    let successful = observations["status"] == profile.status();
+    let report = json!({"schema":1,"profile":if profile == Profile::Delegation {"delegation_counts"} else {"undelegation_counts_and_last_id"},"input_copy":guarded.input,"period":parent::P,"state_root_hex":ROOT,
         "account_hex":hex::encode(inverse::DPOS_CONTRACT_ADDRESS),"inherited_storage_root_hex":STORAGE_ROOT,
-        "open_mode":"existing read-only pair qualification, then three P storage points","pair":pair,
+        "open_mode":format!("existing read-only pair qualification, then {} P storage points", profile.calls()),"pair":pair,
         "source":{"interval_sha256":INTERVAL_SHA,"old_catalog_sha256":OLD_SHA,"old_catalog_origin":"accepted_prior_report"},
         "seed_provenance":source.values().flatten().collect::<Vec<_>>(),"result":observations,
-        "bounds":{"diagnostic_storage_calls":3,"qualification_application_point_reads":4,"qualification_owner_root_checks":"existing owner, separate from diagnostic counter",
-            "row_present_bytes":ROW_CAP,"total_present_bytes":TOTAL_CAP,"serialized_output_bytes":OUTPUT_CAP},
+        "bounds":{"diagnostic_storage_calls":profile.calls(),"qualification_application_point_reads":4,"qualification_owner_root_checks":"existing owner, separate from diagnostic counter",
+            "row_present_bytes":ROW_CAP,"total_present_bytes":profile.calls() * ROW_CAP,"serialized_output_bytes":OUTPUT_CAP},
         "source_pins":{"adapter_source_sha256":sha(include_bytes!("interval_seed_counts.rs")),"inverse_source_sha256":sha(include_bytes!("../native_inverse.rs")),
             "interval_verifier_source_sha256":sha(include_bytes!("../interval_history.rs"))},
         "qualification":{"fresh_inventory_performed":false,"live_membership_checked":false,"new_live_partition_computed":false,"semantic_counts_decoded":false,
@@ -306,6 +374,77 @@ mod tests {
             .iter()
             .map(|s| (address(s).unwrap(), vec![]))
             .collect()
+    }
+    #[test]
+    fn undelegation_keys_order_and_fixed_bounds() {
+        assert!(profile(["--unknown".into()]).is_err());
+        assert!(profile(["--undelegation-counts".into(), "extra".into()]).is_err());
+        assert!(profile([]).unwrap() == Profile::Delegation);
+        assert!(profile(["--undelegation-counts".into()]).unwrap() == Profile::Undelegations);
+        let mut expected = Vec::new();
+        for seed in keys().keys() {
+            for (prefix, suffix) in [
+                (vec![3, 1], vec![1]),
+                (vec![3, 2], vec![1]),
+                (vec![3, 4], vec![]),
+            ] {
+                let mut bytes = prefix;
+                bytes.extend_from_slice(seed);
+                bytes.extend(suffix);
+                let mut key = [0; 32];
+                let mut hash = Keccak::v256();
+                hash.update(&bytes);
+                hash.finalize(&mut key);
+                assert_ne!(key, inverse::delegation_count_key(*seed).0);
+                expected.push(ConcreteStorageKey(key));
+            }
+        }
+        assert_eq!(
+            expected.iter().map(|k| k.0).collect::<BTreeSet<_>>().len(),
+            9
+        );
+        let mut calls = 0;
+        let out = observe_profile(&keys(), Profile::Undelegations, |key| {
+            assert_eq!(key, expected[calls]);
+            calls += 1;
+            Ok(ConcreteRead::Present(vec![0; ROW_CAP]))
+        })
+        .unwrap();
+        assert_eq!(calls, 9);
+        assert_eq!(out["accepted_present_bytes"], 9 * ROW_CAP);
+        for row in out["observations"].as_array().unwrap() {
+            assert!(row["decoded_count"].is_null());
+            assert!(row["decoded_last_id"].is_null());
+        }
+        let id = identity().unwrap();
+        let mut values = vec![
+            Ok(ConcreteRead::Absent),
+            Ok(ConcreteRead::Tombstone),
+            Err(ConcreteReadError::HistoryUnavailable(id)),
+            Err(ConcreteReadError::Pruned(id)),
+            Ok(ConcreteRead::Present(vec![])),
+            Err(ConcreteReadError::Io("stop".into())),
+        ]
+        .into_iter();
+        let out = observe_profile(&keys(), Profile::Undelegations, |_| {
+            values.next().expect("no expansion")
+        })
+        .unwrap();
+        assert_eq!(out["point_calls"], 6);
+        assert_eq!(out["status"], "observations_rejected");
+        let out = observe_profile(&keys(), Profile::Undelegations, |_| {
+            Ok(ConcreteRead::Present(vec![0; ROW_CAP + 1]))
+        })
+        .unwrap();
+        assert_eq!(out["point_calls"], 1);
+        assert_eq!(out["rejected_present_bytes"], ROW_CAP + 1);
+        assert!(
+            observe_profile(&Seeds::new(), Profile::Undelegations, |_| panic!(
+                "unapproved seed"
+            ))
+            .is_err()
+        );
+        assert!(interval::encode_bounded(&json!("x".repeat(OUTPUT_CAP)), OUTPUT_CAP).is_err());
     }
     #[test]
     fn source_subtraction_preserves_every_role_and_rejects_drift() {

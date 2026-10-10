@@ -927,6 +927,21 @@ pub fn delegation_count_key(address: [u8; 20]) -> ConcreteStorageKey {
     iterable_count_key_for(&delegator_validators_prefix(address))
 }
 
+/// Derive the V1 validator-map count slot for one justified address.
+/// Uses Go's [03,01] address prefix and count suffix [01]; no state access.
+pub fn undelegation_v1_count_key(address: [u8; 20]) -> ConcreteStorageKey {
+    storage_key(&[&[3, 1], &address, &[1]])
+}
+/// Derive the V2 validator-map count slot with prefix [03,02] and suffix [01].
+pub fn undelegation_v2_count_key(address: [u8; 20]) -> ConcreteStorageKey {
+    storage_key(&[&[3, 2], &address, &[1]])
+}
+/// Derive the V2 last allocated ID slot with prefix [03,04], without a suffix.
+/// This slot is a cursor; its raw value is not a count or a membership proof.
+pub fn undelegation_v2_last_id_key(address: [u8; 20]) -> ConcreteStorageKey {
+    storage_key(&[&[3, 4], &address])
+}
+
 fn storage_key(parts: &[&[u8]]) -> ConcreteStorageKey {
     let mut hasher = Keccak::v256();
     for part in parts {

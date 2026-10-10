@@ -420,3 +420,19 @@ change or broad gate. The full analyzer cannot reuse summary-only raw inventory
 artifacts. [Document](evm_research/n4_interval_seed_counts.md) and run seed freezes,
 probe/gates and authority/implementation reviews retain exact evidence. Same budget
 baseline 53%, floor 43%, reset 1791948695; latest allowance is recorded separately.
+
+## October 10 N4 fixed undelegation physical slots
+
+Fresh Astra medium authority and independent Sol medium final review accepted the
+frozen nine-point profile with no finding. Actual runtime routing is confirmed.
+Three fixed novel addresses retain 34 authenticated envelope roles. The distinct
+V1 count, V2 count and V2 last allocated ID slots all returned HistoryUnavailable.
+No decoding, child reads, inventory, membership or semantic completeness resulted.
+The earlier map's inference from delegation counts is corrected in the document.
+
+Format/check/Clippy, 35 library tests and three binary tests passed on the first
+validation run. Exact key preimages/order, physical classes, bounds, source rejection
+and default profile behavior are covered. No production/storage-module change or
+broad gate applied. [Document](evm_research/n4_undelegation_count_slots.md), run freeze,
+first logs and independent closeouts retain evidence. Same budget baseline53%,
+floor43%, reset1791948695; allowance observations are separate from token/billing claims.
