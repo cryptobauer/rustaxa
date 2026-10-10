@@ -355,12 +355,18 @@ enum NativeSessionOrigin {
     HistoricalSimulation,
     HistoricalTrace,
     HistoricalTraceBoundary,
+    HistoricalTraceOrdinaryPrefix([u8; 20]),
     ClaimAllNonPayable,
 }
 
 impl NativeSessionOrigin {
     fn is_claim_all_trace(self) -> bool {
-        matches!(self, Self::HistoricalTrace | Self::HistoricalTraceBoundary)
+        matches!(
+            self,
+            Self::HistoricalTrace
+                | Self::HistoricalTraceBoundary
+                | Self::HistoricalTraceOrdinaryPrefix(_)
+        )
     }
 }
 
@@ -570,6 +576,44 @@ impl FinalChain {
             reader_period,
             NativeSessionOrigin::HistoricalTraceBoundary,
         )
+    }
+
+    /// Begins the measured P0 ordinary-prefix trace at transaction1/nativeSeq0.
+    ///
+    /// The trusted composition owner must bind the complete concrete P0 source
+    /// and configuration to this semantic history and prove the successful exact
+    /// ordinary self-call prefix through the EVM trace owner before calling this
+    /// constructor. Periods and caller alone are not prefix proof. This API is a
+    /// trusted adapter boundary; the generic trace runner must not auto-upgrade
+    /// into this origin. Source qualification precedes private context1; only the
+    /// bound P0 delegator, claimAll/native178728 at position1/sequence0 is admitted.
+    /// All effects are disposable, with no rewards or publication surface.
+    pub fn begin_native_trace_claim_all_ordinary_prefix(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+        caller: [u8; 20],
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        let simulation = self.begin_native_trace_claim_all_inner(
+            execution_period,
+            reader_period,
+            NativeSessionOrigin::HistoricalTraceOrdinaryPrefix(caller),
+        )?;
+        let Some(rows) = simulation
+            .session
+            .dpos_state
+            .delegator_validators
+            .get(&caller)
+        else {
+            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+        };
+        let Ok(validators) = <[[u8; 20]; 2]>::try_from(rows.as_slice()) else {
+            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+        };
+        simulation
+            .session
+            .qualify_claim_all(caller, validators, execution_period.as_u64())?;
+        Ok(simulation)
     }
 
     /// Begins the measured value1 Cornus claim-all guard over finalized P1.

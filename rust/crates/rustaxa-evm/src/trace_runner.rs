@@ -45,6 +45,8 @@ pub enum TraceSequenceStage {
 /// Failure to establish, execute, or serialize a structured trace sequence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StructuredTraceRunnerError {
+    /// Request or prefix outcome is outside the measured P0 ordinary-prefix profile.
+    ClaimAllPrefixScope,
     /// The supplied reader is not the exact preceding state selected by Go.
     /// No account, storage, code, or block-hash read has occurred.
     StatePeriodMismatch {
@@ -119,6 +121,189 @@ struct OwnedStructuredResult {
     failed: bool,
     return_value: Vec<u8>,
     events: Vec<TraceEvent>,
+}
+
+/// Trace-owner proof of the exact successful P0 ordinary prefix.
+///
+/// Only [`run_structured_claim_all_prefix_trace`] can create this proof. The
+/// factory borrows it after prefix execution and cannot retain it in its port.
+/// The trusted adapter must associate its full concrete source and configuration
+/// with the native semantic history; this proof does not authenticate that history.
+pub struct ClaimAllPrefixTraceAuthority {
+    state: ConcreteStateIdentity,
+    block: ExecutionBlockContext,
+    target: ExecutionTransaction,
+}
+
+impl ClaimAllPrefixTraceAuthority {
+    /// Complete source identity from which the retained journal began.
+    pub fn state(&self) -> ConcreteStateIdentity {
+        self.state
+    }
+    /// Original execution block, separate from source period zero.
+    pub fn block(&self) -> &ExecutionBlockContext {
+        &self.block
+    }
+    /// Exact original target, including supplied wide nonce and position one.
+    pub fn target(&self) -> &ExecutionTransaction {
+        &self.target
+    }
+}
+
+/// Runs only the measured source0/execution1 ordinary-prefix claim-all trace.
+///
+/// The single prefix is a successful code-free non-native self CALL with
+/// nonce2^512, gas21000, zero price/value and empty input. The sole target is
+/// position1 claimAll with nonce2^512+1 and gas200000. Both use one disposable
+/// journal without reset. The native factory runs only after prefix success;
+/// no native port or sequence exists during the prefix. Target native sequence
+/// begins at zero. Wrong shapes/outcomes return `ClaimAllPrefixScope`; read and
+/// driver errors retain Prefix0/Target0, and factory errors use NativeSession.
+/// No prefix JSON, write set, publication authority or proof escapes.
+#[allow(clippy::too_many_arguments)]
+pub fn run_structured_claim_all_prefix_trace<
+    R: ConcreteStateRead + ?Sized,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+    F: for<'proof> FnOnce(&'proof ClaimAllPrefixTraceAuthority) -> Result<P, NativePortError>,
+>(
+    reader: &R,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_factory: F,
+    block: &ExecutionBlockContext,
+    prefix: &[ExecutionTransaction],
+    targets: &[ExecutionTransaction],
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<StructuredTraceRun, StructuredTraceRunnerError> {
+    use crate::profile::TaraxaPhase;
+    use num_bigint::BigUint;
+    let state = reader.identity();
+    let expected =
+        rustaxa_types::FinalChainBlockNumber::new(block.period.as_u64().saturating_sub(1));
+    if state.period != expected {
+        return Err(StructuredTraceRunnerError::StatePeriodMismatch {
+            state,
+            expected,
+            execution: block.period,
+        });
+    }
+    let scope = StructuredTraceRunnerError::ClaimAllPrefixScope;
+    let ([prior], [target]) = (prefix, targets) else {
+        return Err(scope);
+    };
+    let nonce = BigUint::from(1u8) << 512usize;
+    let mut dpos = [0; 20];
+    dpos[19] = 0xfe;
+    if block.period.as_u64() != 1
+        || !envelope_rules.cornus
+        || profile.phase() != TaraxaPhase::Ficus
+        || prior.kind != ExecutionTransactionKind::Call
+        || prior.position.as_u32() != 0
+        || prior.receiver != Some(prior.sender)
+        || prior.gas_limit.as_u64() != 21000
+        || prior.gas_price.value() != &BigUint::default()
+        || prior.value.value() != &BigUint::default()
+        || !prior.input.is_empty()
+        || BigUint::from_bytes_be(&prior.nonce.to_bytes()) != nonce
+        || all_native_addresses.is_native_address(block.period, prior.sender)
+        || consensus_native_addresses.is_native_address(block.period, prior.sender)
+        || target.kind != ExecutionTransactionKind::Call
+        || target.position.as_u32() != 1
+        || target.sender != prior.sender
+        || target.receiver != Some(dpos)
+        || target.gas_limit.as_u64() != 200000
+        || target.gas_price.value() != &BigUint::default()
+        || target.value.value() != &BigUint::default()
+        || target.input != [0x0b, 0x83, 0xa7, 0x27]
+        || BigUint::from_bytes_be(&target.nonce.to_bytes()) != &nonce + 1u8
+        || !consensus_native_addresses.is_native_address(block.period, dpos)
+    {
+        return Err(scope);
+    }
+    let prefix_error = |error| StructuredTraceRunnerError::Execution {
+        stage: TraceSequenceStage::Prefix,
+        index: 0,
+        error,
+    };
+    let mut journal = ExecutionJournal::new(BorrowedCommitted(reader));
+    let before = journal
+        .account_metadata(prior.sender)
+        .map_err(|e| prefix_error(ExecutionDriverError::Journal(e)))?;
+    if !before.exists
+        || !journal
+            .account_code(prior.sender)
+            .map_err(|e| prefix_error(ExecutionDriverError::Journal(e)))?
+            .is_empty()
+    {
+        return Err(scope);
+    }
+    let result = execute_top_level_call(
+        &mut journal,
+        block_hashes,
+        all_native_addresses,
+        block,
+        prior,
+        envelope_rules,
+        profile,
+    )
+    .map_err(prefix_error)?;
+    if !matches!(result, TransactionExecutionResult::Executed(ref out)
+        if out.status == CodeExecutionStatus::Success && out.gas_used.as_u64() == 21000
+        && out.output.is_empty() && out.logs.is_empty())
+    {
+        return Err(scope);
+    }
+    let after = journal
+        .account_metadata(prior.sender)
+        .map_err(|e| prefix_error(ExecutionDriverError::Journal(e)))?;
+    if !after.exists
+        || after.nonce != prior.nonce.next()
+        || after.balance != before.balance
+        || !journal
+            .account_code(prior.sender)
+            .map_err(|e| prefix_error(ExecutionDriverError::Journal(e)))?
+            .is_empty()
+    {
+        return Err(scope);
+    }
+    let authority = ClaimAllPrefixTraceAuthority {
+        state,
+        block: block.clone(),
+        target: target.clone(),
+    };
+    let mut port = native_factory(&authority).map_err(StructuredTraceRunnerError::NativeSession)?;
+    let mut sequence = PeriodConsensusSequence::new(block.period);
+    let execution = execute_top_level_call_with_native(
+        &mut journal,
+        block_hashes,
+        all_native_addresses,
+        consensus_native_addresses,
+        &mut port,
+        &mut sequence,
+        block,
+        target,
+        envelope_rules,
+        profile,
+    )
+    .map_err(|error| StructuredTraceRunnerError::Execution {
+        stage: TraceSequenceStage::Target,
+        index: 0,
+        error,
+    })?;
+    let result = owned_result(execution, TraceCollector::default());
+    let output = serialize_structured_results(&[StructuredTraceResult {
+        gas_used: result.gas_used,
+        failed: result.failed,
+        return_value: &result.return_value,
+        events: &result.events,
+    }])
+    .map_err(StructuredTraceRunnerError::Serialization)?;
+    Ok(StructuredTraceRun { state, output })
 }
 
 /// Runs one bounded default structured TraceRunner sequence.

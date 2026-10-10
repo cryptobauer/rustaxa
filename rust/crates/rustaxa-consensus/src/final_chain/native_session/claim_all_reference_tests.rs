@@ -15,6 +15,97 @@ const DELEGATOR: [u8; 20] = [0xd1; 20];
 const OWNER: [u8; 20] = [0xa1; 20];
 const VALIDATOR: [u8; 20] = [0x31; 20];
 const SECOND: [u8; 20] = [0x32; 20];
+
+/// The trusted trace adapter proves the ordinary prefix; this owner binds the
+/// native coordinate, caller and exact prepared request/quote independently.
+#[test]
+fn ordinary_prefix_trace_claim_all_binds_distinct_origin_and_rejects_other_requests() {
+    with_claim_all_chain("trace-prefix", |chain| {
+        let source = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+        let state = ReferenceState::from_snapshot(&source);
+        let port = NoTraceAccounts(&state);
+        let mut r = request();
+        r.period = 1.into();
+        r.id.transaction = 1.into();
+        r.supplied_gas = 178728.into();
+        let mut trace = chain
+            .begin_native_trace_claim_all_ordinary_prefix(1.into(), 0.into(), DELEGATOR)
+            .unwrap();
+        let q = trace.prepare(&r, &port).unwrap();
+        for kind in 0..14 {
+            let mut wrong = r.clone();
+            match kind {
+                0 => wrong.id.transaction = 0.into(),
+                1 => wrong.id.sequence = 1,
+                2 => wrong.period = 2.into(),
+                3 => wrong.caller = OWNER,
+                4 => wrong.contract = OWNER,
+                5 => wrong.input.push(0),
+                6 => wrong.supplied_gas = 178727.into(),
+                7 => wrong.supplied_gas = 178729.into(),
+                8 => wrong.depth = 1,
+                9 => wrong.is_static = true,
+                10 => wrong.value = FinalChainNativeValue::new(BigUint::from(1u8)),
+                11 => wrong.kind = FinalChainNativeCallKind::StaticCall,
+                12 => wrong.id.transaction = 2.into(),
+                _ => wrong.state_address = OWNER,
+            }
+            assert_eq!(
+                trace.invoke(&wrong, q, &port),
+                Err(FinalChainNativeSessionError::QuoteMismatch)
+            );
+            let mut rejected = chain
+                .begin_native_trace_claim_all_ordinary_prefix(1.into(), 0.into(), DELEGATOR)
+                .unwrap();
+            assert!(
+                rejected.prepare(&wrong, &port).is_err(),
+                "excluded request {kind}"
+            );
+        }
+        let mut wrong_quote = q;
+        wrong_quote.required_gas = 89999.into();
+        assert_eq!(
+            trace.invoke(&r, wrong_quote, &port),
+            Err(FinalChainNativeSessionError::QuoteMismatch)
+        );
+        let FinalChainNativeInvocationResult::Completed(out) = trace.invoke(&r, q, &port).unwrap()
+        else {
+            panic!("funded");
+        };
+        assert_eq!(out.status, FinalChainNativeStatus::Success);
+        assert_eq!(out.raw_mutations.len(), 12);
+        assert!(out.account_mutations.is_empty() && out.logs.is_empty());
+        assert_eq!(
+            trace.invoke(&r, q, &port),
+            Err(FinalChainNativeSessionError::NotPrepared)
+        );
+        r.id.sequence = 1;
+        assert_eq!(
+            trace.prepare(&r, &port),
+            Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+        );
+        for (execution, reader) in [(0, 0), (1, 1), (2, 0), (2, 1)] {
+            assert!(
+                chain
+                    .begin_native_trace_claim_all_ordinary_prefix(
+                        execution.into(),
+                        reader.into(),
+                        DELEGATOR
+                    )
+                    .is_err()
+            );
+        }
+        assert!(
+            chain
+                .begin_native_trace_claim_all_ordinary_prefix(1.into(), 0.into(), OWNER)
+                .is_err()
+        );
+        assert_eq!(
+            chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+            source
+        );
+    });
+}
 type RawRows = BTreeMap<([u8; 20], [u8; 32]), ConcreteRead<Vec<u8>>>;
 
 struct ReferenceState {

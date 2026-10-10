@@ -19,6 +19,10 @@
 //! gas values0/1/68728/89999/90000/90001 on that same P0 source. Underfunded
 //! calls bind an InsufficientGas terminal after one count read; funded calls
 //! share the zero-payout scalar path. The178728-only origin stays distinct.
+//! HistoricalTraceOrdinaryPrefix binds the composition owner's qualified caller
+//! and admits only transaction1/native sequence0 with native gas178728. The EVM
+//! owner must prove the exact successful ordinary prefix before construction;
+//! this origin shares P0 scalar/source checks without changing the older guards.
 
 //! The separate ClaimAllNonPayable origin qualifies positive P1 at construction
 //! and admits only value1 at the six measured caps, with zero quote gas and no
@@ -66,6 +70,7 @@ impl FinalChainNativeSession<'_> {
                 | (NativeSessionOrigin::HistoricalSimulation, 1)
                 | (NativeSessionOrigin::HistoricalTrace, 1)
                 | (NativeSessionOrigin::HistoricalTraceBoundary, 1)
+                | (NativeSessionOrigin::HistoricalTraceOrdinaryPrefix(_), 1)
         ) || self.next_sequence != 0
             || (self.origin == NativeSessionOrigin::HistoricalTrace
                 && request.supplied_gas.as_u64() != 178728)
@@ -74,8 +79,13 @@ impl FinalChainNativeSession<'_> {
                     request.supplied_gas.as_u64(),
                     0 | 1 | 68728 | 89999 | 90000 | 90001
                 ))
-            || (self.origin.is_claim_all_trace()
-                && request.id.transaction != FinalChainTransactionPosition::new(0))
+            || (matches!(
+                self.origin,
+                NativeSessionOrigin::HistoricalTrace | NativeSessionOrigin::HistoricalTraceBoundary
+            ) && request.id.transaction != FinalChainTransactionPosition::new(0))
+            || matches!(self.origin, NativeSessionOrigin::HistoricalTraceOrdinaryPrefix(caller)
+                if request.id.transaction != FinalChainTransactionPosition::new(1)
+                || request.caller != caller || request.supplied_gas.as_u64() != 178728)
             || request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
             || request.depth != 0
             || request.kind != FinalChainNativeCallKind::Call
@@ -283,7 +293,7 @@ impl FinalChainNativeSession<'_> {
     /// Address renaming is allowed; numeric stake, reward and node topology are
     /// the canonical witness. Missing provenance and graph inconsistencies fail
     /// closed. Ordinary account existence and affordability are checked below.
-    fn qualify_claim_all(
+    pub(super) fn qualify_claim_all(
         &self,
         caller: [u8; 20],
         validators: [[u8; 20]; 2],

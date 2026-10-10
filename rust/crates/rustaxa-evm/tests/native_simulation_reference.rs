@@ -716,3 +716,6 @@ mod reward_claim_all_underfunded;
 
 #[path = "native_simulation_reference/reward_claim_all_h1_underfunded_trace.rs"]
 mod reward_claim_all_h1_underfunded_trace;
+
+#[path = "native_simulation_reference/reward_claim_all_h1_prefix_trace.rs"]
+mod reward_claim_all_h1_prefix_trace;

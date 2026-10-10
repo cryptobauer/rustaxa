@@ -20,7 +20,7 @@ use std::{
 fn addr(v: &Value) -> [u8; 20] {
     bytes(v).try_into().unwrap()
 }
-fn logs(v: &Value) -> Vec<ExecutionLog> {
+pub(super) fn logs(v: &Value) -> Vec<ExecutionLog> {
     v.as_array()
         .unwrap()
         .iter()
@@ -36,28 +36,28 @@ fn logs(v: &Value) -> Vec<ExecutionLog> {
         })
         .collect()
 }
-fn raw(out: &NativeInvocationResult) -> Value {
+pub(super) fn raw(out: &NativeInvocationResult) -> Value {
     let NativeInvocationResult::Completed(out) = out else {
         panic!("funded")
     };
     json!(out.raw_mutations.iter().map(|w|json!({"address":hex::encode(w.address),"key":hex::encode(w.key.0),"value":hex::encode(match &w.operation{NativeRawOperation::Put(v)=>v.as_bytes(),NativeRawOperation::Delete=>&[]})})).collect::<Vec<_>>())
 }
-fn balances(out: &NativeInvocationResult) -> Value {
+pub(super) fn balances(out: &NativeInvocationResult) -> Value {
     let NativeInvocationResult::Completed(out) = out else {
         panic!("funded")
     };
     json!(out.account_mutations.iter().map(|m|{let NativeOrdinaryAccountMutation::Balance{address,expected_exists:true,expected,replacement}=m else{panic!("two payout balances")};let delta=replacement.value()-expected.value();let(op,amount)=if delta.sign()==num_bigint::Sign::Minus{("sub",-delta)}else{("add",delta)};json!({"address":hex::encode(address),"operation":op,"amount":amount.to_string(),"balance":replacement.value().to_string()})}).collect::<Vec<_>>())
 }
-struct Port<'a> {
-    inner: mixed_native::SimulationNativeExecutionPort<'a>,
-    reads: Rc<RefCell<Vec<ConcreteStorageKey>>>,
-    seen: Rc<RefCell<Vec<NativeInvocation>>>,
-    outcomes: Rc<RefCell<Vec<NativeInvocationResult>>>,
-    drops: Rc<Cell<usize>>,
-    present: Rc<RefCell<Vec<bool>>>,
-    boundaries: Rc<RefCell<Vec<usize>>>,
-    fail_read: Option<(usize, u8)>,
-    fail_prepare: Option<usize>,
+pub(super) struct Port<'a> {
+    pub(super) inner: mixed_native::SimulationNativeExecutionPort<'a>,
+    pub(super) reads: Rc<RefCell<Vec<ConcreteStorageKey>>>,
+    pub(super) seen: Rc<RefCell<Vec<NativeInvocation>>>,
+    pub(super) outcomes: Rc<RefCell<Vec<NativeInvocationResult>>>,
+    pub(super) drops: Rc<Cell<usize>>,
+    pub(super) present: Rc<RefCell<Vec<bool>>>,
+    pub(super) boundaries: Rc<RefCell<Vec<usize>>>,
+    pub(super) fail_read: Option<(usize, u8)>,
+    pub(super) fail_prepare: Option<usize>,
 }
 impl Drop for Port<'_> {
     fn drop(&mut self) {
