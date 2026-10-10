@@ -815,3 +815,327 @@ fn claim_all_underfunded_boundaries_match_go_and_discard_faults() {
     assert_eq!((attempts, failures), (3328, 368));
     eprintln!("boundary attempts{attempts} failures{failures}");
 }
+
+/// Initial failures have no successful upper bound. Each estimate stops after
+/// its one measured H1 probe, discards its owner, and allows an immediate retry.
+#[test]
+fn claim_all_underfunded_estimates_stop_at_the_measured_initial_probe() {
+    use rustaxa_evm::estimate::{EstimateError, EstimateProbe, estimate_gas};
+
+    #[derive(Clone, Copy, Default)]
+    struct Plan {
+        native: Fault,
+        source: bool,
+        period: bool,
+    }
+    let public: Value = serde_json::from_str(include_str!("../../../../../experiments/evm_feasibility/fixtures/native_reward_claim_all_underfunded/public.json")).unwrap();
+    let local: Value = serde_json::from_str(include_str!("../../../../../experiments/evm_feasibility/fixtures/native_reward_claim_all_underfunded/local.json")).unwrap();
+    let cpp: Value = serde_json::from_str(include_str!("../../../../../experiments/evm_feasibility/fixtures/native_reward_claim_all_underfunded_estimate/cpp.json")).unwrap();
+    let seed: Value = serde_json::from_str(include_str!("../../../../../experiments/evm_feasibility/fixtures/native_redelegate_reward_h1/public.json")).unwrap();
+    assert_eq!(public, local);
+    assert_eq!(public["state_before"], seed["state_before"]);
+    assert_eq!(public["state_before"], public["state_after"]);
+    assert_eq!(public["repeat_identical"], true);
+    assert_eq!(public["state_unchanged_after_each"], true);
+    let rows: Vec<_> = public["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["owner"] == "DryRunner.Apply")
+        .collect();
+    assert_eq!(rows.len(), 7);
+    assert_eq!(cpp["cases"].as_array().unwrap().len(), 7);
+    let concrete = FixturePath::new("claim-all-underfunded-estimate-concrete");
+    let identity = materialize(&public, &concrete);
+    let original = concrete_rows(&concrete);
+    let app = FixturePath::new("claim-all-underfunded-estimate-owner");
+    let caller = addr(&public["caller"]);
+    let mut baseline_owner = None;
+    let mut attempts = 0;
+    let mut failures = 0;
+    let mut allocated = 0;
+    for restart in 0..2 {
+        let chain = super::redelegate_rewarded_partial::history(&app, restart == 0, &seed);
+        let owner = super::redelegate_rewarded_partial::committed(&chain, &seed);
+        let rows_before = owner_rows(&app);
+        if let Some(before) = &baseline_owner {
+            assert_eq!(&rows_before, before, "reopened estimate owner");
+        } else {
+            baseline_owner = Some(rows_before.clone());
+        }
+        let reader = CompleteSeedReader::open(&concrete, &public, identity);
+        for (row, reference) in rows.iter().zip(cpp["cases"].as_array().unwrap()) {
+            let cap = row["gas"].as_u64().unwrap();
+            assert_eq!(reference["name"], format!("claim_all_H1_cap{cap}"));
+            assert_eq!(reference["consumed"], 1);
+            let transaction = tx(row, caller, &row["supplied_nonce"]);
+            let original_tx = transaction.clone();
+            let mut plans = vec![Plan::default(), Plan::default()];
+            for plan in [
+                Plan {
+                    native: Fault {
+                        factory: true,
+                        ..Fault::default()
+                    },
+                    ..Plan::default()
+                },
+                Plan {
+                    source: true,
+                    ..Plan::default()
+                },
+                Plan {
+                    period: true,
+                    ..Plan::default()
+                },
+            ] {
+                plans.extend([plan, Plan::default()]);
+            }
+            if cap < 111272 {
+                for index in 0..14 {
+                    for mode in 1..=3 {
+                        plans.extend([
+                            Plan {
+                                native: Fault {
+                                    raw: Some((index, mode)),
+                                    ..Fault::default()
+                                },
+                                ..Plan::default()
+                            },
+                            Plan::default(),
+                        ]);
+                    }
+                }
+                for index in 0..2 {
+                    plans.extend([
+                        Plan {
+                            native: Fault {
+                                account: Some(index),
+                                ..Fault::default()
+                            },
+                            ..Plan::default()
+                        },
+                        Plan::default(),
+                    ]);
+                }
+                plans.extend([
+                    Plan {
+                        native: Fault {
+                            prepare: true,
+                            ..Fault::default()
+                        },
+                        ..Plan::default()
+                    },
+                    Plan::default(),
+                ]);
+            }
+            for plan in plans {
+                attempts += 1;
+                let failing = plan.source
+                    || plan.period
+                    || plan.native.factory
+                    || (cap >= 21272
+                        && (plan.native.prepare
+                            || plan.native.raw.is_some_and(|(index, _)| index == 0)));
+                let seen = Rc::new(RefCell::new(Seen::default()));
+                let drops = Rc::new(Cell::new(0));
+                let factories = Cell::new(0);
+                let mut probes = Vec::new();
+                let mut callback_error = None;
+                let estimate = estimate_gas(cap, |gas| {
+                    probes.push(gas);
+                    assert_eq!(probes, vec![cap], "no probe after an initial result");
+                    let mut request = transaction.clone();
+                    request.gas_limit = gas.into();
+                    let block = ExecutionBlockContext {
+                        period: if plan.period { 2.into() } else { 1.into() },
+                        author: address(0x31),
+                        timestamp: 1700000001,
+                        gas_limit: 1_000_000.into(),
+                        chain_id: 666,
+                        difficulty: BigUint::default(),
+                    };
+                    let bad_source = SourceFault(&reader);
+                    let source: &dyn ConcreteStateRead =
+                        if plan.source { &bad_source } else { &reader };
+                    let simulated = simulate_with_native(
+                        source,
+                        &NoHistory,
+                        &Dpos,
+                        &Dpos,
+                        |selected| {
+                            factories.set(factories.get() + 1);
+                            assert_eq!(selected, identity);
+                            if plan.native.factory {
+                                return Err(NativePortError::Infrastructure(
+                                    "boundary factory fault".into(),
+                                ));
+                            }
+                            Ok(Port {
+                                inner: Inner::Historical(Box::new(
+                                    mixed_native::SimulationNativeExecutionPort::new(
+                                        chain.begin_native_simulation(1.into()).unwrap(),
+                                    ),
+                                )),
+                                seen: seen.clone(),
+                                drops: drops.clone(),
+                                fault: plan.native,
+                            })
+                        },
+                        &block,
+                        &request,
+                        EnvelopeRules { cornus: true },
+                        TaraxaProfile::new(false),
+                    );
+                    let result = match simulated {
+                        Err(error) => {
+                            assert!(failing, "unexpected callback failure {error:?}");
+                            if plan.period {
+                                assert!(matches!(
+                                    error,
+                                    SimulationError::StatePeriodMismatch { .. }
+                                ));
+                            } else if plan.source {
+                                assert!(
+                                    matches!(&error, SimulationError::Sender(rustaxa_evm::journal::JournalError::State(ConcreteReadError::Io(message))) if message == "boundary sender source fault")
+                                );
+                            } else if plan.native.factory {
+                                assert_eq!(
+                                    error,
+                                    SimulationError::NativeSession(
+                                        NativePortError::Infrastructure(
+                                            "boundary factory fault".into()
+                                        )
+                                    )
+                                );
+                            } else {
+                                assert!(matches!(
+                                    error,
+                                    SimulationError::Execution(
+                                        rustaxa_evm::driver::ExecutionDriverError::Native(
+                                            rustaxa_evm::native::NativeAdapterError::Port(_)
+                                        )
+                                    )
+                                ));
+                            }
+                            callback_error = Some(error.clone());
+                            return Err(error);
+                        }
+                        Ok(result) => {
+                            assert!(!failing);
+                            assert_eq!(result.state, identity);
+                            result.execution
+                        }
+                    };
+                    assert_result(&result, row);
+                    let observed = seen.borrow();
+                    if cap < 21272 {
+                        assert!(
+                            observed.calls.is_empty()
+                                && observed.raw.is_empty()
+                                && observed.quotes.is_empty()
+                                && observed.results.is_empty()
+                                && observed.accounts.is_empty()
+                        );
+                    } else {
+                        assert_eq!(observed.calls.len(), 1);
+                        assert_eq!(observed.calls[0].supplied_gas.as_u64(), cap - 21272);
+                        assert_eq!(observed.calls[0].period, 1.into());
+                        assert_eq!(observed.calls[0].caller, caller);
+                        assert_eq!(observed.calls[0].id.sequence, 0);
+                        assert_eq!(observed.quotes.len(), 1);
+                        assert_eq!(observed.quotes[0].required_gas.as_u64(), 90000);
+                        assert_eq!(observed.boundaries, vec![1]);
+                        assert_eq!(observed.results.len(), 1);
+                        if cap < 111272 {
+                            assert_eq!(
+                                observed.results[0],
+                                NativeInvocationResult::InsufficientGas {
+                                    required_gas: 90000.into()
+                                }
+                            );
+                            assert_eq!(row["ordered_raw_writes"], json!([]));
+                            assert_eq!(row["ordered_balance_effects"], json!([]));
+                            assert_eq!(row["logs"], json!([]));
+                        } else {
+                            let NativeInvocationResult::Completed(out) = &observed.results[0]
+                            else {
+                                panic!("funded control")
+                            };
+                            assert_eq!(raw(out), row["ordered_raw_writes"]);
+                            assert_eq!(balances(out), row["ordered_balance_effects"]);
+                            assert_eq!(out.logs, logs(&row["logs"]));
+                            assert_eq!(out.gas_used.as_u64(), 90000);
+                            assert_eq!(out.status, NativeStatus::Success);
+                        }
+                        assert_eq!(observed.raw.len(), if cap < 111272 { 1 } else { 14 });
+                        assert_eq!(observed.accounts.len(), if cap < 111272 { 0 } else { 2 });
+                    }
+                    Ok(match result {
+                        TransactionExecutionResult::ConsensusFailure(out) => {
+                            assert_eq!(out.error, ConsensusFailure::IntrinsicGas);
+                            EstimateProbe::ConsensusFailure {
+                                error: "intrinsic gas too low".into(),
+                            }
+                        }
+                        TransactionExecutionResult::Executed(out) => match out.status {
+                            CodeExecutionStatus::Success => EstimateProbe::Success {
+                                gas_used: out.gas_used.as_u64(),
+                            },
+                            CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas) => {
+                                EstimateProbe::CodeFailure {
+                                    error: "out of gas".into(),
+                                }
+                            }
+                            status => panic!("unmeasured initial status {status:?}"),
+                        },
+                    })
+                });
+                assert_eq!(probes, vec![cap]);
+                assert_eq!(factories.get(), usize::from(!plan.source && !plan.period));
+                assert_eq!(
+                    drops.get(),
+                    usize::from(!plan.source && !plan.period && !plan.native.factory)
+                );
+                allocated += drops.get();
+                if failing {
+                    failures += 1;
+                    assert_eq!(
+                        estimate,
+                        Err(EstimateError::Callback(callback_error.unwrap()))
+                    );
+                    assert!(seen.borrow().results.is_empty());
+                    if plan.source || plan.period || plan.native.factory || plan.native.prepare {
+                        assert!(seen.borrow().raw.is_empty());
+                    } else {
+                        assert_eq!(seen.borrow().raw.len(), 1);
+                    }
+                } else if cap < 21272 {
+                    assert_eq!(
+                        estimate,
+                        Err(EstimateError::ConsensusFailure {
+                            error: reference["error"].as_str().unwrap().into()
+                        })
+                    );
+                } else if cap < 111272 {
+                    assert_eq!(
+                        estimate,
+                        Err(EstimateError::CodeFailure {
+                            error: reference["error"].as_str().unwrap().into()
+                        })
+                    );
+                } else {
+                    assert_eq!(estimate, Ok(reference["result"].as_u64().unwrap()));
+                }
+                assert_eq!(transaction, original_tx);
+                assert_eq!(reader.identity(), identity);
+                assert_eq!(concrete_rows(&concrete), original);
+                assert_eq!(owner_rows(&app), rows_before);
+                assert_eq!(
+                    super::redelegate_rewarded_partial::committed(&chain, &seed),
+                    owner
+                );
+            }
+        }
+    }
+    assert_eq!((attempts, failures, allocated), (1012, 74, 970));
+}
