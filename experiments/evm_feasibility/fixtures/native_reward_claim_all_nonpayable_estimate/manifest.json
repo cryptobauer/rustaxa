@@ -1,0 +1,38 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "boundary_sha256": {
+    "README.md": "d50ff56462da8f8d4eb6945e8eb1d7566fe8cbdba82786bd211125e8bdf4ce1f",
+    "local.control.json": "dd1983092c2de2c3a13fef8cfcaaccdc16fc51f770d76765f2d96b675c7ad674",
+    "local.control.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "local.control.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "local.json": "146a1781fd300b6909d3b6ca48619634a5c284a09dd5c587affd131b880c18f6",
+    "local.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "local.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "manifest.json": "052164a53a6fa99f0c7ff1d65df3cc202723137d0679590d61f41c6a2f054311",
+    "public.control.json": "dd1983092c2de2c3a13fef8cfcaaccdc16fc51f770d76765f2d96b675c7ad674",
+    "public.control.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "public.control.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "public.json": "146a1781fd300b6909d3b6ca48619634a5c284a09dd5c587affd131b880c18f6",
+    "public.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "public.stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "cpp_helper_sha256": "0dfc2502882ee9a0f9ab9fd181a01e44a9298939942345a077a957238a24a6d1",
+  "cpp_source_sha256": "a90f607e2c2d65d283eb7784174016916431a7c33dca76363777c3642fef640e",
+  "harness_sha256": "0ec021445b9d25e5356850d0e4ca2f65b857b46c4b9e92f09f2a72154d7afcb3",
+  "measurement_reuse": "Exact accepted H1 boundary outputs; no new Go executions or inferred probes",
+  "probe_counts": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "profile": "H1_initial_cap_value1_nonpayable_estimate_over_accepted_dual_pin_guard_probes",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1
+}

@@ -1394,3 +1394,201 @@ fn nonpayable_claim_all_keeps_transfer_affordability_before_quote() {
         );
     }
 }
+
+/// Actual accepted H1 responses and unchanged C++ estimation both terminate on
+/// the first failed probe. Every callback uses a fresh disposable port and
+/// retains the original wide request. Infrastructure errors stop with their
+/// typed callback lane and have immediate clean retries over the same owners.
+#[test]
+fn nonpayable_claim_all_h1_estimates_stop_at_actual_initial_failure() {
+    use rustaxa_evm::estimate::{EstimateError, EstimateProbe, estimate_gas};
+    let public = nonpayable_corpus();
+    let cpp:Value=serde_json::from_str(include_str!("../../../../../experiments/evm_feasibility/fixtures/native_reward_claim_all_nonpayable_estimate/cpp.json")).unwrap();
+    assert_eq!(
+        cpp["algorithm_sha256"],
+        "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759"
+    );
+    assert_eq!(cpp["cases"].as_array().unwrap().len(), 7);
+    let seed:Value=serde_json::from_str(include_str!("../../../../../experiments/evm_feasibility/fixtures/native_redelegate_reward_h1/public.json")).unwrap();
+    let concrete = FixturePath::new("nonpayable-estimate-source");
+    let identity = materialize(&public, &concrete);
+    let source_rows = concrete_rows(&concrete);
+    let app = FixturePath::new("nonpayable-estimate-owner");
+    let mut baseline = None;
+    let mut attempts = 0;
+    let mut callback_errors = 0;
+    let mut allocated = 0;
+    for restart in 0..2 {
+        let chain = super::redelegate_rewarded_partial::history(&app, restart == 0, &seed);
+        let owner = super::redelegate_rewarded_partial::committed(&chain, &seed);
+        let rows = owner_rows(&app);
+        if let Some(old) = &baseline {
+            assert_eq!(old, &rows)
+        } else {
+            baseline = Some(rows.clone())
+        }
+        associate_nonpayable_p1(
+            &chain,
+            &CompleteSeedReader::open(&concrete, &public, identity),
+            &public,
+            &seed,
+        );
+        for (index, row) in public["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["period"] == 1)
+            .enumerate()
+        {
+            let cap = row["gas"].as_u64().unwrap();
+            let admitted = cap >= 21272;
+            let reference = &cpp["cases"][index];
+            assert_eq!(reference["name"], format!("claim_all_H1_cap{cap}"));
+            assert_eq!(reference["consumed"], 1);
+            assert_eq!(
+                reference["error"].as_str().unwrap(),
+                if admitted {
+                    row["execution_error"].as_str().unwrap()
+                } else {
+                    row["consensus_error"].as_str().unwrap()
+                }
+            );
+            let prototype = nonpayable_tx(row, addr(&public["caller"]));
+            let original = prototype.clone();
+            for fault in [0, 1, 0, 2, 0, 3, 0, 4, 0] {
+                attempts += 1;
+                let mut candidates = Vec::new();
+                let drops = Rc::new(Cell::new(0));
+                let factories = Cell::new(0);
+                let seen = Rc::new(RefCell::new(Vec::new()));
+                let outcomes = Rc::new(RefCell::new(Vec::new()));
+                let source = NonpayableSource {
+                    reader: CompleteSeedReader::open(&concrete, &public, identity),
+                    fail: fault == 3,
+                };
+                let estimate = estimate_gas(cap, |candidate| {
+                    candidates.push(candidate);
+                    assert_eq!(candidate, cap, "no midpoint after initial error");
+                    let mut request = prototype.clone();
+                    request.gas_limit = candidate.into();
+                    let original_probe = request.clone();
+                    let result = simulate_with_native(
+                        &source,
+                        &NoHistory,
+                        &Dpos,
+                        &Dpos,
+                        |selected| {
+                            factories.set(factories.get() + 1);
+                            assert_eq!(selected, identity);
+                            if fault == 4 {
+                                return Err(NativePortError::Infrastructure(
+                                    "nonpayable estimate factory fault".into(),
+                                ));
+                            }
+                            Ok(NonpayablePort {
+                                inner: mixed_native::SimulationNativeExecutionPort::new(
+                                    chain
+                                        .begin_native_claim_all_nonpayable(
+                                            selected.period,
+                                            selected.period,
+                                        )
+                                        .unwrap(),
+                                ),
+                                seen: seen.clone(),
+                                outcomes: outcomes.clone(),
+                                drops: drops.clone(),
+                                fault,
+                            })
+                        },
+                        &super::metadata_trace::block(1),
+                        &request,
+                        EnvelopeRules { cornus: true },
+                        TaraxaProfile::for_phase(TaraxaPhase::Ficus),
+                    );
+                    assert_eq!(request, original_probe);
+                    let result = result?;
+                    assert_eq!(result.state, identity);
+                    assert_nonpayable_execution(result.execution.clone(), row);
+                    Ok(match result.execution {
+                        TransactionExecutionResult::ConsensusFailure(_) => {
+                            EstimateProbe::ConsensusFailure {
+                                error: row["consensus_error"].as_str().unwrap().into(),
+                            }
+                        }
+                        TransactionExecutionResult::Executed(out) => {
+                            let CodeExecutionStatus::Failure(CodeExecutionError::Native(e)) =
+                                out.status
+                            else {
+                                panic!("native nonpayable initial estimate")
+                            };
+                            EstimateProbe::CodeFailure { error: e.error }
+                        }
+                    })
+                });
+                assert_eq!(candidates, vec![cap]);
+                assert_eq!(prototype, original);
+                if matches!(fault, 3 | 4) || (admitted && matches!(fault, 1 | 2)) {
+                    callback_errors += 1;
+                    let Err(EstimateError::Callback(error)) = estimate else {
+                        panic!("typed estimate callback {estimate:?}")
+                    };
+                    match (fault, error) {
+                        (
+                            3,
+                            SimulationError::Sender(rustaxa_evm::journal::JournalError::State(
+                                ConcreteReadError::Io(m),
+                            )),
+                        ) => assert_eq!(m, "nonpayable source account fault"),
+                        (4, SimulationError::NativeSession(NativePortError::Infrastructure(m))) => {
+                            assert_eq!(m, "nonpayable estimate factory fault")
+                        }
+                        (
+                            1 | 2,
+                            SimulationError::Execution(
+                                rustaxa_evm::driver::ExecutionDriverError::Native(
+                                    rustaxa_evm::native::NativeAdapterError::Port(
+                                        NativePortError::Infrastructure(m),
+                                    ),
+                                ),
+                            ),
+                        ) => assert_eq!(
+                            m,
+                            if fault == 1 {
+                                "nonpayable prepare fault"
+                            } else {
+                                "nonpayable invoke fault"
+                            }
+                        ),
+                        (_, error) => panic!("wrong estimate callback owner {error:?}"),
+                    }
+                    assert!(outcomes.borrow().is_empty());
+                } else {
+                    let expected = reference["error"].as_str().unwrap().to_owned();
+                    assert_eq!(
+                        estimate,
+                        Err(if admitted {
+                            EstimateError::CodeFailure { error: expected }
+                        } else {
+                            EstimateError::ConsensusFailure { error: expected }
+                        })
+                    );
+                    assert_eq!(seen.borrow().len(), usize::from(admitted));
+                    assert_eq!(outcomes.borrow().len(), usize::from(admitted));
+                }
+                let expected_drop = usize::from(!matches!(fault, 3 | 4));
+                assert_eq!(drops.get(), expected_drop);
+                assert_eq!(factories.get(), usize::from(fault != 3));
+                allocated += expected_drop;
+                assert_eq!(concrete_rows(&concrete), source_rows);
+                assert_eq!(owner_rows(&app), rows);
+                assert_eq!(
+                    super::redelegate_rewarded_partial::committed(&chain, &seed),
+                    owner
+                );
+            }
+        }
+    }
+    assert_eq!(attempts, 126);
+    assert_eq!(callback_errors, 52);
+    assert_eq!(allocated, 98);
+}

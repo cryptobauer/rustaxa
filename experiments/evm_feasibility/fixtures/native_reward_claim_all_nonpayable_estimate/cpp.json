@@ -1,0 +1,40 @@
+{
+  "algorithm_sha256": "7136e3d4b31368406303db6b2b26a887adbf0793e484921980ef9ed3f1be7759",
+  "cases": [
+    {
+      "consumed": 1,
+      "error": "intrinsic gas too low",
+      "name": "claim_all_H1_cap21271"
+    },
+    {
+      "consumed": 1,
+      "error": "Method is not payable",
+      "name": "claim_all_H1_cap21272"
+    },
+    {
+      "consumed": 1,
+      "error": "Method is not payable",
+      "name": "claim_all_H1_cap21273"
+    },
+    {
+      "consumed": 1,
+      "error": "Method is not payable",
+      "name": "claim_all_H1_cap90000"
+    },
+    {
+      "consumed": 1,
+      "error": "Method is not payable",
+      "name": "claim_all_H1_cap111271"
+    },
+    {
+      "consumed": 1,
+      "error": "Method is not payable",
+      "name": "claim_all_H1_cap111272"
+    },
+    {
+      "consumed": 1,
+      "error": "Method is not payable",
+      "name": "claim_all_H1_cap111273"
+    }
+  ]
+}
