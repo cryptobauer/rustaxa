@@ -284,3 +284,29 @@ The public consensus constructor remains a trusted adapter boundary. The proof
 binds prefix success at the EVM owner; it does not authenticate an arbitrary
 native semantic history. No production route, real-window/root parity, recovery
 or N4–N6 acceptance follows from this run. Nothing was pushed.
+
+
+## October 10 N4 parent transfer-address catalog
+
+Lead `01a126b2-3ae0-7883-a5e3-b4618ade8cd5` runs Sol medium, confirmed in
+local runtime metadata. Fresh allowance baseline 53%, floor 43%, reset
+1791948695; no budget reset. Luna medium map and Astra medium authority ran
+and are runtime-confirmed. Independent Sol medium review accepted the frozen
+source, report and document; runtime confirmation is in the run routing record.
+No routing failure or billing claim.
+
+The experimental decoder admits only 20 justified seeds and 256 aggregate
+delegations, preserving principal, iterable order, exact cursor references and
+raw classifications. Bound: 1,044 point calls and 1 MiB accepted value bytes.
+The P probe used 20 calls, all HistoryUnavailable, zero live matches and an exact
+23,278-row residual partition. No fabricated zeros, semantic completeness,
+owner construction or N4 execution acceptance. Existing unrelated edits remain.
+
+Validation: format/Clippy, 14 qualifier library tests, one new provenance test,
+15 existing inverse binary tests and bounded P probe passed. First targeted
+five-test run also passed; all full outputs/exits are retained. The contract's
+nominal item key was corrected to observed prefix-alias discriminator 02 before
+the scan; implementation reused the established helper. No implementation-review
+correction. [Document](evm_research/n4_parent_transfer_catalog.md),
+[freeze](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/catalog-freeze.json),
+[review](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/catalog-review.md).

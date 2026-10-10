@@ -542,7 +542,8 @@ where
         scalars.push(analyzer.scalar(field, name)?);
     }
 
-    let seeded_delegations = analyze_seeded_delegations(&mut analyzer, seeded_addresses)?;
+    let seeded_delegations =
+        analyze_seeded_delegations(&mut analyzer, seeded_addresses, MAX_SEEDED_DELEGATIONS)?;
 
     analyzer.finish(validator_count, validators, scalars, seeded_delegations)
 }
@@ -550,6 +551,7 @@ where
 fn analyze_seeded_delegations<F>(
     analyzer: &mut Analyzer<'_, F>,
     seeded_addresses: BTreeMap<[u8; 20], BTreeSet<&'static str>>,
+    max_entries: u32,
 ) -> Result<SeededDelegationCoverage>
 where
     F: FnMut(ConcreteStorageKey) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError>,
@@ -580,8 +582,8 @@ where
                 .checked_add(count)
                 .context("seeded delegation count overflow")?;
             ensure!(
-                total_entries <= MAX_SEEDED_DELEGATIONS,
-                "seeded delegation entries {total_entries} exceed diagnostic limit {MAX_SEEDED_DELEGATIONS}"
+                total_entries <= max_entries,
+                "seeded delegation entries {total_entries} exceed diagnostic limit {max_entries}"
             );
             Some(count)
         } else {
@@ -655,12 +657,214 @@ where
 
     Ok(SeededDelegationCoverage {
         candidate_count,
-        max_delegation_entries: MAX_SEEDED_DELEGATIONS,
+        max_delegation_entries: max_entries,
         live_delegation_entries: total_entries,
         count_results,
         candidates,
         delegations,
         global_delegator_set_complete: false,
+    })
+}
+
+/// Maximum justified addresses admitted by the transfer-window diagnostic.
+pub const MAX_TRANSFER_ADDRESSES: usize = 20;
+/// Maximum aggregate delegation entries admitted before child expansion.
+pub const MAX_TRANSFER_DELEGATIONS: u32 = 256;
+/// Point calls, including repeated references, permitted by the transfer bounds.
+pub const MAX_TRANSFER_READS: usize =
+    MAX_TRANSFER_ADDRESSES + 4 * MAX_TRANSFER_DELEGATIONS as usize;
+/// Aggregate accepted point-value bytes; not a RocksDB allocation bound.
+pub const MAX_TRANSFER_VALUE_BYTES: usize = 1024 * 1024;
+
+/// Independent partial delegation catalog for caller-justified addresses.
+///
+/// Matched paths are unique and may overlap other inverse catalogs. Never add
+/// independent counts without checking their path union. Unexplained paths have
+/// no semantic interpretation; this result grants no snapshot/import authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AddressDelegationCatalog {
+    pub seeded_delegations: SeededDelegationCoverage,
+    pub derived_reads: usize,
+    pub accepted_point_value_bytes: usize,
+    pub matched_paths_hex: Vec<String>,
+    pub references: Vec<DelegationCatalogReference>,
+    pub matched_live_entries: usize,
+    pub matched_live_value_bytes: u64,
+    pub unexplained_live_entries: usize,
+    pub unexplained_live_value_bytes: u64,
+    pub unexplained_entries_sha256: String,
+    pub live_partition_exact: bool,
+    pub semantic_snapshot_complete: bool,
+}
+
+/// A justified key reference; repeated cursor references remain separate.
+/// Join logical keys to raw observations rather than inferring physical values.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DelegationCatalogReference {
+    pub delegator_hex: String,
+    pub sources: Vec<&'static str>,
+    pub position: Option<u32>,
+    pub family: &'static str,
+    pub logical_key_hex: String,
+    pub trie_path_hex: String,
+}
+
+/// Decodes only delegations reached from at most twenty justified addresses.
+///
+/// The caller binds the complete DPoS inventory and raw reader to one identity
+/// and supplies provenance for every seed. Live rows must match inventory bytes;
+/// required indexed rows fail on missing, orphan, malformed or unavailable data.
+/// Optional counts/cursors retain physical distinctions and never invent zero.
+/// All source positions are preserved. Aggregate entry, point-call and accepted
+/// value-byte bounds fail closed, with no partial successful catalog returned.
+pub fn analyze_address_delegations<F>(
+    inventory: &ConcreteStorageInventory,
+    seeds: BTreeMap<[u8; 20], BTreeSet<&'static str>>,
+    mut read: F,
+) -> Result<AddressDelegationCatalog>
+where
+    F: FnMut(ConcreteStorageKey) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError>,
+{
+    ensure!(
+        inventory.address == DPOS_CONTRACT_ADDRESS,
+        "catalog inventory is not DPoS"
+    );
+    ensure!(
+        seeds.len() <= MAX_TRANSFER_ADDRESSES,
+        "transfer seed count exceeds limit"
+    );
+    let indexed = inventory
+        .entries
+        .iter()
+        .map(|entry| (entry.hashed_path, entry.value.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+    ensure!(
+        indexed.len() == inventory.entries.len(),
+        "live inventory contains duplicate paths"
+    );
+    let mut derived_reads = 0_usize;
+    let mut point_bytes = 0_usize;
+    let mut analyzer = Analyzer {
+        inventory: indexed,
+        read: |key| {
+            if derived_reads >= MAX_TRANSFER_READS {
+                return Err(ConcreteReadError::Corrupt(
+                    "transfer point-read limit exceeded".into(),
+                ));
+            }
+            derived_reads += 1;
+            let result = read(key);
+            if let Ok(ConcreteRead::Present(value)) = &result {
+                let Some(bytes) = point_bytes.checked_add(value.len()) else {
+                    return Err(ConcreteReadError::Corrupt(
+                        "transfer value-byte overflow".into(),
+                    ));
+                };
+                if bytes > MAX_TRANSFER_VALUE_BYTES {
+                    return Err(ConcreteReadError::Corrupt(
+                        "transfer value-byte limit exceeded".into(),
+                    ));
+                }
+                point_bytes = bytes;
+            }
+            result
+        },
+        known: BTreeMap::new(),
+        matched_by_family: BTreeMap::new(),
+        matched_value_bytes: 0,
+    };
+    let seeded_delegations =
+        analyze_seeded_delegations(&mut analyzer, seeds, MAX_TRANSFER_DELEGATIONS)?;
+    let unexplained = analyzer
+        .inventory
+        .iter()
+        .filter(|(path, _)| !analyzer.known.contains_key(*path))
+        .map(|(path, value)| ConcreteStorageInventoryEntry {
+            hashed_path: *path,
+            value: value.to_vec(),
+        })
+        .collect::<Vec<_>>();
+    let unexplained_bytes = unexplained.iter().try_fold(0_u64, |total, entry| {
+        total
+            .checked_add(u64::try_from(entry.value.len())?)
+            .context("catalog byte-count overflow")
+    })?;
+    let mut references = Vec::new();
+    for candidate in &seeded_delegations.candidates {
+        let delegator: [u8; 20] = hex::decode(&candidate.address_hex)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("decoded candidate width differs"))?;
+        let prefix = delegator_validators_prefix(delegator);
+        let mut push = |position, family, key: ConcreteStorageKey| {
+            references.push(DelegationCatalogReference {
+                delegator_hex: candidate.address_hex.clone(),
+                sources: candidate.sources.clone(),
+                position,
+                family,
+                logical_key_hex: hex::encode(key.0),
+                trie_path_hex: hex::encode(keccak256(&key.0)),
+            });
+        };
+        push(None, "delegation_count", iterable_count_key_for(&prefix));
+        for delegation in seeded_delegations
+            .delegations
+            .iter()
+            .filter(|row| row.delegator_hex == candidate.address_hex)
+        {
+            let validator: [u8; 20] = hex::decode(&delegation.validator_hex)?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("decoded validator width differs"))?;
+            let position = Some(delegation.position);
+            push(
+                position,
+                "delegation_item",
+                iterable_item_key_for(&prefix, delegation.position),
+            );
+            push(
+                position,
+                "delegation_reverse",
+                iterable_position_key_for(&prefix, &validator),
+            );
+            push(
+                position,
+                "delegation_principal",
+                storage_key(&[&[2, 0], &validator, &delegator]),
+            );
+            push(
+                position,
+                "delegation_cursor",
+                storage_key(&[
+                    &[1],
+                    &validator,
+                    &compact_u64_bytes(delegation.last_updated),
+                ]),
+            );
+        }
+    }
+    let matched_paths = analyzer.known.keys().map(hex::encode).collect::<Vec<_>>();
+    let matched_bytes = analyzer.matched_value_bytes;
+    ensure!(
+        matched_paths.len() + unexplained.len() == inventory.entries.len(),
+        "catalog row partition differs"
+    );
+    ensure!(
+        matched_bytes.checked_add(unexplained_bytes) == Some(inventory.value_bytes),
+        "catalog byte partition differs"
+    );
+    drop(analyzer);
+    Ok(AddressDelegationCatalog {
+        seeded_delegations,
+        derived_reads,
+        accepted_point_value_bytes: point_bytes,
+        matched_live_entries: matched_paths.len(),
+        matched_paths_hex: matched_paths,
+        references,
+        matched_live_value_bytes: matched_bytes,
+        unexplained_live_entries: unexplained.len(),
+        unexplained_live_value_bytes: unexplained_bytes,
+        unexplained_entries_sha256: digest_entries(&unexplained),
+        live_partition_exact: true,
+        semantic_snapshot_complete: false,
     })
 }
 
@@ -1298,6 +1502,330 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("reverse index")
+        );
+    }
+}
+
+#[cfg(test)]
+mod address_catalog_tests {
+    use super::*;
+    use rustaxa_types::{FinalChainBlockNumber, concrete_state::ConcreteStateIdentity};
+    fn seeds(addresses: &[[u8; 20]]) -> BTreeMap<[u8; 20], BTreeSet<&'static str>> {
+        addresses
+            .iter()
+            .map(|a| (*a, BTreeSet::from(["test_evidence"])))
+            .collect()
+    }
+    fn inventory(
+        rows: &BTreeMap<ConcreteStorageKey, ConcreteRead<Vec<u8>>>,
+    ) -> ConcreteStorageInventory {
+        let mut entries = rows
+            .iter()
+            .filter_map(|(key, row)| match row {
+                ConcreteRead::Present(value) => Some(ConcreteStorageInventoryEntry {
+                    hashed_path: keccak256(&key.0),
+                    value: value.clone(),
+                }),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|row| row.hashed_path);
+        ConcreteStorageInventory {
+            identity: ConcreteStateIdentity {
+                period: FinalChainBlockNumber::new(7),
+                state_root: [7; 32],
+            },
+            address: DPOS_CONTRACT_ADDRESS,
+            storage_root: Some([8; 32]),
+            nodes_visited: 1,
+            value_bytes: entries.iter().map(|row| row.value.len() as u64).sum(),
+            entries,
+        }
+    }
+    fn rows() -> BTreeMap<ConcreteStorageKey, ConcreteRead<Vec<u8>>> {
+        let mut rows = BTreeMap::new();
+        for delegator in [[1; 20], [2; 20]] {
+            let prefix = delegator_validators_prefix(delegator);
+            rows.insert(
+                iterable_count_key_for(&prefix),
+                ConcreteRead::Present(2_u32.to_le_bytes().to_vec()),
+            );
+            // Preserve insertion order rather than sorting validators.
+            for (position, validator) in [(1, [4; 20]), (2, [3; 20])] {
+                rows.insert(
+                    iterable_item_key_for(&prefix, position),
+                    ConcreteRead::Present(validator.to_vec()),
+                );
+                rows.insert(
+                    iterable_position_key_for(&prefix, &validator),
+                    ConcreteRead::Present(position.to_le_bytes().to_vec()),
+                );
+                let mut row = RlpStream::new_list(2);
+                row.append(&50_u64).append(&30_u64);
+                rows.insert(
+                    storage_key(&[&[2, 0], &validator, &delegator]),
+                    ConcreteRead::Present(row.out().to_vec()),
+                );
+                let mut node = RlpStream::new_list(2);
+                node.append(&10_u64).append(&2_u32);
+                rows.insert(
+                    storage_key(&[&[1], &validator, &compact_u64_bytes(30)]),
+                    ConcreteRead::Present(node.out().to_vec()),
+                );
+            }
+        }
+        rows
+    }
+    #[test]
+    fn catalog_preserves_order_principal_shared_cursors_and_exact_partition() {
+        let rows = rows();
+        let inventory = inventory(&rows);
+        let catalog = analyze_address_delegations(&inventory, seeds(&[[1; 20], [2; 20]]), |key| {
+            Ok(rows[&key].clone())
+        })
+        .unwrap();
+        assert_eq!(catalog.derived_reads, 18);
+        assert_eq!(catalog.references.len(), 18);
+        assert_eq!(catalog.matched_live_entries, 16);
+        assert_eq!(catalog.unexplained_live_entries, 0);
+        assert_eq!(
+            catalog.seeded_delegations.delegations[0].validator_hex,
+            hex::encode([4; 20])
+        );
+        assert_eq!(
+            catalog.seeded_delegations.delegations[1].validator_hex,
+            hex::encode([3; 20])
+        );
+        assert_eq!(catalog.seeded_delegations.delegations[0].stake_hex, "32");
+        assert_eq!(
+            catalog.seeded_delegations.delegations[2].reward_node_result,
+            "live_present_already_matched"
+        );
+        assert!(!catalog.semantic_snapshot_complete);
+        assert!(!catalog.seeded_delegations.global_delegator_set_complete);
+    }
+    #[test]
+    fn catalog_retains_non_live_counts_and_explicit_zero() {
+        let candidate = [1; 20];
+        let key = iterable_count_key_for(&delegator_validators_prefix(candidate));
+        let empty = inventory(&BTreeMap::new());
+        for (read, expected) in [
+            (ConcreteRead::Absent, "absent"),
+            (ConcreteRead::Tombstone, "tombstone"),
+            (
+                ConcreteRead::Present(0_u32.to_le_bytes().to_vec()),
+                "orphan_present",
+            ),
+        ] {
+            let catalog =
+                analyze_address_delegations(&empty, seeds(&[candidate]), |_| Ok(read.clone()))
+                    .unwrap();
+            assert_eq!(
+                catalog.seeded_delegations.candidates[0].delegation_count_result,
+                expected
+            );
+            assert_eq!(
+                catalog.seeded_delegations.candidates[0].delegation_count,
+                None
+            );
+        }
+        let rows = BTreeMap::from([(key, ConcreteRead::Present(0_u32.to_le_bytes().to_vec()))]);
+        let live = analyze_address_delegations(&inventory(&rows), seeds(&[candidate]), |_| {
+            Ok(rows[&key].clone())
+        })
+        .unwrap();
+        assert_eq!(
+            live.seeded_delegations.candidates[0].delegation_count,
+            Some(0)
+        );
+        for (error, expected) in [
+            (
+                ConcreteReadError::HistoryUnavailable(empty.identity),
+                "history_unavailable",
+            ),
+            (ConcreteReadError::Pruned(empty.identity), "pruned"),
+        ] {
+            let catalog =
+                analyze_address_delegations(&empty, seeds(&[candidate]), |_| Err(error.clone()))
+                    .unwrap();
+            assert_eq!(
+                catalog.seeded_delegations.candidates[0].delegation_count_result,
+                expected
+            );
+        }
+    }
+    #[test]
+    fn catalog_rejects_required_missing_malformed_reverse_duplicate_and_byte_drift() {
+        for case in 0..6 {
+            let mut rows = rows();
+            let prefix = delegator_validators_prefix([1; 20]);
+            let original = inventory(&rows);
+            let key = match case {
+                0 => iterable_item_key_for(&prefix, 1),
+                1 => iterable_position_key_for(&prefix, &[4; 20]),
+                2 => storage_key(&[&[2, 0], &[4; 20], &[1; 20]]),
+                3 => iterable_item_key_for(&prefix, 2),
+                _ => iterable_count_key_for(&prefix),
+            };
+            let value = match case {
+                0 => ConcreteRead::Tombstone,
+                1 => ConcreteRead::Present(2_u32.to_le_bytes().to_vec()),
+                2 => ConcreteRead::Present(vec![0xc0]),
+                3 => ConcreteRead::Present([4; 20].to_vec()),
+                4 => ConcreteRead::Present(vec![1]),
+                _ => ConcreteRead::Present(0_u32.to_le_bytes().to_vec()),
+            };
+            rows.insert(key, value);
+            let selected = if case == 5 {
+                original
+            } else {
+                inventory(&rows)
+            };
+            assert!(
+                analyze_address_delegations(&selected, seeds(&[[1; 20]]), |key| Ok(rows
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(ConcreteRead::Absent)))
+                .is_err(),
+                "case {case}"
+            );
+        }
+    }
+    #[test]
+    fn catalog_bounds_stop_before_child_expansion_or_extra_seed_reads() {
+        let candidate = [1; 20];
+        let count_key = iterable_count_key_for(&delegator_validators_prefix(candidate));
+        let rows = BTreeMap::from([(
+            count_key,
+            ConcreteRead::Present(257_u32.to_le_bytes().to_vec()),
+        )]);
+        let mut calls = 0;
+        assert!(
+            analyze_address_delegations(&inventory(&rows), seeds(&[candidate]), |key| {
+                calls += 1;
+                assert_eq!(key, count_key);
+                Ok(rows[&key].clone())
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 1);
+        let many = (0..21).map(|n| [n; 20]).collect::<Vec<_>>();
+        assert!(
+            analyze_address_delegations(&inventory(&BTreeMap::new()), seeds(&many), |_| panic!(
+                "over-limit seeds read"
+            ))
+            .is_err()
+        );
+        let oversized = vec![0; MAX_TRANSFER_VALUE_BYTES + 1];
+        assert!(
+            analyze_address_delegations(&inventory(&BTreeMap::new()), seeds(&[candidate]), |_| Ok(
+                ConcreteRead::Present(oversized.clone())
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("read derived")
+        );
+    }
+    #[test]
+    fn catalog_maximum_reads_and_aggregate_bytes_are_bounded() {
+        let mut rows = BTreeMap::new();
+        let addresses = (1..=20).map(|n| [n; 20]).collect::<Vec<_>>();
+        for (index, delegator) in addresses.iter().enumerate() {
+            let prefix = delegator_validators_prefix(*delegator);
+            rows.insert(
+                iterable_count_key_for(&prefix),
+                ConcreteRead::Present(
+                    (if index == 0 { 256_u32 } else { 0 })
+                        .to_le_bytes()
+                        .to_vec(),
+                ),
+            );
+            if index != 0 {
+                continue;
+            }
+            for position in 1..=256_u32 {
+                let mut validator = [0x44; 20];
+                validator[..4].copy_from_slice(&position.to_le_bytes());
+                rows.insert(
+                    iterable_item_key_for(&prefix, position),
+                    ConcreteRead::Present(validator.to_vec()),
+                );
+                rows.insert(
+                    iterable_position_key_for(&prefix, &validator),
+                    ConcreteRead::Present(position.to_le_bytes().to_vec()),
+                );
+                let mut principal = RlpStream::new_list(2);
+                principal.append(&1_u64).append(&30_u64);
+                rows.insert(
+                    storage_key(&[&[2, 0], &validator, delegator]),
+                    ConcreteRead::Present(principal.out().to_vec()),
+                );
+                let mut cursor = RlpStream::new_list(2);
+                cursor.append(&1_u64).append(&1_u32);
+                rows.insert(
+                    storage_key(&[&[1], &validator, &compact_u64_bytes(30)]),
+                    ConcreteRead::Present(cursor.out().to_vec()),
+                );
+            }
+        }
+        let result = analyze_address_delegations(&inventory(&rows), seeds(&addresses), |key| {
+            Ok(rows[&key].clone())
+        })
+        .unwrap();
+        assert_eq!(result.derived_reads, MAX_TRANSFER_READS);
+        assert_eq!(
+            result.seeded_delegations.live_delegation_entries,
+            MAX_TRANSFER_DELEGATIONS
+        );
+        let mut calls = 0;
+        let error = analyze_address_delegations(
+            &inventory(&BTreeMap::new()),
+            seeds(&addresses[..2]),
+            |_| {
+                calls += 1;
+                Ok(ConcreteRead::Present(vec![
+                    1;
+                    MAX_TRANSFER_VALUE_BYTES / 2 + 1
+                ]))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(format!("{error:#}").contains("value-byte limit"));
+    }
+
+    #[test]
+    fn catalog_non_live_cursor_is_unresolved_and_live_history_contradiction_fails() {
+        let mut rows = rows();
+        let cursor = storage_key(&[&[1], &[4; 20], &compact_u64_bytes(30)]);
+        let live = inventory(&rows);
+        rows.remove(&cursor);
+        let partial = inventory(&rows);
+        let catalog = analyze_address_delegations(&partial, seeds(&[[1; 20]]), |key| {
+            if key == cursor {
+                Err(ConcreteReadError::HistoryUnavailable(partial.identity))
+            } else {
+                Ok(rows[&key].clone())
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            catalog.seeded_delegations.delegations[0].reward_node_result,
+            "history_unavailable"
+        );
+        assert_eq!(
+            catalog.seeded_delegations.delegations[0].reward_per_stake_hex,
+            None
+        );
+        assert!(
+            analyze_address_delegations(&live, seeds(&[[1; 20]]), |key| {
+                if key == cursor {
+                    Err(ConcreteReadError::HistoryUnavailable(live.identity))
+                } else {
+                    Ok(rows[&key].clone())
+                }
+            })
+            .is_err()
         );
     }
 }
