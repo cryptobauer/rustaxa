@@ -359,3 +359,25 @@ remains outside this slice. No production or storage-module changes or broad gat
 Baseline 53%, floor 43%, reset 1791948695 remain unchanged; quota readings are
 separate from tokens/billing. [Document](evm_research/n4_head_history_authentication.md)
 and run `head-history-*` freezes, logs and reviews retain complete evidence.
+
+
+## October 10 N4 P predecessor-list authentication
+
+Fresh Astra-medium authority and independent Sol-medium contexts ran; runtime
+confirmation uses exact thread logs in the run routing record. P's complete lists
+bind to accepted H through separate FinalChain and signed-PBFT predecessor hashes.
+The guarded probe made 14 reads, H 7,973 bytes/P 5,277 bytes. P has one ordinary
+empty-calldata transaction/receipt and no native candidates. Independent C++ raw
+ordered roots match both P stored roots. No reward/DAG payload authority, native
+completeness, public finality, owner construction or N4 execution acceptance.
+
+Initial compile required a module-qualified PBFT-link import. Review required
+item count/size admission before recursive traversal and missing P RLP boundary
+tests. Both were fixed. Frozen captured-row verification, 30 library tests,
+one H adapter test, one P adapter test, format/check/Clippy and whitespace passed.
+Original capture source hashes are reproduced exactly by retained source copies;
+post-capture changes and offline verification are documented. No repeated DB
+probe or broad/storage/production gate. Baseline53%, floor43%, reset1791948695
+remain fixed; latest allowance48% at17:33:00 is separate from tokens/billing.
+[Document](evm_research/n4_parent_history_authentication.md); run parent-history
+freezes/reviews, source comparisons and logs retain full evidence.

@@ -101,9 +101,16 @@ fn bounded_rows(rows: &HeadHistoryRows) -> Result<usize> {
 /// Validates canonical, fully consumed RLP recursively before semantic decode.
 /// Per-row size, 4,096 nodes and depth 64 bound the recursive work.
 fn canonical(bytes: &[u8]) -> Result<()> {
-    fn rebuild(bytes: &[u8], depth: usize, nodes: &mut usize) -> Result<Vec<u8>> {
+    canonical_bounded(bytes, 4096)
+}
+/// Shared complete canonical RLP check; callers bound row bytes independently.
+pub(crate) fn canonical_bounded(bytes: &[u8], max_nodes: usize) -> Result<()> {
+    fn rebuild(bytes: &[u8], depth: usize, nodes: &mut usize, max_nodes: usize) -> Result<Vec<u8>> {
         *nodes += 1;
-        ensure!(depth <= 64 && *nodes <= 4096, "RLP traversal cap exceeded");
+        ensure!(
+            depth <= 64 && *nodes <= max_nodes,
+            "RLP traversal cap exceeded"
+        );
         let row = Rlp::new(bytes);
         ensure!(
             row.payload_info()?.total() == bytes.len(),
@@ -112,10 +119,13 @@ fn canonical(bytes: &[u8]) -> Result<()> {
         let mut stream = RlpStream::new();
         if row.is_list() {
             let count = row.item_count()?;
-            ensure!(count <= 4096, "RLP child cap exceeded");
+            ensure!(count <= max_nodes, "RLP child cap exceeded");
             stream.begin_list(count);
             for position in 0..count {
-                stream.append_raw(&rebuild(row.at(position)?.as_raw(), depth + 1, nodes)?, 1);
+                stream.append_raw(
+                    &rebuild(row.at(position)?.as_raw(), depth + 1, nodes, max_nodes)?,
+                    1,
+                );
             }
         } else {
             stream.append(&row.data()?);
@@ -124,7 +134,7 @@ fn canonical(bytes: &[u8]) -> Result<()> {
         ensure!(encoded == bytes, "noncanonical RLP");
         Ok(encoded)
     }
-    rebuild(bytes, 0, &mut 0)?;
+    rebuild(bytes, 0, &mut 0, max_nodes)?;
     Ok(())
 }
 
@@ -148,7 +158,11 @@ fn list_items(bytes: &[u8], count: usize) -> Result<Vec<&[u8]>> {
 }
 
 fn receipt(bytes: &[u8]) -> Result<(u8, u64, u64, usize)> {
-    canonical(bytes)?;
+    receipt_bounded(bytes, 4096)
+}
+/// Shared five-field Taraxa receipt decoder with canonical scalar re-encoding.
+pub(crate) fn receipt_bounded(bytes: &[u8], max_nodes: usize) -> Result<(u8, u64, u64, usize)> {
+    canonical_bounded(bytes, max_nodes)?;
     let row = Rlp::new(bytes);
     ensure!(row.item_count()? == 5, "receipt arity differs");
     let status: u8 = row.val_at(0)?;
@@ -194,7 +208,7 @@ fn receipt(bytes: &[u8]) -> Result<(u8, u64, u64, usize)> {
     Ok((status, gas, cumulative, logs.item_count()?))
 }
 
-fn ordered_root(items: &[&[u8]]) -> H256 {
+pub(crate) fn ordered_root(items: &[&[u8]]) -> H256 {
     H256::from_slice(triehash::ordered_trie_root::<KeccakHasher, _>(items.iter().copied()).as_ref())
 }
 fn authenticate_lists(
