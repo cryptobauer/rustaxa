@@ -22,6 +22,250 @@ struct ReferenceState {
     accounts: RefCell<BTreeMap<[u8; 20], FinalChainNativeAccount>>,
 }
 
+/// Renamed semantic corpus for the measured preloaded underfunded profile.
+/// Public integration supplies the independent authenticated canonical P1.
+fn underfunded_session(chain: &FinalChain, historical: bool) -> FinalChainNativeSession<'_> {
+    let mut s = if historical {
+        historical_session(chain)
+    } else {
+        session(chain)
+    };
+    s.dpos_state.aspen_supply_state = AspenSupplyState::Unmigrated {
+        minted_tokens: StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(800)),
+    };
+    s
+}
+
+struct CountOnlyState<'a> {
+    inner: &'a ReferenceState,
+    count_key: ConcreteStorageKey,
+    reads: RefCell<Vec<ConcreteStorageKey>>,
+}
+impl FinalChainNativeStateRead for CountOnlyState<'_> {
+    fn account(
+        &self,
+        _: [u8; 20],
+    ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        panic!("underfunded scalar account read")
+    }
+    fn raw_storage(
+        &self,
+        address: [u8; 20],
+        key: &ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+        assert_eq!(*key, self.count_key);
+        assert!(
+            self.reads.borrow().is_empty(),
+            "underfunded invocation count re-read"
+        );
+        self.reads.borrow_mut().push(*key);
+        self.inner.raw_storage(address, key)
+    }
+}
+
+#[test]
+fn underfunded_claim_all_binds_count_and_consumes_without_scalar_reads() {
+    with_claim_all_chain("underfunded-binding", |chain| {
+        for historical in [false, true] {
+            for gas in [0, 1, 68728, 89999] {
+                let mut s = underfunded_session(chain, historical);
+                let original = s.dpos_state.clone();
+                let inner = ReferenceState::from_snapshot(&original);
+                let state = CountOnlyState {
+                    inner: &inner,
+                    count_key: super::custody::iterable_count_key(
+                        &super::custody::delegator_validators_prefix(DELEGATOR),
+                    ),
+                    reads: RefCell::new(Vec::new()),
+                };
+                let mut r = request();
+                r.period = s.pending_period;
+                r.supplied_gas = gas.into();
+                let q = s.prepare(&r, &state).unwrap();
+                assert_eq!(q.required_gas.as_u64(), 90000);
+                let mut wrong = r.clone();
+                wrong.supplied_gas = (gas + 1).into();
+                assert_eq!(
+                    s.invoke(&wrong, q, &state),
+                    Err(FinalChainNativeSessionError::QuoteMismatch)
+                );
+                let mut wrong_q = q;
+                wrong_q.required_gas = 89999.into();
+                assert_eq!(
+                    s.invoke(&r, wrong_q, &state),
+                    Err(FinalChainNativeSessionError::QuoteMismatch)
+                );
+                assert_eq!(
+                    s.invoke(&r, q, &state),
+                    Ok(FinalChainNativeInvocationResult::InsufficientGas {
+                        required_gas: 90000.into()
+                    })
+                );
+                assert_eq!(*state.reads.borrow(), vec![state.count_key]);
+                assert_eq!(s.dpos_state, original);
+                assert_eq!(s.next_sequence, 1);
+                assert!(s.prepared.is_none() && !s.aborted);
+                assert_eq!(
+                    s.invoke(&r, q, &state),
+                    Err(FinalChainNativeSessionError::NotPrepared)
+                );
+                r.id.sequence = 1;
+                assert_eq!(
+                    s.prepare(&r, &state),
+                    Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+                );
+                assert!(s.aborted);
+            }
+        }
+    });
+}
+
+#[test]
+fn underfunded_claim_all_rejects_excluded_preloaded_profiles_and_count_integrity() {
+    with_claim_all_chain("underfunded-profile", |chain| {
+        for historical in [false, true] {
+            for kind in 0..23 {
+                let mut s = underfunded_session(chain, historical);
+                let mut r = request();
+                r.period = s.pending_period;
+                r.supplied_gas = 89999.into();
+                match kind {
+                    0 => s.dpos_state.total_vote_count += 1,
+                    1 => {
+                        s.dpos_state.aspen_supply_state = AspenSupplyState::Unmigrated {
+                            minted_tokens: StoredDposTokenAmount::default(),
+                        }
+                    }
+                    2 => {
+                        s.dpos_state.aspen_supply_state = AspenSupplyState::Migrated {
+                            total_supply: StoredDposTokenAmount::canonical_u256_after_mutation(
+                                U256::from(800),
+                            ),
+                            current_yield: AspenYield(0),
+                        }
+                    }
+                    3 => r.caller = OWNER,
+                    4 => s.dpos_state.validator_order.swap(0, 1),
+                    5 => s.dpos_state.delegation_ledger_history_complete = false,
+                    6 => {
+                        s.dpos_state
+                            .delegations
+                            .get_mut(&VALIDATOR)
+                            .unwrap()
+                            .remove(&DELEGATOR);
+                    }
+                    7 => {
+                        s.dpos_state.delegator_rewards.insert(
+                            SECOND,
+                            StoredDposTokenAmount::canonical_u256_after_mutation(U256::one()),
+                        );
+                    }
+
+                    8 => s.dpos_state.reward_reference_graph = DposRewardGraph::incomplete(),
+                    9 => {
+                        s.dpos_state
+                            .validator_reward_per_stake
+                            .insert(
+                                VALIDATOR,
+                                StoredDposRewardIndex::canonical_after_mutation(
+                                    DposRewardIndex::zero(),
+                                ),
+                            )
+;
+                    }
+                    10 => r.input.push(0),
+                    11 => r.is_static = true,
+                    12 => r.depth = 1,
+                    13 => r.value = FinalChainNativeValue::new(BigUint::from(1u8)),
+                    14 => {
+                        s.next_sequence = 1;
+                        r.id.sequence = 1;
+                    }
+                    15 => {
+                        s.origin = if historical {
+                            NativeSessionOrigin::PendingPeriod
+                        } else {
+                            NativeSessionOrigin::HistoricalSimulation
+                        }
+                    }
+                    16 => {
+                        s.dpos_state.total_stakes.remove(&SECOND);
+                    }
+                    17 => {
+                        s.dpos_state.commission_rewards.insert(
+                            VALIDATOR,
+                            StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(9)),
+                        );
+                    }
+
+                    18 => s.dpos_state.redelegate_same_validator_history_complete = false,
+                    _ => {}
+                }
+                let before = s.dpos_state.clone();
+                let state = ReferenceState::from_snapshot(
+                    &underfunded_session(chain, historical).dpos_state,
+                );
+                let count = super::custody::iterable_count_key(
+                    &super::custody::delegator_validators_prefix(DELEGATOR),
+                );
+                if kind >= 19 {
+                    state.rows.borrow_mut().insert(
+                        (DPOS_CONTRACT_ADDRESS, count.0),
+                        match kind {
+                            19 => ConcreteRead::Absent,
+                            20 => ConcreteRead::Present(vec![0xff]),
+                            21 => ConcreteRead::Present(1u32.to_le_bytes().to_vec()),
+                            _ => ConcreteRead::Present(3u32.to_le_bytes().to_vec()),
+                        },
+                    );
+                }
+                let raw = state.rows.borrow().clone();
+                assert!(
+                    s.prepare(&r, &state).is_err(),
+                    "profile{kind} historical{historical}"
+                );
+                assert!(s.aborted && s.prepared.is_none());
+                assert_eq!(s.dpos_state, before);
+                assert_eq!(*state.rows.borrow(), raw);
+            }
+        }
+    });
+}
+
+#[test]
+fn underfunded_claim_all_retains_selected_period_fork_guards() {
+    for historical in [false, true] {
+        for kind in 0..5 {
+            let excluded = if historical { 2 } else { 3 };
+            with_claim_all_chain_config(
+                "underfunded-fork",
+                |rewards, ficus| match kind {
+                    0 => rewards.fix_claim_all_block_num = excluded.into(),
+                    1 => rewards.aspen_part_one_period = excluded.into(),
+                    2 => rewards.magnolia_period = excluded.into(),
+                    3 => *ficus = excluded.into(),
+                    4 => {
+                        rewards.aspen_part_two_period = 1.into();
+                        rewards.aspen_max_supply = U256::from(8000).into();
+                    }
+                    _ => unreachable!(),
+                },
+                |chain| {
+                    let mut s = underfunded_session(chain, historical);
+                    let state = ReferenceState::from_snapshot(&s.dpos_state);
+                    let before = s.dpos_state.clone();
+                    let mut r = request();
+                    r.period = s.pending_period;
+                    r.supplied_gas = 89999.into();
+                    assert!(s.prepare(&r, &state).is_err());
+                    assert!(s.aborted && s.prepared.is_none());
+                    assert_eq!(s.dpos_state, before);
+                },
+            );
+        }
+    }
+}
+
 impl ReferenceState {
     fn from_snapshot(snapshot: &DposSnapshot) -> Self {
         let rows = canonical_concrete_precompile_storage(snapshot, true)

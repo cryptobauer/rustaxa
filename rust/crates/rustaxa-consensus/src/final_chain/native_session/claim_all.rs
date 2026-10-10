@@ -1,4 +1,4 @@
-//! Finite positive noarg claim-all execution over the canonical P1 topology.
+//! Finite noarg claim-all execution over the canonical P1 topology.
 //!
 //! Admission permits only HistoricalSimulation1 and PendingPeriod2, with the
 //! reward graph bound to that selected execution block.
@@ -8,6 +8,9 @@
 //! pays a positive reward; the second pays zero but still writes its checkpoint.
 //! Broader topologies and business failures are admission errors, never receipts
 //! with a silently discarded irreversible prefix. No effect escapes on error.
+//! Underfunded first calls qualify the complete preloaded semantic profile and
+//! select a read-free gas terminal. Go's lazy counter/supply reads are carried
+//! by that authenticated source boundary, not repeated as journal callbacks.
 
 use super::account::{DposAccountPort, StagedDposAccountPort};
 use super::custody::{
@@ -32,7 +35,7 @@ fn scope<T>() -> Result<T, FinalChainNativeSessionError> {
 }
 
 impl FinalChainNativeSession<'_> {
-    /// Binds the measured direct, first-in-session, funded noarg request.
+    /// Binds the measured direct, first-in-session noarg request and count quote.
     /// Origin/period is exactly historical1 or pending2, with no cross-pair
     /// admission. Reads only the exact present count; excluded shapes poison preparation
     /// through the caller, while unavailable/mismatched rows remain hard errors.
@@ -51,7 +54,6 @@ impl FinalChainNativeSession<'_> {
             || request.kind != FinalChainNativeCallKind::Call
             || request.is_static
             || request.value.value() != &BigUint::default()
-            || request.supplied_gas.as_u64() < 90_000
             || self.pending_period < self.final_chain.rewards_config.fix_claim_all_block_num
             || self.pending_period < self.final_chain.rewards_config.aspen_part_one_period
             || !self.final_chain.magnolia_active(self.pending_period)
@@ -81,17 +83,49 @@ impl FinalChainNativeSession<'_> {
             invocation: request.id,
             required_gas: 90_000.into(),
         };
+        let prepared = PreparedClaimAll {
+            caller: request.caller,
+            validators,
+            count_key,
+            count_read,
+        };
+        let kind = if request.supplied_gas.as_u64() < quote.required_gas.as_u64() {
+            self.qualify_underfunded_claim_all(&prepared)?;
+            PreparedKind::InsufficientGas
+        } else {
+            PreparedKind::ClaimAll(prepared)
+        };
         self.prepared = Some(PreparedCall {
             request: request.clone(),
             quote,
-            kind: PreparedKind::ClaimAll(PreparedClaimAll {
-                caller: request.caller,
-                validators,
-                count_key,
-                count_read,
-            }),
+            kind,
         });
         Ok(quote)
+    }
+
+    /// Admits only the measured successful-source, underfunded profile.
+    /// The source must associate the loaded P1 semantics with its raw/account
+    /// view. These pure checks map Go's lazy setup values; they do not authenticate
+    /// arbitrary substituted bootstrap bytes or reproduce callback fault timing.
+    /// Funded calls retain their existing invocation-stage qualification.
+    fn qualify_underfunded_claim_all(
+        &self,
+        prepared: &PreparedClaimAll,
+    ) -> Result<(), FinalChainNativeSessionError> {
+        self.qualify_claim_all(prepared)?;
+        if self.dpos_state.total_vote_count != 400
+            || total_staked_amount(&self.dpos_state)
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
+                != U256::from(4000)
+            || !matches!(
+                &self.dpos_state.aspen_supply_state,
+                AspenSupplyState::Unmigrated { minted_tokens }
+                    if minted_tokens.as_u256() == U256::from(800)
+            )
+        {
+            return scope();
+        }
+        Ok(())
     }
 
     /// Qualifies the measured role/order/graph shape without extra raw reads.
