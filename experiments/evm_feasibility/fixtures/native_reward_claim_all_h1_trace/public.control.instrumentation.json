@@ -1,0 +1,15 @@
+{
+  "instrumented_sha256": {
+    "core/vm/evm.go": "696034df7356651984a0ea86a03a907536cdc3c708c5887c7464a8d894cdac9e",
+    "fixture/native_redelegate_reward_h1_reference.go": "a9c44c5494ec854ef160d880e306fd190bdca491b5367797608cb2bedca26b59",
+    "fixture/native_redelegate_simulation_reference.go": "4f1a276f17a4a9d225e6781ccf4e5e5985343fc1042ff8f9b3a971bdf8030368",
+    "fixture/native_redelegate_swap_append_simulation_reference.go": "476950bec7483109076625f3fcb640aee089b143daa010a0165e4e57df06421e",
+    "fixture/native_redelegate_trace_reference.go": "6ab03170f6f27b6510f202231d93d20f0ed83fedacbac745f7cbba9e6ec0fd9c",
+    "fixture/native_reward_claim_all_h1_reference.go": "88d2192fead8afc086d28c5c81b77415ccf2ef1a8d3827586eb6e878dfc982c6",
+    "fixture/native_simulation_reference.go": "3c707cff1aa1b172571f38735b761e096da019b5163b614022ce1a44c6741378",
+    "taraxa/state/contracts/storage/storage.go": "2f56b13597e9b24e022e496a2be650c65938f951e619ab958a986a24971d7d2c",
+    "taraxa/state/state_dry_runner/trace_runner.go": "13ccdd340cf46de9ff373ff51da498182977428d550b61e9c14fa885cc69a9e5",
+    "taraxa/state/state_evm/account.go": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568"
+  },
+  "patch": "--- a/core/vm/evm.go\n+++ b/core/vm/evm.go\n@@ -451,10 +451,10 @@\n \t}\n \n \tif precompiled != nil {\n-\t\tif gas_required := precompiled.RequiredGas(frame, self); gas_required <= gas_left {\n+\t\tif gas_required := claimAllBoundaryRequired(precompiled, frame, self); gas_required <= gas_left {\n \t\t\tgas_left -= gas_required\n \t\t\tgas_copy = gas_required\n-\t\t\tret, err = precompiled.Run(frame, self)\n+\t\t\tret, err = claimAllBoundaryRun(precompiled, frame, self)\n \t\t} else {\n \t\t\terr = ErrOutOfGas\n \t\t}\n--- a/taraxa/state/state_dry_runner/trace_runner.go\n+++ b/taraxa/state/state_dry_runner/trace_runner.go\n@@ -74,7 +74,8 @@\n \t\t}\n \t\tevm.UpdateVmConfig(vm.Config{Debug: true, Tracer: tracer})\n \n-\t\tret, _ := evm.Main(&trx)\n+\t\tret, targetError := evm.Main(&trx)\n+\t\tobserveClaimAllH1TraceTarget(ret,targetError,block_state,&trx)\n \n \t\t// Depending on the tracer type, format and return the output\n \t\tswitch tracer := tracer.(type) {\n--- a/fixture/native_simulation_reference.go\n+++ b/fixture/native_simulation_reference.go\n@@ -150,10 +150,12 @@\n \t}\n \tdatabase.descriptor = state_db.StateDescriptor{BlockNum: database.pending.number, StateRoot: root}\n \tdatabase.pending = nil\n+\tobserveH1TraceCommit(database)\n \treturn nil\n }\n \n func (database *nativeSimulationDB) GetBlockStateReader(block types.BlockNum) state_db.Reader {\n+\tobserveH1TraceReader(block)\n \treturn nativeSimulationHistorical{latest: database, period: block}\n }\n \n"
+}
