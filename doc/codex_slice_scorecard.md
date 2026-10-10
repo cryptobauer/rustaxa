@@ -310,3 +310,29 @@ the scan; implementation reused the established helper. No implementation-review
 correction. [Document](evm_research/n4_parent_transfer_catalog.md),
 [freeze](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/catalog-freeze.json),
 [review](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/catalog-review.md).
+
+
+## October 10 N4 parent slashing jail catalog
+
+A fresh Astra-medium context approved the new slashing authority profile before
+implementation and accepted the frozen authority closeout. A fresh independent
+Sol-medium context accepted implementation/output. Both ran; exact thread IDs and
+runtime confirmation are in `/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/runtime-routing.json`. No routing failure.
+The run keeps baseline 53%, floor 43%, reset 1791948695; current allowance is
+recorded separately from tokens/billing in its checkpoint.
+
+The fixed P decoder uses 196 byte-pinned accepted validator seeds, direct padded
+list key 02, and Keccak(00 || validator) jail keys. It retains source order, expired
+blocks and distinct non-live classes. The read-only probe made 197 calls and
+explained 21/54 rows (91 bytes): empty list plus 20 jail blocks. The 33 residual
+rows (37 bytes) remain opaque. No complete jail/proof/snapshot/owner authority.
+All 20 initial validators are already among these seeds; that source adds none.
+
+Validation: five initial targeted tests passed, then 19 library tests and one
+binary provenance test, format/check/Clippy, bounded P probe and whitespace passed.
+No compile/test or independent-review correction. Complete first command/output/exit
+evidence, source/public-Go layout comparison and review limits are retained in the
+run artifacts. [Document](evm_research/n4_parent_slashing_catalog.md),
+[freeze](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/slashing-freeze.json),
+[authority](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/slashing-authority-closeout.md),
+[review](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/slashing-review.md).
