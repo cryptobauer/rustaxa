@@ -1,7 +1,7 @@
-//! Finite noarg claim-all execution over the canonical P1 topology.
+//! Finite noarg claim-all execution over canonical P1 and H1/P0 trace topologies.
 //!
-//! Admission permits only HistoricalSimulation1 and PendingPeriod2, with the
-//! reward graph bound to that selected execution block.
+//! Positive P1 admission permits HistoricalSimulation1 and PendingPeriod2,
+//! with the reward graph bound to that selected execution block.
 //! Gas preparation authenticates only the caller's LE32 count. Invocation binds
 //! that observation and materializes ordered item rows before executing two
 //! scalar claims on shared private account, semantic and raw views. The first
@@ -11,6 +11,10 @@
 //! Underfunded first calls qualify the complete preloaded semantic profile and
 //! select a read-free gas terminal. Go's lazy counter/supply reads are carried
 //! by that authenticated source boundary, not repeated as journal callbacks.
+//! HistoricalTrace1 loads exact zero-reward P0, changes only private execution
+//! context, and admits native gas178728 at transaction0. Its scalar steps read
+//! no ordinary accounts and emit no balances/logs. General trace queries and
+//! other caps remain closed.
 
 use super::account::{DposAccountPort, StagedDposAccountPort};
 use super::custody::{
@@ -36,8 +40,9 @@ fn scope<T>() -> Result<T, FinalChainNativeSessionError> {
 
 impl FinalChainNativeSession<'_> {
     /// Binds the measured direct, first-in-session noarg request and count quote.
-    /// Origin/period is exactly historical1 or pending2, with no cross-pair
-    /// admission. Reads only the exact present count; excluded shapes poison preparation
+    /// Origin/period is exactly historical1, pending2 or qualified trace1/P0,
+    /// with no cross-pair admission. Reads only the exact present count;
+    /// excluded shapes poison preparation
     /// through the caller, while unavailable/mismatched rows remain hard errors.
     pub(super) fn prepare_claim_all(
         &mut self,
@@ -48,7 +53,11 @@ impl FinalChainNativeSession<'_> {
             (self.origin, self.pending_period.as_u64()),
             (NativeSessionOrigin::PendingPeriod, 2)
                 | (NativeSessionOrigin::HistoricalSimulation, 1)
+                | (NativeSessionOrigin::HistoricalTrace, 1)
         ) || self.next_sequence != 0
+            || (self.origin == NativeSessionOrigin::HistoricalTrace
+                && (request.supplied_gas.as_u64() != 178728
+                    || request.id.transaction != FinalChainTransactionPosition::new(0)))
             || request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
             || request.depth != 0
             || request.kind != FinalChainNativeCallKind::Call
@@ -71,6 +80,9 @@ impl FinalChainNativeSession<'_> {
         };
         if validators[0] == validators[1] || rows != &self.dpos_state.validator_order {
             return scope();
+        }
+        if self.origin == NativeSessionOrigin::HistoricalTrace {
+            self.qualify_claim_all(request.caller, validators, self.pending_period.as_u64())?;
         }
         let count_key = iterable_count_key(&delegator_validators_prefix(request.caller));
         let count_read = state.raw_storage(DPOS_CONTRACT_ADDRESS, &count_key)?;
@@ -112,7 +124,11 @@ impl FinalChainNativeSession<'_> {
         &self,
         prepared: &PreparedClaimAll,
     ) -> Result<(), FinalChainNativeSessionError> {
-        self.qualify_claim_all(prepared)?;
+        self.qualify_claim_all(
+            prepared.caller,
+            prepared.validators,
+            self.pending_period.as_u64(),
+        )?;
         if self.dpos_state.total_vote_count != 400
             || total_staked_amount(&self.dpos_state)
                 .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
@@ -134,19 +150,23 @@ impl FinalChainNativeSession<'_> {
     /// closed. Ordinary account existence and affordability are checked below.
     fn qualify_claim_all(
         &self,
-        prepared: &PreparedClaimAll,
+        caller: [u8; 20],
+        validators: [[u8; 20]; 2],
+        graph_period: u64,
     ) -> Result<(), FinalChainNativeSessionError> {
         let s = &self.dpos_state;
-        let [first, second] = prepared.validators;
-        let caller = prepared.caller;
+        let [first, second] = validators;
+        let trace = self.origin == NativeSessionOrigin::HistoricalTrace;
         let Some(metadata) = s.validator_metadata.get(&first) else {
             return scope();
         };
         let owner = metadata.owner;
-        if caller == DPOS_CONTRACT_ADDRESS
+        if first == second
+            || (trace && [first, second].contains(&DPOS_CONTRACT_ADDRESS))
+            || caller == DPOS_CONTRACT_ADDRESS
             || [first, second, owner].contains(&caller)
             || [first, second, DPOS_CONTRACT_ADDRESS].contains(&owner)
-            || s.validator_order != prepared.validators
+            || s.validator_order != validators
             || s.total_stakes.len() != 2
             || s.validator_metadata.len() != 2
             || s.vrf_keys.len() != 2
@@ -160,7 +180,7 @@ impl FinalChainNativeSession<'_> {
             || s.delegator_rewards
                 .keys()
                 .chain(s.commission_rewards.keys())
-                .any(|v| !prepared.validators.contains(v))
+                .any(|v| !validators.contains(v))
         {
             return scope();
         }
@@ -168,7 +188,7 @@ impl FinalChainNativeSession<'_> {
         let graph = &s.reward_reference_graph;
         let graph_error =
             |e: DposRewardGraphError| FinalChainNativeSessionError::Domain(e.to_string());
-        if graph.current_block().map_err(graph_error)? != self.pending_period.as_u64()
+        if graph.current_block().map_err(graph_error)? != graph_period
             || graph.live_nodes().map_err(graph_error)?.len() != 2
         {
             return scope();
@@ -176,11 +196,11 @@ impl FinalChainNativeSession<'_> {
         // Canonical genesis mirrors are absent. The graph carries the zero
         // indices. Its older head is not the exceptional legacy stale flag.
         let zero = DposRewardIndex::zero();
-        for (index, validator) in prepared.validators.into_iter().enumerate() {
-            if s.validator_metadata
-                .get(&validator)
-                .is_none_or(|m| m.owner != owner)
-                || !s.vrf_keys.contains_key(&validator)
+        for (index, validator) in validators.into_iter().enumerate() {
+            if s.validator_metadata.get(&validator).is_none_or(|m| {
+                m.owner != owner
+                    || (trace && (m.commission != 100 || m.last_commission_change != 0))
+            }) || !s.vrf_keys.contains_key(&validator)
                 || s.total_stakes
                     .get(&validator)
                     .is_none_or(|v| v.as_u256() != U256::from(2000))
@@ -191,8 +211,7 @@ impl FinalChainNativeSession<'_> {
                             .any(|a| rows.get(a).is_none_or(|v| v.as_u256() != U256::from(1000)))
                 })
                 || [caller, owner].iter().any(|a| {
-                    s.delegator_validators.get(a).map(Vec::as_slice)
-                        != Some(prepared.validators.as_slice())
+                    s.delegator_validators.get(a).map(Vec::as_slice) != Some(validators.as_slice())
                 })
                 || s.delegation_reward_cursors
                     .get(&validator)
@@ -209,12 +228,12 @@ impl FinalChainNativeSession<'_> {
                     .get(&validator)
                     .map(StoredDposTokenAmount::as_u256)
                     .unwrap_or_default()
-                    != U256::from(if index == 0 { 792 } else { 0 })
+                    != U256::from(if index == 0 && !trace { 792 } else { 0 })
                 || s.commission_rewards
                     .get(&validator)
                     .map(StoredDposTokenAmount::as_u256)
                     .unwrap_or_default()
-                    != U256::from(if index == 0 { 8 } else { 0 })
+                    != U256::from(if index == 0 && !trace { 8 } else { 0 })
                 || graph.read_validator_head(&validator).map_err(graph_error)? != 0
                 || graph.is_stale_head(&validator).map_err(graph_error)?
                 || [caller, owner]
@@ -233,7 +252,55 @@ impl FinalChainNativeSession<'_> {
                 return scope();
             }
         }
+        if trace
+            && (s.total_vote_count != 400
+                || s.vote_counts.len() != 2
+                || validators
+                    .iter()
+                    .any(|v| s.vote_counts.get(v) != Some(&200))
+                || !s.undelegations.is_empty()
+                || !s.undelegations_v2.is_empty()
+                || !s.undelegation_v2_last_ids.is_empty()
+                || !s.slashing_jail_blocks.is_empty()
+                || !s.slashing_jailed_validators.is_empty()
+                || !s.slashing_double_voting_proofs.is_empty()
+                || total_staked_amount(s).map_err(map_kernel_error)? != U256::from(4000)
+                || !matches!(
+                    &s.aspen_supply_state,
+                    AspenSupplyState::Unmigrated { minted_tokens }
+                        if minted_tokens.as_u256().is_zero()
+                ))
+        {
+            return scope();
+        }
         Ok(())
+    }
+
+    /// Authenticates the complete genesis topology before private context binding.
+    pub(super) fn qualify_trace_claim_all_source(
+        &self,
+    ) -> Result<(), FinalChainNativeSessionError> {
+        let Ok(validators) = <[[u8; 20]; 2]>::try_from(self.dpos_state.validator_order.as_slice())
+        else {
+            return scope();
+        };
+        let Some(owner) = self
+            .dpos_state
+            .validator_metadata
+            .get(&validators[0])
+            .map(|m| m.owner)
+        else {
+            return scope();
+        };
+        let Some(caller) = self
+            .dpos_state
+            .delegator_validators
+            .keys()
+            .find(|a| **a != owner)
+        else {
+            return scope();
+        };
+        self.qualify_claim_all(*caller, validators, 0)
     }
 
     /// Runs the two snapshotted scalar steps on one private evolving overlay.
@@ -269,16 +336,22 @@ impl FinalChainNativeSession<'_> {
                 ));
             }
         }
-        self.qualify_claim_all(&prepared)?;
+        self.qualify_claim_all(
+            prepared.caller,
+            prepared.validators,
+            self.pending_period.as_u64(),
+        )?;
+        let zero_trace = self.origin == NativeSessionOrigin::HistoricalTrace;
         let mut accounts = StagedDposAccountPort::from_state(state);
-        if !accounts
-            .account(prepared.caller)
-            .map_err(map_kernel_error)?
-            .exists
-            || !accounts
-                .account(DPOS_CONTRACT_ADDRESS)
+        if !zero_trace
+            && (!accounts
+                .account(prepared.caller)
                 .map_err(map_kernel_error)?
                 .exists
+                || !accounts
+                    .account(DPOS_CONTRACT_ADDRESS)
+                    .map_err(map_kernel_error)?
+                    .exists)
         {
             return scope();
         }
@@ -300,7 +373,7 @@ impl FinalChainNativeSession<'_> {
             // No unsupported business result may discard a prior raw prefix.
             if outcome.status_code != 1
                 || !outcome.code_retval.is_empty()
-                || outcome.logs.len() != if index == 0 { 1 } else { 0 }
+                || outcome.logs.len() != if index == 0 && !zero_trace { 1 } else { 0 }
             {
                 return scope();
             }
@@ -311,13 +384,17 @@ impl FinalChainNativeSession<'_> {
                 data: log.data,
             }));
         }
+        let account_mutations = accounts.into_mutations();
+        if zero_trace && !account_mutations.is_empty() {
+            return scope();
+        }
         self.dpos_state = next;
         Ok(FinalChainNativeInvocationResult::Completed(
             FinalChainNativeOutcome {
                 status: FinalChainNativeStatus::Success,
                 gas_used: quote.required_gas,
                 output: Vec::new(),
-                account_mutations: accounts.into_mutations(),
+                account_mutations,
                 raw_mutations: trace.finish(),
                 logs,
             },

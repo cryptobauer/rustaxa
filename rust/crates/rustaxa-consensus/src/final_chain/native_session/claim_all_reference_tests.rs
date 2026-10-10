@@ -806,3 +806,288 @@ fn historical_claim_all_binds_exact_origin_period_graph_and_guards() {
         );
     }
 }
+
+/// The trace constructor checks exact P0 before changing only its private context.
+/// No ordinary account callback is permitted by the zero-reward scalar lane.
+struct NoTraceAccounts<'a>(&'a ReferenceState);
+impl FinalChainNativeStateRead for NoTraceAccounts<'_> {
+    fn account(
+        &self,
+        _: [u8; 20],
+    ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        panic!("H1/P0 native account read")
+    }
+    fn raw_storage(
+        &self,
+        address: [u8; 20],
+        key: &ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+        self.0.raw_storage(address, key)
+    }
+}
+
+#[test]
+fn trace_claim_all_binds_p0_context_and_zero_payout_without_account_reads() {
+    with_claim_all_chain("trace-p0", |chain| {
+        let source = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+        assert_eq!(source.reward_reference_graph.current_block().unwrap(), 0);
+        let mut trace = chain
+            .begin_native_trace_claim_all(1.into(), 0.into())
+            .unwrap();
+        assert_eq!(trace.session.origin, NativeSessionOrigin::HistoricalTrace);
+        assert_eq!(
+            trace
+                .session
+                .dpos_state
+                .reward_reference_graph
+                .current_block()
+                .unwrap(),
+            1
+        );
+        let state = ReferenceState::from_snapshot(&source);
+        let port = NoTraceAccounts(&state);
+        let mut r = request();
+        r.period = 1.into();
+        r.supplied_gas = 178728.into();
+        let q = trace.prepare(&r, &port).unwrap();
+        let mut wrong = r.clone();
+        wrong.supplied_gas = 178727.into();
+        assert_eq!(
+            trace.invoke(&wrong, q, &port),
+            Err(FinalChainNativeSessionError::QuoteMismatch)
+        );
+        let mut wrong_q = q;
+        wrong_q.required_gas = 89999.into();
+        assert_eq!(
+            trace.invoke(&r, wrong_q, &port),
+            Err(FinalChainNativeSessionError::QuoteMismatch)
+        );
+        let FinalChainNativeInvocationResult::Completed(out) = trace.invoke(&r, q, &port).unwrap()
+        else {
+            panic!("trace success")
+        };
+        assert_eq!(out.status, FinalChainNativeStatus::Success);
+        assert_eq!(out.gas_used.as_u64(), 90000);
+        assert!(out.output.is_empty() && out.logs.is_empty() && out.account_mutations.is_empty());
+        assert_eq!(out.raw_mutations.len(), 12);
+        for validator in [VALIDATOR, SECOND] {
+            assert_eq!(
+                trace
+                    .session
+                    .dpos_state
+                    .reward_reference_graph
+                    .read_validator_head(&validator)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                trace
+                    .session
+                    .dpos_state
+                    .reward_reference_graph
+                    .read_cursor(&validator, &DELEGATOR)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                trace
+                    .session
+                    .dpos_state
+                    .reward_reference_graph
+                    .read_cursor(&validator, &OWNER)
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(
+            trace.invoke(&r, q, &port),
+            Err(FinalChainNativeSessionError::NotPrepared)
+        );
+        r.id.sequence = 1;
+        assert_eq!(
+            trace.prepare(&r, &port),
+            Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+        );
+        drop(trace);
+        assert_eq!(
+            chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+            source
+        );
+        for (execution, reader) in [(0, 0), (1, 1), (2, 0), (2, 1)] {
+            assert!(matches!(
+                chain.begin_native_trace_claim_all(execution.into(), reader.into()),
+                Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+            ));
+        }
+    });
+}
+
+#[test]
+fn trace_claim_all_rejects_unmeasured_requests_and_source_shapes() {
+    with_claim_all_chain("trace-scope", |chain| {
+        for kind in 0..28 {
+            let mut trace = chain
+                .begin_native_trace_claim_all(1.into(), 0.into())
+                .unwrap();
+            let mut r = request();
+            r.period = 1.into();
+            r.supplied_gas = 178728.into();
+            match kind {
+                0 => r.supplied_gas = 89999.into(),
+                1 => r.supplied_gas = 90000.into(),
+                2 => r.supplied_gas = 178727.into(),
+                3 => r.supplied_gas = 178729.into(),
+                4 => r.id.transaction = 1.into(),
+                5 => r.input.push(0),
+                6 => r.input = DPOS_REDELEGATE_SELECTOR.to_vec(),
+                7 => r.input = vec![0; 4],
+                8 => r.depth = 1,
+                9 => r.is_static = true,
+                10 => r.value = FinalChainNativeValue::new(BigUint::from(1u8)),
+                11 => r.caller = OWNER,
+                12 => trace.session.dpos_state.total_vote_count += 1,
+                13 => {
+                    trace.session.dpos_state.aspen_supply_state = AspenSupplyState::Unmigrated {
+                        minted_tokens: StoredDposTokenAmount::canonical_u256_after_mutation(
+                            U256::one(),
+                        ),
+                    }
+                }
+                14 => {
+                    trace.session.dpos_state.delegator_rewards.insert(
+                        VALIDATOR,
+                        StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(792)),
+                    );
+                }
+                15 => {
+                    trace.session.dpos_state.commission_rewards.insert(
+                        VALIDATOR,
+                        StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(8)),
+                    );
+                }
+                16 => trace.session.dpos_state.delegation_ledger_history_complete = false,
+                17 => {
+                    trace
+                        .session
+                        .dpos_state
+                        .redelegate_same_validator_history_complete = false
+                }
+                18 => trace.session.dpos_state.validator_order.swap(0, 1),
+                19 => {
+                    trace.session.dpos_state.reward_reference_graph = DposRewardGraph::incomplete()
+                }
+                20 => {
+                    trace
+                        .session
+                        .dpos_state
+                        .delegation_reward_cursors
+                        .get_mut(&VALIDATOR)
+                        .unwrap()
+                        .remove(&OWNER);
+                }
+                21 => {
+                    trace
+                        .session
+                        .dpos_state
+                        .delegator_rewards
+                        .insert([0x99; 20], StoredDposTokenAmount::default());
+                }
+                22 => {
+                    trace.session.dpos_state.aspen_supply_state = AspenSupplyState::Migrated {
+                        total_supply: StoredDposTokenAmount::canonical_u256_after_mutation(
+                            U256::from(8000),
+                        ),
+                        current_yield: AspenYield(0),
+                    }
+                }
+                23 => {
+                    trace.session.dpos_state.vote_counts.insert(VALIDATOR, 201);
+                }
+                24 => {
+                    trace.session.dpos_state.vote_counts.insert([0x99; 20], 0);
+                }
+                25 => {
+                    trace
+                        .session
+                        .dpos_state
+                        .validator_metadata
+                        .get_mut(&VALIDATOR)
+                        .unwrap()
+                        .commission = 101
+                }
+                26 => {
+                    trace
+                        .session
+                        .dpos_state
+                        .validator_metadata
+                        .get_mut(&VALIDATOR)
+                        .unwrap()
+                        .last_commission_change = 1
+                }
+                27 => trace
+                    .session
+                    .dpos_state
+                    .slashing_jailed_validators
+                    .push(VALIDATOR),
+                _ => unreachable!(),
+            }
+            let before = trace.session.dpos_state.clone();
+            let raw = ReferenceState::from_snapshot(
+                &chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+            );
+            assert!(
+                trace.prepare(&r, &NoTraceAccounts(&raw)).is_err(),
+                "trace excluded{kind}"
+            );
+            assert!(trace.session.aborted && trace.session.prepared.is_none());
+            assert_eq!(trace.session.dpos_state, before);
+        }
+        // The original graph0 cannot contain extra rewards or fabricated graph1.
+        let mut s = chain
+            .native_session_from_state(
+                None,
+                1.into(),
+                chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+                NativeSessionOrigin::HistoricalTrace,
+            )
+            .unwrap();
+        s.qualify_trace_claim_all_source().unwrap();
+        chain
+            .advance_reward_reference_graph_block(&mut s.dpos_state, 1.into())
+            .unwrap();
+        assert!(s.qualify_trace_claim_all_source().is_err());
+    });
+}
+
+#[test]
+fn trace_claim_all_retains_fork_guards() {
+    for kind in 0..5 {
+        with_claim_all_chain_config(
+            "trace-fork",
+            |rewards, ficus| match kind {
+                0 => rewards.fix_claim_all_block_num = 2.into(),
+                1 => rewards.aspen_part_one_period = 2.into(),
+                2 => rewards.magnolia_period = 2.into(),
+                3 => *ficus = 2.into(),
+                4 => {
+                    rewards.aspen_part_two_period = 1.into();
+                    rewards.aspen_max_supply = U256::from(8000).into();
+                }
+                _ => unreachable!(),
+            },
+            |chain| {
+                let mut trace = chain
+                    .begin_native_trace_claim_all(1.into(), 0.into())
+                    .unwrap();
+                let before = trace.session.dpos_state.clone();
+                let raw = ReferenceState::from_snapshot(&before);
+                let mut r = request();
+                r.period = 1.into();
+                r.supplied_gas = 178728.into();
+                assert!(trace.prepare(&r, &NoTraceAccounts(&raw)).is_err());
+                assert!(trace.session.aborted);
+                assert_eq!(trace.session.dpos_state, before);
+            },
+        );
+    }
+}

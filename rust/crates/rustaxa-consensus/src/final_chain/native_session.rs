@@ -353,6 +353,7 @@ struct PreparedCall {
 enum NativeSessionOrigin {
     PendingPeriod,
     HistoricalSimulation,
+    HistoricalTrace,
 }
 
 /// Single-period staged native kernel state.
@@ -381,6 +382,7 @@ pub struct FinalChainNativeSession<'a> {
 }
 
 /// Disposable native execution over one finalized historical DPoS state.
+/// A bounded trace uses a separate origin and private execution context.
 ///
 /// This owning wrapper exposes the normal prepare/invoke protocol but no
 /// rewards, persistence, snapshot extraction or publication surface. Dropping
@@ -520,6 +522,42 @@ impl FinalChain {
         .map(|session| FinalChainNativeSimulation { session })
     }
 
+    /// Begins the measured empty-prefix H1 claim-all trace from finalized P0.
+    ///
+    /// Only reader0/execution1 is supported. The complete zero-reward genesis
+    /// topology is checked before changing the private graph context to1. This
+    /// does not distribute rewards, advance the source, or publish state. The
+    /// caller must bind the concrete P0 source identity to this same history.
+    /// The returned port admits only the first direct claim-all at transaction0,
+    /// with native gas178728; it rejects queries and other mutations. It has no
+    /// rewards, persistence or publication surface. Other trace shapes require
+    /// separate qualification at the trace owner.
+    pub fn begin_native_trace_claim_all(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        if execution_period.as_u64() != 1 || reader_period != FinalChainBlockNumber::GENESIS {
+            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+        }
+        if execution_period < self.dpos_cornus_period {
+            return Err(FinalChainNativeSessionError::PreCornusUnsupported);
+        }
+        let dpos_state = self
+            .dpos_snapshot_at_finalized_block(reader_period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let mut session = self.native_session_from_state(
+            None,
+            execution_period,
+            dpos_state,
+            NativeSessionOrigin::HistoricalTrace,
+        )?;
+        session.qualify_trace_claim_all_source()?;
+        self.advance_reward_reference_graph_block(&mut session.dpos_state, execution_period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        Ok(FinalChainNativeSimulation { session })
+    }
+
     fn begin_native_session_inner(
         &self,
         request_id: Option<[u8; 32]>,
@@ -563,12 +601,15 @@ impl FinalChain {
     ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
         let eligibility_period =
             FinalChainBlockNumber::new(period.as_u64().saturating_sub(self.dpos_delegation_delay));
-        let eligibility_state = if eligibility_period == period {
-            dpos_state.clone()
-        } else {
-            self.dpos_snapshot_at_finalized_block(eligibility_period)
-                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
-        };
+        // No delayed query is admitted for the bounded trace origin. Retain its
+        // source clone without claiming general live-reader query support.
+        let eligibility_state =
+            if origin == NativeSessionOrigin::HistoricalTrace || eligibility_period == period {
+                dpos_state.clone()
+            } else {
+                self.dpos_snapshot_at_finalized_block(eligibility_period)
+                    .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
+            };
         let period_start_total_vote_count = dpos_state.total_vote_count;
         let period_start_amount_delegated = total_staked_amount(&dpos_state)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
@@ -640,6 +681,13 @@ impl FinalChainNativeSession<'_> {
             return Err(FinalChainNativeSessionError::QuoteOutstanding);
         }
         self.validate_request(request)?;
+
+        if self.origin == NativeSessionOrigin::HistoricalTrace
+            && request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
+        {
+            self.aborted = true;
+            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+        }
 
         if request.input.starts_with(&DPOS_SET_VALIDATOR_INFO_SELECTOR) {
             return self.prepare_validator_info(request);
