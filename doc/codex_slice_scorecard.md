@@ -263,3 +263,24 @@ Lead01a12418-dc34-7013-a51b-57b6ef22163b confirmed gpt-6.1-sol medium. Fresh sta
 | Value1 H1 initial estimate /c07d5495a | Actual accepted Go initial failures/unchangedCPP;126callbacks/52typederrors/98drops; firststdout filename and new Value-comparison corrections retained; focused1/public81/check/clippy/serialfast507.46/CPP/retainedruntime/white;11gates/Sol ACCEPT |679.57|
 
 All thirteen source slices above are accepted locally. No production route, general profiles, qualified real-window/root parity, recovery, N4-N6 or cutover is closed. Current pending source/gates and exact acceptance are in current-pending.json and named freeze/review/closeout records. Quota final observation remains separate from tokens and billing.
+
+
+## October 10 exact P0 prefix and N4 input contract
+
+Lead `01a12614-b9fe-7293-a303-2bdefab52645` used Sol medium. The fresh
+allowance baseline is 58%, with a 48% floor and reset 1791948695. The saved
+budget was not reset. Final allowance and elapsed time are recorded separately
+in the [run checkpoint](/home/fry/artifacts/evm-run-01a12614-b9fe-7293-a303-2bdefab52645-20261010/final-checkpoint.md).
+Local runtime records confirm Luna medium for the bounded maps, Astra medium
+for authority, and independent Sol medium for review. No routing failure or
+billing claim is implied.
+
+| Scope | Behavior and validation | Corrections and evidence |
+| --- | --- | --- |
+| P0 ordinary-prefix Rust trace / `c182cdc4e` | Exact successful self-call prefix with gas 21000 before a sealed borrowed proof reaches the factory. The target with gas 200000 binds transaction 1/native sequence 0, source 0/execution 1 and native gas 178728. Older origins keep their guards. Full owner/concrete rows and supplied inputs remain unchanged after faults and retries. 1,539 consensus tests, the complete EVM package with 83 native API tests, check/clippy, serial fast, Rust-enabled bridge build with 12 jobs and all 15 tests and whitespace passed. | Initial compile corrections: private helper visibility and missing test enum import. No behavior-test failure or final review correction. All 20 Go oracle source/fixture hashes remain unchanged. Eleven final gates total 1054.73 seconds; serial fast 532.13 seconds. [Freeze/review/commit closeout](/home/fry/artifacts/evm-run-01a12614-b9fe-7293-a303-2bdefab52645-20261010/p0-prefix-closeout.json). |
+| N4 owner input contract | Source/document inspection and independent review only. The H=25,706,949 transition needs complete parent, session-eligibility and certificate-D state, qualified policy, raw origins, reward runtime and a coherent historical owner. No database was opened or real transition executed. | Independent review added the planner's complete D=25,706,942 owner requirement. [Restart contract](evm_research/n4_owner_input_restart_contract.md) and its linked review retain the correction and exact restart conditions. |
+
+The public consensus constructor remains a trusted adapter boundary. The proof
+binds prefix success at the EVM owner; it does not authenticate an arbitrary
+native semantic history. No production route, real-window/root parity, recovery
+or N4–N6 acceptance follows from this run. Nothing was pushed.
