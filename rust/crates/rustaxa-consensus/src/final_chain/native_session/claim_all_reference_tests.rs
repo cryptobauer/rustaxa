@@ -1257,3 +1257,217 @@ fn trace_boundary_claim_all_rejects_unmeasured_caps_and_nonzero_sources() {
         }
     });
 }
+
+/// Qualified guard terminals must not manufacture count/bootstrap/account reads.
+struct NoNonpayableReads;
+impl FinalChainNativeStateRead for NoNonpayableReads {
+    fn account(
+        &self,
+        _: [u8; 20],
+    ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        panic!("nonpayable native account callback")
+    }
+    fn raw_storage(
+        &self,
+        _: [u8; 20],
+        _: &ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+        panic!("nonpayable native raw callback")
+    }
+}
+fn nonpayable_session(chain: &FinalChain, historical: bool) -> FinalChainNativeSession<'_> {
+    let mut s = underfunded_session(chain, historical);
+    s.origin = NativeSessionOrigin::ClaimAllNonPayable;
+    s
+}
+
+#[test]
+fn nonpayable_claim_all_binds_read_free_zero_gas_terminal() {
+    with_claim_all_chain("nonpayable-binding", |chain| {
+        for historical in [false, true] {
+            for gas in [0, 1, 68728, 89999, 90000, 90001] {
+                let mut s = nonpayable_session(chain, historical);
+                let original = s.dpos_state.clone();
+                let mut r = request();
+                r.period = s.pending_period;
+                r.value = FinalChainNativeValue::new(1u8.into());
+                r.supplied_gas = gas.into();
+                let q = s.prepare(&r, &NoNonpayableReads).unwrap();
+                assert_eq!(q.required_gas.as_u64(), 0);
+                let mut wrong = r.clone();
+                wrong.value = FinalChainNativeValue::new(2u8.into());
+                assert_eq!(
+                    s.invoke(&wrong, q, &NoNonpayableReads),
+                    Err(FinalChainNativeSessionError::QuoteMismatch)
+                );
+                let mut wrong_q = q;
+                wrong_q.required_gas = 1.into();
+                assert_eq!(
+                    s.invoke(&r, wrong_q, &NoNonpayableReads),
+                    Err(FinalChainNativeSessionError::QuoteMismatch)
+                );
+                let FinalChainNativeInvocationResult::Completed(out) =
+                    s.invoke(&r, q, &NoNonpayableReads).unwrap()
+                else {
+                    panic!("nonpayable completed")
+                };
+                assert_eq!(
+                    out.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Method is not payable".into()
+                    }
+                );
+                assert_eq!(out.gas_used.as_u64(), 0);
+                assert!(
+                    out.output.is_empty()
+                        && out.raw_mutations.is_empty()
+                        && out.account_mutations.is_empty()
+                        && out.logs.is_empty()
+                );
+                assert_eq!(s.dpos_state, original);
+                assert_eq!(s.next_sequence, 1);
+                assert!(s.prepared.is_none() && !s.aborted);
+                assert_eq!(
+                    s.invoke(&r, q, &NoNonpayableReads),
+                    Err(FinalChainNativeSessionError::NotPrepared)
+                );
+                r.id.sequence = 1;
+                assert_eq!(
+                    s.prepare(&r, &NoNonpayableReads),
+                    Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+                );
+                assert!(s.aborted);
+            }
+        }
+        for (execution, reader) in [(0, 1), (3, 1), (1, 0), (2, 0), (1, 2), (2, 2)] {
+            assert!(matches!(
+                chain.begin_native_claim_all_nonpayable(execution.into(), reader.into()),
+                Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+            ));
+        }
+        assert!(
+            chain
+                .begin_native_claim_all_nonpayable(1.into(), 1.into())
+                .is_err(),
+            "missing finalized P1"
+        );
+    });
+}
+
+#[test]
+fn nonpayable_claim_all_rejects_unmeasured_shapes_and_sources() {
+    with_claim_all_chain("nonpayable-scope", |chain| {
+        for historical in [false, true] {
+            for kind in 0..24 {
+                let mut s = nonpayable_session(chain, historical);
+                let mut r = request();
+                r.period = s.pending_period;
+                r.value = FinalChainNativeValue::new(1u8.into());
+                match kind {
+                    0 => r.value = FinalChainNativeValue::default(),
+                    1 => r.value = FinalChainNativeValue::new(2u8.into()),
+                    2 => r.supplied_gas = 89998.into(),
+                    3 => r.supplied_gas = 178728.into(),
+                    4 => r.input.push(0),
+                    5 => r.input = DPOS_GET_TOTAL_DELEGATION_SELECTOR.to_vec(),
+                    6 => r.depth = 1,
+                    7 => r.is_static = true,
+                    8 => r.kind = FinalChainNativeCallKind::DelegateCall,
+                    9 => r.id.transaction = 1.into(),
+                    10 => r.caller = OWNER,
+                    11 => r.caller = VALIDATOR,
+                    12 => s.dpos_state.total_vote_count = 401,
+                    13 => s
+                        .dpos_state
+                        .vote_counts
+                        .insert(SECOND, 201)
+                        .map(|_| ())
+                        .unwrap(),
+                    14 => {
+                        s.dpos_state.aspen_supply_state = AspenSupplyState::Unmigrated {
+                            minted_tokens: StoredDposTokenAmount::default(),
+                        }
+                    }
+                    15 => s.dpos_state.delegation_ledger_history_complete = false,
+                    16 => s.dpos_state.validator_order.swap(0, 1),
+                    17 => {
+                        s.dpos_state
+                            .validator_metadata
+                            .get_mut(&VALIDATOR)
+                            .unwrap()
+                            .commission = 101
+                    }
+                    18 => s.dpos_state.reward_reference_graph = DposRewardGraph::incomplete(),
+                    19 => s
+                        .dpos_state
+                        .delegator_rewards
+                        .insert(
+                            SECOND,
+                            StoredDposTokenAmount::canonical_u256_after_mutation(U256::one()),
+                        )
+                        .map(|_| ())
+                        .unwrap_or(()),
+                    20 => s.dpos_state.slashing_jailed_validators.push(SECOND),
+                    21 => {
+                        let m = s.dpos_state.validator_metadata.remove(&SECOND).unwrap();
+                        s.dpos_state
+                            .validator_metadata
+                            .insert(DPOS_CONTRACT_ADDRESS, m);
+                        s.dpos_state.validator_order[1] = DPOS_CONTRACT_ADDRESS;
+                    }
+                    22 => s
+                        .dpos_state
+                        .total_stakes
+                        .get_mut(&VALIDATOR)
+                        .unwrap()
+                        .clone_from(&StoredDposTokenAmount::canonical_u256_after_mutation(
+                            U256::from(2001),
+                        )),
+                    23 => s.pending_period = 3.into(),
+                    _ => unreachable!(),
+                };
+                let before = s.dpos_state.clone();
+                assert!(
+                    s.prepare(&r, &NoNonpayableReads).is_err(),
+                    "nonpayable excluded{kind}"
+                );
+                assert_eq!(s.aborted, !matches!(kind, 8 | 23));
+                assert!(s.prepared.is_none());
+                assert_eq!(s.dpos_state, before);
+            }
+        }
+    });
+}
+
+#[test]
+fn nonpayable_claim_all_retains_selected_period_fork_guards() {
+    for historical in [false, true] {
+        for kind in 0..5 {
+            let excluded = if historical { 2 } else { 3 };
+            with_claim_all_chain_config(
+                "nonpayable-fork",
+                |rewards, ficus| match kind {
+                    0 => rewards.fix_claim_all_block_num = excluded.into(),
+                    1 => rewards.aspen_part_one_period = excluded.into(),
+                    2 => rewards.magnolia_period = excluded.into(),
+                    3 => *ficus = excluded.into(),
+                    4 => {
+                        rewards.aspen_part_two_period = 1.into();
+                        rewards.aspen_max_supply = U256::from(8000).into();
+                    }
+                    _ => unreachable!(),
+                },
+                |chain| {
+                    let mut s = nonpayable_session(chain, historical);
+                    let before = s.dpos_state.clone();
+                    let mut r = request();
+                    r.period = s.pending_period;
+                    r.value = FinalChainNativeValue::new(1u8.into());
+                    assert!(s.prepare(&r, &NoNonpayableReads).is_err());
+                    assert!(s.aborted && s.prepared.is_none());
+                    assert_eq!(s.dpos_state, before);
+                },
+            );
+        }
+    }
+}

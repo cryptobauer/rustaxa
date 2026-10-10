@@ -355,6 +355,7 @@ enum NativeSessionOrigin {
     HistoricalSimulation,
     HistoricalTrace,
     HistoricalTraceBoundary,
+    ClaimAllNonPayable,
 }
 
 impl NativeSessionOrigin {
@@ -571,6 +572,46 @@ impl FinalChain {
         )
     }
 
+    /// Begins the measured value1 Cornus claim-all guard over finalized P1.
+    ///
+    /// Only reader1/execution1 or2 is supported. Complete positive P1 semantics
+    /// are qualified before advancing private graph context for execution2.
+    /// The composition owner must associate its concrete account/raw source
+    /// with this same accepted history; this API does not authenticate a generic
+    /// independently supplied reader. Only the first direct transaction0 call,
+    /// exact selector/value1 and six measured native gas caps are admitted.
+    /// Preparation quotes0 without native callbacks; invocation returns the
+    /// nonpayable failure. Ordinary value transfer and rollback belong to the
+    /// EVM owner. No terminal rewards, persistence or publication are exposed.
+    pub fn begin_native_claim_all_nonpayable(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        if reader_period.as_u64() != 1 || !matches!(execution_period.as_u64(), 1 | 2) {
+            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+        }
+        if execution_period < self.dpos_cornus_period {
+            return Err(FinalChainNativeSessionError::PreCornusUnsupported);
+        }
+        let dpos_state = self
+            .dpos_snapshot_at_finalized_block(reader_period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let mut session = self.native_session_from_state(
+            None,
+            execution_period,
+            dpos_state,
+            NativeSessionOrigin::ClaimAllNonPayable,
+        )?;
+        session.qualify_nonpayable_claim_all_source(1)?;
+        if execution_period.as_u64() == 2 {
+            self.advance_reward_reference_graph_block(&mut session.dpos_state, execution_period)
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        }
+        session.qualify_nonpayable_claim_all_source(execution_period.as_u64())?;
+        Ok(FinalChainNativeSimulation { session })
+    }
+
     fn begin_native_trace_claim_all_inner(
         &self,
         execution_period: FinalChainBlockNumber,
@@ -639,7 +680,10 @@ impl FinalChain {
             FinalChainBlockNumber::new(period.as_u64().saturating_sub(self.dpos_delegation_delay));
         // No delayed query is admitted for the bounded trace origin. Retain its
         // source clone without claiming general live-reader query support.
-        let eligibility_state = if origin.is_claim_all_trace() || eligibility_period == period {
+        let eligibility_state = if origin.is_claim_all_trace()
+            || origin == NativeSessionOrigin::ClaimAllNonPayable
+            || eligibility_period == period
+        {
             dpos_state.clone()
         } else {
             self.dpos_snapshot_at_finalized_block(eligibility_period)
@@ -717,7 +761,10 @@ impl FinalChainNativeSession<'_> {
         }
         self.validate_request(request)?;
 
-        if self.origin.is_claim_all_trace() && request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR {
+        if (self.origin.is_claim_all_trace()
+            || self.origin == NativeSessionOrigin::ClaimAllNonPayable)
+            && request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
+        {
             self.aborted = true;
             return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
         }

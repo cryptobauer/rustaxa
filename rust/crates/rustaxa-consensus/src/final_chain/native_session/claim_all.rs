@@ -20,6 +20,10 @@
 //! calls bind an InsufficientGas terminal after one count read; funded calls
 //! share the zero-payout scalar path. The178728-only origin stays distinct.
 
+//! The separate ClaimAllNonPayable origin qualifies positive P1 at construction
+//! and admits only value1 at the six measured caps, with zero quote gas and no
+//! native callbacks. Its disposable terminal returns the Cornus nonpayable
+//! failure; ordinary transfer rollback remains with the EVM owner.
 use super::account::{DposAccountPort, StagedDposAccountPort};
 use super::custody::{
     delegator_validators_prefix, iterable_count_key, iterable_item_key, map_kernel_error,
@@ -53,6 +57,9 @@ impl FinalChainNativeSession<'_> {
         request: &FinalChainNativeRequest,
         state: &dyn FinalChainNativeStateRead,
     ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        if self.origin == NativeSessionOrigin::ClaimAllNonPayable {
+            return self.prepare_nonpayable_claim_all(request);
+        }
         if !matches!(
             (self.origin, self.pending_period.as_u64()),
             (NativeSessionOrigin::PendingPeriod, 2)
@@ -145,6 +152,12 @@ impl FinalChainNativeSession<'_> {
             // This origin cannot use the positive P1 minted800 profile below.
             return Ok(());
         }
+        self.qualify_positive_claim_all_bootstrap()
+    }
+
+    /// Pure numeric lazy-bootstrap mapping shared by qualified positive P1
+    /// terminals. This does not construct a prepared claim or read its count.
+    fn qualify_positive_claim_all_bootstrap(&self) -> Result<(), FinalChainNativeSessionError> {
         if self.dpos_state.total_vote_count != 400
             || total_staked_amount(&self.dpos_state)
                 .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
@@ -158,6 +171,112 @@ impl FinalChainNativeSession<'_> {
             return scope();
         }
         Ok(())
+    }
+
+    /// Qualifies exact positive P1 before private execution-context adjustment.
+    /// Raw bootstrap values/absence and ordinary accounts must be associated
+    /// with this semantic history at composition, outside native callbacks.
+    pub(super) fn qualify_nonpayable_claim_all_source(
+        &self,
+        graph_period: u64,
+    ) -> Result<(), FinalChainNativeSessionError> {
+        if !matches!(self.pending_period.as_u64(), 1 | 2)
+            || self.pending_period < self.final_chain.rewards_config.fix_claim_all_block_num
+            || self.pending_period < self.final_chain.rewards_config.aspen_part_one_period
+            || !self.final_chain.magnolia_active(self.pending_period)
+            || !self.final_chain.ficus_active_at(self.pending_period)
+            || self.final_chain.aspen_part_two_active(self.pending_period)
+            || self.final_chain.dpos_validator_maximum_stake.as_u256() != U256::from(1_000_000)
+        {
+            return scope();
+        }
+        let Ok(validators) = <[[u8; 20]; 2]>::try_from(self.dpos_state.validator_order.as_slice())
+        else {
+            return scope();
+        };
+        let Some(owner) = self
+            .dpos_state
+            .validator_metadata
+            .get(&validators[0])
+            .map(|m| m.owner)
+        else {
+            return scope();
+        };
+        let Some(caller) = self
+            .dpos_state
+            .delegator_validators
+            .keys()
+            .find(|a| **a != owner)
+        else {
+            return scope();
+        };
+        self.qualify_claim_all(*caller, validators, graph_period)?;
+        self.qualify_positive_claim_all_bootstrap()?;
+        let s = &self.dpos_state;
+        if validators.contains(&DPOS_CONTRACT_ADDRESS)
+            || s.vote_counts.len() != 2
+            || validators.iter().any(|v| {
+                s.vote_counts.get(v) != Some(&200)
+                    || s.validator_metadata
+                        .get(v)
+                        .is_none_or(|m| m.commission != 100 || m.last_commission_change != 0)
+            })
+            || !s.undelegations.is_empty()
+            || !s.undelegations_v2.is_empty()
+            || !s.undelegation_v2_last_ids.is_empty()
+            || !s.slashing_jail_blocks.is_empty()
+            || !s.slashing_jailed_validators.is_empty()
+            || !s.slashing_double_voting_proofs.is_empty()
+        {
+            return scope();
+        }
+        Ok(())
+    }
+
+    /// Binds a read-free nonpayable terminal for only the measured value1 caps.
+    /// The ordinary owner has already transferred value and advanced the nonce;
+    /// failure rollback remains outside this semantic session.
+    fn prepare_nonpayable_claim_all(
+        &mut self,
+        request: &FinalChainNativeRequest,
+    ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        if self.next_sequence != 0
+            || request.id.transaction != FinalChainTransactionPosition::new(0)
+            || request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
+            || request.depth != 0
+            || request.kind != FinalChainNativeCallKind::Call
+            || request.is_static
+            || request.value.value() != &BigUint::from(1u8)
+            || !matches!(
+                request.supplied_gas.as_u64(),
+                0 | 1 | 68728 | 89999 | 90000 | 90001
+            )
+        {
+            return scope();
+        }
+        self.qualify_nonpayable_claim_all_source(self.pending_period.as_u64())?;
+        if !self
+            .dpos_state
+            .delegator_validators
+            .contains_key(&request.caller)
+            || self
+                .dpos_state
+                .validator_metadata
+                .values()
+                .any(|m| m.owner == request.caller)
+        {
+            return scope();
+        }
+        let quote = FinalChainNativeGasQuote {
+            invocation: request.id,
+            required_gas: 0.into(),
+        };
+        self.prepared = Some(PreparedCall {
+            request: request.clone(),
+            quote,
+            kind: PreparedKind::NonPayable,
+        });
+        Ok(quote)
     }
 
     /// Qualifies the measured role/order/graph shape without extra raw reads.
