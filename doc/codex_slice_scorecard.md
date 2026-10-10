@@ -436,3 +436,20 @@ and default profile behavior are covered. No production/storage-module change or
 broad gate applied. [Document](evm_research/n4_undelegation_count_slots.md), run freeze,
 first logs and independent closeouts retain evidence. Same budget baseline53%,
 floor43%, reset1791948695; allowance observations are separate from token/billing claims.
+
+## October 10 N4 older transfer undelegation slots
+
+Fresh Astra medium contract/authority closeout and independent Sol medium review
+accepted the frozen 60-point profile. All 38 original H-transfer role records are
+retained; the 20 exact addresses are hypotheses, not undelegator membership. All
+60 V1/V2 count and V2 last-ID points returned HistoryUnavailable, zero bytes and
+null numbers. No child discovery, fresh inventory or semantic authority resulted.
+
+The first targeted test caught a nine-call cap left in the new profile; corrected
+before the probe. Sol then required explicit negative source cases. One test-only
+addition resolves that finding; exact removal reproduces captured source, so no
+repeat probe was needed. Final35 library and five binary tests, fmt/check/Clippy
+passed. No production/storage-module change or broad gate applied.
+[Document](evm_research/n4_old_seed_undelegation_slots.md), run original/final freezes,
+first/corrected logs, capture diff and independent closeouts retain exact evidence.
+Baseline53%, floor43%, reset1791948695; latest44% at18:06:40 is separate from tokens.

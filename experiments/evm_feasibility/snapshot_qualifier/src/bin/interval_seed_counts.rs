@@ -35,16 +35,21 @@ const OUTPUT_CAP: usize = 1024 * 1024;
 enum Profile {
     Delegation,
     Undelegations,
+    OldUndelegations,
 }
 impl Profile {
     fn calls(self) -> usize {
-        if self == Self::Delegation { 3 } else { 9 }
+        match self {
+            Self::Delegation => 3,
+            Self::Undelegations => 9,
+            Self::OldUndelegations => 60,
+        }
     }
     fn status(self) -> &'static str {
-        if self == Self::Delegation {
-            "three_physical_outcomes_observed"
-        } else {
-            "nine_physical_outcomes_observed"
+        match self {
+            Self::Delegation => "three_physical_outcomes_observed",
+            Self::Undelegations => "nine_physical_outcomes_observed",
+            Self::OldUndelegations => "sixty_physical_outcomes_observed",
         }
     }
     fn slots(self, seed: [u8; 20]) -> Vec<(&'static str, ConcreteStorageKey)> {
@@ -68,15 +73,40 @@ impl Profile {
         }
     }
 }
-/// Accept only the explicit nine-read mode; reject unknown or extra flags before I/O.
+/// Accept only one explicit fixed mode; reject unknown or extra flags before I/O.
 fn profile(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Profile> {
     let values: Vec<_> = args.into_iter().collect();
     match values.as_slice() {
         [] => Ok(Profile::Delegation),
         [flag] if flag == "--undelegation-counts" => Ok(Profile::Undelegations),
+        [flag] if flag == "--old-seed-undelegation-counts" => Ok(Profile::OldUndelegations),
         _ => anyhow::bail!("unexpected argument"),
     }
 }
+const OLD_EXPECTED: [&str; 20] = [
+    "0105deca852ae3e7e1fe17bc0db2271ad259e0d6",
+    "35307b7b24fb1473abb364f0c3dd3082b3730cd5",
+    "4bd4dbae73bfcd070ed01788bb8ecf18f152ef61",
+    "5e70e5a2fda0675ea0f2453425190c02858b272a",
+    "73ec3af8f07c964f13e0d105ac77951f4d80811f",
+    "746c48a57f2297ce00ea05378113667aa8d23684",
+    "7ab15fdcf5c1305541900bba926ac7b38b2acc7b",
+    "869b5f98b0e3aa50bc91be470a8c5d44e92b59d7",
+    "94306df4a952bff4cb99c48859acf1178766fe34",
+    "94ca3352cd13344bb67e2132ee6d1f0f237b6ae4",
+    "9d3fa769f395ed6e136ff76c0bcb6fe7f60d926b",
+    "b743f776ddd8278325a6c64b8a7d6c409433c96e",
+    "c83e64997c6244f85ac1459fe46f2e059d855305",
+    "e143ededbf9285dc39daf64c120037a4b9a0f095",
+    "e3a497c34a0d5dcdbeff5b88063d9a87ff51bd80",
+    "e43d40a9bdff67ce7756bab3ff697192b466e6d6",
+    "e90958a7e4a95ee0c3e2b36dcf6344835755fcfd",
+    "ebb12f67806703f7dd80ec1ea4c768fbce98c48c",
+    "f9d0eada55b9a3e8d9fd69dc3c57163c0d42dc18",
+    "fdc4fcce3beb94b201ef2623b1bcc96cb56c4b84",
+];
+const PREFLIGHT: &[u8] = include_bytes!("../../../../../doc/evm_research/n4_replay_preflight.json");
+const PREFLIGHT_SHA: &str = "d68ab554634e7907f2b43ab43f753d6b9351d1b760afc8b91eb3f77c523ae437";
 type Seeds = BTreeMap<[u8; 20], Vec<Value>>;
 fn sha(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -196,6 +226,119 @@ fn seed_facts(report: &Value, old: &Value) -> Result<Seeds> {
     );
     Ok(result)
 }
+/// Repeat accepted H-transfer source checks and preserve all 38 source roles.
+/// Exact old/preflight byte pins precede pure shape checks; no signature claim.
+fn old_seeds(bytes: &[u8]) -> Result<Seeds> {
+    ensure!(
+        bytes.len() <= 1024 * 1024 && sha(bytes) == OLD_SHA && sha(PREFLIGHT) == PREFLIGHT_SHA,
+        "old evidence pin drift"
+    );
+    old_seed_facts(
+        &serde_json::from_slice(PREFLIGHT)?,
+        &serde_json::from_slice(bytes)?,
+    )
+}
+fn old_seed_facts(report: &Value, old: &Value) -> Result<Seeds> {
+    ensure!(
+        report["period"] == parent::P + 1
+            && report["prior_period"] == parent::P
+            && report["prior_root_hex"] == ROOT,
+        "transfer evidence identity drift"
+    );
+    let envelopes = &report["envelope_classification"];
+    for name in [
+        "every_signature_decoded",
+        "every_chain_id_841",
+        "every_call",
+        "every_input_empty",
+    ] {
+        ensure!(
+            envelopes[name] == true,
+            "incomplete transfer evidence: {name}"
+        );
+    }
+    ensure!(
+        envelopes["expected_count"] == 19 && envelopes["exact_count"] == 19,
+        "transfer count drift"
+    );
+    let entries = envelopes["entries"]
+        .as_array()
+        .context("missing envelopes")?;
+    ensure!(entries.len() == 19, "wrong envelope count");
+    let expected_sender = address("35307b7b24fb1473abb364f0c3dd3082b3730cd5")?;
+    let mut sources = Seeds::new();
+    let mut provenance = Vec::new();
+    let mut recipients = BTreeSet::new();
+    for (position, entry) in entries.iter().enumerate() {
+        ensure!(
+            entry["position"].as_u64() == Some(position as u64),
+            "envelope order drift"
+        );
+        ensure!(
+            entry["chain_id"] == 841 && entry["kind"] == "call" && entry["input_hex"] == "",
+            "envelope class drift"
+        );
+        let sender = address(entry["sender_hex"].as_str().context("missing sender")?)?;
+        let recipient = address(entry["receiver_hex"].as_str().context("missing receiver")?)?;
+        ensure!(sender == expected_sender, "sender drift");
+        ensure!(recipients.insert(recipient), "duplicate recipient");
+        for (key, role) in [
+            (sender, "retained_transfer_sender"),
+            (recipient, "retained_transfer_recipient"),
+        ] {
+            sources.entry(key).or_default().push(json!({"address_hex":hex::encode(key),"role":role,"envelope_position":position,"evidence_sha256":PREFLIGHT_SHA}));
+            provenance.push(json!({"address_hex": hex::encode(key), "role": role, "envelope_position": position, "evidence_sha256": PREFLIGHT_SHA}));
+        }
+    }
+    ensure!(
+        sources.len() == 20,
+        "transfer seed union must contain twenty addresses"
+    );
+    let accounts = report["prior_state_dependencies"]["accounts"]
+        .as_array()
+        .context("missing prior accounts")?;
+    ensure!(accounts.len() == 20, "prior account count drift");
+    let mut prior = BTreeSet::new();
+    for account in accounts {
+        ensure!(
+            account["result"] == "present",
+            "prior account is not present"
+        );
+        ensure!(
+            prior.insert(address(
+                account["address_hex"]
+                    .as_str()
+                    .context("missing prior address")?
+            )?),
+            "duplicate prior account"
+        );
+    }
+    ensure!(
+        prior == sources.keys().copied().collect(),
+        "prior accounts differ from transfer seeds"
+    );
+    ensure!(
+        old["period"] == parent::P
+            && old["state_root_hex"] == ROOT
+            && old["storage_root_hex"] == STORAGE_ROOT
+            && old["account_hex"] == "00000000000000000000000000000000000000fe",
+        "old identity drift"
+    );
+    ensure!(
+        old["seed_provenance"] == json!(provenance),
+        "old provenance drift"
+    );
+    ensure!(
+        sources.keys().copied().collect::<Vec<_>>()
+            == OLD_EXPECTED
+                .iter()
+                .map(|v| address(v))
+                .collect::<Result<Vec<_>>>()?,
+        "old seed set drift"
+    );
+    Ok(sources)
+}
+
 fn identity() -> Result<ConcreteStateIdentity> {
     Ok(ConcreteStateIdentity {
         period: FinalChainBlockNumber::new(parent::P),
@@ -225,10 +368,14 @@ fn observe_profile(
 ) -> Result<Value> {
     ensure!(
         seeds.keys().copied().collect::<Vec<_>>()
-            == EXPECTED
-                .iter()
-                .map(|s| address(s))
-                .collect::<Result<Vec<_>>>()?,
+            == (if profile == Profile::OldUndelegations {
+                OLD_EXPECTED.as_slice()
+            } else {
+                EXPECTED.as_slice()
+            })
+            .iter()
+            .map(|s| address(s))
+            .collect::<Result<Vec<_>>>()?,
         "unapproved point seed set"
     );
     let mut calls = 0;
@@ -305,26 +452,47 @@ fn main() -> Result<()> {
     let output = PathBuf::from(args.next().context("missing output")?);
     let profile = profile(args)?;
     let guarded = paths::validate(&input, &output)?;
-    let source = seeds(
-        &evidence(
-            &interval_path,
-            "interval-history-authentication.json",
-            8 * 1024 * 1024,
-        )?,
-        &evidence(&old_path, "parent-transfer-catalog.json", 1024 * 1024)?,
+    let interval_bytes = evidence(
+        &interval_path,
+        "interval-history-authentication.json",
+        8 * 1024 * 1024,
     )?;
+    let old_bytes = evidence(&old_path, "parent-transfer-catalog.json", 1024 * 1024)?;
+    let novel = seeds(&interval_bytes, &old_bytes)?;
+    let source = if profile == Profile::OldUndelegations {
+        old_seeds(&old_bytes)?
+    } else {
+        novel
+    };
+    // Materialize and check the fixed independent plan before opening state.
+    let plan: Vec<_> = source
+        .keys()
+        .flat_map(|seed| profile.slots(*seed))
+        .collect();
+    ensure!(
+        plan.len() == profile.calls()
+            && plan
+                .iter()
+                .map(|(_, key)| key.0)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == profile.calls(),
+        "fixed plan differs"
+    );
     let (readers, _, pair) = qualification::qualify(&guarded.application, &guarded.state)?;
     let identity = identity()?;
     let read = |key| readers.storage_at(identity, inverse::DPOS_CONTRACT_ADDRESS, key);
     let observations = match profile {
         Profile::Delegation => observe_counts(&source, read),
-        Profile::Undelegations => observe_profile(&source, profile, read),
+        Profile::Undelegations | Profile::OldUndelegations => {
+            observe_profile(&source, profile, read)
+        }
     }?;
     let successful = observations["status"] == profile.status();
-    let report = json!({"schema":1,"profile":if profile == Profile::Delegation {"delegation_counts"} else {"undelegation_counts_and_last_id"},"input_copy":guarded.input,"period":parent::P,"state_root_hex":ROOT,
+    let report = json!({"schema":1,"profile":match profile {Profile::Delegation => "delegation_counts", Profile::Undelegations => "undelegation_counts_and_last_id", Profile::OldUndelegations => "old_transfer_undelegation_counts_and_last_id"},"input_copy":guarded.input,"period":parent::P,"state_root_hex":ROOT,
         "account_hex":hex::encode(inverse::DPOS_CONTRACT_ADDRESS),"inherited_storage_root_hex":STORAGE_ROOT,
         "open_mode":format!("existing read-only pair qualification, then {} P storage points", profile.calls()),"pair":pair,
-        "source":{"interval_sha256":INTERVAL_SHA,"old_catalog_sha256":OLD_SHA,"old_catalog_origin":"accepted_prior_report"},
+        "source":{"interval_sha256":INTERVAL_SHA,"old_catalog_sha256":OLD_SHA,"old_catalog_origin":"accepted_prior_report","old_preflight_sha256":if profile == Profile::OldUndelegations {json!(PREFLIGHT_SHA)} else {Value::Null}},
         "seed_provenance":source.values().flatten().collect::<Vec<_>>(),"result":observations,
         "bounds":{"diagnostic_storage_calls":profile.calls(),"qualification_application_point_reads":4,"qualification_owner_root_checks":"existing owner, separate from diagnostic counter",
             "row_present_bytes":ROW_CAP,"total_present_bytes":profile.calls() * ROW_CAP,"serialized_output_bytes":OUTPUT_CAP},
@@ -374,6 +542,191 @@ mod tests {
             .iter()
             .map(|s| (address(s).unwrap(), vec![]))
             .collect()
+    }
+    #[test]
+    fn old_source_missing_duplicate_class_and_identity_faults_reject() {
+        let preflight: Value = serde_json::from_slice(PREFLIGHT).unwrap();
+        for field in ["period", "prior_period", "prior_root_hex"] {
+            let mut f = preflight.clone();
+            f[field] = json!("changed");
+            assert!(old_seed_facts(&f, &old()).is_err());
+        }
+        for field in [
+            "period",
+            "state_root_hex",
+            "storage_root_hex",
+            "account_hex",
+        ] {
+            let mut o = old();
+            o[field] = json!("changed");
+            assert!(old_seed_facts(&preflight, &o).is_err());
+        }
+        for field in [
+            "every_signature_decoded",
+            "every_chain_id_841",
+            "every_call",
+            "every_input_empty",
+        ] {
+            let mut f = preflight.clone();
+            f["envelope_classification"][field] = json!(false);
+            assert!(old_seed_facts(&f, &old()).is_err());
+        }
+        for field in ["kind", "input_hex"] {
+            let mut f = preflight.clone();
+            f["envelope_classification"]["entries"][0][field] = json!("changed");
+            assert!(old_seed_facts(&f, &old()).is_err());
+        }
+        for field in ["sender_hex", "receiver_hex"] {
+            let mut f = preflight.clone();
+            f["envelope_classification"]["entries"][0][field] = json!("01");
+            assert!(old_seed_facts(&f, &old()).is_err());
+        }
+        let mut f = preflight.clone();
+        f["envelope_classification"]["entries"][1]["receiver_hex"] =
+            f["envelope_classification"]["entries"][0]["receiver_hex"].clone();
+        assert!(old_seed_facts(&f, &old()).is_err());
+        for mode in 0..4 {
+            let mut o = old();
+            let rows = o["seed_provenance"].as_array_mut().unwrap();
+            match mode {
+                0 => {
+                    rows.pop();
+                }
+                1 => {
+                    rows[1] = rows[0].clone();
+                }
+                2 => {
+                    rows[0]["address_hex"] = json!("01");
+                }
+                _ => {
+                    rows.swap(0, 1);
+                }
+            }
+            assert!(old_seed_facts(&preflight, &o).is_err());
+        }
+        for mode in 0..4 {
+            let mut f = preflight.clone();
+            let rows = f["prior_state_dependencies"]["accounts"]
+                .as_array_mut()
+                .unwrap();
+            match mode {
+                0 => {
+                    rows.pop();
+                }
+                1 => {
+                    rows[1] = rows[0].clone();
+                }
+                2 => {
+                    rows[0]["address_hex"] = json!("01");
+                }
+                _ => {
+                    rows[0]["address_hex"] = json!("1111111111111111111111111111111111111111");
+                }
+            }
+            assert!(old_seed_facts(&f, &old()).is_err());
+        }
+    }
+    #[test]
+    fn old_source_and_sixty_points_are_fixed() {
+        assert!(
+            profile(["--old-seed-undelegation-counts".into()]).unwrap()
+                == Profile::OldUndelegations
+        );
+        assert!(
+            profile([
+                "--old-seed-undelegation-counts".into(),
+                "--undelegation-counts".into()
+            ])
+            .is_err()
+        );
+        let bytes = include_bytes!("../../tests/fixtures/parent_transfer_catalog.json");
+        let seeds = old_seeds(bytes).unwrap();
+        assert_eq!(seeds.len(), 20);
+        assert_eq!(seeds.values().map(Vec::len).sum::<usize>(), 38);
+        assert!(old_seeds(b"changed").is_err());
+        let preflight: Value = serde_json::from_slice(PREFLIGHT).unwrap();
+        for field in [
+            "role",
+            "envelope_position",
+            "address_hex",
+            "evidence_sha256",
+        ] {
+            let mut old = old();
+            old["seed_provenance"][0][field] = json!("changed");
+            assert!(old_seed_facts(&preflight, &old).is_err());
+        }
+        let mut old = old();
+        old["seed_provenance"].as_array_mut().unwrap().swap(0, 1);
+        assert!(old_seed_facts(&preflight, &old).is_err());
+        for field in ["sender_hex", "receiver_hex", "position", "chain_id"] {
+            let mut f = preflight.clone();
+            f["envelope_classification"]["entries"][0][field] = json!("changed");
+            assert!(old_seed_facts(&f, &self::old()).is_err());
+        }
+        let mut f = preflight.clone();
+        f["prior_state_dependencies"]["accounts"][0]["result"] = json!("absent");
+        assert!(old_seed_facts(&f, &self::old()).is_err());
+        let mut expected = Vec::new();
+        for seed in seeds.keys() {
+            for (prefix, suffix) in [
+                (vec![3, 1], vec![1]),
+                (vec![3, 2], vec![1]),
+                (vec![3, 4], vec![]),
+            ] {
+                let mut bytes = prefix;
+                bytes.extend_from_slice(seed);
+                bytes.extend(suffix);
+                let mut key = [0; 32];
+                let mut hash = Keccak::v256();
+                hash.update(&bytes);
+                hash.finalize(&mut key);
+                assert_ne!(key, inverse::delegation_count_key(*seed).0);
+                expected.push(key);
+            }
+        }
+        assert_eq!(expected.iter().copied().collect::<BTreeSet<_>>().len(), 60);
+        let mut calls = 0;
+        let out = observe_profile(&seeds, Profile::OldUndelegations, |key| {
+            assert_eq!(key.0, expected[calls]);
+            calls += 1;
+            Ok(ConcreteRead::Present(vec![0; ROW_CAP]))
+        })
+        .unwrap();
+        assert_eq!(calls, 60);
+        assert_eq!(out["accepted_present_bytes"], 60 * ROW_CAP);
+        assert_eq!(out["status"], "sixty_physical_outcomes_observed");
+        for row in out["observations"].as_array().unwrap() {
+            assert!(row["decoded_count"].is_null());
+            assert!(row["decoded_last_id"].is_null());
+        }
+        let id = identity().unwrap();
+        let mut calls = 0;
+        let out = observe_profile(&seeds, Profile::OldUndelegations, |_| {
+            calls += 1;
+            if calls % 2 == 0 {
+                Err(ConcreteReadError::Pruned(id))
+            } else {
+                Err(ConcreteReadError::HistoryUnavailable(id))
+            }
+        })
+        .unwrap();
+        assert_eq!(out["point_calls"], 60);
+        let out = observe_profile(&seeds, Profile::OldUndelegations, |_| {
+            Ok(ConcreteRead::Present(vec![0; ROW_CAP + 1]))
+        })
+        .unwrap();
+        assert_eq!(out["point_calls"], 1);
+        let out = observe_profile(&seeds, Profile::OldUndelegations, |_| {
+            Err(ConcreteReadError::Io("stop".into()))
+        })
+        .unwrap();
+        assert_eq!(out["point_calls"], 1);
+        assert!(
+            observe_profile(&Seeds::new(), Profile::OldUndelegations, |_| panic!(
+                "unapproved"
+            ))
+            .is_err()
+        );
     }
     #[test]
     fn undelegation_keys_order_and_fixed_bounds() {
