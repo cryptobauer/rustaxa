@@ -1,6 +1,7 @@
 //! Read-only helpers for qualifying independent Taraxa snapshot copies.
 
 pub mod head_history;
+pub mod interval_history;
 pub mod native_inverse;
 pub mod native_slashing;
 pub mod parent_history;

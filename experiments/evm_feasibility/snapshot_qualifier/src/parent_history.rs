@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const P: u64 = head::H - 1;
+/// Fixed diagnostic lower endpoint; never a retention boundary.
+pub const MIN_PERIOD: u64 = 25_706_901;
 pub const MAX_ROW_BYTES: usize = 256 * 1024;
 pub const MAX_TOTAL_BYTES: usize = 512 * 1024;
 pub const MAX_ITEMS: usize = 256;
@@ -53,6 +55,7 @@ impl ParentHistoryRows {
 /// Sealed local successor context; construction requires the entire H verifier.
 /// Fields are private so callers cannot substitute unverified predecessor hashes.
 pub struct ParentLinkContext {
+    period: u64,
     expected_hash: H256,
     expected_pbft: H256,
 }
@@ -65,9 +68,48 @@ impl ParentLinkContext {
         let period = Rlp::new(&rows.period_data);
         let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(period.at(0)?.as_raw()))?;
         Ok(Self {
+            period: P,
             expected_hash: stored.parent_hash,
             expected_pbft: link.prev_block_hash,
         })
+    }
+    /// Exact next period carried by this sealed context.
+    pub fn period(&self) -> u64 {
+        self.period
+    }
+    /// Checks a forward index immediately, before the reverse-index read.
+    pub fn authenticate_forward_index(&self, hash: &[u8]) -> Result<()> {
+        ensure!(
+            hash == self.expected_hash.as_bytes(),
+            "predecessor forward hash mismatch"
+        );
+        Ok(())
+    }
+    /// Consumes this context and advances only after full predecessor success.
+    /// The fixed lower endpoint returns no next context; it cannot overrun.
+    pub fn authenticate_and_advance(
+        self,
+        rows: &ParentHistoryRows,
+    ) -> Result<(ParentHistoryAuthentication, Option<Self>)> {
+        ensure!(
+            (MIN_PERIOD..=P).contains(&self.period),
+            "interval period outside fixed bounds"
+        );
+        let witness = self.authenticate_rows(rows)?;
+        let next = if self.period == MIN_PERIOD {
+            None
+        } else {
+            let stored =
+                StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&rows.header))?;
+            let period = Rlp::new(&rows.period_data);
+            let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(period.at(0)?.as_raw()))?;
+            Some(Self {
+                period: self.period.checked_sub(1).context("period underflow")?,
+                expected_hash: stored.parent_hash,
+                expected_pbft: link.prev_block_hash,
+            })
+        };
+        Ok((witness, next))
     }
     /// Returns the authenticated successor's FinalChain predecessor hash.
     pub fn expected_hash(&self) -> H256 {
@@ -101,13 +143,13 @@ impl ParentLinkContext {
         let metadata = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(signed.as_raw()))?;
         let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(signed.as_raw()))?;
         ensure!(
-            metadata.period == P && link.period == P,
+            metadata.period == self.period && link.period == self.period,
             "P PBFT period differs"
         );
         let typed_period: u64 = signed.val_at(4)?;
         let timestamp: u64 = signed.val_at(5)?;
         ensure!(
-            typed_period == P && timestamp == metadata.timestamp,
+            typed_period == self.period && timestamp == metadata.timestamp,
             "P PBFT scalar differs"
         );
         for (position, value) in [(4, typed_period), (5, timestamp)] {
@@ -130,7 +172,7 @@ impl ParentLinkContext {
         let legacy = LegacyBlockHeaderRlp::try_from(
             LegacyBlockHeaderRlpInput::new(StoredBlockHeaderRlp::new(header), 315_000_000, 0)
                 .signed_pbft_block(SignedPbftBlockRlp::new(signed.as_raw()))
-                .block_number(FinalChainBlockNumber::new(P)),
+                .block_number(FinalChainBlockNumber::new(self.period)),
         )?;
         ensure!(
             legacy.hash()? == self.expected_hash,
@@ -141,7 +183,7 @@ impl ParentLinkContext {
     /// Checks exact hash and little-endian number indexes before later reads.
     pub fn authenticate_indexes(&self, hash: &[u8], number: &[u8]) -> Result<()> {
         ensure!(
-            hash == self.expected_hash.as_bytes() && number == P.to_le_bytes(),
+            hash == self.expected_hash.as_bytes() && number == self.period.to_le_bytes(),
             "P indexes mismatch"
         );
         Ok(())
@@ -194,8 +236,8 @@ impl ParentLinkContext {
                 "receipt_status": status, "gas_used": gas, "cumulative_gas_used": cumulative, "logs": logs}));
         }
         Ok(ParentHistoryAuthentication {
-            period: P,
-            successor_period: head::H,
+            period: self.period,
+            successor_period: self.period + 1,
             header_hash_hex: hex::encode(self.expected_hash),
             pbft_hash_hex: hex::encode(pbft_hash),
             author_hex: hex::encode(metadata.author),
@@ -339,6 +381,7 @@ mod tests {
         assert!(witness.native_candidates.is_empty());
         assert!(!witness.historical_key_completeness && !witness.semantic_snapshot_complete);
         let wrong = ParentLinkContext {
+            period: P,
             expected_hash: H256::zero(),
             expected_pbft: context.expected_pbft,
         };
@@ -350,6 +393,7 @@ mod tests {
                 .contains("FinalChain")
         );
         let wrong = ParentLinkContext {
+            period: P,
             expected_hash: context.expected_hash,
             expected_pbft: H256::zero(),
         };

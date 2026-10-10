@@ -381,3 +381,23 @@ probe or broad/storage/production gate. Baseline53%, floor43%, reset1791948695
 remain fixed; latest allowance48% at17:33:00 is separate from tokens/billing.
 [Document](evm_research/n4_parent_history_authentication.md); run parent-history
 freezes/reviews, source comparisons and logs retain full evidence.
+
+
+## October 10 N4 fixed 48-period source authentication
+
+Fresh Astra-medium and Sol-medium contexts ran and accepted the frozen interval;
+exact runtime evidence is in the run routing record. The sealed chain context
+advances only after full period authentication and stops at25,706,901. One pass
+made296reads, authenticated48periods/583signed transactions and both ordered roots
+plus both predecessor hash domains. Accepted input420,457bytes; output2,766,744bytes.
+Zero direct native calls is a bounded result, not all-history or internal-call absence.
+
+Format/check/Clippy,35library tests and three adapter tests passed. Capture sources
+are pinned; final additions are tests only. Existing C++ root parity remains.
+Initial Clippy required direct row struct initialization, fixed before capture.
+No behavior-test or final-review correction; no repeated DB probe, production/storage
+module change or broad/differential gate. Native completeness, cache-generation,
+reward-graph authority, owner readiness and N4 execution remain false. Fixed budget
+baseline53/floor43/reset1791948695; allowance47% at17:43:30 is separate from tokens.
+[Document](evm_research/n4_interval_history_authentication.md), run interval freezes,
+first logs and authority/implementation closeouts hold detailed evidence.
