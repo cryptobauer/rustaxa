@@ -1091,3 +1091,169 @@ fn trace_claim_all_retains_fork_guards() {
         );
     }
 }
+
+#[test]
+fn trace_boundary_claim_all_consumes_exact_count_only_terminals() {
+    with_claim_all_chain("trace-boundary-terminal", |chain| {
+        let source = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+        for gas in [0, 1, 68728, 89999] {
+            let mut trace = chain
+                .begin_native_trace_claim_all_gas_boundaries(1.into(), 0.into())
+                .unwrap();
+            assert_eq!(
+                trace.session.origin,
+                NativeSessionOrigin::HistoricalTraceBoundary
+            );
+            let before = trace.session.dpos_state.clone();
+            let inner = ReferenceState::from_snapshot(&source);
+            let state = CountOnlyState {
+                inner: &inner,
+                count_key: super::custody::iterable_count_key(
+                    &super::custody::delegator_validators_prefix(DELEGATOR),
+                ),
+                reads: RefCell::new(Vec::new()),
+            };
+            let mut r = request();
+            r.period = 1.into();
+            r.supplied_gas = gas.into();
+            let q = trace.prepare(&r, &state).unwrap();
+            assert_eq!(q.required_gas.as_u64(), 90000);
+            let mut wrong = r.clone();
+            wrong.supplied_gas = (gas + 2).into();
+            assert_eq!(
+                trace.invoke(&wrong, q, &state),
+                Err(FinalChainNativeSessionError::QuoteMismatch)
+            );
+            let mut wrong_q = q;
+            wrong_q.required_gas = 89999.into();
+            assert_eq!(
+                trace.invoke(&r, wrong_q, &state),
+                Err(FinalChainNativeSessionError::QuoteMismatch)
+            );
+            assert_eq!(
+                trace.invoke(&r, q, &state),
+                Ok(FinalChainNativeInvocationResult::InsufficientGas {
+                    required_gas: 90000.into()
+                })
+            );
+            assert_eq!(*state.reads.borrow(), vec![state.count_key]);
+            assert_eq!(trace.session.dpos_state, before);
+            assert_eq!(trace.session.next_sequence, 1);
+            assert_eq!(
+                trace.invoke(&r, q, &state),
+                Err(FinalChainNativeSessionError::NotPrepared)
+            );
+            r.id.sequence = 1;
+            assert_eq!(
+                trace.prepare(&r, &state),
+                Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+            );
+            assert!(trace.session.aborted);
+        }
+        assert_eq!(
+            chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+            source
+        );
+    });
+}
+
+#[test]
+fn trace_boundary_claim_all_funded_caps_use_zero_payout_kernel() {
+    with_claim_all_chain("trace-boundary-funded", |chain| {
+        let source = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+        for gas in [90000, 90001] {
+            let mut trace = chain
+                .begin_native_trace_claim_all_gas_boundaries(1.into(), 0.into())
+                .unwrap();
+            let raw = ReferenceState::from_snapshot(&source);
+            let mut r = request();
+            r.period = 1.into();
+            r.supplied_gas = gas.into();
+            let q = trace.prepare(&r, &NoTraceAccounts(&raw)).unwrap();
+            let FinalChainNativeInvocationResult::Completed(out) =
+                trace.invoke(&r, q, &NoTraceAccounts(&raw)).unwrap()
+            else {
+                panic!("funded boundary")
+            };
+            assert_eq!(out.status, FinalChainNativeStatus::Success);
+            assert_eq!(out.gas_used.as_u64(), 90000);
+            assert_eq!(out.raw_mutations.len(), 12);
+            assert!(
+                out.account_mutations.is_empty() && out.logs.is_empty() && out.output.is_empty()
+            );
+        }
+        assert_eq!(
+            chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+            source
+        );
+    });
+}
+
+#[test]
+fn trace_boundary_claim_all_rejects_unmeasured_caps_and_nonzero_sources() {
+    with_claim_all_chain("trace-boundary-exclusions", |chain| {
+        for gas in [2, 68727, 68729, 89998, 90002, 178728] {
+            let mut trace = chain
+                .begin_native_trace_claim_all_gas_boundaries(1.into(), 0.into())
+                .unwrap();
+            let raw = ReferenceState::from_snapshot(&trace.session.dpos_state);
+            let state = CountOnlyState {
+                inner: &raw,
+                count_key: super::custody::iterable_count_key(
+                    &super::custody::delegator_validators_prefix(DELEGATOR),
+                ),
+                reads: RefCell::new(Vec::new()),
+            };
+            let mut r = request();
+            r.period = 1.into();
+            r.supplied_gas = gas.into();
+            assert_eq!(
+                trace.prepare(&r, &state),
+                Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+            );
+            assert!(state.reads.borrow().is_empty() && trace.session.aborted);
+        }
+        for kind in 0..8 {
+            let mut trace = chain
+                .begin_native_trace_claim_all_gas_boundaries(1.into(), 0.into())
+                .unwrap();
+            let raw = ReferenceState::from_snapshot(&trace.session.dpos_state);
+            let state = CountOnlyState {
+                inner: &raw,
+                count_key: super::custody::iterable_count_key(
+                    &super::custody::delegator_validators_prefix(DELEGATOR),
+                ),
+                reads: RefCell::new(Vec::new()),
+            };
+            let mut r = request();
+            r.period = 1.into();
+            r.supplied_gas = 0.into();
+            match kind {
+                0 => trace.session.dpos_state.total_vote_count = 401,
+                1 => {
+                    trace.session.dpos_state.aspen_supply_state = AspenSupplyState::Unmigrated {
+                        minted_tokens: StoredDposTokenAmount::canonical_u256_after_mutation(
+                            U256::from(800),
+                        ),
+                    }
+                }
+                2 => {
+                    trace.session.dpos_state.delegator_rewards.insert(
+                        VALIDATOR,
+                        StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(792)),
+                    );
+                }
+                3 => r.id.transaction = 1.into(),
+                4 => r.is_static = true,
+                5 => r.depth = 1,
+                6 => r.value = FinalChainNativeValue::new(BigUint::from(1u8)),
+                7 => r.input = vec![0; 4],
+                _ => unreachable!(),
+            }
+            let before = trace.session.dpos_state.clone();
+            assert!(trace.prepare(&r, &state).is_err(), "boundaryexcluded{kind}");
+            assert!(state.reads.borrow().is_empty() && trace.session.aborted);
+            assert_eq!(trace.session.dpos_state, before);
+        }
+    });
+}

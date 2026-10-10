@@ -354,6 +354,13 @@ enum NativeSessionOrigin {
     PendingPeriod,
     HistoricalSimulation,
     HistoricalTrace,
+    HistoricalTraceBoundary,
+}
+
+impl NativeSessionOrigin {
+    fn is_claim_all_trace(self) -> bool {
+        matches!(self, Self::HistoricalTrace | Self::HistoricalTraceBoundary)
+    }
 }
 
 /// Single-period staged native kernel state.
@@ -537,6 +544,39 @@ impl FinalChain {
         execution_period: FinalChainBlockNumber,
         reader_period: FinalChainBlockNumber,
     ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        self.begin_native_trace_claim_all_inner(
+            execution_period,
+            reader_period,
+            NativeSessionOrigin::HistoricalTrace,
+        )
+    }
+
+    /// Begins the seven measured H1/P0 claim-all gas-boundary traces.
+    ///
+    /// Source qualification and private context binding match
+    /// [`Self::begin_native_trace_claim_all`], but a distinct origin admits only
+    /// native gas0/1/68728/89999/90000/90001 at first transaction0. Underfunded
+    /// preparation authenticates the caller count and binds a read-free terminal;
+    /// funded calls use the same zero-payout scalar kernel. Other gas caps and
+    /// trace shapes are rejected. This disposable wrapper cannot publish state.
+    pub fn begin_native_trace_claim_all_gas_boundaries(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        self.begin_native_trace_claim_all_inner(
+            execution_period,
+            reader_period,
+            NativeSessionOrigin::HistoricalTraceBoundary,
+        )
+    }
+
+    fn begin_native_trace_claim_all_inner(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+        origin: NativeSessionOrigin,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
         if execution_period.as_u64() != 1 || reader_period != FinalChainBlockNumber::GENESIS {
             return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
         }
@@ -546,12 +586,8 @@ impl FinalChain {
         let dpos_state = self
             .dpos_snapshot_at_finalized_block(reader_period)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        let mut session = self.native_session_from_state(
-            None,
-            execution_period,
-            dpos_state,
-            NativeSessionOrigin::HistoricalTrace,
-        )?;
+        let mut session =
+            self.native_session_from_state(None, execution_period, dpos_state, origin)?;
         session.qualify_trace_claim_all_source()?;
         self.advance_reward_reference_graph_block(&mut session.dpos_state, execution_period)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
@@ -603,13 +639,12 @@ impl FinalChain {
             FinalChainBlockNumber::new(period.as_u64().saturating_sub(self.dpos_delegation_delay));
         // No delayed query is admitted for the bounded trace origin. Retain its
         // source clone without claiming general live-reader query support.
-        let eligibility_state =
-            if origin == NativeSessionOrigin::HistoricalTrace || eligibility_period == period {
-                dpos_state.clone()
-            } else {
-                self.dpos_snapshot_at_finalized_block(eligibility_period)
-                    .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
-            };
+        let eligibility_state = if origin.is_claim_all_trace() || eligibility_period == period {
+            dpos_state.clone()
+        } else {
+            self.dpos_snapshot_at_finalized_block(eligibility_period)
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
+        };
         let period_start_total_vote_count = dpos_state.total_vote_count;
         let period_start_amount_delegated = total_staked_amount(&dpos_state)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
@@ -682,9 +717,7 @@ impl FinalChainNativeSession<'_> {
         }
         self.validate_request(request)?;
 
-        if self.origin == NativeSessionOrigin::HistoricalTrace
-            && request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
-        {
+        if self.origin.is_claim_all_trace() && request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR {
             self.aborted = true;
             return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
         }

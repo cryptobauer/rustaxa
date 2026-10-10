@@ -15,6 +15,10 @@
 //! context, and admits native gas178728 at transaction0. Its scalar steps read
 //! no ordinary accounts and emit no balances/logs. General trace queries and
 //! other caps remain closed.
+//! The separate HistoricalTraceBoundary1 origin admits the six measured native
+//! gas values0/1/68728/89999/90000/90001 on that same P0 source. Underfunded
+//! calls bind an InsufficientGas terminal after one count read; funded calls
+//! share the zero-payout scalar path. The178728-only origin stays distinct.
 
 use super::account::{DposAccountPort, StagedDposAccountPort};
 use super::custody::{
@@ -54,10 +58,17 @@ impl FinalChainNativeSession<'_> {
             (NativeSessionOrigin::PendingPeriod, 2)
                 | (NativeSessionOrigin::HistoricalSimulation, 1)
                 | (NativeSessionOrigin::HistoricalTrace, 1)
+                | (NativeSessionOrigin::HistoricalTraceBoundary, 1)
         ) || self.next_sequence != 0
             || (self.origin == NativeSessionOrigin::HistoricalTrace
-                && (request.supplied_gas.as_u64() != 178728
-                    || request.id.transaction != FinalChainTransactionPosition::new(0)))
+                && request.supplied_gas.as_u64() != 178728)
+            || (self.origin == NativeSessionOrigin::HistoricalTraceBoundary
+                && !matches!(
+                    request.supplied_gas.as_u64(),
+                    0 | 1 | 68728 | 89999 | 90000 | 90001
+                ))
+            || (self.origin.is_claim_all_trace()
+                && request.id.transaction != FinalChainTransactionPosition::new(0))
             || request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
             || request.depth != 0
             || request.kind != FinalChainNativeCallKind::Call
@@ -81,7 +92,7 @@ impl FinalChainNativeSession<'_> {
         if validators[0] == validators[1] || rows != &self.dpos_state.validator_order {
             return scope();
         }
-        if self.origin == NativeSessionOrigin::HistoricalTrace {
+        if self.origin.is_claim_all_trace() {
             self.qualify_claim_all(request.caller, validators, self.pending_period.as_u64())?;
         }
         let count_key = iterable_count_key(&delegator_validators_prefix(request.caller));
@@ -115,8 +126,8 @@ impl FinalChainNativeSession<'_> {
         Ok(quote)
     }
 
-    /// Admits only the measured successful-source, underfunded profile.
-    /// The source must associate the loaded P1 semantics with its raw/account
+    /// Admits the measured underfunded P1 and zero-payout P0 trace profiles.
+    /// The source must associate the loaded semantics with its raw/account
     /// view. These pure checks map Go's lazy setup values; they do not authenticate
     /// arbitrary substituted bootstrap bytes or reproduce callback fault timing.
     /// Funded calls retain their existing invocation-stage qualification.
@@ -129,6 +140,11 @@ impl FinalChainNativeSession<'_> {
             prepared.validators,
             self.pending_period.as_u64(),
         )?;
+        if self.origin == NativeSessionOrigin::HistoricalTraceBoundary {
+            // The shared qualifier already binds votes400/stake4000/mint0.
+            // This origin cannot use the positive P1 minted800 profile below.
+            return Ok(());
+        }
         if self.dpos_state.total_vote_count != 400
             || total_staked_amount(&self.dpos_state)
                 .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
@@ -156,7 +172,7 @@ impl FinalChainNativeSession<'_> {
     ) -> Result<(), FinalChainNativeSessionError> {
         let s = &self.dpos_state;
         let [first, second] = validators;
-        let trace = self.origin == NativeSessionOrigin::HistoricalTrace;
+        let trace = self.origin.is_claim_all_trace();
         let Some(metadata) = s.validator_metadata.get(&first) else {
             return scope();
         };
@@ -341,7 +357,7 @@ impl FinalChainNativeSession<'_> {
             prepared.validators,
             self.pending_period.as_u64(),
         )?;
-        let zero_trace = self.origin == NativeSessionOrigin::HistoricalTrace;
+        let zero_trace = self.origin.is_claim_all_trace();
         let mut accounts = StagedDposAccountPort::from_state(state);
         if !zero_trace
             && (!accounts
