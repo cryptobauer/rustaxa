@@ -336,3 +336,26 @@ run artifacts. [Document](evm_research/n4_parent_slashing_catalog.md),
 [freeze](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/slashing-freeze.json),
 [authority](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/slashing-authority-closeout.md),
 [review](/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010/slashing-review.md).
+
+
+## October 10 N4 retained H ordered-list authentication
+
+Fresh Astra-medium authority and Sol-medium review contexts ran, confirmed by
+exact thread logs in the run routing record. The original header context used
+proposal gas 2.1 billion and failed closed. Astra identified persisted-header
+context from genesis PBFT gas 315 million; the corrected H hash matches exactly.
+Both full ordered roots independently match the unchanged upstream C++ algorithm.
+No public-finality, native-completeness, historical-owner or N4 closure claim.
+
+The guarded read-only adapter made eight application reads, 7,973 bytes, 19 signed
+transactions and 19 receipts, with zero native candidates. The offline fixture
+contains these exact rows. Checks: format/check/Clippy, 24 library and one adapter
+test, and C++ empty/two/reversed/real-H roots passed. Initial Clippy found elidable
+lifetimes and a complex return type; both were fixed. Independent Sol review found
+rejected oversized row bytes were not counted; accounting now precedes caps, with
+explicit rejected-row assertions. The affected adapter test and Clippy passed;
+no additional DB probe was required. Existing dependency unused-import warning
+remains outside this slice. No production or storage-module changes or broad gate.
+Baseline 53%, floor 43%, reset 1791948695 remain unchanged; quota readings are
+separate from tokens/billing. [Document](evm_research/n4_head_history_authentication.md)
+and run `head-history-*` freezes, logs and reviews retain complete evidence.

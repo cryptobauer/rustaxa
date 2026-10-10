@@ -1,0 +1,22 @@
+# N4 retained H ordered-list authentication
+
+This diagnostic authenticates all 19 signed transactions and all 19 receipts at H=25,706,949 to the accepted local H hash. It does not execute the transition or establish native-state completeness, public finality or historical owner readiness.
+
+`head_history::HeadHistoryRows` holds eight exact application observations. `authenticate_head_history` accepts bounded byte inputs and returns a complete `HeadHistoryAuthentication` witness only after accepted evidence pins, canonical RLP, indexes, signed PBFT metadata, reconstructed header hash, both ordered roots, signed envelopes and same-position receipt facts pass. Failure returns an error and no partial witness. The witness preserves ordered raw transaction and receipt bytes. Native candidates remain empty for this ordinary-transfer profile. Domain execution and database writes are outside this module.
+
+The `head_history_authentication` binary uses existing canonical-path and identity guards and opens only the independent copy's application database read-only. It makes exactly eight logical reads, in this order: head, genesis, PeriodData H, receipts H, stored header H, hash-by-number H, number-by-pinned-hash, system hashes H. Bounds are 8 KiB per row, 16 KiB total accepted bytes, 4 KiB per item, exactly 19 items per list, 4,096 RLP nodes and depth 64 per row. No retries or scans occur. Nonempty system hashes are rejected. Reports are exclusive new output files outside both database trees. Read, identity and budget failures stop execution; authentication failures save a rejected observation report and return failure.
+
+H hash is `e5b61be65207997d9d30536500b4bd8be3fc2bbe3ec00c38343f20282c6e5065`. The exact byte pins come from `n4_restored_reward_inputs.json` (SHA-256 `bf1292101a4afb406489cbb029e51c7fca23e6d3b2ee260684ce0880b6ba0907`); expected envelope and receipt facts come from `n4_replay_preflight.json` (`d68ab554634e7907f2b43ab43f753d6b9351d1b760afc8b91eb3f77c523ae437`). All eight observations total 7,973 bytes.
+
+The first probe failed closed because the initial authority contract used proposal gas 2,100,000,000. C++ `FinalChain` initializes its persisted-header limit from mainnet genesis PBFT gas 315,000,000 (`final_chain.cpp:20,330`; `mainnet_genesis.json:1602`). Astra approved this source-backed correction. With 315,000,000, the existing Rust header codec reconstructs the exact accepted H hash. The rejected first report and the contract addendum remain immutable evidence.
+
+Ordered roots use canonical RLP zero-based position keys and raw item values. An offline driver compiled the unchanged upstream C++ `trie_common.cpp` with pinned build libraries. It independently reproduced empty/two/reversed fixtures and these complete H roots:
+
+- Transactions: `899f44457d384d45b5bd704ce5e091e966f00ed93dab3c62b73816cd867fe654`.
+- Receipts: `84c077c745d619c706fb637ec0c68966e5a057ea63ed78e39e496d72f7a4f721`.
+
+The checked-in byte fixture is the eight captured rows, not synthesized state. Offline tests cover the real witness, every observation pin, missing input, RLP canonicality/arity/depth, malformed receipt scalars and sentinels, complete counts, item/row/total limits, changed ordering, omission, insertion, wrong same-count receipts and mismatched roots. The adapter test proves read caps stop before a ninth call. No production or storage-module code changed, so focused qualifier checks and independent reviews apply; no broad or differential campaign ran.
+
+Evidence directory: `/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010`. See `native-history-contract.md`, `native-history-anchor-investigation.md`, reference root build/input/output pins, probe reports, gate logs and final reviews. The owner-supplied default-mainnet/likely-v1.14.1 policy assumption remains; the actual producer is unverified. H has zero native calls, so this slice cannot discover delegator addresses or proof-history keys. A later bounded interval requires reviewed predecessor linkage and native method/event contracts.
+
+Independent Sol review required counting oversized rejected rows before cap rejection. The adapter was corrected and its test now asserts rejected per-row and aggregate byte accounting. The affected test and Clippy passed. The verifier and captured source rows did not change; the corrected probe report therefore retains the prior adapter source pin, and the final source hash is in `head-history-review-fix-freeze.json`. No repeated DB probe was needed.
