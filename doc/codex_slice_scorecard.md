@@ -552,3 +552,34 @@ owner or real transition acceptance follows. Nothing was pushed.
 Latest allowance83% (2026-10-11T19:29:57.263000+00:00),
 7 points consumed from90%; floor80%. Stop is ready-slice completion
 with named live blockers. This is account-wide quota, not task token/billing data.
+
+
+## October 11 N4 offline parent-input handoff
+
+Local implementation `85dfbdf716a2862a670b18f6c36e0e6c21b73c1f` closes the
+native parent-input binding dependency. It reauthenticates seven delayed roots,
+binds all 48 source periods to D=s−7 and freshly replays all 96 total/global-jail
+proofs. Six shared artifact admissions use 6,368,042 bytes. Candidate Aspen
+remains under the default-mainnet assumption; broader authority flags stay false.
+
+6 focused handoff, 4 native, 7 Aspen, 76 qualifier library and 1 canonical native
+parity test passed; format/check/production Clippy/build/whitespace passed.
+Fast and actual source hook each passed 2,118 tests, zero failures, plus guards.
+Astra accepted the contract, amended schema, source and independent exact replay.
+Luna supplied the bounded map. Sol6.1 medium implemented serially; requested
+children were Luna/Astra medium, with runtime identities unobserved. A fresh
+Astra accepted the next 914-row VRF semantic preparation, with live NOT READY.
+
+Corrections: four unnecessary borrows; saved parent fifth metadata-only family;
+independent false-flag and source-cap tests; explicit candidate policy assumption.
+First failures and all reviews remain in
+`/home/fry/artifacts/n4-run-01a12d0c-3bcb-79b3-bcb7-ebff9b8aed08-20261011`.
+Frozen report 74,614 bytes matches independent replay. No storage/C++ change,
+historical probe, cache/owner/transition/production adoption or push.
+
+Fresh quota baseline 67%, floor 57%, latest 65% at 2026-10-11T22:36:16Z:
+2 points consumed account-wide.
+Current 10-point authority supersedes historical suspension; old budget unchanged.
+The [checkpoint](evm_research/n4_next_run_checkpoint.md) lists exact voter, lambda,
+raw-cache and producer blockers, including the unresolved 69-tuple overlap and
+missing bounded VRF adapter/command authority.
