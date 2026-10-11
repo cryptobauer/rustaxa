@@ -510,9 +510,7 @@ impl Recorder<'_> {
                 outcome,
             });
         }
-        for frame in &frames {
-            bundle::consistent_frame(frame, prior, &self.run.budget)?;
-        }
+        bundle::consistent_frames(self.identity, &frames, prior, &self.run.budget)?;
         let header = binary::Header {
             identity: self.identity,
             address,
@@ -952,8 +950,9 @@ fn replay_proof(
         &run.budget,
         Some((identity, address, key)),
         tuple.is_none(),
-    )?;
-    bundle::consistent_transcript(bytes, prior, &run.budget)?;
+    )
+    .map_err(|error| run.budget.stop(error))?;
+    bundle::consistent_transcript(bytes, header, prior, &run.budget)?;
     let witness = ConcreteStorageWitness { bytes, header };
     run.budget.charge(R::CanonicalBytes, 1024)?;
     let store = ReplayStore {
