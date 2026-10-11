@@ -473,3 +473,20 @@ or broad gate applied. [Document](evm_research/n4_parent_raw_inventory.md), run
 original/final freezes, exact capture diff and independent closeouts retain pins.
 The shared budget reached 43% from 53% at 18:12:47; floor 43%, reset 1791948695.
 No new work started after that observation; only in-flight closeout continued.
+
+
+## October 11 N4 offline reconstruction round
+
+Lead Sol medium implements serially. Luna medium started first and completed bounded seed/key/source maps. Fresh Astra medium contracts and Sol medium independent reviews ran for each new profile. Exact thread IDs and runtime confirmations are in the round's runtime-routing.json; no routing failure occurred. The user explicitly authorized a fresh 100% to 90% allowance round in the same lead thread; the earlier October 10 budget remains immutable. Allowance is separate from tokens and billing.
+
+| Accepted slice | Local commit | Result | Focused validation and corrections |
+| --- | --- | --- | --- |
+| Validator/owner seed audit | 67b7ee5de | 290 addresses, 870 tuples, 60 exact exclusions; 70 raw-live scalar slots, 800 not-live only | 35 lib + 4 binary tests and checks; first borrow failure corrected; independent Sol/Astra acceptance |
+| Offline undelegations | 604664af8 | 217 family paths/2277 bytes, 45 V1 and two V2 objects; 800 unresolved | 35 lib + 4 seed + 7 family tests and checks; first fixture/syntax/Clippy errors corrected; Sol/Astra acceptance; no union claim at this stage |
+| Parent reward fields | 55da44664 | 48 periods, 914 cert entries, 139 DAG blocks, 583 transactions; raw difficulty and fee inputs | 41 lib + 1 adapter tests and checks; gas getter/Clippy/accounting corrections, four review fixes and exact source/expansion cap tests; Sol/Astra acceptance |
+| Pure base codecs/keys | e2a5931e7 | Canonical bounded raw decoders and pure keys; no reader or physical analyzer change | 47 lib tests/checks, exact independent OpenSSL key/path test; required frozen-vector correction accepted by Sol |
+| Exact saved path union | de81438f4 | B 2065 + U 217 paths with actual zero overlap; union 2282/37971 bytes, residual 20996/221106 | 47 lib + 5 binary tests/checks/offline run; first Clippy corrected, explicit lookup/distinct/repeated/output guard tests required by review; Sol/Astra acceptance |
+
+All runs preserve raw/root/period provenance, saved non-live/null classifications and complete-snapshot/owner/reward/production limits. No supplied data changed, no new physical read or inventory ran, no owner or reward transition was built, and nothing was pushed. Storage/bridge/node/differential gates do not apply to these diagnostic-only changes. Complete first/corrected logs, source/binary/report freezes and accepted records are under `/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261011-round2`.
+
+Luna's child-address subtraction finds 56 distinct retained undelegation child addresses, all inside the 290 accepted seeds. It grants no new membership or physical authority. A fresh Astra/Sol source contract for the seven delayed headers/roots at 894..900 is READY with no finding; implementation/probe have not started. The round reached its 90% floor from 100% at 13:03:14.058Z; only in-flight review and minimal closeout continued. Latest allowance and final pending state belong to n4_next_run_checkpoint.md and the run checkpoint.
