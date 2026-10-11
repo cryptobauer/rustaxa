@@ -1,5 +1,8 @@
 //! Read-only helpers for qualifying independent Taraxa snapshot copies.
 
+#[path = "bin/parent_cache_fields/admission.rs"]
+mod artifact_admission;
+pub mod aspen_policy;
 pub mod delayed_headers;
 pub mod head_history;
 pub mod interval_history;

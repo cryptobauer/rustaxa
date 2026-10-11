@@ -1,8 +1,9 @@
 //! Seven header commitments linked to the fixed, revalidated local H interval.
 //! No state, list-root, native-value, producer or public-finality authority follows.
-#[path = "bin/parent_cache_fields/admission.rs"]
-mod admission;
-use crate::{head_history as head, interval_history as interval, parent_history as parent};
+use crate::{
+    artifact_admission as admission, head_history as head, interval_history as interval,
+    parent_history as parent,
+};
 use admission::{parse_unique, sha};
 use anyhow::{Context, Result, ensure};
 use ethereum_types::H256;
