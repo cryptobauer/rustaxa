@@ -54,6 +54,75 @@ class QuotaTests(unittest.TestCase):
         self.path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
         return now, reset
 
+    def test_budget_reset_jitter_preserves_baseline_floor_and_file(self):
+        state_path = Path(self.temp.name) / 'jitter-budget.json'
+        reset = (self.now + timedelta(days=1)).timestamp()
+        QUOTA.initialize_budget(state_path, self.budget_observation(20, reset=reset), now=self.now)
+        original = state_path.read_bytes()
+        for drift in (-2, -1, 0, 1, 2):
+            for used, expected in ((29, 0), (30, 2)):
+                with self.subTest(drift=drift, used=used):
+                    result, code = QUOTA.inspect_budget(
+                        state_path, self.budget_observation(used, reset=reset+drift), now=self.now)
+                    self.assertEqual(code, expected)
+                    self.assertEqual(result['baseline_resets_at'], reset)
+                    self.assertEqual(result['baseline_remaining_percent'], 80)
+                    self.assertEqual(result['floor_remaining_percent'], 70)
+                    self.assertEqual(result['reset_drift_seconds'], drift)
+                    self.assertEqual(result['reset_tolerance_seconds'], 2)
+                    self.assertEqual(state_path.read_bytes(), original)
+
+    def test_budget_reset_tolerance_cannot_drift_transitively(self):
+        state_path = Path(self.temp.name) / 'anchored-budget.json'
+        reset = (self.now + timedelta(days=1)).timestamp()
+        QUOTA.initialize_budget(state_path, self.budget_observation(20, reset=reset), now=self.now)
+        original = state_path.read_bytes()
+        for drift, expected in ((2, 0), (4, 3), (-2.0001, 3), (2.0001, 3), (604800, 3)):
+            result, code = QUOTA.inspect_budget(
+                state_path, self.budget_observation(21, reset=reset+drift), now=self.now)
+            self.assertEqual(code, expected)
+            if code == 3 and drift != 604800:
+                self.assertIn('different allowance reset', result['reason'])
+            self.assertEqual(state_path.read_bytes(), original)
+
+    def test_log_reset_jitter_cannot_hide_usage_regression(self):
+        reset = (self.now + timedelta(days=1)).timestamp()
+        for earlier, later in ((-2, 2), (2, -2), (0, 2), (2, 0)):
+            self.evaluate(used=30, reset=reset+earlier, min_remaining_percent=0)
+            first = self.path.read_text()
+            self.evaluate(used=29, reset=reset+later, min_remaining_percent=0)
+            self.path.write_text(first+self.path.read_text())
+            result, code = QUOTA.inspect_log(
+                self.path, now=self.now, expected_session='current', min_remaining_percent=0)
+            self.assertEqual(code, 3)
+            self.assertIn('decreased', result['reason'])
+
+    def test_log_reset_peak_neighborhood_is_not_transitive(self):
+        reset = (self.now + timedelta(days=1)).timestamp()
+        records = ''
+        for drift, used in ((0, 50), (4, 49), (8, 49)):
+            self.evaluate(used=used, reset=reset+drift, min_remaining_percent=0)
+            records += self.path.read_text()
+        self.path.write_text(records)
+        result, code = QUOTA.inspect_log(
+            self.path, now=self.now, expected_session='current', min_remaining_percent=0)
+        self.assertEqual(code, 0)
+        self.assertEqual(result['used_percent'], 49)
+
+    def test_saved_window_expiry_cannot_be_extended_by_reset_jitter(self):
+        state_path = Path(self.temp.name) / 'expired-budget.json'
+        reset = (self.now + timedelta(days=1)).timestamp()
+        QUOTA.initialize_budget(state_path, self.budget_observation(20, reset=reset), now=self.now)
+        original = state_path.read_bytes()
+        later = datetime.fromtimestamp(reset+1, timezone.utc)
+        observation = self.budget_observation(21, reset=reset+2)
+        observation['observed_utc'] = later.isoformat()
+        observation['age_seconds'] = 0
+        result, code = QUOTA.inspect_budget(state_path, observation, now=later)
+        self.assertEqual(code, 3)
+        self.assertIn('saved allowance window has expired', result['reason'])
+        self.assertEqual(state_path.read_bytes(), original)
+
     def test_default_80_percent_remaining_threshold_and_observed_model(self):
         for used, code in ((0, 0), (19, 0), (19.5, 0), (20, 2), (20.5, 2), (50, 2), (100, 2)):
             with self.subTest(used=used):

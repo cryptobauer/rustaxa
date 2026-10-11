@@ -18,6 +18,9 @@ from pathlib import Path
 MIN_REMAINING_PERCENT = 80
 DEFAULT_BUDGET_CONSUME_PERCENT = 10
 WEEK_SECONDS = 7 * 24 * 60 * 60
+# Observed weekly telemetry rounds the same reset by up to two seconds.
+# Budget matching is always anchored to the immutable baseline, never a chain.
+RESET_TOLERANCE_SECONDS = 2
 
 
 def _valid_floor(value):
@@ -100,7 +103,13 @@ def inspect_log(path, *, now=None, max_age_seconds=300, expected_session=None,
             return unknown('Snapshot is stale; use the current session log.')
         if reset <= now.timestamp():
             return unknown('Recorded allowance window has expired.')
-        if used < window_peaks.get(reset, used):
+        # Two observations each within +/-2 seconds of one baseline can be
+        # four seconds apart. Conservatively reject rollback in that bounded
+        # neighborhood; do not grow a transitive cluster of reset timestamps.
+        peak = max((value for recorded_reset, value in window_peaks.items()
+                    if abs(recorded_reset - reset) <= 2 * RESET_TOLERANCE_SECONDS),
+                   default=used)
+        if used < peak:
             return unknown('Cumulative allowance usage decreased within the recorded weekly window.')
     except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
         return unknown('Snapshot fields are missing or invalid.')
@@ -212,8 +221,13 @@ def _budget_decision(state, observation, path, *, initialized=False, now=None):
     if current_session != state['session_id']:
         return {**baseline, 'status': 'unknown',
                 'reason': 'Current telemetry does not match the lead baseline session.'}, 3
-    if not math.isclose(observation.get('resets_at', float('nan')),
-                        state['resets_at'], rel_tol=0, abs_tol=1e-6):
+    drift = observation['resets_at'] - state['resets_at']
+    baseline.update({'reset_drift_seconds': drift,
+                     'reset_tolerance_seconds': RESET_TOLERANCE_SECONDS})
+    if state['resets_at'] <= now.timestamp():
+        return {**baseline, 'status': 'unknown',
+                'reason': 'The saved allowance window has expired; refusing to extend it.'}, 3
+    if abs(drift) > RESET_TOLERANCE_SECONDS:
         return {**baseline, 'status': 'unknown',
                 'reason': 'Current telemetry uses a different allowance reset window.'}, 3
     current_used = observation['used_percent']
