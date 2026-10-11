@@ -490,3 +490,65 @@ Lead Sol medium implements serially. Luna medium started first and completed bou
 All runs preserve raw/root/period provenance, saved non-live/null classifications and complete-snapshot/owner/reward/production limits. No supplied data changed, no new physical read or inventory ran, no owner or reward transition was built, and nothing was pushed. Storage/bridge/node/differential gates do not apply to these diagnostic-only changes. Complete first/corrected logs, source/binary/report freezes and accepted records are under `/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261011-round2`.
 
 Luna's child-address subtraction finds 56 distinct retained undelegation child addresses, all inside the 290 accepted seeds. It grants no new membership or physical authority. A fresh Astra/Sol source contract for the seven delayed headers/roots at 894..900 is READY with no finding; implementation/probe have not started. The round reached its 90% floor from 100% at 13:03:14.058Z; only in-flight review and minimal closeout continued. Latest allowance and final pending state belong to n4_next_run_checkpoint.md and the run checkpoint.
+
+
+## October 11 N4 delayed headers and Aspen
+
+Run `/home/fry/artifacts/n4-run-01a12b7a-2f06-7661-9183-a37257d00590-20261011`.
+Sol medium implemented serially. Luna medium started first. Independent Sol
+accepted headers and Aspen; fresh Astra settled the named authority contracts.
+Astra independently accepted quota-reader recovery. Child runtime identities
+were not independently exposed; requested models/results are in resume-routing.json.
+
+| Accepted slice | Local commit | Dependency result | Checks and corrections |
+| --- | --- | --- | --- |
+| Seven delayed headers | 1fd035545 | Seven local-H-linked root commitments900..894;17 calls,60237 accepted bytes,0 trie reads | 12 focused/59 lib/1 adapter tests, check/format/production Clippy/build/fast/hook passed; oversized-failure replay/call accounting/source pins corrected; frozen Sol ACCEPT and independent byte-identical replay |
+| Quota reset drift | edcb0ed5c | Same immutable90% baseline and80% floor remain usable under ±2-second reset noise; larger changes/expiry/usage rollback reject | 31 tests per helper copy passed; bounded Astra recovery review and final ACCEPT; full first failures preserved |
+| Aspen candidate policy | b158dc4c6 | 48 regenerated periods/139 signed DAGs;64 minimum-tied blocks/60 author rows; producer/cache authority false | 7 focused/66 lib/1 existing adapter tests, check/format/production Clippy/locked build/fast/hook passed; duplicate module import and requested real-DAG/author mutation tests corrected;53 freeze pins, Sol ACCEPT and independent byte-identical replay |
+
+The old raw-field module/validator and all16 semantic source pins are unchanged.
+No storage module, production route or C++ behavior changed. Narrow storage bridge,
+node and broad differential gates did not apply to these qualifier diagnostics.
+The wider header test lint run retained existing test-only findings; the accepted
+production targets pass. Complete commands/exits, first failures, frozen sources,
+reports and independent reviews are in the run directory. Nothing was pushed.
+
+Native total/jail values remain unavailable as accepted inputs. Source-only bounded
+witness review isolated the missing budget/capture/replay capability and found a
+READY synthetic path through pinned/raw binding APIs. Live probes remain blocked
+by open-path handling and unimplemented constructor/pair/canonical budgets.
+No owner, full cache, real transition or production acceptance follows.
+
+Budget was initialized once at90% (2026-10-11T15:00:15.132Z), floor80%, reset1792322995.
+Latest acceptance-boundary observation85% (18:39:13.734Z), five points consumed.
+Account-wide allowance is separate from tokens and billing. Current pending work,
+final allowance and restart action belong to n4_next_run_checkpoint.md.
+
+
+## October 11 N4 synthetic witness and borrowed views
+
+Same run and immutable quota baseline as the delayed-header/Aspen record above.
+Root Sol6.1 medium implemented serially; independent Sol6.1 medium accepted both
+frozen slices. Astra medium settled synthetic/view contracts and the precise live
+binding blocker. Requested child runtimes remain unverified; no routing failure.
+
+| Accepted slice | Local commit | Result and checks |
+| --- | --- | --- |
+| Synthetic bounded witness | be62cc368 | Shared13-resource policy; strict bounded transcript, borrowed account codec, bounded canonical traversal and account→storage reconciliation.11 focused,138 package+1 doctest, existing Go parity,4 Rust-enabled bridge tests, format/production lint/fast/hook pass.39 pins; independent11+1 tests pass. Two source findings and five test gaps corrected. |
+| Borrowed application views | 470322313 | Three additive GAT views; existing APIs and test modules unchanged.3 focused,141 package+1 doctest,4 Rust-enabled bridge tests, format/production lint/fast/hook pass.31 pins; independent3 tests pass. No review defect. |
+
+The package retains one ignored live fixture. Wider test Clippy retains15 existing
+findings in original test code; accepted production lint and fast gates pass.
+All first failures, corrections and complete outputs are preserved in the run.
+No new DB probe, inventory, C++ behavior or production route. Synthetic limits
+are application accounting, not engine/RSS bounds or live history completeness.
+
+The bounded offline replay and repository-view dependencies are closed. Live
+export still requires a persistent non-creating RocksDB open and bounded error
+conversion across open/pinned read/raw status, then bounded capture/constructor/
+pair wiring. Native48 total and48 jail proofs remain missing. No complete cache,
+owner or real transition acceptance follows. Nothing was pushed.
+
+Latest allowance83% (2026-10-11T19:29:57.263000+00:00),
+7 points consumed from90%; floor80%. Stop is ready-slice completion
+with named live blockers. This is account-wide quota, not task token/billing data.
