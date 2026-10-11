@@ -887,6 +887,25 @@ fn digest_paths(entries: &[ConcreteStorageInventoryEntry]) -> String {
     hex::encode(digest.finalize())
 }
 
+/// Pure global validator-count key for offline authenticated seed-link audits.
+/// Output is the logical key K(00 05 01), before storage-trie hashing.
+pub fn validator_seed_count_key() -> ConcreteStorageKey {
+    iterable_count_key()
+}
+/// Pure retained forward key K(00 05 02 || position_u32_le).
+/// Callers must enforce their own index bounds; this helper never reads state.
+pub fn validator_seed_item_key(position: u32) -> ConcreteStorageKey {
+    iterable_item_key(position)
+}
+/// Pure retained reverse key K(00 05 02 || validator_address20).
+pub fn validator_seed_reverse_key(address: [u8; 20]) -> ConcreteStorageKey {
+    iterable_position_key(address)
+}
+/// Pure validator-owner key K(00 03 || validator_address20), with no state access.
+pub fn validator_seed_owner_key(address: [u8; 20]) -> ConcreteStorageKey {
+    storage_key(&[&[0, 3], &address])
+}
+
 fn iterable_count_key() -> ConcreteStorageKey {
     iterable_count_key_for(VALIDATORS_PREFIX)
 }
