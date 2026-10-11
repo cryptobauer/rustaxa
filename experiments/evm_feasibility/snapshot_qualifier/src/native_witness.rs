@@ -97,10 +97,6 @@ pub fn load_fixed_plan() -> Result<ConcreteDiagnosticPlan> {
         delayed_headers::INPUT_SIZE,
         delayed_headers::INPUT_SIZE,
     )?;
-    let value = admission::parse_unique(&interval_bytes)?;
-    let rows: interval_history::IntervalHistoryRows =
-        serde_json::from_value(value["authentication"]["rows"].clone())?;
-    interval_history::authenticate_interval(&rows)?;
     let parent_bytes = admission::evidence(
         Path::new(PARENT_PATH),
         Path::new(PARENT_PATH),
@@ -108,14 +104,6 @@ pub fn load_fixed_plan() -> Result<ConcreteDiagnosticPlan> {
         PARENT_SIZE,
         PARENT_SIZE,
     )?;
-    let parent = admission::parse_unique(&parent_bytes)?;
-    parent_reward_fields::validate_field_report(&parent)?;
-    let derived = parent_reward_fields::derive_available_fields(&rows)?;
-    ensure!(
-        parent["missing_inputs"]["delayed_roots_and_totals"]
-            == derived["missing_inputs"]["delayed_roots_and_totals"],
-        "native manifest drift"
-    );
     let delayed_bytes = admission::evidence(
         Path::new(DELAYED_PATH),
         Path::new(DELAYED_PATH),
@@ -123,8 +111,45 @@ pub fn load_fixed_plan() -> Result<ConcreteDiagnosticPlan> {
         DELAYED_SIZE,
         DELAYED_SIZE,
     )?;
-    let evidence = delayed_headers::Evidence::admit_fixed(&interval_bytes)?;
-    let replay = delayed_headers::replay_fixed_historical(&evidence, &delayed_bytes)?;
+    plan_from_admitted(&interval_bytes, &parent_bytes, &delayed_bytes)
+}
+/// Construct the fixed native plan from three shared admitted artifacts.
+/// Exact byte pins are checked before parsing. All original chain, parent
+/// manifest and delayed-header validators remain in force. No file is read;
+/// malformed, unpinned or incomplete authority returns an error, never a plan.
+pub fn plan_from_admitted(
+    interval_bytes: &[u8],
+    parent_bytes: &[u8],
+    delayed_bytes: &[u8],
+) -> Result<ConcreteDiagnosticPlan> {
+    for (bytes, size, digest) in [
+        (
+            interval_bytes,
+            delayed_headers::INPUT_SIZE,
+            delayed_headers::INPUT_SHA,
+        ),
+        (parent_bytes, PARENT_SIZE, PARENT_SHA),
+        (delayed_bytes, DELAYED_SIZE, DELAYED_SHA),
+    ] {
+        ensure!(
+            bytes.len() == size && admission::sha(bytes) == digest,
+            "native authority pin drift"
+        );
+    }
+    let value = admission::parse_unique(interval_bytes)?;
+    let rows: interval_history::IntervalHistoryRows =
+        serde_json::from_value(value["authentication"]["rows"].clone())?;
+    interval_history::authenticate_interval(&rows)?;
+    let parent = admission::parse_unique(parent_bytes)?;
+    parent_reward_fields::validate_field_report(&parent)?;
+    let derived = parent_reward_fields::derive_available_fields(&rows)?;
+    ensure!(
+        parent["missing_inputs"]["delayed_roots_and_totals"]
+            == derived["missing_inputs"]["delayed_roots_and_totals"],
+        "native manifest drift"
+    );
+    let evidence = delayed_headers::Evidence::admit_fixed(interval_bytes)?;
+    let replay = delayed_headers::replay_fixed_historical(&evidence, delayed_bytes)?;
     ensure!(
         replay["authentication"]["status"] == "seven_delayed_headers_authenticated_to_local_h",
         "delayed headers unavailable"

@@ -10,6 +10,7 @@ pub mod native_inverse;
 pub mod native_slashing;
 pub mod native_witness;
 pub mod parent_history;
+pub mod parent_input_handoff;
 pub mod parent_reward_fields;
 pub mod paths;
 pub mod qualification;
