@@ -18,6 +18,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
 
+/// Bounded pure codecs and key derivations for saved base-row comparison.
+pub mod base_rows;
+
 /// Highest validator count accepted by the bounded diagnostic.
 pub const MAX_VALIDATORS: u32 = 4_096;
 
