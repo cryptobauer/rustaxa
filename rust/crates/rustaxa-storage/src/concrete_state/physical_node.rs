@@ -66,6 +66,20 @@ pub(crate) struct SelectedVersion {
 }
 
 pub(crate) trait PhysicalTrieStore {
+    // Diagnostic adapters charge before visits and allocation. Production ports
+    // retain their existing unbudgeted behavior through these default methods.
+    fn allocation_error(&self) -> ConcreteReadError {
+        corrupt("canonical allocation failed")
+    }
+    fn visit_budget(&self, _raw_bytes: usize) -> Result<(), ConcreteReadError> {
+        Ok(())
+    }
+    fn canonical_budget(&self, _bytes: usize) -> Result<(), ConcreteReadError> {
+        Ok(())
+    }
+    fn account_commitment(&self, bytes: &[u8]) -> Result<Vec<u8>, ConcreteReadError> {
+        account_commitment_rlp(&super::codec::decode_physical_account(bytes)?)
+    }
     fn identity(&self) -> ConcreteStateIdentity;
     fn node(&self, column: &str, hash: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError>;
     fn value(
@@ -373,6 +387,28 @@ struct VerifiedNode {
 }
 
 impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F> {
+    fn copy(&self, raw: &[u8]) -> Result<Vec<u8>, ConcreteReadError> {
+        self.store.canonical_budget(raw.len())?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(raw.len())
+            .map_err(|_| self.store.allocation_error())?;
+        out.extend_from_slice(raw);
+        Ok(out)
+    }
+    fn data(&self, raw: &[u8]) -> Result<Vec<u8>, ConcreteReadError> {
+        super::witness_rlp::data(
+            raw,
+            |n| self.store.canonical_budget(n),
+            || self.store.allocation_error(),
+        )
+    }
+    fn list(&self, parts: &[super::witness_rlp::Part<'_>]) -> Result<Vec<u8>, ConcreteReadError> {
+        super::witness_rlp::list(
+            parts,
+            |n| self.store.canonical_budget(n),
+            || self.store.allocation_error(),
+        )
+    }
     fn child(
         &self,
         raw: &[u8],
@@ -383,11 +419,10 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
         let physical_is_list = exact_rlp(raw, "physical trie child")?.is_list();
         let mut verified = self.node(raw, prefix, follows_target, depth)?;
         if physical_is_list && verified.canonical.len() >= 32 {
-            verified.canonical = rlp::encode(&keccak256(&verified.canonical).as_slice()).to_vec();
+            verified.canonical = self.data(&keccak256(&verified.canonical))?;
         }
         Ok(verified)
     }
-
     fn node(
         &self,
         raw: &[u8],
@@ -395,6 +430,7 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
         follows_target: bool,
         depth: usize,
     ) -> Result<VerifiedNode, ConcreteReadError> {
+        self.store.visit_budget(raw.len())?;
         if depth > 128 || prefix.len() > 64 {
             return Err(corrupt("physical trie path exceeds its depth bound"));
         }
@@ -408,7 +444,6 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
             _ => Err(corrupt("physical trie node has invalid list arity")),
         }
     }
-
     fn reference(
         &self,
         rlp: &Rlp<'_>,
@@ -420,7 +455,7 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
         let reference = rlp.data().map_err(corrupt)?;
         if reference.is_empty() {
             return Ok(VerifiedNode {
-                canonical: vec![0x80],
+                canonical: self.copy(&[0x80])?,
                 proof: follows_target.then_some(PathProof::NonMember),
             });
         }
@@ -429,7 +464,7 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
             .map_err(|_| corrupt("physical trie reference must be empty or 32 bytes"))?;
         if !follows_target {
             return Ok(VerifiedNode {
-                canonical: raw.to_vec(),
+                canonical: self.copy(raw)?,
                 proof: None,
             });
         }
@@ -438,21 +473,14 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
             .node(self.node_column, hash)?
             .ok_or_else(|| ConcreteReadError::HistoryUnavailable(self.store.identity()))?;
         let verified = self.node(&child, prefix, true, depth + 1)?;
-        let computed = keccak256(&verified.canonical);
-        if computed != hash {
-            return Err(corrupt(format!(
-                "physical trie child hash mismatch at nibble depth {}: expected {}, computed {}",
-                prefix.len(),
-                hex_hash(hash),
-                hex_hash(computed)
-            )));
+        if keccak256(&verified.canonical) != hash {
+            return Err(corrupt("physical trie child hash mismatch"));
         }
         Ok(VerifiedNode {
-            canonical: raw.to_vec(),
+            canonical: self.copy(raw)?,
             proof: verified.proof,
         })
     }
-
     fn branch(
         &self,
         rlp: &Rlp<'_>,
@@ -460,34 +488,41 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
         follows_target: bool,
         depth: usize,
     ) -> Result<VerifiedNode, ConcreteReadError> {
-        if follows_target && prefix.len() >= self.target.len() {
+        if prefix.len() >= 64 {
             return Err(corrupt("physical branch extends past a complete key"));
         }
         let selected = follows_target.then(|| self.target[prefix.len()] as usize);
-        let mut stream = RlpStream::new_list(17);
+        let mut children: [Option<VerifiedNode>; 16] = std::array::from_fn(|_| None);
         let mut proof = None;
-        for index in 0..16 {
+        for (index, slot) in children.iter_mut().enumerate() {
+            let mut child_prefix = [0_u8; 64];
+            child_prefix[..prefix.len()].copy_from_slice(prefix);
+            child_prefix[prefix.len()] = index as u8;
             let child_follows = selected == Some(index);
-            let mut child_prefix = prefix.to_vec();
-            child_prefix.push(index as u8);
-            let child = self.child(
+            let mut child = self.child(
                 rlp.at(index).map_err(corrupt)?.as_raw(),
-                &child_prefix,
+                &child_prefix[..prefix.len() + 1],
                 child_follows,
                 depth + 1,
             )?;
             if child_follows {
-                proof = child.proof;
+                proof = child.proof.take();
             }
-            stream.append_raw(&child.canonical, 1);
+            *slot = Some(child);
         }
-        stream.append_empty_data();
+        use super::witness_rlp::Part;
+        let parts: [Part<'_>; 17] = std::array::from_fn(|i| {
+            if i == 16 {
+                Part::Data(&[])
+            } else {
+                Part::Raw(&children[i].as_ref().unwrap().canonical)
+            }
+        });
         Ok(VerifiedNode {
-            canonical: stream.out().to_vec(),
+            canonical: self.list(&parts)?,
             proof,
         })
     }
-
     fn short(
         &self,
         rlp: &Rlp<'_>,
@@ -497,15 +532,21 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
     ) -> Result<VerifiedNode, ConcreteReadError> {
         let count = rlp.item_count().map_err(corrupt)?;
         let compact = rlp.at(0).map_err(corrupt)?.data().map_err(corrupt)?;
-        let (terminal, part) = decode_compact(compact)?;
-        let mut leaf_path = prefix.to_vec();
-        leaf_path.extend_from_slice(&part);
-        if leaf_path.len() > 64 {
+        let (terminal, part, part_len) = compact_view(compact)?;
+        let length = prefix
+            .len()
+            .checked_add(part_len)
+            .ok_or_else(|| corrupt("physical key width overflow"))?;
+        if length > 64 {
             return Err(corrupt("physical short-node key exceeds 32 bytes"));
         }
-        let matches = self.target[prefix.len()..].starts_with(&part);
+        let mut leaf_path = [0_u8; 64];
+        leaf_path[..prefix.len()].copy_from_slice(prefix);
+        leaf_path[prefix.len()..length].copy_from_slice(&part[..part_len]);
+        let matches = self.target[prefix.len()..].starts_with(&part[..part_len]);
+        use super::witness_rlp::Part;
         if terminal {
-            if leaf_path.len() != 64 {
+            if length != 64 {
                 return Err(corrupt("physical leaf key is not 32 bytes"));
             }
             let leaf_key = nibbles_to_bytes(&leaf_path)?;
@@ -532,45 +573,38 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
                 return Err(corrupt("physical inline leaf and versioned value differ"));
             }
             let commitment = match self.schema {
-                TrieSchema::Account => account_commitment_rlp(
-                    &super::codec::decode_physical_account(&selected.value)?,
-                )?,
-                TrieSchema::Storage => rlp::encode(&selected.value).to_vec(),
+                TrieSchema::Account => self.store.account_commitment(&selected.value)?,
+                TrieSchema::Storage => self.data(&selected.value)?,
             };
-            let mut stream = RlpStream::new_list(2);
-            stream.append(&compact);
-            stream.append(&commitment);
-            let canonical = stream.out().to_vec();
+            let canonical = self.list(&[Part::Data(compact), Part::Data(&commitment)])?;
             if content.len() == 32 && keccak256(&canonical).as_slice() != content {
                 return Err(corrupt("physical leaf hash hint does not match its value"));
             }
-            let exact_target = follows_target && matches && leaf_path.as_slice() == self.target;
+            let exact_target = follows_target && matches && leaf_path == self.target;
             return Ok(VerifiedNode {
                 canonical,
-                proof: follows_target.then_some({
-                    if exact_target {
+                proof: if follows_target {
+                    Some(if exact_target {
                         PathProof::Member(selected.value)
                     } else {
                         PathProof::NonMember
-                    }
-                }),
+                    })
+                } else {
+                    None
+                },
             });
         }
         if count != 2 {
             return Err(corrupt("physical extension node has no child"));
         }
-        let child_follows = follows_target && matches;
         let child = self.child(
             rlp.at(1).map_err(corrupt)?.as_raw(),
-            &leaf_path,
-            child_follows,
+            &leaf_path[..length],
+            follows_target && matches,
             depth + 1,
         )?;
-        let mut stream = RlpStream::new_list(2);
-        stream.append(&compact);
-        stream.append_raw(&child.canonical, 1);
         Ok(VerifiedNode {
-            canonical: stream.out().to_vec(),
+            canonical: self.list(&[Part::Data(compact), Part::Raw(&child.canonical)])?,
             proof: if follows_target && !matches {
                 Some(PathProof::NonMember)
             } else {
@@ -578,6 +612,35 @@ impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F>
             },
         })
     }
+}
+
+fn compact_view(bytes: &[u8]) -> Result<(bool, [u8; 64], usize), ConcreteReadError> {
+    let first = *bytes
+        .first()
+        .ok_or_else(|| corrupt("physical short-node compact key is empty"))?;
+    let flag = first >> 4;
+    if flag > 3 || flag & 1 == 0 && first & 15 != 0 {
+        return Err(corrupt("physical short-node compact key has invalid flags"));
+    }
+    let length = (bytes.len() - 1)
+        .checked_mul(2)
+        .and_then(|n| n.checked_add((flag & 1) as usize))
+        .ok_or_else(|| corrupt("compact width overflow"))?;
+    if length > 64 {
+        return Err(corrupt("physical compact key exceeds 64 nibbles"));
+    }
+    let mut out = [0_u8; 64];
+    let mut cursor = 0;
+    if flag & 1 != 0 {
+        out[0] = first & 15;
+        cursor = 1;
+    }
+    for byte in &bytes[1..] {
+        out[cursor] = byte >> 4;
+        out[cursor + 1] = byte & 15;
+        cursor += 2;
+    }
+    Ok((flag & 2 != 0, out, length))
 }
 
 fn decode_compact(bytes: &[u8]) -> Result<(bool, Vec<u8>), ConcreteReadError> {

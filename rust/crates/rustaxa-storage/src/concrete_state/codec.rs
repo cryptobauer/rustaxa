@@ -169,6 +169,67 @@ fn exact_hash(bytes: &[u8], label: &str) -> Result<[u8; 32], ConcreteReadError> 
         .map_err(|_| corrupt(format!("{label} must be 32 bytes")))
 }
 
+/// Borrowed diagnostic account fields. It preserves physical widths without
+/// constructing nonce, BigUint or preserved-RLP heap buffers.
+pub(crate) struct AccountView<'a> {
+    nonce: &'a [u8],
+    balance: &'a [u8],
+    storage: &'a [u8],
+    code: &'a [u8],
+    pub(crate) storage_root: Option<[u8; 32]>,
+}
+pub(crate) fn account_view(bytes: &[u8]) -> Result<AccountView<'_>, ConcreteReadError> {
+    let r = exact_rlp(bytes, "account")?;
+    if !r.is_list() || r.item_count().map_err(corrupt)? != 5 {
+        return Err(corrupt("account must be a five-field RLP list"));
+    }
+    let nonce = field_data(&r, 0, "nonce")?;
+    let balance = field_data(&r, 1, "balance")?;
+    if nonce.first() == Some(&0) {
+        return Err(corrupt("account nonce starts with zero"));
+    }
+    let storage = field_data(&r, 2, "storage root")?;
+    let code = field_data(&r, 3, "code hash")?;
+    let storage_root = optional_hash(storage, "storage root")?;
+    optional_hash(code, "code hash")?;
+    r.val_at::<u64>(4).map_err(corrupt)?;
+    Ok(AccountView {
+        nonce,
+        balance,
+        storage,
+        code,
+        storage_root,
+    })
+}
+pub(crate) fn account_view_commitment(
+    bytes: &[u8],
+    charge: impl Fn(usize) -> Result<(), ConcreteReadError>,
+    allocation_error: impl Fn() -> ConcreteReadError,
+) -> Result<Vec<u8>, ConcreteReadError> {
+    let view = account_view(bytes)?;
+    let empty_storage = empty_trie_root();
+    let empty_code = empty_code_hash();
+    use super::witness_rlp::Part;
+    super::witness_rlp::list(
+        &[
+            Part::Data(view.nonce),
+            Part::Data(view.balance),
+            Part::Data(if view.storage.is_empty() {
+                &empty_storage
+            } else {
+                view.storage
+            }),
+            Part::Data(if view.code.is_empty() {
+                &empty_code
+            } else {
+                view.code
+            }),
+        ],
+        charge,
+        allocation_error,
+    )
+}
+
 pub(crate) fn corrupt(error: impl std::fmt::Display) -> ConcreteReadError {
     ConcreteReadError::Corrupt(error.to_string())
 }

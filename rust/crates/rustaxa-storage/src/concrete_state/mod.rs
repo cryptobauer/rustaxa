@@ -14,6 +14,13 @@ mod lifecycle;
 mod physical_node;
 mod reader;
 mod trie_writer;
+mod witness;
+mod witness_rlp;
+pub use witness::{
+    ConcreteStorageWitness, ConcreteWitnessBudget, ConcreteWitnessError, ConcreteWitnessLimits,
+    ConcreteWitnessLogical, ConcreteWitnessPhysical, ConcreteWitnessReplay,
+    ConcreteWitnessResource, ConcreteWitnessUsage, replay_storage_witness,
+};
 mod writer;
 
 pub use codec::{
