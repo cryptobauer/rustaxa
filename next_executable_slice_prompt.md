@@ -1,153 +1,96 @@
-Start a NEW session on feat/rust/evm-state-db using gpt-6.1-sol medium.
-Work autonomously on the next N4 historical native-state reconstruction slices
-for another TEN PERCENTAGE POINTS of weekly allowance from a fresh startup baseline.
-This prompt authorizes the bounded implementation, read-only probes, isolated test
-owners, validation, independent review and local commits described below. Do not
-start the run while merely preparing this prompt. Do not push.
+Start the next N4 slice on feat/rust/evm-state-db with gpt-6.1-sol medium.
+Work autonomously through the bounded offline parent-input handoff described below.
+Commit accepted work locally; keep documentation commits separate. Do not push.
+This prompt is preparation only until invoked; do not start a new run merely to
+prepare or validate it.
 
-Read AGENTS.md and /home/fry/.codex/RTK.md before shell commands. Prefix commands
-with rtk. Apply codex-efficient-work, doc/codex_slice_workflow.md and the current
-model table in doc/evm_research/08_implementation_plan.md. Never ingest AI.md.
-Keep worktrees under /home/fry/.codex/worktrees and useful artifacts under
-/home/fry/artifacts or the persistent checkout.
+Read AGENTS.md and /home/fry/.codex/RTK.md before shell commands; prefix all shell
+commands with rtk. Never read, write, search or ingest AI.md. Apply
+codex-efficient-work, doc/codex_slice_workflow.md, the applicable rewrite workflow
+and doc/rewrite_validation_strategy.md. Start from:
+- doc/evm_research/n4_next_run_checkpoint.md (accepted storage closeout)
+- doc/evm_research/n4_next_10point_plan.md (current next-slice scope)
+- /home/fry/artifacts/n4-binding-resume-20261011/storage-final-closeout-review.md
+- /home/fry/artifacts/n4-next-prompt-20261011/next-input-pins.json
 
-Accepted implementation/evidence base: 1838694c6d9089c497a824a82c120044183553ee.
-Verify branch, HEAD and status once; reconcile newer preparation-only commits.
-Preserve unrelated edits, including existing workflow, queue, old checkpoint,
-skill and audit changes. There are no pending owned implementation, gates,
-reviews or processes. Read doc/evm_research/n4_next_run_checkpoint.md first.
-It supersedes stale P0 next-action text in the older restart and queue records.
+Accepted implementation HEAD is8a4a613dbbc4c82dcf5d608efb6f65d9d288f048.
+Accepted storage checkpoint commit is9539294ba99f6be60f54095b3b0518eabf32ace1.
+A later documentation-only prompt commit may follow it. Inspect actual Git state
+and reconcile newer accepted work; do not reset to these references. Preserve
+unrelated workflow, N6 queue/checkpoint, .agents/ and token-audit changes.
 
-Read these current records, then selected source ranges rather than full history:
-- doc/evm_research/n4_light_snapshot_availability.md.
-- doc/evm_research/n4_v1_14_1_policy_basis.md.
-- doc/evm_research/n4_owner_input_restart_contract.md, interpreted with those updates.
-- /home/fry/artifacts/light-snapshot-check-20261010/checkpoint.md and review.md.
-- /home/fry/artifacts/n4-v1.14.1-policy-20261010/checkpoint.md and review.md.
+Quota: the latest user instruction is “continue and ignore budget for now”.
+Quota stopping is suspended until the user changes it. Preserve the existing
+/home/fry/artifacts/n4-run-01a12b7a-2f06-7661-9183-a37257d00590-20261011/quota-budget.json
+unchanged, SHA256bd5664c3f082e5b961e5fb67deffde261e0bf72ea60112233af44c007fe7695a.
+Historical baseline90%, floor80%, last valid83%; fresh resumed telemetry was
+unresolved. Do not present83% as current, initialize a budget, rebase the old
+file, impersonate its lead or infer billing. Record fresh current-lead telemetry
+if available and include account-wide side use; unknown telemetry stays unknown.
+Actual account/model unavailability still stops dependent work. No new ten-point
+round is authorized by this prompt.
 
-Before agents, preparation commits, gates or implementation, identify THIS lead
-using CODEX_THREAD_ID or an explicit current UUID, never the newest log. Create a
-unique RUN_ARTIFACT_DIR under /home/fry/artifacts. Record fresh allowance once:
+1. Check capacity and confirm Luna-medium first for a bounded input/hash/consumer
+   map. Follow the current model table in doc/evm_research/08_implementation_plan.md
+   and n6_model_setup_validation.md. Configure models explicitly through a
+   configurable role, with independent context for fresh agents. Reserve Luna's
+   slot. Sol implements serially; Astra reviews the new authority profile. Record
+   requested model/reasoning, successful startup, results and routing failures.
+2. Verify the333-file accepted closeout without a database open:
 
-```sh
-rtk proxy python3 .agents/skills/codex-efficient-work/scripts/codex_quota.py --budget-file "${RUN_ARTIFACT_DIR}/quota-budget.json" --init-budget --consume-percent 10
-```
+   rtk proxy python3 -E /home/fry/artifacts/n4-binding-resume-20261011/verify-final-closeout.py
 
-Reuse the same budget without --init-budget for every later check and same-session
-resume. This new round is explicitly authorized; old budgets remain immutable.
-Do not resume the old lead sessions or their agents, transfer their budgets, or
-infer current allowance from historical readings. Ten points means a drop from
-the startup remaining percentage by 10, not 10% of that remainder. Account-wide
-activity counts. Check before assignments/slices/large gates, after closeout and
-about every five minutes during long work. Unknown/stale telemetry gets one
-bounded refresh; unresolved telemetry, identity or reset-window mismatch stops
-new work. At the floor finish only in-flight atomic work and minimal closeout.
+   Storage capability, delayed roots and the fixed96 total/jail proof family are
+   closed. All48 totals for D25706894..25706941 are534879 and all48 jail
+   preconditions passed independent replay. Candidate Aspen policy is accepted
+   separately under the default-mainnet assumption. Do not rerun their consumed
+   live commands, recapture, change frozen artifacts or inject observed constants.
+3. Prepare the exact offline parent-input admission/join contract from the six
+   pinned artifacts in the current plan. Keep original parent/schema validators
+   unchanged. Bind48 source periods25706901..25706948 to D=s−7 and complete roots.
+   Obtain independent Astra READY for the implementation contract before coding.
+   The next-slice plan does not by itself supply READY executable authority.
+4. Implement the smallest additive offline handoff under snapshot_qualifier
+   ownership. Reuse the accepted raw-chain, witness verifier, canonical native
+   decoder and Aspen derivation. Reports are provenance/comparison inputs; claimed
+   success booleans never replace authentication. Preserve all13 witness ceilings.
+   Settle aggregate artifact-read/source-profile/output limits and parser
+   allocation exclusions before implementation; count repeated loader reads.
+   Use the admitted bundle with the storage verifier; blindly calling the replay
+   CLI/helper again would exceed the proposed artifact-read count/bytes.
+   No database opens, new physical reads, cursor use or inventory is authorized.
+5. Validate and freeze the handoff, independently replay it offline, obtain final
+   review, and commit accepted work. Then prepare one exact remaining voter or
+   lambda authority contract using the original recovered-voter manifest and
+   consumer rules. No new live probe follows automatically. If justified live
+   evidence is required, first settle its complete semantic/read contract and
+   independent exact-command READY, including fixed inputs/identities/keys,
+   byte/operation/output limits, executable/source pins and failure stops.
 
-Established input basis:
-- H=25,706,949; P=25,706,948; session eligibility E=25,706,944;
-  certificate eligibility D=25,706,942. Keep E and D distinct.
-- All six authenticated live DPoS/slashing inventories at P/E/D succeeded.
-  Each DPoS inventory has 23,278 rows; each slashing inventory has 54.
-  The respective native tries match across these periods. This does not prove
-  all accounts, deleted/all-ever keys, logical key catalogs or complete semantics.
-- Existing partial inversion explains 2,065 DPoS rows and leaves 21,213 undecoded;
-  those unexplained live bytes are present, not missing. No Rust DPoS sidecars.
-  Parent vote/stake raw origins are present. Minted-token tombstone is not zero.
-- Retained cache has 49 decoded rows at 25,706,901..25,706,949. Excluding H gives
-  the 48-period candidate parent subset under frequency 100; historical runtime
-  and generation authority still need reviewed reconstruction.
-- Owner directs default mainnet configuration and reports likely v1.14.1.
-  Release commit a0e85fe31eb03573cd92c165a5f81035cec9907e pins public EVM
-  6c7e5338b22d5e596cc2365a88d1f94840e1ee1b. Seven relevant release files equal
-  the checkout; all 12 retained DPoS scalars match. Local Go oracle pin
-  bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418 is distinct.
-  Use this supplied reference basis without requesting another config upload.
-  Actual producer binary/capture remain unverified; retain that limit in evidence,
-  but do not use it as a generic blocker to reference reconstruction work.
-- P0 ordinary-prefix Rust binding is accepted at c182cdc4e25e218ef24587bde64dd01eb892d4c0.
-  Do not redo that slice or broaden prefix admission.
+Remaining inputs:2742 unqualified voter value/proof rows for914 delayed-period/
+voter pairs and20 distinct voters;48 lambda selections;48 raw expected cache
+rows; producer/configuration authority. Native total/global jail success does
+not qualify voter weights or every per-voter jail key. Do not repeat the69
+earlier unavailable tuples without changed evidence, expand the manifest, sweep
+addresses or keys, or assume missing/tombstone/unavailable means zero.
 
-Work in order:
-1. Check capacity, then launch and confirm gpt-6-luna medium first with a bounded
-   read-only map of the existing native inverse decoder, Go storage layouts and
-   Rust snapshot import/session seams. Give exact paths and questions; reuse its
-   map. Reserve its slot. Lead implements serial slices directly. Use configurable
-   roles, explicit models/reasoning and fork_turns=none; verify runtime when available.
-2. Obtain bounded independent gpt-6-astra medium authority review before changing
-   native completeness or historical-owner boundaries. Escalate to high only for
-   a named difficult invariant. Settle one actionable reconstruction contract:
-   logical-key discovery from justified address/index/history sources, raw-byte
-   authentication, missing/absent/tombstone rules, ordering, reward graph/history
-   authority, cache reconstruction and a safe parent test owner. Separate a narrow
-   decoder contract from larger owner design so ready decoding can proceed.
-3. Implement the smallest useful decoder/catalog family under that contract using
-   existing Rust owners and codec modules. Prefer retained indexes, justified key
-   derivation and bounded retained transaction/history evidence. Classify every
-   examined row as explained, unresolved or invalid; preserve raw bytes and root/
-   period provenance. Partial coverage must not become a complete DposSnapshot.
-   Keep delegation principal, iterable ordering, V1/V2 undelegations, graph nodes/
-   cursors, slashing records and history markers explicit. No brute-force key search,
-   fabricated zeros, policy facts, unknown keys or missing-history assumptions.
-4. Use only local/evm-state-db/snapshot-litenode-copy for read-only source probes
-   through the existing path and identity guards. Reports must be new files outside
-   both trees. The supplied data tree and independent input copy remain immutable.
-   Reuse accepted evidence by exact hashes. Do not repeat full inventories merely
-   to restate availability. Any new scan has fixed identities, account/column/key
-   sources and explicit node/row/byte/operation limits reviewed before execution.
-   Existing inventory ceilings are 50,000 nodes, 50,000 leaves and 32 MiB per account;
-   reward-cache acceptance ceilings are 128 rows and 1 MiB with overflow detection.
-   Stop on exceeded bounds, unavailable history or identity drift. Prepare broad
-   or differential campaigns concretely and ask before running those gates.
-5. Build an isolated historical test owner only after complete reconstruction and
-   its authority contract are reviewed. Keep account/storage/EVM execution in the
-   existing owners. Do not rewrite the retained head, write LAST_NUMBER to bypass
-   constructor checks, weaken completeness guards or add a production fallback.
-   New writable test databases belong under the persistent run artifacts and must
-   be initialized through a reviewed path from authenticated inputs. Diagnostic
-   coverage improvements may be accepted independently while owner construction
-   is still blocked by a precisely named semantic requirement.
-6. Execute the real one-period reference only when dependencies are complete:
-   the same 19 signed transfers, request-bound native session, reviewed parent cache,
-   derived system schedule and one finish_rewards, with unpublished output.
-   Derive rewards, effects and final root independently; compare them with stored
-   receipts/results. Never inject the expected root or treat transaction-only root
-   equality, empty-distribution c0 or synthetic success as full transition proof.
-   Retain the owner-supplied policy assumption in every real-window acceptance claim.
-7. Continue ready N4 slices within the budget. Do not stop after one useful commit
-   if another reviewed bounded slice is ready. Do not add optional synthetic work
-   merely to consume quota, or request a full snapshot without identifying specific
-   unavailable records. If all useful work is blocked, record the exact missing
-   source/authority and the attempted bounds, not a generic database/consensus gap.
+Run narrow tests first and require nonzero matches. Preserve existing tests and
+complete first-failure logs. Run affected package checks/tests, format, production
+lint, focused canonical/selection parity, required fast checks and commit hooks.
+If storage changes, confirm RUSTAXA_ENABLE=ON, build rust_storage_tests with12 jobs
+and run it. Obtain approval before expensive repository-wide/differential
+campaigns, after preparing exact commands and data. Freeze sources, inputs,
+executables, outputs and gates; independent final review/replay precede acceptance.
 
-Validation and acceptance:
-- Follow doc/rewrite_validation_strategy.md. For each behavior change, run focused
-  malformed/missing/tombstone/order/history tests and the smallest compile checks
-  before broader required gates. Use C++/Go versus Rust parity for routed behavior.
-  Preserve existing tests and old profiles; do not weaken assertions to pass.
-- Run affected package fmt/check/clippy/tests and required fast/bridge/smoke checks
-  when their scope applies. CMake builds use 12 jobs. Any storage-module change also
-  builds and runs rust_storage_tests. Ask before expensive repo-wide/differential
-  campaigns; routine required targeted checks remain authorized. Capture commands,
-  full outputs, exits and nonzero matched test counts on the first run.
-- Snapshot preservation claims need complete logical-row/column comparisons with
-  correct comparators and WAL-visible state, not selected-value checks. Use the
-  accepted shared owner snapshot helper for disposable owner fault/retry tests.
-- Freeze source and evidence after checks, then obtain independent Sol medium
-  final review for settled decoder work; Astra reviews new historical authority.
-  Never approve own implementation. Fix findings and rerun affected checks before
-  local Conventional Commits. Document changed modules/types/functions fully.
+Full reward-cache construction, writable owner creation,19-transfer execution
+and production adoption require their separate complete authority. Do not route
+production, alter supplied trees, weaken completeness checks, introduce C++
+ownership or fallback, or treat diagnostics as public finality/producer proof.
+Keep H25706949/P25706948/session E25706944/certificate D25706942 distinct.
 
-Use fresh reviewer contexts at semantic profile changes. Record model requests,
-confirmed runs/results and routing failures; do not infer quota from model choices.
-If required review capacity cannot start, checkpoint before dependent work and do
-other ready independent work. Do not retry unchanged capacity failures or silently
-substitute models. Workers must preserve others' edits. No production route,
-protocol/fallback change, supplied-data mutation, upstream C++ exception, push or
-unapproved broad campaign is authorized. Read rewrite_agent_workflow.md before any
-upstream-owned C++ change; favor Rust and existing overlay shims.
-
-At budget, authorized completion or a blocker affecting all ready work, leave a
-compact checkpoint with accepted HEAD/commits, owned pending paths/hashes,
-checks/reviews/results, remaining invariants, actual routing, source/evidence pins
-and exact next action. Keep baseline/floor/final/reset separate from token/billing
-claims. Link detailed history. Do not leave an unvalidated slice marked accepted.
+Continue ready work in this scope. At completion, actual capacity/account limit
+or all-ready-work blockage, leave a compact checkpoint: accepted commits and
+implementation HEAD; pending paths/hashes; checks, corrections and independent
+reviews; actual routing; original/latest quota with the user override; exact
+remaining binding, wiring or authority/data blockers; next executable action.
+Do not push.
