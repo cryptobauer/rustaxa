@@ -218,6 +218,24 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
+    /// Returns a raw backend metadata view for the little-endian `u32` key.
+    /// One point read preserves missing, present-empty and present-nonempty
+    /// results. The view cannot outlive this repository borrow. Backend errors
+    /// propagate unchanged. No repository payload copy occurs; the backend may
+    /// allocate its slice or error.
+    pub fn meta_value_view(&self, key: u32) -> Result<Option<D::Slice<'_>>> {
+        self.db.get(Column::FinalChainMeta, &key.to_le_bytes())
+    }
+
+    /// Returns a raw backend header view for the little-endian `u64` number.
+    /// One point read preserves missing, present-empty and present-nonempty
+    /// results. The view cannot outlive this repository borrow. Backend errors
+    /// propagate unchanged. No repository payload copy occurs; the backend may
+    /// allocate its slice or error. This method does not decode the header.
+    pub fn block_header_raw_view(&self, number: u64) -> Result<Option<D::Slice<'_>>> {
+        self.db
+            .get(Column::FinalChainBlkByNumber, &number.to_le_bytes())
+    }
     /// Returns block hash bytes for a finalized block number.
     /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_blk_hash_by_number)`.
     pub fn block_hash_by_number(&self, number: u64) -> Result<Option<Vec<u8>>> {
@@ -1332,5 +1350,127 @@ mod tests {
 
         let result = repo.receipt_by_trx_hash(trx_hash).unwrap();
         assert_eq!(result, Some(b"receipt".to_vec()));
+    }
+}
+
+#[cfg(test)]
+mod borrowed_view_tests {
+
+    use super::*;
+    use crate::db::{DbIterator, KeyValueEntry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct ViewReadFailure;
+    impl std::fmt::Display for ViewReadFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("borrowed view sentinel")
+        }
+    }
+    impl std::error::Error for ViewReadFailure {}
+    struct ViewStore {
+        column: Column,
+        key: Vec<u8>,
+        bytes: Option<Vec<u8>>,
+        fail: bool,
+        calls: AtomicUsize,
+    }
+    impl DbReader for ViewStore {
+        type Slice<'a> = &'a [u8];
+        fn get<'a>(&'a self, column: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
+            assert_eq!(column.name(), self.column.name());
+            assert_eq!(key, self.key);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(ViewReadFailure.into());
+            }
+            Ok(self.bytes.as_deref())
+        }
+        fn exist(&self, _: Column, _: &[u8]) -> Result<bool> {
+            unreachable!()
+        }
+        fn get_at_or_before(&self, _: Column, _: &[u8]) -> Result<Option<KeyValueEntry>> {
+            unreachable!()
+        }
+        fn get_at_or_after(&self, _: Column, _: &[u8]) -> Result<Option<KeyValueEntry>> {
+            unreachable!()
+        }
+        fn iter(&self, _: Column) -> DbIterator<'_> {
+            unreachable!()
+        }
+        fn iter_rev(&self, _: Column) -> DbIterator<'_> {
+            unreachable!()
+        }
+    }
+
+    fn exercise_final_view(metadata: bool) {
+        let key = if metadata {
+            0x01020304_u32.to_le_bytes().to_vec()
+        } else {
+            0x0102030405060708_u64.to_le_bytes().to_vec()
+        };
+        let column = if metadata {
+            Column::FinalChainMeta
+        } else {
+            Column::FinalChainBlkByNumber
+        };
+        // Explicit nonsymmetric bytes catch wrong width and endian selection.
+        assert_eq!(
+            key,
+            if metadata {
+                vec![4, 3, 2, 1]
+            } else {
+                vec![8, 7, 6, 5, 4, 3, 2, 1]
+            }
+        );
+        for bytes in [None, Some(vec![]), Some(vec![1, 2, 3])] {
+            let db = Arc::new(ViewStore {
+                column,
+                key: key.clone(),
+                bytes,
+                fail: false,
+                calls: AtomicUsize::new(0),
+            });
+            let repo = FinalChainRepository::new(db.clone());
+            let view = if metadata {
+                repo.meta_value_view(0x01020304).unwrap()
+            } else {
+                repo.block_header_raw_view(0x0102030405060708).unwrap()
+            };
+            assert_eq!(db.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(view, db.bytes.as_deref());
+            if let Some(view) = view {
+                assert_eq!(view.as_ptr(), db.bytes.as_ref().unwrap().as_ptr());
+            }
+            let owned = if metadata {
+                repo.meta_value(0x01020304).unwrap()
+            } else {
+                repo.block_header_raw(0x0102030405060708).unwrap()
+            };
+            assert_eq!(view, owned.as_deref());
+            assert_eq!(db.calls.load(Ordering::SeqCst), 2);
+        }
+        let db = Arc::new(ViewStore {
+            column,
+            key,
+            bytes: None,
+            fail: true,
+            calls: AtomicUsize::new(0),
+        });
+        let repo = FinalChainRepository::new(db.clone());
+        let error = if metadata {
+            repo.meta_value_view(0x01020304).unwrap_err()
+        } else {
+            repo.block_header_raw_view(0x0102030405060708).unwrap_err()
+        };
+        assert!(error.downcast_ref::<ViewReadFailure>().is_some());
+        assert_eq!(db.calls.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn borrowed_metadata_view_preserves_selection_and_error() {
+        exercise_final_view(true);
+    }
+    #[test]
+    fn borrowed_header_view_preserves_selection_and_error() {
+        exercise_final_view(false);
     }
 }

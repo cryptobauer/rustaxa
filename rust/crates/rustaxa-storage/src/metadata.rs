@@ -26,6 +26,17 @@ impl<D: DbReader> MetadataRepository<D> {
             .filter(|value| !value.is_empty()))
     }
 
+    /// Returns the backend's raw genesis hash view with one point read.
+    /// Missing or empty bytes return `None`; nonempty bytes remain in the
+    /// backend slice. The view cannot outlive this repository borrow. Backend
+    /// errors propagate unchanged. This method makes no payload copy, although
+    /// a backend may allocate its slice or error.
+    pub fn genesis_hash_view(&self) -> Result<Option<D::Slice<'_>>> {
+        Ok(self
+            .db
+            .get(Column::Genesis, &SINGLE_VALUE_KEY)?
+            .filter(|value| !value.as_ref().is_empty()))
+    }
     /// Returns up to `count` latest sortition parameter changes in chronological order.
     /// C++ mapping: `DbStorage::getLastSortitionParams(size_t)`.
     ///
@@ -638,5 +649,93 @@ mod tests {
             repo.block_rewards_stats_rlp().unwrap(),
             vec![(7u64, vec![0xC7])]
         );
+    }
+}
+
+#[cfg(test)]
+mod borrowed_view_tests {
+
+    use super::*;
+    use crate::db::{DbIterator, KeyValueEntry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct ViewReadFailure;
+    impl std::fmt::Display for ViewReadFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("borrowed view sentinel")
+        }
+    }
+    impl std::error::Error for ViewReadFailure {}
+    struct ViewStore {
+        column: Column,
+        key: Vec<u8>,
+        bytes: Option<Vec<u8>>,
+        fail: bool,
+        calls: AtomicUsize,
+    }
+    impl DbReader for ViewStore {
+        type Slice<'a> = &'a [u8];
+        fn get<'a>(&'a self, column: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
+            assert_eq!(column.name(), self.column.name());
+            assert_eq!(key, self.key);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(ViewReadFailure.into());
+            }
+            Ok(self.bytes.as_deref())
+        }
+        fn exist(&self, _: Column, _: &[u8]) -> Result<bool> {
+            unreachable!()
+        }
+        fn get_at_or_before(&self, _: Column, _: &[u8]) -> Result<Option<KeyValueEntry>> {
+            unreachable!()
+        }
+        fn get_at_or_after(&self, _: Column, _: &[u8]) -> Result<Option<KeyValueEntry>> {
+            unreachable!()
+        }
+        fn iter(&self, _: Column) -> DbIterator<'_> {
+            unreachable!()
+        }
+        fn iter_rev(&self, _: Column) -> DbIterator<'_> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn borrowed_genesis_view_preserves_selection_and_error() {
+        for bytes in [None, Some(vec![]), Some(vec![1, 2, 3])] {
+            let db = Arc::new(ViewStore {
+                column: Column::Genesis,
+                key: SINGLE_VALUE_KEY.to_vec(),
+                bytes,
+                fail: false,
+                calls: AtomicUsize::new(0),
+            });
+            let repo = MetadataRepository::new(db.clone());
+            let view = repo.genesis_hash_view().unwrap();
+            assert_eq!(db.calls.load(Ordering::SeqCst), 1);
+            let expected = db.bytes.as_deref().filter(|bytes| !bytes.is_empty());
+            assert_eq!(view, expected);
+            if let Some(view) = view {
+                assert_eq!(view.as_ptr(), db.bytes.as_ref().unwrap().as_ptr());
+            }
+            assert_eq!(view, repo.genesis_hash().unwrap().as_deref());
+            assert_eq!(db.calls.load(Ordering::SeqCst), 2);
+        }
+        let db = Arc::new(ViewStore {
+            column: Column::Genesis,
+            key: SINGLE_VALUE_KEY.to_vec(),
+            bytes: None,
+            fail: true,
+            calls: AtomicUsize::new(0),
+        });
+        let repo = MetadataRepository::new(db.clone());
+        assert!(
+            repo.genesis_hash_view()
+                .unwrap_err()
+                .downcast_ref::<ViewReadFailure>()
+                .is_some()
+        );
+        assert_eq!(db.calls.load(Ordering::SeqCst), 1);
     }
 }
