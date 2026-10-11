@@ -2863,8 +2863,6 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddb7af00d2b17dbd07d82c0063e25411959748ff03e8d4f96134c2ff41fce34f"
 dependencies = [
  "libc",
  "librocksdb-sys",
@@ -2985,6 +2983,7 @@ dependencies = [
  "rocksdb",
  "rustaxa-types",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "tiny-keccak",
 ]

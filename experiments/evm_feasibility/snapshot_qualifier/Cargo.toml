@@ -6,6 +6,9 @@ publish = false
 
 [workspace]
 
+[patch.crates-io]
+rocksdb = { path = "../../../rust/vendor/rocksdb" }
+
 [dependencies]
 anyhow = "1"
 ethereum-types = { version = "0.16", features = ["rlp"] }

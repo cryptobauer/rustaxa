@@ -1,7 +1,9 @@
-//! Bounded synthetic witness diagnostics. Expected roots require external
-//! authority; this module establishes no history completeness or live routing.
-//! Limits cover application payload copies and reconstruction charges, not
-//! database-engine memory, allocator overhead, operating-system I/O or RSS.
+//! Bounded synthetic and read-only live witness diagnostics with offline replay.
+//! Expected roots and request plans require independently authenticated authority;
+//! these diagnostics establish neither history completeness nor production routing.
+//! The storage budget covers admitted rows, metadata, payload copies and proof
+//! reconstruction. Caller authority admission, database-engine memory, allocator
+//! overhead, operating-system I/O and RSS remain outside this accounting.
 use super::{
     codec,
     physical_node::{PathProof, PhysicalTrieStore, SelectedVersion, TrieSchema, verify_path},
@@ -142,6 +144,25 @@ impl ConcreteWitnessBudget {
     }
     pub fn usage(&self) -> ConcreteWitnessUsage {
         self.state.borrow().usage
+    }
+    /// Add finite input admission without resetting family accounting.
+    fn admit_input(&self, length: usize) -> Result<(), ConcreteWitnessError> {
+        self.charge(R::EncodedBytes, 0)?;
+        let required = self
+            .usage()
+            .admitted_input_bytes
+            .checked_add(length as u64)
+            .ok_or_else(|| self.stop(ConcreteWitnessError::Overflow))?;
+        let limit = self.limits.limit(R::EncodedBytes);
+        if required > limit {
+            return Err(self.stop(ConcreteWitnessError::LimitExceeded {
+                resource: R::EncodedBytes,
+                limit,
+                required,
+            }));
+        }
+        self.state.borrow_mut().usage.admitted_input_bytes = required;
+        Ok(())
     }
     fn stop(&self, error: ConcreteWitnessError) -> ConcreteWitnessError {
         let mut state = self.state.borrow_mut();
@@ -296,6 +317,7 @@ struct ReplayStore<'a, 'b> {
     budget: &'b ConcreteWitnessBudget,
     offset: Cell<usize>,
     ordinal: Cell<u64>,
+    last_read: Option<&'b Cell<Option<live::ConcreteDiagnosticRead>>>,
 }
 impl ReplayStore<'_, '_> {
     fn failure(&self, e: ConcreteWitnessError) -> ConcreteReadError {
@@ -309,6 +331,21 @@ impl ReplayStore<'_, '_> {
         request: [u8; 32],
         period: FinalChainBlockNumber,
     ) -> Result<binary::Outcome<'_>, ConcreteReadError> {
+        let diagnostic_column = match column {
+            "2" => 2,
+            "3" => 3,
+            "4" => 4,
+            "5" => 5,
+            _ => return Err(self.failure(ConcreteWitnessError::Request)),
+        };
+        if let Some(last) = self.last_read {
+            last.set(Some(live::ConcreteDiagnosticRead {
+                operation,
+                column: diagnostic_column,
+                request,
+                outcome: live::ConcreteDiagnosticOutcome::Pending,
+            }));
+        }
         self.budget
             .charge(R::Operations, 1)
             .map_err(|e| self.failure(e))?;
@@ -329,6 +366,25 @@ impl ReplayStore<'_, '_> {
             || frame.period != period.as_u64()
         {
             return Err(self.failure(ConcreteWitnessError::Request));
+        }
+        if let Some(last) = self.last_read {
+            let outcome = match frame.outcome {
+                binary::Outcome::End => live::ConcreteDiagnosticOutcome::End,
+                binary::Outcome::Node(bytes) => live::ConcreteDiagnosticOutcome::Node {
+                    bytes: bytes.len() as u64,
+                },
+                binary::Outcome::Row(key, value) => live::ConcreteDiagnosticOutcome::Row {
+                    key_bytes: key.len() as u64,
+                    value_bytes: value.len() as u64,
+                },
+                binary::Outcome::Error(code) => live::ConcreteDiagnosticOutcome::Error(code),
+            };
+            last.set(Some(live::ConcreteDiagnosticRead {
+                operation,
+                column,
+                request,
+                outcome,
+            }));
         }
         self.offset.set(next);
         self.ordinal.set(self.ordinal.get() + 1);
@@ -513,6 +569,7 @@ pub fn replay_storage_witness(
         budget: &budget,
         offset: Cell::new(binary::HEADER_BYTES),
         ordinal: Cell::new(0),
+        last_read: None,
     };
     let (physical, proof) = tuple_proof(&store, address, key).map_err(|_| {
         budget
@@ -538,3 +595,14 @@ pub fn replay_storage_witness(
 #[cfg(test)]
 #[path = "witness_tests.rs"]
 mod tests;
+
+#[path = "witness_bundle.rs"]
+mod bundle;
+#[path = "witness_live.rs"]
+mod live;
+pub use live::{
+    ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
+    ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,
+    ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, capture_diagnostic_run,
+    replay_diagnostic_bundle,
+};

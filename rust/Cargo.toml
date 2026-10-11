@@ -7,4 +7,8 @@ members = [
     "crates/rustaxa-types",
     "crates/rustaxa-vdf",
 ]
+exclude = ["vendor/rocksdb"]
 resolver = "3"
+
+[patch.crates-io]
+rocksdb = { path = "vendor/rocksdb" }

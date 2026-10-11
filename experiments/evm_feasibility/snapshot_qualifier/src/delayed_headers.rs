@@ -52,6 +52,11 @@ impl Evidence {
         let bytes = admission::evidence(path, path, INPUT_SHA, INPUT_SIZE, INPUT_SIZE)?;
         Self::decode(&bytes)
     }
+    /// Admit already loaded fixed input without reading or copying its raw
+    /// bytes again. Exact length/hash and unchanged interval checks still apply.
+    pub fn admit_fixed(bytes: &[u8]) -> Result<Self> {
+        Self::decode(bytes)
+    }
     fn decode(bytes: &[u8]) -> Result<Self> {
         ensure!(
             bytes.len() == INPUT_SIZE && sha(bytes) == INPUT_SHA,
@@ -631,3 +636,28 @@ pub fn publish(output: &Path, value: &Value) -> Result<()> {
 #[cfg(test)]
 #[path = "delayed_headers_tests.rs"]
 mod tests;
+
+/// Re-authenticates the one independently accepted historical capture after
+/// source upgrades. The complete raw capture must match its accepted byte pin
+/// before JSON decode. Historical source metadata is preserved in the admitted
+/// bytes; only a private replay copy is rebound to this build's source metadata.
+/// No caller-selected capture or source-pin substitution is accepted. Returned
+/// raw headers pass the unchanged replay's full link and guard checks.
+pub fn replay_fixed_historical(evidence: &Evidence, bytes: &[u8]) -> Result<Value> {
+    ensure!(
+        bytes.len() == 256_840
+            && sha(bytes) == "7d57845a66978c6107b2d3f733f7e9e743cde0761926d07060517bc11e7c867f",
+        "historical delayed capture pin differs"
+    );
+    let mut value = parse_unique(bytes)?;
+    // The admitted whole-capture pin authenticates the exact original17 source
+    // pins and the executable recorded in header-final-freeze.json. Rebinding
+    // does not authenticate new captures or replace historical metadata on disk.
+    value["source_pins"]["current_compiled"] = compiled_pins();
+    value
+        .as_object_mut()
+        .context("capture object")?
+        .remove("content_sha256");
+    value["content_sha256"] = json!(sha(&serde_json::to_vec(&value)?));
+    replay(evidence, &interval::encode_bounded(&value, OUTPUT_CAP)?)
+}

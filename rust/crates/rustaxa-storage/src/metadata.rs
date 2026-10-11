@@ -4,18 +4,34 @@ use std::sync::Arc;
 use crate::Column;
 use crate::SINGLE_VALUE_KEY;
 use crate::StorageError;
-use crate::db::{DbReader, DbWriter};
+use crate::db::{DbPointReader, DbReader, DbWriter};
 
-pub struct MetadataRepository<D: DbReader> {
+pub struct MetadataRepository<D: DbPointReader> {
     db: Arc<D>,
 }
 
-impl<D: DbReader> MetadataRepository<D> {
+impl<D: DbPointReader> MetadataRepository<D> {
     /// Creates a metadata repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         MetadataRepository { db }
     }
 
+    /// Returns the backend's raw genesis hash view with one point read.
+    /// Missing or empty bytes return `None`; nonempty bytes remain in the
+    /// backend slice. The view cannot outlive this repository borrow. Backend
+    /// errors propagate unchanged. This method makes no payload copy, although
+    /// a backend may allocate its slice or error.
+    pub fn genesis_hash_view(
+        &self,
+    ) -> std::result::Result<Option<<D as DbPointReader>::Slice<'_>>, D::Error> {
+        Ok(self
+            .db
+            .point_get(Column::Genesis, &SINGLE_VALUE_KEY)?
+            .filter(|value| !value.as_ref().is_empty()))
+    }
+}
+
+impl<D: DbReader> MetadataRepository<D> {
     /// Returns the configured genesis hash when present and non-empty.
     /// C++ mapping: `DbStorage::getGenesisHash()`.
     pub fn genesis_hash(&self) -> Result<Option<Vec<u8>>> {
@@ -26,17 +42,6 @@ impl<D: DbReader> MetadataRepository<D> {
             .filter(|value| !value.is_empty()))
     }
 
-    /// Returns the backend's raw genesis hash view with one point read.
-    /// Missing or empty bytes return `None`; nonempty bytes remain in the
-    /// backend slice. The view cannot outlive this repository borrow. Backend
-    /// errors propagate unchanged. This method makes no payload copy, although
-    /// a backend may allocate its slice or error.
-    pub fn genesis_hash_view(&self) -> Result<Option<D::Slice<'_>>> {
-        Ok(self
-            .db
-            .get(Column::Genesis, &SINGLE_VALUE_KEY)?
-            .filter(|value| !value.as_ref().is_empty()))
-    }
     /// Returns up to `count` latest sortition parameter changes in chronological order.
     /// C++ mapping: `DbStorage::getLastSortitionParams(size_t)`.
     ///

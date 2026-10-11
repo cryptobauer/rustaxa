@@ -186,6 +186,37 @@ pub trait DbReader: Send + Sync {
     fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a>;
 }
 
+/// Narrow point-read port with backend-owned borrowed bytes and typed errors.
+/// Missing, empty, and backend failure remain distinct. The returned slice
+/// cannot outlive the backend borrow; this port exposes no iterator or writes.
+pub trait DbPointReader: Send + Sync {
+    type Slice<'a>: AsRef<[u8]>
+    where
+        Self: 'a;
+    type Error;
+    fn point_get<'a>(
+        &'a self,
+        column: Column,
+        key: &[u8],
+    ) -> std::result::Result<Option<Self::Slice<'a>>, Self::Error>;
+}
+
+/// Preserve the existing read result and error for every ordinary backend.
+impl<D: DbReader> DbPointReader for D {
+    type Slice<'a>
+        = <D as DbReader>::Slice<'a>
+    where
+        Self: 'a;
+    type Error = anyhow::Error;
+    fn point_get<'a>(
+        &'a self,
+        column: Column,
+        key: &[u8],
+    ) -> std::result::Result<Option<Self::Slice<'a>>, Self::Error> {
+        self.get(column, key)
+    }
+}
+
 /// Trait abstracting database write operations.
 pub trait DbWriter: Send + Sync {
     type Batch;

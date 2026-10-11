@@ -26,10 +26,17 @@ pub use concrete_state::{
     PreparedConcreteView, account_commitment_rlp, account_version_prefix, decode_physical_account,
     replay_storage_witness, storage_version_prefix, versioned_key,
 };
+pub use concrete_state::{
+    ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
+    ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,
+    ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, capture_diagnostic_run,
+    replay_diagnostic_bundle,
+};
 pub use config::Column;
 pub use config::Config;
 pub use config::StatusField;
 pub use dag::DagRepository;
+pub use db::DbPointReader;
 pub use db::ExtraRewardVotesGuard;
 pub use db::Storage;
 pub use db::StorageWriteBatch;

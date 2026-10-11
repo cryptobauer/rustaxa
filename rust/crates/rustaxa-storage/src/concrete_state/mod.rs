@@ -17,9 +17,12 @@ mod trie_writer;
 mod witness;
 mod witness_rlp;
 pub use witness::{
-    ConcreteStorageWitness, ConcreteWitnessBudget, ConcreteWitnessError, ConcreteWitnessLimits,
-    ConcreteWitnessLogical, ConcreteWitnessPhysical, ConcreteWitnessReplay,
-    ConcreteWitnessResource, ConcreteWitnessUsage, replay_storage_witness,
+    ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
+    ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,
+    ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, ConcreteStorageWitness,
+    ConcreteWitnessBudget, ConcreteWitnessError, ConcreteWitnessLimits, ConcreteWitnessLogical,
+    ConcreteWitnessPhysical, ConcreteWitnessReplay, ConcreteWitnessResource, ConcreteWitnessUsage,
+    capture_diagnostic_run, replay_diagnostic_bundle, replay_storage_witness,
 };
 mod writer;
 

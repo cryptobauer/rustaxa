@@ -5,7 +5,7 @@ use rustaxa_types::FINAL_CHAIN_LOG_BLOOM_BYTES;
 use rustaxa_types::FinalChainLogBloom;
 use std::sync::Arc;
 
-use crate::db::{DbReader, DbWriter};
+use crate::db::{DbPointReader, DbReader, DbWriter};
 use crate::{Column, StatusField};
 
 /// Final-chain execution counters persisted with finalized block visibility.
@@ -184,8 +184,41 @@ pub fn encode_final_chain_log_bloom_chunk(chunk: &FinalChainLogBloomChunk) -> Ve
     stream.out().to_vec()
 }
 
-pub struct FinalChainRepository<D: DbReader> {
+pub struct FinalChainRepository<D: DbPointReader> {
     db: Arc<D>,
+}
+
+impl<D: DbPointReader> FinalChainRepository<D> {
+    /// Creates a final-chain repository over the shared database handle.
+    pub fn new(db: Arc<D>) -> Self {
+        FinalChainRepository { db }
+    }
+
+    /// Returns a raw backend metadata view for the little-endian `u32` key.
+    /// One point read preserves missing, present-empty and present-nonempty
+    /// results. The view cannot outlive this repository borrow. Backend errors
+    /// propagate unchanged. No repository payload copy occurs; the backend may
+    /// allocate its slice or error.
+    pub fn meta_value_view(
+        &self,
+        key: u32,
+    ) -> std::result::Result<Option<<D as DbPointReader>::Slice<'_>>, D::Error> {
+        self.db
+            .point_get(Column::FinalChainMeta, &key.to_le_bytes())
+    }
+
+    /// Returns a raw backend header view for the little-endian `u64` number.
+    /// One point read preserves missing, present-empty and present-nonempty
+    /// results. The view cannot outlive this repository borrow. Backend errors
+    /// propagate unchanged. No repository payload copy occurs; the backend may
+    /// allocate its slice or error. This method does not decode the header.
+    pub fn block_header_raw_view(
+        &self,
+        number: u64,
+    ) -> std::result::Result<Option<<D as DbPointReader>::Slice<'_>>, D::Error> {
+        self.db
+            .point_get(Column::FinalChainBlkByNumber, &number.to_le_bytes())
+    }
 }
 
 impl<D: DbReader> FinalChainRepository<D> {
@@ -194,11 +227,6 @@ impl<D: DbReader> FinalChainRepository<D> {
     const EXTERNAL_EVM_PENDING_PUBLICATION_KEY: &'static [u8] =
         b"rustaxa:external_evm_pending_publication";
     const CONCRETE_STATE_PAIRING_KEY: &'static [u8] = b"rustaxa:concrete_state_pairing:v1";
-
-    /// Creates a final-chain repository over the shared database handle.
-    pub fn new(db: Arc<D>) -> Self {
-        FinalChainRepository { db }
-    }
 
     /// Returns raw final-chain metadata payload by metadata key.
     /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_meta)`.
@@ -218,24 +246,6 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Returns a raw backend metadata view for the little-endian `u32` key.
-    /// One point read preserves missing, present-empty and present-nonempty
-    /// results. The view cannot outlive this repository borrow. Backend errors
-    /// propagate unchanged. No repository payload copy occurs; the backend may
-    /// allocate its slice or error.
-    pub fn meta_value_view(&self, key: u32) -> Result<Option<D::Slice<'_>>> {
-        self.db.get(Column::FinalChainMeta, &key.to_le_bytes())
-    }
-
-    /// Returns a raw backend header view for the little-endian `u64` number.
-    /// One point read preserves missing, present-empty and present-nonempty
-    /// results. The view cannot outlive this repository borrow. Backend errors
-    /// propagate unchanged. No repository payload copy occurs; the backend may
-    /// allocate its slice or error. This method does not decode the header.
-    pub fn block_header_raw_view(&self, number: u64) -> Result<Option<D::Slice<'_>>> {
-        self.db
-            .get(Column::FinalChainBlkByNumber, &number.to_le_bytes())
-    }
     /// Returns block hash bytes for a finalized block number.
     /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_blk_hash_by_number)`.
     pub fn block_hash_by_number(&self, number: u64) -> Result<Option<Vec<u8>>> {
