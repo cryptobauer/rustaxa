@@ -1,82 +1,132 @@
-# N4 checkpoint — October 11
+# N4 storage checkpoint — October 11
 
-Branch `feat/rust/evm-state-db`; accepted implementation HEAD `47032231369aca78904c4a367830973d9e18e935`.
-No push. Original base `eb13f969acb49c593692ad651a070abb20b62711`;
-prior implementation `de81438f478fe34b379d5eb34801934e3a500604`.
-Artifacts: `/home/fry/artifacts/n4-run-01a12b7a-2f06-7661-9183-a37257d00590-20261011`. Final records supersede interim stop/progress records;
-historical failures and routing evidence remain intact.
+Branch `feat/rust/evm-state-db`. Accepted implementation HEAD
+`8a4a613dbbc4c82dcf5d608efb6f65d9d288f048`. Local commits only; no push.
+Resume base: implementation `47032231369aca78904c4a367830973d9e18e935`,
+checkpoint `8ceb7742aafa42b8e01c0ab7a196609db62e2ea4`.
+Artifacts: `/home/fry/artifacts/n4-binding-resume-20261011` (R below).
+Earlier evidence remains under
+`/home/fry/artifacts/n4-run-01a12b7a-2f06-7661-9183-a37257d00590-20261011`.
 
-## Accepted dependencies
+## Accepted work
 
-| Local commit | Result | Independent acceptance |
+| Commit | Result | Independent evidence in R |
 | --- | --- | --- |
-| `1fd035545` | Seven delayed headers900..894 linked from the accepted48 full-list periods;17 calls/60237 bytes/zero trie reads | Sol ACCEPT, exact offline replay; delayed-final-review.md/header-final-freeze.json |
-| `edcb0ed5c` | Quota reset jitter at most±2 seconds from the immutable baseline; larger drift, expiry and rollback reject | Astra ACCEPT; quota-reset-final-review.md;31 tests per helper copy |
-| `b158dc4c6` | Aspen candidate counters:48 periods/139 signed DAGs,64 tied-minimum blocks/60 author rows | Sol ACCEPT, byte-identical replay; aspen-final-review.md/aspen-final-freeze.json |
-| `be62cc368` | Synthetic bounded account→storage witness capture/replay; shared accounting, strict transcript and bounded canonical reconstruction | Sol ACCEPT, independent11 witness+1 pinned Go tests; witness-final-review.md/witness-final-freeze.json |
-| `470322313` | Three additive borrowed backend views for genesis, metadata and header, with unchanged existing APIs | Sol ACCEPT, independent3 tests; application-views-final-review.md/application-views-final-freeze.json |
+| `7b512956ceb1ce10819e73bc29577ca13e155c10` | Persistent bounded RocksDB binding; production storage capture/encoding/replay; fixed qualifier | binding-final-review.md; live-wiring-final-review.md; live-first-run-final-review.md |
+| `8a4a613dbbc4c82dcf5d608efb6f65d9d288f048` | Charge all cross-proof comparisons while avoiding repeated prior-header/frame decoding; unchanged limits and raw bytes | frame-cost-implementation-review.md; frame-cost-live-final-review.md; frame-cost-commit-final-review.md |
 
-Qualifier gates: header12 focused/59 library/1 adapter and Aspen7 focused/66
-library/1 adapter, format/production lint/build/fast/hooks passed. Storage gates:
-witness138 package tests and views141, each with one existing ignored live fixture
-and one passing doctest; focused11/3 pass. Rust-enabled bridge built with12 jobs
-and all4 tests passed for each slice. Format, production Clippy, whitespace,
-fast gates and both commit hooks passed. The wider test lint retains15 existing
-findings; complete first failures are saved. Both original view-file test modules
-are unchanged, independently checked. No existing tests were weakened.
+Earlier accepted dependencies remain: delayed headers `1fd035545`, quota reset
+checks `edcb0ed5c`, Aspen counters `b158dc4c6`, synthetic witness `be62cc368`,
+and borrowed views `470322313`. Their original contracts, reviews and freezes
+remain authoritative for their separate scopes.
 
-Freezes retain39 witness and31 view pins, including copied test executables and
-complete gate outputs. Accepted header/Aspen executable copies remain available.
-No new state/trie probe, inventory, C++ change or production route was added.
-The synthetic constructor budget registrations are accounting, not authenticated
-constructor proofs. No complete owner/cache or real19-transfer replay is accepted.
+The binding retains the existing DB owner, CF cleanup and borrowed pin/cursor
+lifetimes. Its bounded read-only route does not create directories or discover
+CFs. Source-owned descriptors preserve comparators. Open, pinned-read and cursor
+errors use bounded conversion; ordinary production error behavior is preserved.
+No Cargo registry edit, separate raw-C DB owner or C++ production route was added.
 
-## Allowance and routing
+One non-cloneable storage budget covers open metadata, pair views, both
+constructors, authentication, all payloads and encoding. Charges precede
+application allocations, copies, traversal and DB operations. Pin/cursor lengths
+are checked before copying. Complete root/account/path authentication and strict
+record order, conflict and consumption checks remain. Physical selection is
+observed provenance; it does not prove history completeness. Engine memory,
+allocator overhead, OS I/O and RSS are outside the application bound.
 
-Original baseline90% at2026-10-11T15:00:15.132Z; stop80%; reset1792322995.
-Latest83% at2026-10-11T19:29:57.263000+00:00;
-7 points consumed, 3 points remain above the floor.
-This is account-wide allowance, including side use, not task tokens or billing.
-Resume the same quota-budget.json, SHA256
-`bd5664c3f082e5b961e5fb67deffde261e0bf72ea60112233af44c007fe7695a`;
-do not initialize or rebase. Stop reason: reviewed ready slices complete; live
-export remains blocked by the exact dependencies below, not an asserted quota stop.
+## Live result and stops
 
-Lead session01a12b7a-2f06-7661-9183-a37257d00590 is confirmed Sol6.1 medium.
-Luna medium started first. Independent Sol6.1 medium reviewed headers, Aspen,
-witness and views. Astra medium reviewed authority and quota recovery. All ran;
-child runtime identities remain unverified. No routing failure or billing inference.
-Detailed assignments/results remain in resume-routing.json.
+The first authorized capture stopped at FrameInspections300000/required300001,
+payload index83, jail D25706929. No bundle or accepted prefix was published.
+No missing/unavailable/retention error was observed; the remaining12 tuples were
+unobserved. The comparison correction received separate contract/source/gate
+review and a new single-use command authority. No ceiling or manifest was raised.
+
+The second capture completed both constructors:51 registrations,50 distinct
+identities, then the fixed96 payloads for D25706894..25706941. It used3108
+records,6897 operations and116613/300000 frame inspections. The captured RCB1
+bundle is1026265 bytes, SHA256
+`a0a36875f90defe9dad0d7450416c75f57c06e9eee16cc53f27c666f95fcc761`.
+Three known directory metadata identities matched before and after capture.
+They are provenance checks, not database-byte hashes or immutability proofs.
+
+Independent offline replay exited0. All96 proofs and canonical native
+preconditions passed; all48 totals are534879. Replay used122829/300000 frame
+inspections. Total absence never becomes zero; jail accepts authenticated
+nonmembership or the canonical empty list only. Final output acceptance is
+recorded in `frame-cost-offline-final-review.md`.
+
+Exact commands and single-use stops are in `frame-cost-live-contract.md` and
+`frame-cost-live-command-final-review.md`. Inputs remain the original pinned
+interval, parent and delayed-header artifacts; the accepted codecs and
+independently authenticated roots are unchanged. There were no inventory sweeps,
+expanded requests, repeated unavailable tuples or post-failure retries.
+
+## Validation and evidence
+
+Binding:8 focused tests and3 compile-fail lifetime/ownership tests passed.
+Final storage:29 focused tests,159 package tests,1 doctest and1 pinned Go
+parity test passed;1 existing live test remains ignored. Qualifier:4 focused
+and70 library tests passed. Format, affected package check and production
+Clippy with warnings denied passed. Wider test lint retains15 existing findings.
+`RUSTAXA_ENABLE=ON`; bridge built with12 jobs and all4 tests passed. Fast gate:
+2118 passed,0 failed,47 summaries/42 nonzero (`frame-cost-fast.json/log`).
+The earlier capability fast gate had2113 passes. Actual configured source commit
+hooks passed; the cost hook took229.26s. Full fast logs are retained separately
+from the condensed RTK commit output. Documentation uses a separate hook commit.
+
+All first failures remain. Corrections include typed point errors, metadata key1,
+sealed owner cleanup, two new-test lint findings, two copied vendor documents'
+whitespace, replay source profiling, and the preflight gate/report filename
+collision. The original collision opened no DB; corrected exclusive recording
+and distinct filenames were reviewed. Historical freezes are not rewritten.
+
+Source/input/executable/gate freezes: `first-source-commit-freeze.json`,
+`frame-cost-validation-freeze.json`297 pins, `frame-cost-preprobe-freeze.json`301
+pins, `frame-cost-qualifier-freeze.json`, and `frame-cost-capture-output-freeze.json`.
+The original and v2 executables have separate immutable artifact paths.
+Final replay/output pins and review are in `frame-cost-offline-output-freeze.json`.
+The complete closeout freeze is `storage-final-closeout-freeze.json`.
+
+## Quota, routing and pending state
+
+Original baseline90%, floor80%; last valid observation83% (7 points consumed),
+including account-wide side use. Fresh resumed telemetry was unresolved; no
+current numeric usage or billing claim is made. User instruction
+“continue and ignore budget for now” suspended the quota stop. The original
+quota-budget.json was not edited or rebased; SHA256 remains
+`bd5664c3f082e5b961e5fb67deffde261e0bf72ea60112233af44c007fe7695a`.
+The original telemetry stop and routing records remain intact.
+
+Luna medium started first and supplied bounded audits; Sol6.1 medium implemented
+the binding/live/qualifier and comparison work. Astra medium supplied independent
+contract/source/final reviews and replay. Requested routing and actual startup
+results are in `routing.json` and `frame-cost-routing-closeout.md`; child runtime
+identities remain unverified. No model failure or billing inference is asserted.
+Luna's initial Cargo-root map error and its correction are both retained.
+
+No owned source change remains pending. The8 unrelated files retain their
+original hashes in `closeout-pending-paths.json`, confirmed by Luna. Preserve
+modified workflow, N6 queue/checkpoint and active prompt; untracked next-ten-point
+plan and3 token audits; `.agents/` as an uninspected directory. Do not stage them.
 
 ## Blockers and next action
 
-Live witness export needs a persistent reviewed RocksDB binding patch. Pinned
-read-only CF subset open is supported, but the Rust wrapper calls create_dir_all
-and allocates uncapped error strings before caller handling. Fix non-creating open
-and bounded errors across open, pinned reads and raw-iterator status under the
-existing DB owner. Do not patch disposable Cargo registry files or bypass the
-owner with a separate raw-C handle. See witness-live-open-feasibility.md.
+Storage binding, capture wiring and native data-retention dependencies for this
+fixed diagnostic family are closed. No missing tuple or retention blocker was
+observed in the accepted capture/replay. No further historical probe is authorized
+by these consumed single-use contracts.
 
-Then implement bounded live capture and shared constructor/pair wiring, including
-fixed descriptors, finite path/metadata charges and all constructor proofs; review
-the exact96-tuple live contract before a probe. Typed borrowed views now exist.
-Raw reverse selection is observed provenance, not proof of history completeness.
-Application caps exclude engine memory, OS I/O and RSS and are not yet proven
-adequate for the copied database. No total probe ran or may be repeated blindly.
+Next executable action: verify the complete frozen evidence without a DB open:
 
-Missing total-vote inputs:48 authenticated native totalsD25706894..25706941 and
-48 jailed-list preconditions. DPoS key is Keccak256(preimage04); slashing key is
-leftpad32(02), followed by the established storage-path codec. Roots alone prove
-neither native values nor absence. Missing/tombstone/unavailable never means zero.
-Read total-vote-contract.md, bounded-witness-contract.md and witness-api-feasibility.md.
+```sh
+rtk proxy python3 -E /home/fry/artifacts/n4-binding-resume-20261011/verify-final-closeout.py
+```
 
-Delayed root commitments and default-mainnet/likelyv1.14.1 Aspen candidate policy
-are accepted. Producer binary/configuration, native voter facts/weights, total/jail
-facts, lambda, independent retained cache values, complete model and coherent
-historical owner remain open. Keep H25706949/P25706948/sessionE25706944/
-certificateD25706942 distinct. No writable owner, production adoption or full cache.
-
-No owned implementation is pending. Checkpoint/scorecard closeout is separate from
-source commits. Preserve initial edits to workflow, N6 queue/checkpoint and active
-prompt, plus untracked .agents/, next-ten-point plan and three token audits. The
-skill quota helper copy is synchronized; its pre-existing package is not staged.
+Then use the qualified
+48 totals plus48 jail preconditions as inputs to a separately complete N4
+authority contract. Producer/configuration, voter facts/weights, lambda, retained
+cache equality and coherent historical owner remain outside this storage slice.
+Full reward-cache construction, writable owner creation,19-transfer execution
+and production adoption still require their separate complete authority.
+Keep H25706949/P25706948/session E25706944/certificate D25706942 distinct.
