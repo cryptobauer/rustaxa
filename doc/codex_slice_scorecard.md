@@ -583,3 +583,30 @@ Current 10-point authority supersedes historical suspension; old budget unchange
 The [checkpoint](evm_research/n4_next_run_checkpoint.md) lists exact voter, lambda,
 raw-cache and producer blockers, including the unresolved 69-tuple overlap and
 missing bounded VRF adapter/command authority.
+
+
+## October 12 N4 bounded VRF families
+
+Local source commits b707c177 and 63166711 add fixed 20/47 VRF witness profiles.
+Offline 69-unavailable overlap is zero. Independent guarded capture/replay/fact
+reviews accept 67 Member/Present facts, each 32 bytes and nonzero; one voter's full 48-period VRF
+dependency is closed. Native 96 and13 ceilings remain unchanged. First source
+copies preserve historical freezes after the second adapter changed shared code.
+
+First fast/hook 2125 passes; second 2129 passes, each zero failures and both guards.
+Second package171 storage/82 qualifier,4+4 focused tests,6 guard tests and4 Rust-enabled
+bridge tests passed;12-job build. Format/check/production Clippy/build passed.
+Prior canonical parity remains covered. Width-before-next-read and transitive
+source pins were fixed; later review added complete bound/malformed/error/trailing
+regressions. Failed fixture/compiler/empty-stage attempts remain in full logs.
+
+Lead Sol6.1 medium observed; requested Luna/Astra/Sol6.1 medium workers ran.
+Fresh Astra lambda review records source/producer/policy/export gaps. Another
+fresh Astra prepared the next complete47 voter window; no new implementation/read
+authority. Child runtime/billing unknown, no routing failure inferred.
+
+Baseline 64%,floor 54%, before-closeout56% (8 points consumed). Exact final quota,
+HEAD, routing, source/replay/review pins and unrelated-change checks are in
+/home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011.
+Remaining2675 voter rows,48 lambda,48 raw cache RLP and producer/configauthority.
+No production route or push. See [checkpoint](evm_research/n4_next_run_checkpoint.md).

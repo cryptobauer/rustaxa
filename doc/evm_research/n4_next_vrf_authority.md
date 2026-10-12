@@ -1,17 +1,33 @@
-# Next bounded voter-family authority preparation
+# Next bounded VRF authority preparation
 
-Status: semantic/input contract prepared; NOT READY for live execution or dependent implementation. No command authority is granted. This is one remaining reward-cache input family, not full weights or reward construction.
+The prior unavailable overlap is closed offline. First-period20 and one complete
+voter's remaining 47 proofs are independently accepted. The complete evidence,
+source commits, bounds and missing dependencies are in [the checkpoint](n4_next_run_checkpoint.md).
+The [adapter notes](n4_bounded_vrf_adapter.md) document the reviewed public units.
 
-Objective: authenticate delayed per-voter VRF bytes for exactly the recovered vote-address manifest. Consumer is the VRF branch of historical_voter_inputs in native_session/vote_inputs.rs:108-117. Present value must be exactly32 bytes; all-zero means no usable key. None is only authenticated logical nonmembership. Physical unavailable, missing retained history, tombstones or read errors never supply None, zero, a weight or a proof. This family does not independently run the full facade with invented validator/jail/policy values and does not establish stake eligibility or vote weights.
+Next semantic family: voter `264a30e880d3b53bb2cdeb234e34201ebf9a9965`, exactly 47
+rows at D25706895..25706941. This is the next lexicographic member of the ten
+voters present in all 48 periods. Its first-D dependency is already accepted at
+parent index 8, selection index2, proof 53. This closes no new value facts yet.
 
-Fixed inputs: original parent report2257600bytes/SHA256b54906443d6504bd1ad59d2208791d4cd710ffe2ae4a0731f8306af7b5521a3b; accepted offline handoff74614bytes/SHA256585c549a1bf717ea65af5066c91fa90d7d5f8e0038111edbc0dfba89eb2c19ec; full original2742-row voter manifest digestdf11561223b5222e9bb311cf2dc51ee92510a149e164db579d8a7dc767de905a. The generated remaining-vrf-input-manifest.json is536633bytes/SHA256600efbd1c1afac3ab02182540eca69662fbb8d8999001be542d0cdc93136fb6a, fixed below1MiB. It selects exactly914 original fe_vrf_00_04_address rows in original manifest order,914 unique(D,voter) pairs,20 recovered voters; keeps parent indices and all signed-vote source references; no address expansion or sweep. Each request binds D to its authenticated32-byte handoff root, account00000000000000000000000000000000000000fe, and key=Keccak256(00||04||20-byte voter). key_preimage_hex provides the exact bytes. The raw key formula is the accepted concrete_storage_key in final_chain.rs:10920 and validator_vrf_key in custody.rs:1182. Sources and exact hashes are frozen in vrf-consumer-source-pins.json. Output request manifest remains wholly unqualified; no claimed facts are introduced.
+Persistent run:
+`/home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011`.
+Read vrf-next-voter-window-authority.md and the50138-byte preparation JSON
+(SHA256 68db6aa170beaf8ad90046287df8c865685ec133dbf93f11690ee4d086828888).
+A fresh Astra worker recomputed all 10 candidates, matched every original47 row,
+reference/root/order/preimage, checked all 50 current source pins, and verified
+zero closed-row or prior69 overlap. Runtime model identity remains unknown.
 
-Offline next action: a fresh authority reviewer verifies each generated selection/reference/root/preimage against the pinned original manifest and accepted handoff, and checks consumer rules against source pins. This map is deterministic preparation, not a DB request. Any future plan must reauthenticate source votes and roots through the accepted raw six-input profile instead of trusting these projected rows alone. Preserve exact ordering, duplicate/conflict checks and full consumption. Evidence output must bind raw selected physical record/version/tombstone provenance plus account/path/schema/root proof and canonical semantic bytes; no row becomes qualified before full authentication.
+Status: semantic preparation accepted; implementation and physical READY false.
+A full implementation contract, fixed qualifier/profile/binaries/guard, focused
+checks, independent Sol source review and exact-command READY remain required.
+Existing immutable storage plans/kernels may be reused. No CLI voter/root/count
+or ceiling override is allowed. Reauthenticate raw six-owner inputs, then freshly
+replay the fixed first 20 bundle and verify prior selected proof before any opener.
+Keep separate complete-family budgets, all 13 witness ceilings, first-failure stops,
+full consumption, no accepted prefix, no repeat or recovery inference. Present
+values must be 32 bytes; zero is unusable; None requires proven nonmembership.
 
-Exact live blockers:
-1. Existing ConcreteDiagnosticPlan/Replay owns a fixed96 tuple family (48 total+48 global jail). Its consumed live command cannot admit these914 new VRF requests. No changed API, family adapter, per-batch complete request set, executable or single-use command has been reviewed. Do not increase PayloadTuples96 or any of the13 ceilings automatically.
-2. Before any physical read, resolve and pin the intersection with the69 earlier unavailable tuples. Changed roots alone do not show recovered retention. Supply changed evidence or recovery that justifies every repeated unavailable identity/address/key; otherwise exclude all overlap from a separately named contract, retaining explicit missing dependencies. This preparation has not classified that intersection and authorizes no repeat.
-3. Fix the exact supplied DB identity/descriptors, noncreating/read-only open, retained selection policy and constructor/pair identities; named proof request subfamily; all raw-key/value/record/frame/operation/read/output limits; allocation exclusions; source and executable pins; exact command and first-failure/no-prefix stops. Each unknown remains a stop. No suggested generic max or automatic cap expansion supplies authority.
-4. Required independent exact-command READY precedes any DB open. New family needs fresh reviewer context, focused decoder/key/proof/retention tests, narrow package/parity/bridge/fast checks where applicable, immutable freezes, and independent replay/final review. A broader or differential campaign still needs task-owner approval.
-
-Remaining after this preparation: all914 VRF values/proofs remain missing; the other1828 validator/jail voter rows remain missing. Total remaining voter facts2742. Also48 lambda selections,48 raw expected cache RLP rows,producer/configuration authority. Existing global empty-jail/native total success does not qualify per-voter jail/VRF/stake. No owner, public finality, cache equality,19-transfer execution or production authority follows. No DB open, new probe, cursor or inventory occurs in this preparation.
+847 VRF and 1828 other voter rows remain missing. Lambda 48, expected cache RLP 48
+and producer/policy authority remain open. No weight, cache, owner, public finality,
+19-transfer execution or production authority follows these diagnostics.
