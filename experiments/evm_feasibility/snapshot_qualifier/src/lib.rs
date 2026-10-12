@@ -21,3 +21,5 @@ pub mod vrf_witness;
 pub mod vrf_next_voter_window;
 
 pub mod vrf_third_voter_window;
+
+pub mod vrf_fourth_voter_window;
