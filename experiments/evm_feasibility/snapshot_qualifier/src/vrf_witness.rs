@@ -18,7 +18,7 @@ const FIRST: u64 = 25_706_894;
 const VOTER_SHA: &str = "df11561223b5222e9bb311cf2dc51ee92510a149e164db579d8a7dc767de905a";
 const ROOT: &str = "d0e50649639d5d5f4d1dd0be22f017d70787a28d12eead469e4e588c4bc40c49";
 
-fn selection(
+pub(crate) fn selection(
     context: rustaxa_storage::ConcreteDiagnosticPlan,
     rows: &Value,
 ) -> Result<(ConcreteVrfPlan, Value)> {
@@ -74,7 +74,7 @@ fn authority() -> Result<(ConcreteVrfPlan, Value, Value)> {
     let (plan, selected) = selection(context, &rows)?;
     Ok((plan, selected, summary))
 }
-fn sources() -> Result<Value> {
+pub(crate) fn sources() -> Result<Value> {
     macro_rules! pin { ($p:literal) => {{let b=include_bytes!($p);
         ensure!(b.len()<=1048576,"VRF source file cap");
         json!({"path":$p,"bytes":b.len(),"sha256":admission::sha(b)})}}; }
@@ -204,7 +204,13 @@ pub fn capture(bundle_output: &Path, report_output: &Path) -> Result<()> {
 /// Canonical VRF semantics after complete proof replay. Present bytes remain
 /// exactly32 bytes, including a zero key. None comes only from logical proof.
 fn decode(logical: &[ConcreteWitnessLogical; 20]) -> Result<Value> {
-    let mut values = Vec::with_capacity(20);
+    decode_values(logical)
+}
+/// Reuse canonical VRF semantics for independently verified complete families.
+pub(crate) fn decode_values<const N: usize>(
+    logical: &[ConcreteWitnessLogical; N],
+) -> Result<Value> {
+    let mut values = Vec::with_capacity(N);
     for item in logical {
         values.push(match item {
             ConcreteWitnessLogical::Member(bytes) => {

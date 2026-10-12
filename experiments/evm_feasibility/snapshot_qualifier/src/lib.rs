@@ -15,4 +15,5 @@ pub mod parent_reward_fields;
 pub mod paths;
 pub mod qualification;
 pub mod reward_votes;
+pub mod vrf_voter_window;
 pub mod vrf_witness;

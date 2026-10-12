@@ -9,18 +9,21 @@ const PROOFS: usize = 2 + 49 + 96;
 pub(super) enum Profile {
     Native,
     FirstVrf,
+    VrfVoterWindow,
 }
 impl Profile {
     fn header(self) -> [u8; 16] {
         match self {
             Self::Native => HEADER,
             Self::FirstVrf => [b'R', b'C', b'V', b'1', 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 20, 0],
+            Self::VrfVoterWindow => [b'R', b'C', b'V', b'2', 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 47, 0],
         }
     }
     pub(super) fn proofs(self) -> usize {
         match self {
             Self::Native => PROOFS,
             Self::FirstVrf => 71,
+            Self::VrfVoterWindow => 98,
         }
     }
 }

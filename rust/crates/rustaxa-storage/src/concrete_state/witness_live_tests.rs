@@ -526,6 +526,261 @@ fn vrf_tombstone_with_independent_nonmembership_preserves_physical_provenance() 
     assert_eq!(replay.physical[0], ConcreteWitnessPhysical::Tombstone);
     assert_eq!(replay.logical[0], ConcreteWitnessLogical::NonMember);
 }
+
+#[test]
+fn voter_window_fixed_order_and_profile_independently_replay_all_remaining_periods() {
+    let f = Fixture::with_vrf_member(vec![9; 32]);
+    let first = vrf_plan(plan(f.plan.head.state_root));
+    let old = capture_vrf_run(
+        &f.application,
+        &f.state,
+        &first,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let window = ConcreteVrfVoterPlan::new(first, [1; 20]).unwrap();
+    assert_eq!(window.voter(), [1; 20]);
+    for (i, t) in window.tuples().iter().enumerate() {
+        assert_eq!(t.identity.period.as_u64(), FIRST_DELAYED + 1 + i as u64);
+        assert_eq!(t.key, window.tuples[0].key);
+        assert_eq!(t.address, window.tuples[0].address);
+    }
+    let capture = capture_vrf_voter_run(
+        &f.application,
+        &f.state,
+        &window,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(&capture.bundle[..4], b"RCV2");
+    assert_eq!(capture.usage.used(R::PayloadTuples), 47);
+    let replay =
+        replay_vrf_voter_bundle(&capture.bundle, &window, ConcreteWitnessLimits::default())
+            .unwrap();
+    assert!(
+        replay
+            .logical
+            .iter()
+            .all(|v| *v == ConcreteWitnessLogical::Member(vec![9; 32]))
+    );
+    assert!(
+        replay
+            .physical
+            .iter()
+            .all(|v| *v == ConcreteWitnessPhysical::Present(vec![9; 32]))
+    );
+    assert_eq!(replay.usage.used(R::Registrations), 51);
+    assert_eq!(replay.usage.used(R::DistinctIdentities), 50);
+    assert!(
+        replay_vrf_voter_bundle(&old.bundle, &window, ConcreteWitnessLimits::default()).is_err()
+    );
+    let first = vrf_plan(plan(f.plan.head.state_root));
+    assert!(replay_vrf_bundle(&capture.bundle, &first, ConcreteWitnessLimits::default()).is_err());
+    for i in [0, 4, 8, 10, 12, 14] {
+        let mut b = capture.bundle.clone();
+        b[i] ^= 1;
+        assert!(replay_vrf_voter_bundle(&b, &window, ConcreteWitnessLimits::default()).is_err());
+    }
+    let mut trailing = capture.bundle.clone();
+    trailing.push(0);
+    assert!(replay_vrf_voter_bundle(&trailing, &window, ConcreteWitnessLimits::default()).is_err());
+    let budget = ConcreteWitnessBudget::new(ConcreteWitnessLimits::default());
+    budget.admit_input(capture.bundle.len()).unwrap();
+    let env =
+        bundle::admit_profile::<98>(&capture.bundle, &budget, bundle::Profile::VrfVoterWindow)
+            .unwrap();
+    for offset in [8, 16, 48, 68, usize::MAX] {
+        let mut proofs: Vec<_> = env.proofs.iter().map(|v| v.to_vec()).collect();
+        if offset == usize::MAX {
+            proofs.swap(51, 52);
+        } else {
+            proofs[51][offset] ^= 1;
+        }
+        let b = bundle::encode_profile(
+            &env.pair.map(|v| v.to_vec()),
+            &env.descriptors.map(|v| v.to_vec()),
+            &proofs,
+            &ConcreteWitnessBudget::new(ConcreteWitnessLimits::default()),
+            bundle::Profile::VrfVoterWindow,
+        )
+        .unwrap();
+        let failure = replay_vrf_voter_bundle(&b, &window, ConcreteWitnessLimits::default())
+            .err()
+            .unwrap();
+        assert_eq!(failure.phase, ConcreteDiagnosticPhase::Payload);
+        assert_eq!(failure.index, 0);
+    }
+}
+
+#[test]
+fn voter_window_missing_voter_wrong_root_and_late_frame_bound_fail_closed() {
+    assert!(ConcreteVrfVoterPlan::new(vrf_plan(plan(codec::empty_trie_root())), [0; 20]).is_err());
+    let f = Fixture::with_vrf_member(vec![9; 32]);
+    let p = ConcreteVrfVoterPlan::new(vrf_plan(plan(f.plan.head.state_root)), [1; 20]).unwrap();
+    let captured = capture_vrf_voter_run(
+        &f.application,
+        &f.state,
+        &p,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let limit = captured.usage.used(R::FrameInspections) - 1;
+    let failure = capture_vrf_voter_run(
+        &f.application,
+        &f.state,
+        &p,
+        ConcreteWitnessLimits::default()
+            .lowered(R::FrameInspections, limit)
+            .unwrap(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(failure.phase, ConcreteDiagnosticPhase::Payload);
+    assert!(failure.index > 0);
+    assert!(matches!(
+        failure.error,
+        ConcreteWitnessError::LimitExceeded {
+            resource: R::FrameInspections,
+            ..
+        }
+    ));
+    let mut wrong = plan(f.plan.head.state_root);
+    wrong.delayed[10].state_root = [7; 32];
+    wrong.tuples[10].identity = wrong.delayed[10];
+    wrong.tuples[58].identity = wrong.delayed[10];
+    let p = ConcreteVrfVoterPlan::new(vrf_plan(wrong), [1; 20]).unwrap();
+    let failure = replay_vrf_voter_bundle(&captured.bundle, &p, ConcreteWitnessLimits::default())
+        .err()
+        .unwrap();
+    assert_eq!(failure.phase, ConcreteDiagnosticPhase::SecondConstructor);
+    assert_eq!(failure.error, ConcreteWitnessError::Identity);
+}
+
+#[test]
+fn voter_window_all_bounds_and_malformed_member_stop_before_later_payloads() {
+    let f = Fixture::with_vrf_member(vec![9; 32]);
+    let p = ConcreteVrfVoterPlan::new(vrf_plan(plan(f.plan.head.state_root)), [1; 20]).unwrap();
+    for r in [
+        R::KeyBytes,
+        R::RowBytes,
+        R::RawCopyBytes,
+        R::CanonicalBytes,
+        R::EncodedBytes,
+        R::Operations,
+        R::Visits,
+        R::Records,
+        R::FrameInspections,
+        R::ConstructorIdentities,
+        R::Registrations,
+        R::DistinctIdentities,
+        R::PayloadTuples,
+    ] {
+        let e = capture_vrf_voter_run(
+            &f.application,
+            &f.state,
+            &p,
+            ConcreteWitnessLimits::default().lowered(r, 0).unwrap(),
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(e.error,ConcreteWitnessError::LimitExceeded {resource,..} if resource==r));
+        assert_eq!(e.usage.used(r), 0);
+    }
+    let f = Fixture::with_vrf_member(vec![9; 31]);
+    let p = ConcreteVrfVoterPlan::new(vrf_plan(plan(f.plan.head.state_root)), [1; 20]).unwrap();
+    let e = capture_vrf_voter_run(
+        &f.application,
+        &f.state,
+        &p,
+        ConcreteWitnessLimits::default(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(e.phase, ConcreteDiagnosticPhase::Payload);
+    assert_eq!(e.index, 0);
+    assert_eq!(e.error, ConcreteWitnessError::Schema);
+    assert_eq!(e.usage.used(R::PayloadTuples), 1);
+}
+
+#[test]
+fn voter_window_history_error_and_unused_frames_stop_at_the_bound_payload() {
+    let f = Fixture::empty();
+    let p = ConcreteVrfVoterPlan::new(vrf_plan(plan(codec::empty_trie_root())), [1; 20]).unwrap();
+    let captured = capture_vrf_voter_run(
+        &f.application,
+        &f.state,
+        &p,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let budget = ConcreteWitnessBudget::new(ConcreteWitnessLimits::default());
+    budget.admit_input(captured.bundle.len()).unwrap();
+    let env =
+        bundle::admit_profile::<98>(&captured.bundle, &budget, bundle::Profile::VrfVoterWindow)
+            .unwrap();
+    for extra in [false, true] {
+        let mut proofs: Vec<_> = env.proofs.iter().map(|v| v.to_vec()).collect();
+        let index = 17;
+        let target = 51 + index;
+        let tuple = p.tuples[index];
+        let mut header = binary::admit_transcript(
+            &proofs[target],
+            &budget,
+            Some((tuple.identity, tuple.address, tuple.key)),
+            false,
+        )
+        .unwrap();
+        let mut offset = binary::HEADER_BYTES;
+        let mut frames = Vec::new();
+        while offset < proofs[target].len() {
+            let (frame, next) = binary::frame_at(&proofs[target], offset, &budget).unwrap();
+            frames.push(frame);
+            offset = next;
+        }
+        if extra {
+            let source = &frames[1];
+            let frame = binary::Frame {
+                ordinal: frames.len() as u64,
+                identity: source.identity,
+                operation: source.operation,
+                column: source.column,
+                request: source.request,
+                period: source.period,
+                outcome: binary::Outcome::End,
+            };
+            frames.push(frame);
+            header.records += 1;
+        } else {
+            frames[0].outcome = binary::Outcome::Error(3);
+        }
+        let encoder = ConcreteWitnessBudget::new(ConcreteWitnessLimits::default());
+        encoder.charge(R::Records, frames.len() as u64).unwrap();
+        let altered = binary::encode_transcript(header, &frames, &encoder, 0, false).unwrap();
+        proofs[target] = altered;
+        let bytes = bundle::encode_profile(
+            &env.pair.map(|v| v.to_vec()),
+            &env.descriptors.map(|v| v.to_vec()),
+            &proofs,
+            &ConcreteWitnessBudget::new(ConcreteWitnessLimits::default()),
+            bundle::Profile::VrfVoterWindow,
+        )
+        .unwrap();
+        let e = replay_vrf_voter_bundle(&bytes, &p, ConcreteWitnessLimits::default())
+            .err()
+            .unwrap();
+        assert_eq!(e.phase, ConcreteDiagnosticPhase::Payload);
+        assert_eq!(e.index, index as u16);
+        assert_eq!(e.usage.used(R::PayloadTuples), 18);
+        if extra {
+            assert_eq!(e.error, ConcreteWitnessError::UnusedRecords);
+        } else {
+            assert_eq!(
+                e.last_read.unwrap().outcome,
+                ConcreteDiagnosticOutcome::Error(3)
+            );
+        }
+    }
+}
 #[test]
 fn complete_empty_root_family_independently_replays_fixed_subset() {
     let f = Fixture::empty();

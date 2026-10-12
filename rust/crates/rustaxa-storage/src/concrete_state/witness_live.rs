@@ -100,6 +100,57 @@ struct FamilyReplay<const N: usize> {
     physical: [ConcreteWitnessPhysical; N],
     usage: ConcreteWitnessUsage,
 }
+
+/// One first-period voter across the remaining forty-seven delayed identities.
+/// The constructor consumes a validated first-period plan, preserves its full
+/// context and binds the same VRF key at each remaining period. External raw
+/// vote/root and prior-proof authentication remain the caller's responsibility.
+pub struct ConcreteVrfVoterPlan {
+    context: ConcreteDiagnosticPlan,
+    voter: [u8; 20],
+    tuples: [ConcreteDiagnosticTuple; 47],
+}
+impl ConcreteVrfVoterPlan {
+    /// Require membership in the first plan's voter set before consuming it.
+    /// Derive all remaining identities in order; no count, root, key or period
+    /// override is accepted. An unknown voter returns Request before any open.
+    pub fn new(first: ConcreteVrfPlan, voter: [u8; 20]) -> Result<Self, ConcreteWitnessError> {
+        let index = first
+            .voters
+            .iter()
+            .position(|v| *v == voter)
+            .ok_or(ConcreteWitnessError::Request)?;
+        let tuple = first.tuples[index];
+        let tuples = std::array::from_fn(|i| ConcreteDiagnosticTuple {
+            identity: first.context.delayed[i + 1],
+            ..tuple
+        });
+        Ok(Self {
+            context: first.context,
+            voter,
+            tuples,
+        })
+    }
+    /// Borrow the fixed pair and full constructor context without mutation.
+    pub fn context(&self) -> &ConcreteDiagnosticPlan {
+        &self.context
+    }
+    /// Return the single externally authenticated voter identity.
+    pub fn voter(&self) -> [u8; 20] {
+        self.voter
+    }
+    /// Borrow the complete ordered forty-seven-request family.
+    pub fn tuples(&self) -> &[ConcreteDiagnosticTuple; 47] {
+        &self.tuples
+    }
+}
+/// Fully consumed RCV2 result. Physical provenance does not supply logical
+/// nonmembership; raw selected keys/versions stay in the authenticated bundle.
+pub struct ConcreteVrfVoterReplay {
+    pub logical: [ConcreteWitnessLogical; 47],
+    pub physical: [ConcreteWitnessPhysical; 47],
+    pub usage: ConcreteWitnessUsage,
+}
 /// Fixed capture/replay phase for first-failure retention evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConcreteDiagnosticPhase {
@@ -795,6 +846,25 @@ pub fn capture_vrf_run(
         limits,
     )
 }
+/// Capture the complete remaining voter window through unchanged read-only
+/// owners and one sticky budget. First failure returns no accepted prefix.
+#[allow(clippy::result_large_err)]
+pub fn capture_vrf_voter_run(
+    application: &Path,
+    state: &Path,
+    plan: &ConcreteVrfVoterPlan,
+    limits: ConcreteWitnessLimits,
+) -> Result<ConcreteDiagnosticCapture, ConcreteDiagnosticFailure> {
+    capture_family(
+        application,
+        state,
+        &plan.context,
+        &plan.tuples,
+        bundle::Profile::VrfVoterWindow,
+        true,
+        limits,
+    )
+}
 #[allow(clippy::result_large_err, clippy::too_many_arguments)]
 fn capture_family(
     application: &Path,
@@ -960,6 +1030,28 @@ pub fn replay_vrf_bundle(
         limits,
     )
     .map(|r| ConcreteVrfReplay {
+        logical: r.logical,
+        physical: r.physical,
+        usage: r.usage,
+    })
+}
+/// Admit and consume all ninety-eight RCV2 proofs against the external fixed
+/// context. History errors or malformed values stop at their first payload.
+#[allow(clippy::result_large_err)]
+pub fn replay_vrf_voter_bundle(
+    bytes: &[u8],
+    plan: &ConcreteVrfVoterPlan,
+    limits: ConcreteWitnessLimits,
+) -> Result<ConcreteVrfVoterReplay, ConcreteDiagnosticFailure> {
+    replay_family::<47, 98>(
+        bytes,
+        &plan.context,
+        &plan.tuples,
+        bundle::Profile::VrfVoterWindow,
+        true,
+        limits,
+    )
+    .map(|r| ConcreteVrfVoterReplay {
         logical: r.logical,
         physical: r.physical,
         usage: r.usage,
