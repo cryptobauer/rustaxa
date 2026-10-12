@@ -450,6 +450,33 @@ pub fn run(output: &Path) -> Result<()> {
     )
 }
 
+/// Reuse the complete six-input offline authentication for the narrow VRF
+/// consumer. Return the regenerated, compared original voter rows only after
+/// every existing root, signature, policy, native proof and join check passes.
+/// Reads exactly the fixed six artifacts and bounded Aspen source profile;
+/// never opens a database. Failure returns no authority or partial manifest.
+pub(crate) fn load_authenticated_voter_authority() -> Result<(ConcreteDiagnosticPlan, Value, Value)>
+{
+    let (admitted, budget) = admit()?;
+    let report = derive(
+        &admitted,
+        &budget,
+        source_profile()?,
+        admit_aspen_sources()?,
+        executable_profile()?,
+    )?;
+    let plan = native_witness::plan_from_admitted(&admitted[0], &admitted[1], &admitted[2])?;
+    let parent = admission::parse_unique(&admitted[1])?;
+    let summary = json!({"inputs":report["inputs"],"sources":report["sources"],
+        "aspen_sources":report["aspen_sources"],"executable":report["executable"],
+        "bounds":report["bounds"],"actual":report["actual"],"voter_manifest":report["voter_manifest"]});
+    Ok((
+        plan,
+        parent["missing_inputs"]["voter_keys"].clone(),
+        summary,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

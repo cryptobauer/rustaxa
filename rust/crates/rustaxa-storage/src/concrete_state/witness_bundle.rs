@@ -4,24 +4,59 @@ use std::mem::size_of;
 const HEADER: [u8; 16] = [b'R', b'C', b'B', b'1', 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 96, 0];
 const PROOFS: usize = 2 + 49 + 96;
 
+/// Private wire profiles prevent callers from expanding a reviewed family.
+#[derive(Clone, Copy)]
+pub(super) enum Profile {
+    Native,
+    FirstVrf,
+}
+impl Profile {
+    fn header(self) -> [u8; 16] {
+        match self {
+            Self::Native => HEADER,
+            Self::FirstVrf => [b'R', b'C', b'V', b'1', 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 20, 0],
+        }
+    }
+    pub(super) fn proofs(self) -> usize {
+        match self {
+            Self::Native => PROOFS,
+            Self::FirstVrf => 71,
+        }
+    }
+}
+
 /// Allocate exact metadata capacity for the two constructor groups and payloads.
-pub(super) fn proof_vector(
+pub(super) fn proof_vector_profile(
     budget: &ConcreteWitnessBudget,
+    profile: Profile,
 ) -> Result<Vec<Vec<u8>>, ConcreteWitnessError> {
-    budget.charge(R::CanonicalBytes, (PROOFS * size_of::<Vec<u8>>()) as u64)?;
+    budget.charge(
+        R::CanonicalBytes,
+        (profile.proofs() * size_of::<Vec<u8>>()) as u64,
+    )?;
     let mut out = Vec::new();
-    out.try_reserve_exact(PROOFS)
+    out.try_reserve_exact(profile.proofs())
         .map_err(|_| budget.stop(ConcreteWitnessError::Allocation))?;
     Ok(out)
 }
 /// Charge the complete final capacity and every copied constituent before reserve.
+#[cfg(test)]
 pub(super) fn encode(
     pair: &[Vec<u8>; 4],
     descriptors: &[Vec<u8>; 2],
     proofs: &[Vec<u8>],
     budget: &ConcreteWitnessBudget,
 ) -> Result<Vec<u8>, ConcreteWitnessError> {
-    if proofs.len() != PROOFS {
+    encode_profile(pair, descriptors, proofs, budget, Profile::Native)
+}
+pub(super) fn encode_profile(
+    pair: &[Vec<u8>; 4],
+    descriptors: &[Vec<u8>; 2],
+    proofs: &[Vec<u8>],
+    budget: &ConcreteWitnessBudget,
+    profile: Profile,
+) -> Result<Vec<u8>, ConcreteWitnessError> {
+    if proofs.len() != profile.proofs() {
         return Err(budget.stop(ConcreteWitnessError::Schema));
     }
     let mut size = HEADER.len();
@@ -41,7 +76,7 @@ pub(super) fn encode(
     let mut out = Vec::new();
     out.try_reserve_exact(size)
         .map_err(|_| budget.stop(ConcreteWitnessError::Allocation))?;
-    out.extend_from_slice(&HEADER);
+    out.extend_from_slice(&profile.header());
     for bytes in pair.iter().chain(descriptors).chain(proofs) {
         out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         out.extend_from_slice(bytes);
@@ -49,18 +84,26 @@ pub(super) fn encode(
     debug_assert_eq!(out.len(), size);
     Ok(out)
 }
-pub(super) struct Envelope<'a> {
+pub(super) struct Envelope<'a, const N: usize = PROOFS> {
     pub pair: [&'a [u8]; 4],
     pub descriptors: [&'a [u8]; 2],
-    pub proofs: [&'a [u8]; PROOFS],
+    pub proofs: [&'a [u8]; N],
 }
 /// Borrow a fixed-count envelope after complete input admission. Reject trailing
 /// bytes and admit every raw row width before any header/descriptor decoding.
+#[cfg(test)]
 pub(super) fn admit<'a>(
     bytes: &'a [u8],
     budget: &ConcreteWitnessBudget,
 ) -> Result<Envelope<'a>, ConcreteWitnessError> {
-    if bytes.get(..HEADER.len()) != Some(HEADER.as_slice()) {
+    admit_profile(bytes, budget, Profile::Native)
+}
+pub(super) fn admit_profile<'a, const N: usize>(
+    bytes: &'a [u8],
+    budget: &ConcreteWitnessBudget,
+    profile: Profile,
+) -> Result<Envelope<'a, N>, ConcreteWitnessError> {
+    if N != profile.proofs() || bytes.get(..HEADER.len()) != Some(profile.header().as_slice()) {
         return Err(budget.stop(ConcreteWitnessError::Schema));
     }
     let mut offset = HEADER.len();
@@ -94,7 +137,7 @@ pub(super) fn admit<'a>(
         *value = take()?;
         budget.charge(R::RowBytes, value.len() as u64)?;
     }
-    let mut proofs = [&[][..]; PROOFS];
+    let mut proofs = [&[][..]; N];
     for value in &mut proofs {
         *value = take()?;
     }

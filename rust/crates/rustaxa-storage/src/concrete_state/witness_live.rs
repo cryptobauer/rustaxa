@@ -39,6 +39,67 @@ pub struct ConcreteDiagnosticPlan {
     pub delayed: [ConcreteStateIdentity; 48],
     pub tuples: [ConcreteDiagnosticTuple; 96],
 }
+/// Complete first delayed-period VRF diagnostic, with twenty ordered voters.
+/// Construction validates shape and keys; external raw vote/root authority is
+/// still required. No caller-selected count, period or wire profile is exposed.
+pub struct ConcreteVrfPlan {
+    context: ConcreteDiagnosticPlan,
+    voters: [[u8; 20]; 20],
+    tuples: [ConcreteDiagnosticTuple; 20],
+}
+impl ConcreteVrfPlan {
+    /// Bind all twenty distinct voters in original ascending manifest order to
+    /// the first delayed root and Keccak256(00 || 04 || voter). Invalid context,
+    /// duplicates or reordered voters return an error before any DB access.
+    pub fn new(
+        context: ConcreteDiagnosticPlan,
+        voters: [[u8; 20]; 20],
+    ) -> Result<Self, ConcreteWitnessError> {
+        validate_plan(&context)?;
+        if voters.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(ConcreteWitnessError::Request);
+        }
+        let mut address = [0; 20];
+        address[19] = 0xfe;
+        let tuples = voters.map(|voter| {
+            let mut preimage = [0; 22];
+            preimage[1] = 4;
+            preimage[2..].copy_from_slice(&voter);
+            ConcreteDiagnosticTuple {
+                identity: context.delayed[0],
+                address,
+                key: ConcreteStorageKey(codec::keccak256(&preimage)),
+            }
+        });
+        Ok(Self {
+            context,
+            voters,
+            tuples,
+        })
+    }
+    pub fn context(&self) -> &ConcreteDiagnosticPlan {
+        &self.context
+    }
+    pub fn voters(&self) -> &[[u8; 20]; 20] {
+        &self.voters
+    }
+    pub fn tuples(&self) -> &[ConcreteDiagnosticTuple; 20] {
+        &self.tuples
+    }
+}
+/// Complete independent VRF replay. Physical dispositions are provenance;
+/// logical nonmembership derives only from the authenticated path. Selected
+/// raw keys, versions and frames remain in the fully consumed RCV1 bundle.
+pub struct ConcreteVrfReplay {
+    pub logical: [ConcreteWitnessLogical; 20],
+    pub physical: [ConcreteWitnessPhysical; 20],
+    pub usage: ConcreteWitnessUsage,
+}
+struct FamilyReplay<const N: usize> {
+    logical: [ConcreteWitnessLogical; N],
+    physical: [ConcreteWitnessPhysical; N],
+    usage: ConcreteWitnessUsage,
+}
 /// Fixed capture/replay phase for first-failure retention evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConcreteDiagnosticPhase {
@@ -664,6 +725,7 @@ fn capture_proof(
     identity: ConcreteStateIdentity,
     tuple: Option<ConcreteDiagnosticTuple>,
     prior: &[Vec<u8>],
+    strict_history: bool,
 ) -> Result<Vec<u8>, ConcreteWitnessError> {
     run.budget.charge(R::CanonicalBytes, 1024)?;
     let baseline = run.budget.usage().used(R::Records);
@@ -675,9 +737,13 @@ fn capture_proof(
     };
     if let Some(tuple) = tuple {
         run.budget.tuple(identity, tuple.address, tuple.key)?;
-        let (physical, proof) = tuple_proof(&store, tuple.address, tuple.key)
-            .map_err(|_| run.budget.error().unwrap_or(ConcreteWitnessError::Proof))?;
-        reconcile(identity, physical, proof)?;
+        let (physical, proof) =
+            tuple_proof_policy(&store, tuple.address, tuple.key, strict_history)
+                .map_err(|_| run.budget.error().unwrap_or(ConcreteWitnessError::Proof))?;
+        let (_, logical) = reconcile(identity, physical, proof)?;
+        if strict_history {
+            validate_vrf_value(&logical)?;
+        }
         store.encode(tuple.address, tuple.key, baseline, false, prior)
     } else {
         account_proof(&store)
@@ -698,6 +764,45 @@ pub fn capture_diagnostic_run(
     application: &Path,
     state: &Path,
     plan: &ConcreteDiagnosticPlan,
+    limits: ConcreteWitnessLimits,
+) -> Result<ConcreteDiagnosticCapture, ConcreteDiagnosticFailure> {
+    capture_family(
+        application,
+        state,
+        plan,
+        &plan.tuples,
+        bundle::Profile::Native,
+        false,
+        limits,
+    )
+}
+/// Capture only the immutable first-period twenty-VRF family. Failure consumes
+/// one shared budget and returns first-failure evidence without an accepted prefix.
+#[allow(clippy::result_large_err)]
+pub fn capture_vrf_run(
+    application: &Path,
+    state: &Path,
+    plan: &ConcreteVrfPlan,
+    limits: ConcreteWitnessLimits,
+) -> Result<ConcreteDiagnosticCapture, ConcreteDiagnosticFailure> {
+    capture_family(
+        application,
+        state,
+        &plan.context,
+        &plan.tuples,
+        bundle::Profile::FirstVrf,
+        true,
+        limits,
+    )
+}
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
+fn capture_family(
+    application: &Path,
+    state: &Path,
+    plan: &ConcreteDiagnosticPlan,
+    tuples: &[ConcreteDiagnosticTuple],
+    profile: bundle::Profile,
+    strict_history: bool,
     limits: ConcreteWitnessLimits,
 ) -> Result<ConcreteDiagnosticCapture, ConcreteDiagnosticFailure> {
     let run = Run::new(limits);
@@ -742,7 +847,7 @@ pub fn capture_diagnostic_run(
         }
 
         let mut descriptors: [Vec<u8>; 2] = std::array::from_fn(|_| Vec::new());
-        let mut proofs = bundle::proof_vector(&run.budget)?;
+        let mut proofs = bundle::proof_vector_profile(&run.budget, profile)?;
         for (constructor, descriptor_bytes) in descriptors.iter_mut().enumerate() {
             let (open_phase, descriptor_phase, proof_phase) = if constructor == 0 {
                 (
@@ -774,10 +879,17 @@ pub fn capture_diagnostic_run(
             run.budget.register_constructor(&ids[..count])?;
             for (index, id) in ids[..count].iter().enumerate() {
                 run.phase(proof_phase, index, Some(*id), None);
-                proofs.push(capture_proof(&db, &run, *id, None, &proofs)?);
+                proofs.push(capture_proof(
+                    &db,
+                    &run,
+                    *id,
+                    None,
+                    &proofs,
+                    strict_history,
+                )?);
             }
             if constructor == 1 {
-                for (index, tuple) in plan.tuples.iter().enumerate() {
+                for (index, tuple) in tuples.iter().enumerate() {
                     run.phase(
                         ConcreteDiagnosticPhase::Payload,
                         index,
@@ -790,12 +902,14 @@ pub fn capture_diagnostic_run(
                         tuple.identity,
                         Some(*tuple),
                         &proofs,
+                        strict_history,
                     )?);
                 }
             }
         }
         run.phase(ConcreteDiagnosticPhase::Envelope, 0, None, None);
-        let bundle = bundle::encode(&pair_rows, &descriptors, &proofs, &run.budget)?;
+        let bundle =
+            bundle::encode_profile(&pair_rows, &descriptors, &proofs, &run.budget, profile)?;
         Ok(ConcreteDiagnosticCapture {
             bundle,
             usage: run.budget.usage(),
@@ -816,12 +930,56 @@ pub fn replay_diagnostic_bundle(
     plan: &ConcreteDiagnosticPlan,
     limits: ConcreteWitnessLimits,
 ) -> Result<ConcreteDiagnosticReplay, ConcreteDiagnosticFailure> {
+    replay_family::<96, 147>(
+        bytes,
+        plan,
+        &plan.tuples,
+        bundle::Profile::Native,
+        false,
+        limits,
+    )
+    .map(|r| ConcreteDiagnosticReplay {
+        logical: r.logical,
+        usage: r.usage,
+    })
+}
+/// Offline first-period VRF replay admits the whole RCV1 envelope and consumes
+/// every ordered proof on one fresh budget. No partial family can escape.
+#[allow(clippy::result_large_err)]
+pub fn replay_vrf_bundle(
+    bytes: &[u8],
+    plan: &ConcreteVrfPlan,
+    limits: ConcreteWitnessLimits,
+) -> Result<ConcreteVrfReplay, ConcreteDiagnosticFailure> {
+    replay_family::<20, 71>(
+        bytes,
+        &plan.context,
+        &plan.tuples,
+        bundle::Profile::FirstVrf,
+        true,
+        limits,
+    )
+    .map(|r| ConcreteVrfReplay {
+        logical: r.logical,
+        physical: r.physical,
+        usage: r.usage,
+    })
+}
+#[allow(clippy::result_large_err)]
+fn replay_family<const N: usize, const P: usize>(
+    bytes: &[u8],
+    plan: &ConcreteDiagnosticPlan,
+    tuples: &[ConcreteDiagnosticTuple; N],
+    profile: bundle::Profile,
+    strict_history: bool,
+    limits: ConcreteWitnessLimits,
+) -> Result<FamilyReplay<N>, ConcreteDiagnosticFailure> {
     let run = Run::new(limits);
     let work = || -> Result<_, ConcreteWitnessError> {
         validate_plan(plan)?;
         run.phase(ConcreteDiagnosticPhase::Admission, 0, None, None);
         run.budget.admit_input(bytes.len())?;
-        let envelope = bundle::admit(bytes, &run.budget)?;
+        let envelope = bundle::admit_profile::<P>(bytes, &run.budget, profile)?;
         for (index, row) in envelope.pair.iter().enumerate() {
             run.phase(ConcreteDiagnosticPhase::Pair, index, None, None);
             let mut request = [0; 32];
@@ -903,33 +1061,41 @@ pub fn replay_diagnostic_bundle(
                     *id,
                     None,
                     &envelope.proofs[..cursor],
+                    strict_history,
                 )?;
                 cursor += 1;
             }
         }
         let mut logical = std::array::from_fn(|_| ConcreteWitnessLogical::NonMember);
-        for (index, tuple) in plan.tuples.iter().enumerate() {
+        let mut physical = std::array::from_fn(|i| {
+            ConcreteWitnessPhysical::HistoryUnavailable(tuples[i].identity)
+        });
+        for (index, tuple) in tuples.iter().enumerate() {
             run.phase(
                 ConcreteDiagnosticPhase::Payload,
                 index,
                 Some(tuple.identity),
                 Some(*tuple),
             );
-            logical[index] = replay_proof(
+            let result = replay_proof(
                 envelope.proofs[cursor],
                 &run,
                 tuple.identity,
                 Some(*tuple),
                 &envelope.proofs[..cursor],
+                strict_history,
             )?
             .ok_or(ConcreteWitnessError::Schema)?;
+            physical[index] = result.0;
+            logical[index] = result.1;
             cursor += 1;
         }
         if cursor != envelope.proofs.len() {
             return Err(ConcreteWitnessError::UnusedRecords);
         }
-        Ok(ConcreteDiagnosticReplay {
+        Ok(FamilyReplay {
             logical,
+            physical,
             usage: run.budget.usage(),
         })
     };
@@ -941,7 +1107,8 @@ fn replay_proof(
     identity: ConcreteStateIdentity,
     tuple: Option<ConcreteDiagnosticTuple>,
     prior: &[&[u8]],
-) -> Result<Option<ConcreteWitnessLogical>, ConcreteWitnessError> {
+    strict_history: bool,
+) -> Result<Option<(ConcreteWitnessPhysical, ConcreteWitnessLogical)>, ConcreteWitnessError> {
     let (address, key) = tuple
         .map(|t| (t.address, t.key))
         .unwrap_or(([0; 20], ConcreteStorageKey([0; 32])));
@@ -964,9 +1131,13 @@ fn replay_proof(
     };
     let result = if let Some(tuple) = tuple {
         run.budget.tuple(identity, tuple.address, tuple.key)?;
-        let (physical, proof) = tuple_proof(&store, address, key)
+        let (physical, proof) = tuple_proof_policy(&store, address, key, strict_history)
             .map_err(|_| run.budget.error().unwrap_or(ConcreteWitnessError::Proof))?;
-        Some(reconcile(identity, physical, proof)?.1)
+        let result = reconcile(identity, physical, proof)?;
+        if strict_history {
+            validate_vrf_value(&result.1)?;
+        }
+        Some(result)
     } else {
         account_proof(&store)
             .map_err(|_| run.budget.error().unwrap_or(ConcreteWitnessError::Proof))?;
@@ -976,6 +1147,14 @@ fn replay_proof(
         return Err(ConcreteWitnessError::UnusedRecords);
     }
     Ok(result)
+}
+
+fn validate_vrf_value(logical: &ConcreteWitnessLogical) -> Result<(), ConcreteWitnessError> {
+    if matches!(logical, ConcreteWitnessLogical::Member(bytes) if bytes.len() != 32) {
+        Err(ConcreteWitnessError::Schema)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -29,8 +29,8 @@ pub use concrete_state::{
 pub use concrete_state::{
     ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
     ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,
-    ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, capture_diagnostic_run,
-    replay_diagnostic_bundle,
+    ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, ConcreteVrfPlan, ConcreteVrfReplay,
+    capture_diagnostic_run, capture_vrf_run, replay_diagnostic_bundle, replay_vrf_bundle,
 };
 pub use config::Column;
 pub use config::Config;

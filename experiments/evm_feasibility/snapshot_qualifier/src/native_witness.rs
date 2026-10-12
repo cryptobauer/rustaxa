@@ -253,19 +253,19 @@ pub fn preflight(report_output: &Path) -> Result<()> {
         "qualification":{"historical_totals_qualified":false,"production_routing_authorized":false}}),
     )
 }
-fn policy() -> Value {
+pub(crate) fn policy() -> Value {
     let limits = ConcreteWitnessLimits::default();
     json!({"authority_input_bytes":AUTHORITY_INPUT_CAP,"bundle_bytes":BUNDLE_CAP,
         "report_bytes":REPORT_CAP,"executable_bytes":268435456,"executable_hash_buffer_bytes":8192,"storage_resources":RESOURCES.iter().map(|r|
             json!({"resource":format!("{r:?}"),"limit":limits.limit(*r)})).collect::<Vec<_>>(),
         "exclusions":["authority admission allocations","engine memory","allocator overhead","OS I/O","RSS"]})
 }
-fn usage(usage: ConcreteWitnessUsage) -> Value {
+pub(crate) fn usage(usage: ConcreteWitnessUsage) -> Value {
     json!({"admitted_input_bytes":usage.admitted_input_bytes,
         "resources":RESOURCES.iter().map(|r|json!({"resource":format!("{r:?}"),
             "used":usage.used(*r)})).collect::<Vec<_>>()})
 }
-fn identity_json(identity: ConcreteStateIdentity) -> Value {
+pub(crate) fn identity_json(identity: ConcreteStateIdentity) -> Value {
     json!({"period":identity.period.as_u64(),"state_root_hex":hex::encode(identity.state_root)})
 }
 /// Finite typed first-failure report. It retains exact tuple and last request,
@@ -313,7 +313,7 @@ pub fn decode_totals(logical: &[ConcreteWitnessLogical; 96]) -> Result<[u64; 48]
     }
     Ok(totals)
 }
-fn output_path(output: &Path) -> Result<PathBuf> {
+pub(crate) fn output_path(output: &Path) -> Result<PathBuf> {
     let parent = fs::canonicalize(
         output
             .parent()
@@ -328,7 +328,7 @@ fn output_path(output: &Path) -> Result<PathBuf> {
     );
     Ok(output)
 }
-fn publish_report(path: &Path, report: &Value) -> Result<()> {
+pub(crate) fn publish_report(path: &Path, report: &Value) -> Result<()> {
     admission::publish_exclusive(path, &interval_history::encode_bounded(report, REPORT_CAP)?)
 }
 /// Fixed copy capture. Both output paths and all historical authority inputs

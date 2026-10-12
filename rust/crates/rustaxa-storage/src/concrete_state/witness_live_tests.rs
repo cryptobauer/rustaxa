@@ -53,6 +53,182 @@ fn raw_descriptor(id: ConcreteStateIdentity) -> Vec<u8> {
     s.out().to_vec()
 }
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+fn vrf_plan(context: ConcreteDiagnosticPlan) -> ConcreteVrfPlan {
+    ConcreteVrfPlan::new(context, std::array::from_fn(|i| [i as u8 + 1; 20])).unwrap()
+}
+
+#[test]
+fn vrf_complete_nonmember_family_replays_and_rejects_profile_confusion() {
+    let f = Fixture::empty();
+    let plan = vrf_plan(plan(codec::empty_trie_root()));
+    let capture = capture_vrf_run(
+        &f.application,
+        &f.state,
+        &plan,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(&capture.bundle[..4], b"RCV1");
+    assert_eq!(capture.usage.used(R::PayloadTuples), 20);
+    assert_eq!(capture.usage.used(R::Registrations), 51);
+    assert_eq!(capture.usage.used(R::DistinctIdentities), 50);
+    let replay =
+        replay_vrf_bundle(&capture.bundle, &plan, ConcreteWitnessLimits::default()).unwrap();
+    assert!(
+        replay
+            .logical
+            .iter()
+            .all(|v| *v == ConcreteWitnessLogical::NonMember)
+    );
+    assert!(
+        replay
+            .physical
+            .iter()
+            .all(|v| matches!(v, ConcreteWitnessPhysical::HistoryUnavailable(_)))
+    );
+    assert!(
+        replay_diagnostic_bundle(&capture.bundle, &f.plan, ConcreteWitnessLimits::default())
+            .is_err()
+    );
+    let native = capture_diagnostic_run(
+        &f.application,
+        &f.state,
+        &f.plan,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    assert!(replay_vrf_bundle(&native.bundle, &plan, ConcreteWitnessLimits::default()).is_err());
+    for offset in [0, 4, 8, 10, 12, 14] {
+        let mut wrong = capture.bundle.clone();
+        wrong[offset] ^= 1;
+        assert!(replay_vrf_bundle(&wrong, &plan, ConcreteWitnessLimits::default()).is_err());
+    }
+    let mut extra = capture.bundle.clone();
+    extra.push(0);
+    assert!(replay_vrf_bundle(&extra, &plan, ConcreteWitnessLimits::default()).is_err());
+}
+
+#[test]
+fn vrf_key_order_and_context_fail_before_any_open() {
+    let voters = std::array::from_fn(|i| [i as u8 + 1; 20]);
+    let p = vrf_plan(plan(codec::empty_trie_root()));
+    for (i, t) in p.tuples().iter().enumerate() {
+        let mut raw = [0; 22];
+        raw[1] = 4;
+        raw[2..].copy_from_slice(&voters[i]);
+        assert_eq!(t.key.0, codec::keccak256(&raw));
+        assert_eq!(t.identity, p.context.delayed[0]);
+        assert_eq!(
+            t.address,
+            [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe
+            ]
+        );
+    }
+    let mut reordered = voters;
+    reordered.swap(0, 1);
+    assert!(ConcreteVrfPlan::new(plan(codec::empty_trie_root()), reordered).is_err());
+    let mut duplicate = voters;
+    duplicate[1] = duplicate[0];
+    assert!(ConcreteVrfPlan::new(plan(codec::empty_trie_root()), duplicate).is_err());
+    let mut wrong = plan(codec::empty_trie_root());
+    wrong.delayed[0].period = (FIRST_DELAYED + 1).into();
+    assert!(ConcreteVrfPlan::new(wrong, voters).is_err());
+}
+
+#[test]
+fn vrf_history_error_never_becomes_proven_nonmembership_and_keeps_first_failure() {
+    let f = Fixture::empty();
+    let plan = vrf_plan(plan(codec::empty_trie_root()));
+    let captured = capture_vrf_run(
+        &f.application,
+        &f.state,
+        &plan,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let budget = ConcreteWitnessBudget::new(ConcreteWitnessLimits::default());
+    budget.admit_input(captured.bundle.len()).unwrap();
+    let env =
+        bundle::admit_profile::<71>(&captured.bundle, &budget, bundle::Profile::FirstVrf).unwrap();
+    let mut proofs: Vec<_> = env.proofs.iter().map(|p| p.to_vec()).collect();
+    let header = binary::admit_transcript(
+        &proofs[51],
+        &budget,
+        Some((
+            plan.tuples[0].identity,
+            plan.tuples[0].address,
+            plan.tuples[0].key,
+        )),
+        false,
+    )
+    .unwrap();
+    let mut offset = binary::HEADER_BYTES;
+    let mut frames = Vec::new();
+    while offset < proofs[51].len() {
+        let (frame, next) = binary::frame_at(&proofs[51], offset, &budget).unwrap();
+        frames.push(frame);
+        offset = next;
+    }
+    assert_eq!(frames[0].operation, 1);
+    assert_eq!(frames[0].column, 5);
+    frames[0].outcome = binary::Outcome::Error(3);
+    let encoding = ConcreteWitnessBudget::new(ConcreteWitnessLimits::default());
+    encoding.charge(R::Records, frames.len() as u64).unwrap();
+    let altered = binary::encode_transcript(header, &frames, &encoding, 0, false).unwrap();
+    proofs[51] = altered;
+    let bytes = bundle::encode_profile(
+        &env.pair.map(|p| p.to_vec()),
+        &env.descriptors.map(|p| p.to_vec()),
+        &proofs,
+        &ConcreteWitnessBudget::new(ConcreteWitnessLimits::default()),
+        bundle::Profile::FirstVrf,
+    )
+    .unwrap();
+    let failure = replay_vrf_bundle(&bytes, &plan, ConcreteWitnessLimits::default())
+        .err()
+        .unwrap();
+    assert_eq!(failure.phase, ConcreteDiagnosticPhase::Payload);
+    assert_eq!(failure.index, 0);
+    assert_eq!(
+        failure.last_read.unwrap().outcome,
+        ConcreteDiagnosticOutcome::Error(3)
+    );
+    assert_eq!(failure.usage.used(R::PayloadTuples), 1);
+}
+
+#[test]
+fn vrf_all_thirteen_bounds_fail_without_accepted_prefix() {
+    let f = Fixture::with_vrf_member(vec![9; 32]);
+    let plan = vrf_plan(plan(f.plan.head.state_root));
+    for resource in [
+        R::KeyBytes,
+        R::RowBytes,
+        R::RawCopyBytes,
+        R::CanonicalBytes,
+        R::EncodedBytes,
+        R::Operations,
+        R::Visits,
+        R::Records,
+        R::FrameInspections,
+        R::ConstructorIdentities,
+        R::Registrations,
+        R::DistinctIdentities,
+        R::PayloadTuples,
+    ] {
+        let limits = ConcreteWitnessLimits::default()
+            .lowered(resource, 0)
+            .unwrap();
+        let failure = capture_vrf_run(&f.application, &f.state, &plan, limits)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(failure.error,ConcreteWitnessError::LimitExceeded {resource:r,..} if r==resource),
+            "{resource:?}: {failure:?}"
+        );
+        assert_eq!(failure.usage.used(resource), 0);
+    }
+}
 struct Fixture {
     application: std::path::PathBuf,
     state: std::path::PathBuf,
@@ -65,6 +241,88 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
+    fn with_vrf_member(value: Vec<u8>) -> Self {
+        fn leaf(path: &[u8], value: &[u8]) -> Vec<u8> {
+            let mut s = RlpStream::new_list(2);
+            s.append(&path);
+            s.append(&value);
+            s.out().to_vec()
+        }
+        let mut f = Self::empty();
+        let tuple = vrf_plan(plan(codec::empty_trie_root())).tuples[0];
+        let mut compact = vec![0x20];
+        compact.extend_from_slice(&codec::storage_trie_path(tuple.key));
+        let storage_root = codec::keccak256(&leaf(&compact, &rlp::encode(&value)));
+        let storage_node = leaf(&compact, &storage_root);
+        let mut raw = RlpStream::new_list(5);
+        raw.append_empty_data();
+        raw.append(&vec![1u8]);
+        raw.append(&storage_root.as_slice());
+        raw.append_empty_data();
+        raw.append(&0u64);
+        let raw = raw.out().to_vec();
+        let commitment =
+            codec::account_commitment_rlp(&codec::decode_physical_account(&raw).unwrap()).unwrap();
+        let prefix = codec::account_version_prefix(tuple.address);
+        let mut compact = vec![0x20];
+        compact.extend_from_slice(&prefix);
+        let root = codec::keccak256(&leaf(&compact, &commitment));
+        let account_node = leaf(&compact, &root);
+        f.plan = plan(root);
+        {
+            let db = Owner::open_cf_descriptors(
+                &Options::default(),
+                &f.application,
+                APPLICATION_COLUMNS
+                    .into_iter()
+                    .map(|c| c.descriptor(&Options::default()))
+                    .chain(std::iter::once(ColumnFamilyDescriptor::new(
+                        "unrelated_inventory_forbidden",
+                        Options::default(),
+                    ))),
+            )
+            .unwrap();
+            for period in [HEAD, PARENT] {
+                db.put_cf(
+                    &db.cf_handle(Column::FinalChainBlkByNumber.name()).unwrap(),
+                    period.to_le_bytes(),
+                    header(root),
+                )
+                .unwrap();
+            }
+        }
+        {
+            let db = Owner::open_cf_descriptors(
+                &Options::default(),
+                &f.state,
+                CONCRETE_COLUMNS.map(|c| ColumnFamilyDescriptor::new(c, Options::default())),
+            )
+            .unwrap();
+            db.put(DESCRIPTOR_KEY, raw_descriptor(f.plan.head)).unwrap();
+            for (column, key, value) in [
+                ("2", root.to_vec(), account_node),
+                ("4", storage_root.to_vec(), storage_node),
+                (
+                    "3",
+                    codec::versioned_key(prefix, tuple.identity.period).to_vec(),
+                    raw,
+                ),
+                (
+                    "5",
+                    codec::versioned_key(
+                        codec::storage_version_prefix(tuple.address, tuple.key),
+                        tuple.identity.period,
+                    )
+                    .to_vec(),
+                    value,
+                ),
+            ] {
+                db.put_cf(&db.cf_handle(column).unwrap(), key, value)
+                    .unwrap();
+            }
+        }
+        f
+    }
     fn empty() -> Self {
         let base = std::path::PathBuf::from("/home/fry/artifacts/n4-binding-resume-20261011").join(
             format!(
@@ -136,6 +394,137 @@ impl Fixture {
             plan,
         }
     }
+}
+
+#[test]
+fn vrf_present_selected_version_and_tombstone_require_matching_paths() {
+    let f = Fixture::with_vrf_member(vec![9; 32]);
+    let plan = vrf_plan(plan(f.plan.head.state_root));
+    let capture = capture_vrf_run(
+        &f.application,
+        &f.state,
+        &plan,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let replay =
+        replay_vrf_bundle(&capture.bundle, &plan, ConcreteWitnessLimits::default()).unwrap();
+    assert_eq!(
+        replay.logical[0],
+        ConcreteWitnessLogical::Member(vec![9; 32])
+    );
+    assert_eq!(
+        replay.physical[0],
+        ConcreteWitnessPhysical::Present(vec![9; 32])
+    );
+    assert!(
+        replay.logical[1..]
+            .iter()
+            .all(|v| *v == ConcreteWitnessLogical::NonMember)
+    );
+    let tuple = plan.tuples[0];
+    {
+        let db = Owner::open_cf_descriptors(
+            &Options::default(),
+            &f.state,
+            CONCRETE_COLUMNS.map(|c| ColumnFamilyDescriptor::new(c, Options::default())),
+        )
+        .unwrap();
+        db.put_cf(
+            &db.cf_handle("5").unwrap(),
+            codec::versioned_key(
+                codec::storage_version_prefix(tuple.address, tuple.key),
+                tuple.identity.period,
+            ),
+            [],
+        )
+        .unwrap();
+    }
+    let failed = capture_vrf_run(
+        &f.application,
+        &f.state,
+        &plan,
+        ConcreteWitnessLimits::default(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(failed.phase, ConcreteDiagnosticPhase::Payload);
+    assert_eq!(failed.index, 0);
+    assert_eq!(failed.error, ConcreteWitnessError::Proof);
+}
+
+#[test]
+fn vrf_malformed_present_width_stops_capture_and_replay_at_first_payload() {
+    for width in [1, 31, 33, 64] {
+        let f = Fixture::with_vrf_member(vec![9; width]);
+        let plan = vrf_plan(plan(f.plan.head.state_root));
+        let failure = capture_vrf_run(
+            &f.application,
+            &f.state,
+            &plan,
+            ConcreteWitnessLimits::default(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(failure.phase, ConcreteDiagnosticPhase::Payload);
+        assert_eq!(failure.index, 0);
+        assert_eq!(failure.error, ConcreteWitnessError::Schema);
+        assert_eq!(failure.usage.used(R::PayloadTuples), 1);
+        // Synthetic malformed-value fixture: the private test-only invocation
+        // omits VRF semantics while retaining genuine root/path reconstruction.
+        let captured = capture_family(
+            &f.application,
+            &f.state,
+            &plan.context,
+            &plan.tuples,
+            bundle::Profile::FirstVrf,
+            false,
+            ConcreteWitnessLimits::default(),
+        )
+        .unwrap();
+        let failure = replay_vrf_bundle(&captured.bundle, &plan, ConcreteWitnessLimits::default())
+            .err()
+            .unwrap();
+        assert_eq!(failure.phase, ConcreteDiagnosticPhase::Payload);
+        assert_eq!(failure.index, 0);
+        assert_eq!(failure.error, ConcreteWitnessError::Schema);
+        assert_eq!(failure.usage.used(R::PayloadTuples), 1);
+    }
+}
+
+#[test]
+fn vrf_tombstone_with_independent_nonmembership_preserves_physical_provenance() {
+    let f = Fixture::empty();
+    let plan = vrf_plan(plan(codec::empty_trie_root()));
+    let tuple = plan.tuples[0];
+    {
+        let db = Owner::open_cf_descriptors(
+            &Options::default(),
+            &f.state,
+            CONCRETE_COLUMNS.map(|c| ColumnFamilyDescriptor::new(c, Options::default())),
+        )
+        .unwrap();
+        db.put_cf(
+            &db.cf_handle("5").unwrap(),
+            codec::versioned_key(
+                codec::storage_version_prefix(tuple.address, tuple.key),
+                tuple.identity.period,
+            ),
+            [],
+        )
+        .unwrap();
+    }
+    let capture = capture_vrf_run(
+        &f.application,
+        &f.state,
+        &plan,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let replay =
+        replay_vrf_bundle(&capture.bundle, &plan, ConcreteWitnessLimits::default()).unwrap();
+    assert_eq!(replay.physical[0], ConcreteWitnessPhysical::Tombstone);
+    assert_eq!(replay.logical[0], ConcreteWitnessLogical::NonMember);
 }
 #[test]
 fn complete_empty_root_family_independently_replays_fixed_subset() {

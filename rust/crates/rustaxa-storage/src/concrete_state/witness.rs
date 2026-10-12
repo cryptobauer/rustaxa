@@ -471,10 +471,24 @@ fn tuple_proof<S: PhysicalTrieStore>(
     address: [u8; 20],
     key: ConcreteStorageKey,
 ) -> Result<(ConcreteWitnessPhysical, PathProof), ConcreteReadError> {
+    tuple_proof_policy(store, address, key, false)
+}
+/// The VRF profile rejects explicit history errors. Successful absent seeks
+/// still need a complete independent nonmembership proof.
+fn tuple_proof_policy<S: PhysicalTrieStore>(
+    store: &S,
+    address: [u8; 20],
+    key: ConcreteStorageKey,
+    strict_history: bool,
+) -> Result<(ConcreteWitnessPhysical, PathProof), ConcreteReadError> {
     let id = store.identity();
     let selected = match store.value("5", codec::storage_version_prefix(address, key), id.period) {
         Ok(value) => value,
-        Err(ConcreteReadError::HistoryUnavailable(observed)) if observed == id => None,
+        Err(ConcreteReadError::HistoryUnavailable(observed))
+            if observed == id && !strict_history =>
+        {
+            None
+        }
         Err(error) => return Err(error),
     };
     let physical = match selected {
@@ -603,6 +617,6 @@ mod live;
 pub use live::{
     ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
     ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,
-    ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, capture_diagnostic_run,
-    replay_diagnostic_bundle,
+    ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, ConcreteVrfPlan, ConcreteVrfReplay,
+    capture_diagnostic_run, capture_vrf_run, replay_diagnostic_bundle, replay_vrf_bundle,
 };
