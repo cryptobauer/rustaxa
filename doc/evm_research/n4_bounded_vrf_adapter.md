@@ -1,6 +1,6 @@
 # VRF public API notes
 
-Scope: accepted first20 VRF profile and current remaining47 voter profile. These notes describe complete public units from the reviewed source. They introduce no code change or physical execution authority. Existing old96 diagnostic APIs, wire profile, tests and accounting remain unchanged.
+Scope: accepted first20 and first four complete remaining47 voter profiles. These notes describe complete public units from the reviewed source. They introduce no code change or physical execution authority. Existing old96 diagnostic APIs, wire profile, tests and accounting remain unchanged.
 
 ## Storage plans and results
 
@@ -34,3 +34,40 @@ Both modules reject existing/overlapping output files and require publication ou
 
 Qualification remains limited to the complete named VRF fact family. It does not qualify stake, jail, voter weights, reward cache equality, owner readiness, producer verification, public finality, real19-transfer behavior or production routing. A remaining47 failure cannot qualify a prefix. A successful remaining47 replay leaves847 VRF and1828 other missing rows,2675 total. A separate frozen guard and exact-command READY review remain prerequisites for any physical attempt.
 
+
+
+## Additional fixed voter modules
+
+`vrf_next_voter_window`, `vrf_third_voter_window` and `vrf_fourth_voter_window`
+export `preflight(output: &Path)`, `capture(bundle_output: &Path, report_output: &Path)`
+and `replay(bundle_input: &Path, report_output: &Path)`, each returning `anyhow::Result<()>`,
+plus fixed `PROFILE` and131072-byte `REPORT_CAP`. They use the same raw-six owner,
+immutable Rust plan, consuming capture/replay kernels, full47-row selector and
+exclusive output/error rules documented above. Their fixed bindings are:
+
+| Module | Voter | Complete selector position | First20 index/proof |
+| --- | --- | --- | --- |
+| vrf_next_voter_window | 264a30e880d3b53bb2cdeb234e34201ebf9a9965 | second | 2/53 |
+| vrf_third_voter_window | 329d40b5f15cfe4de0e9953d0599d2a39a65fc04 | third | 3/54 |
+| vrf_fourth_voter_window | 575910424ac437467726542781508b2220b71ce8 | fourth | 6/57 |
+
+Each selector requires exactly ten complete voters and its full fixed lexicographic
+prefix. All47 original manifest indices, source references and delayed periods
+must match. Each invocation freshly executes all71 prior first20 proofs, then
+requires the named prior nonzero32-byte Member/Present equality before any opener.
+No previous47 bundle supplies authority. Sources remain22 qualifier plus25 owner,
+with1MiB per-file/4MiB combined ceilings. Old96, first20 and new47 have separate
+complete budgets; the13 storage ceilings and RCV2 framing are unchanged.
+
+Each module has corresponding `live_vrf_*_voter_window` and
+`replay_vrf_*_voter_window` bins with the same exact argument forms. Invalid overrides
+fail before admission. Binaries bind a specific voter; wire framing alone does not.
+Tests and reverse controls reject another voter's bundle at Identity/Payload/index0,
+before PayloadTuples charging. Fourth-source tests cover all three earlier bundles.
+
+Second, third and fourth fact families are independently accepted, bringing the total to208.
+The fifth candidate has only an unreviewed preparation map. A guard admits a bounded metadata freeze only after
+independent READY: third68KiB, fourth128KiB. These artifact caps do not raise DB,
+source, report, stdout, result or timeout ceilings. Current stage and remaining
+blockers are in the checkpoint. Existing historical counts above describe the
+first complete voter only.

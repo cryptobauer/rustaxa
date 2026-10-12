@@ -610,3 +610,25 @@ HEAD, routing, source/replay/review pins and unrelated-change checks are in
 /home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011.
 Remaining2675 voter rows,48 lambda,48 raw cache RLP and producer/configauthority.
 No production route or push. See [checkpoint](evm_research/n4_next_run_checkpoint.md).
+
+
+## October 12 N4 second authorized VRF round
+
+Accepted141 further VRF facts in fixed second, third and fourth47 families;
+208 accepted total. Local source commits d880f6cf,6321961 and9ad13da have independent
+source/exact-command reviews, byte-identical independent replay and reverse-plan
+rejection. Fast and actual hooks:2130 passes/zero failures/both guards. Second
+storage172/qualifier87/bridge4/cross-family1 pass. Third qualifier93/focused6 and
+fourth qualifier99/focused6 pass, each CLI19/guard6; unchanged storage/bridge source
+and RustON cache hashes permit evidence reuse. All50/53/56/59 historical source
+copies remain verified. No production routing or push. Fifth unreviewed map closes
+row selection and copy preparation only; fresh key/proof/overlap/design reviews,
+source/gates/hook/freeze/READY remain required.
+
+Fresh55% baseline/floor45%; reached45% at2026-10-12T20:27:21.531Z,10 points consumed.
+Stopped new work/delegation; only in-flight acceptance/map and minimal closeout
+finished. Requested Luna/Astra/Sol6.1 medium workers ran, lead Sol6.1 medium observed,
+child runtime/billing unknown. Exact final allowance, HEAD and freeze verification:
+/home/fry/artifacts/n4-vrf-round2-01a12d5e-20261012/checkpoint.md.
+Remaining706 VRF+1828 other rows, lambda48, exact cache RLP48 and producer/policy/
+weights/owner/production dependencies. Old budget and unrelated changes preserved.
