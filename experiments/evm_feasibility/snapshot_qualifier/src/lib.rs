@@ -17,3 +17,5 @@ pub mod qualification;
 pub mod reward_votes;
 pub mod vrf_voter_window;
 pub mod vrf_witness;
+
+pub mod vrf_next_voter_window;

@@ -613,6 +613,50 @@ fn voter_window_fixed_order_and_profile_independently_replay_all_remaining_perio
 }
 
 #[test]
+fn voter_windows_with_same_rcv2_framing_reject_each_others_fixed_keys() {
+    let fixture = Fixture::empty();
+    let plans = [1, 2].map(|voter| {
+        ConcreteVrfVoterPlan::new(vrf_plan(plan(codec::empty_trie_root())), [voter; 20]).unwrap()
+    });
+    let captures = plans.each_ref().map(|plan| {
+        capture_vrf_voter_run(
+            &fixture.application,
+            &fixture.state,
+            plan,
+            ConcreteWitnessLimits::default(),
+        )
+        .unwrap()
+    });
+    assert_eq!(&captures[0].bundle[..16], &captures[1].bundle[..16]);
+    assert_eq!(&captures[0].bundle[..4], b"RCV2");
+    for index in 0..2 {
+        let verified = replay_vrf_voter_bundle(
+            &captures[index].bundle,
+            &plans[index],
+            ConcreteWitnessLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(verified.usage.used(R::PayloadTuples), 47);
+        assert!(
+            verified
+                .logical
+                .iter()
+                .all(|v| *v == ConcreteWitnessLogical::NonMember)
+        );
+        let error = replay_vrf_voter_bundle(
+            &captures[index].bundle,
+            &plans[1 - index],
+            ConcreteWitnessLimits::default(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.error, ConcreteWitnessError::Identity);
+        assert_eq!(error.phase, ConcreteDiagnosticPhase::Payload);
+        assert_eq!(error.index, 0);
+    }
+}
+
+#[test]
 fn voter_window_missing_voter_wrong_root_and_late_frame_bound_fail_closed() {
     assert!(ConcreteVrfVoterPlan::new(vrf_plan(plan(codec::empty_trie_root())), [0; 20]).is_err());
     let f = Fixture::with_vrf_member(vec![9; 32]);
