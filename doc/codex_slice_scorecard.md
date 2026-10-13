@@ -698,3 +698,45 @@ All seven historical guards plus the new marker are consumed. Remaining565 VRF+
 blockers remain. No production routing or push. Read the current
 [checkpoint](evm_research/n4_next_run_checkpoint.md) and
 [shared contract](evm_research/n4_shared_bounded_vrf.md).
+
+## Shared fixed VRF successors — October 13
+
+Accepted source `b16511d9` is local only. Fixed voters 8/9/10 each add 47 facts after
+separate exact READY, one guarded capture, full lead/independent 98-proof replay
+and reverseIdentity/index 0/PayloadTuples 0. Total 490 facts and ten complete voters.
+R is /home/fry/artifacts/n4-vrf-successors-01a13763-641e-7371-96ad-102630143805-20261013.
+
+One lead writer extended the sealed table and six fixed CLIs; no copied adapter.
+Closure 74 Rust/owner+two Python,1319694 bytes;67 prior Rust paths unchanged.
+Luna checked bounded candidates/141 full rows. Astra accepted exact eligibility/
+source closure and a later metadata-fit amendment. Independent Sol accepted code,
+gates, each full command and each complete fact outcome. Requested Sol 6.1-medium,
+Luna-medium and Astra-medium all ran; child runtime/billing unknown. Earlier
+review model transcription is preserved with a separate routing correction.
+
+Corrections cover exact shared source predecessor, old/current evidence paths,
+embedded profile 22 and owner 25 ordered/lexical source bindings, seventh lib pin
+equality, command/executable history, test Debug/indentation and metadata overflow.
+First compact spec 72070 was rejected before physical admission. Reviewed 31 optional
+new duplicate representations exclusions retain all 180 old occurrences, direct
+source/binary pins and mandatory proof. Final specs 65434/65422/65422 fit 64 KiB.
+No source/schema/cap change or physical retry followed this correction.
+
+Gates pass: 186 package tests, three focused tests, 22 tool tests, one parity
+test, 18 actual argv controls, quality/all-bin checks, fast 2130 and actual hook
+2130. The actual source commit hook also passes 2130 tests. Storage 172/ON bridge 4 reuse
+has 106 exact unchanged pin occurrences/cache/evidence checks. Each physical command
+has 314 occurrences and at most 416065967 bytes; each independent fixed-parent
+outcome has 345 and at most 417158352, within 400/450 MiB.
+
+Measured focused 243.86 s, package 280.50 s, quality 11.10 s, fast 299.49 s, actual hook 241.52 s,
+source commit 230.46 s. Captures 28.65/28.69/28.56 s, lead replays 26.13/25.99/26.25 s and
+reverses 26.21/26.02/26.15 s are outer command durations. Full request-to-report review
+wall intervals and correction intervals are in R/timing-record.json; they include
+waits and are not active CPU/token cost. Fresh 97% baseline/floor 87%; R/final-quota.json
+owns final consumption. No allowance-derived cost or saving is claimed.
+
+All ready fixed successors are complete, below the ten-point limit. Remaining 424
+VRF + 1828 stake/jail and lambda/raw-cache/producer/weights/owner/finality/real-replay
+gaps remain. Preserve all consumed markers. Documentation closes accepted facts
+separately from source code; no push or production route.

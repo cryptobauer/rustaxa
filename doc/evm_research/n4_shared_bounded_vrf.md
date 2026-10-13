@@ -1,6 +1,10 @@
 # Shared bounded VRF qualification
 
-The diagnostic qualifier uses one sealed engine for seven fixed voter profiles.
+The current qualifier admits ten sealed voter profiles. The
+[fixed successor record](n4_fixed_vrf_successors.md) documents voters eight through
+ten. The original seven-profile shared trial below is historical.
+
+The original diagnostic trial used one sealed engine for seven fixed voter profiles.
 Source commit `3f1eb719d84bd30c682daf65f92235eab8f3913d` replaces six copied
 implementations with thin wrappers and adds two fixed seventh CLI entry points.
 This change does not route production code or change storage, protocol or codecs.
@@ -118,3 +122,14 @@ with seven complete voters. The new marker and all seven old guards remain
 consumed. Remaining diagnostic and production blockers are in the
 [current checkpoint](n4_next_run_checkpoint.md). New sealed instances need the
 required source/authority delta review and independent exact-command READY.
+
+## Accepted eighth through tenth successors
+
+The [fixed successor record](n4_fixed_vrf_successors.md) extends this historical
+seven-profile contract through the reviewed finite amendment. Current source
+b16511d9 has ten profiles and 74 + 2 sources. Voters eight through ten each add 47
+independently accepted facts:490 total and ten complete voters. Each had exact
+READY, one capture, full lead/independent 98-proof replay and reverse rejection.
+The old shared trial above remains historical evidence. No old capture was repeated
+and no source, metadata, command or proof cap increased. Read the current checkpoint
+before further work; no complete candidate remains automatically eligible.
