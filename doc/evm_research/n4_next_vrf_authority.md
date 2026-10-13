@@ -1,35 +1,32 @@
-# Next bounded VRF authority
+# Next N4 VRF authority — seventh voter
 
-Four complete voters and the first-period20 family are accepted:208 VRF facts.
-[The checkpoint](n4_next_run_checkpoint.md) records source commits, validation,
-consumed commands and blockers. [Adapter notes](n4_bounded_vrf_adapter.md) describe
-complete public APIs. This round stopped at10 quota points, baseline55%/floor45%.
-Preserve the exhausted budget. Further work needs new quota authorization.
+Six complete voters and the first-period20 family are accepted:302 VRF facts.
+The fifth and sixth fixed adapters have source and fact acceptance, actual local
+commit hooks and complete independent replay. Their immutable62/65 source copies
+are preserved. No production routing changed. Current evidence is in
+[the checkpoint](n4_next_run_checkpoint.md).
 
-Next candidate is `6bf44c438f6328640b0bc5d7d7766310cf49610f`, fifth among ten
-complete voters. Its47 delayed rows are D25706895..25706941. First-D dependency:
-original parent23, sorted selection7, proof58. The unreviewed preparation map is
-under `/home/fry/artifacts/n4-vrf-round2-01a12d5e-20261012`:
-fifth-voter-preparation-map.json and .md. Luna mapped all47 full raw rows, root
-joins and references and checked all59 source copies. The map predates the final
-fourth acceptance; that dependency is now closed. It grants no new fact, source
-or physical authority. The Keccak logical key and full-tuple overlap remain open.
+Next candidate is `c9b2ed9876bd463f67a412bb7ce3ea269e3fdafa`, seventh of ten
+complete voters. Its47 delayed rows are D25706895..25706941; first-D parent41,
+selection13/proof64, key `fdad1437f176f1a0acaf8244356c9d0169241736fde0b7a1355e0d52e1ac2f6f`.
+Fresh Astra preparation and implementation authority, and fresh Sol predesign,
+are in `/home/fry/artifacts/n4-vrf-round3-01a12d5e-20261013`.
+The sixth final ACCEPT and immutable65-copy conditions are now closed.
 
-Exact next steps: fresh Astra raw/proof/Keccak/overlap authority review and fresh
-Sol design review; fixed voter adapter/profile; targeted/full checks and final
-source review; local commit with actual hook; complete source/binary/raw/command
-freeze and separate exact-command READY. No fifth implementation, gate or physical
-read has started. Keep all old markers and command freezes consumed. Source copies
-preserve historical shared-code pins; current source status is in the checkpoint.
+Seventh source work has not started. Remaining executable stages: implement the
+fixed profile under the existing shared plan and RCV2 kernels; required focused,
+package, canonical, quality/all-bin, guard/cap and fast gates; independent frozen
+source review; actual local source commit/hook; full bounded command freeze;
+separate independent exact-command READY; one guarded capture and complete lead,
+independent byte-equal replay plus reverse-plan control; final fact acceptance.
+Fresh quota authorization is required after the saved45/35 round ends.
 
-Each invocation must reauthenticate six raw inputs and completely replay the fixed
-first20 bundle before opener reachability. The unchanged Rust plans and RCV2
-kernels enforce47 payloads/98 proofs, all13 ceilings, separate complete-family
-budgets and first-failure stops. No voter/root/count/limit override, accepted prefix,
-retry or retention inference. Member values need32 bytes; zero is unusable.
-Nonmembership needs its authenticated proof.
+The old69 unavailable undelegation probes have zero full-tuple VRF overlap.
+Raw7 authentication and all71 prior proofs precede every opener. All13 witness
+limits remain fixed. Earlier47 bundles are controls, not authority for a new voter.
+Preparation grants no physical read, prefix acceptance, retry or production claim.
 
-706 VRF plus1828 other voter rows remain missing:2534 total. Lambda48, exact
-expected-cache RLP48, producer/policy, weights, cache equality, owner, public
-finality, real19-transfer and production routing remain open. Accepted diagnostics
-grant no broader authority.
+612 VRF plus1828 other voter rows remain:2440 total. Lambda48 with qualified
+producer/source/custody/policy/export evidence, raw expected-cache RLP48 and
+producer/configuration authority remain open. Weights, cache equality, owner,
+public finality and actual19-transfer execution are not established.

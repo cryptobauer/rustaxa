@@ -38,7 +38,8 @@ Qualification remains limited to the complete named VRF fact family. It does not
 
 ## Additional fixed voter modules
 
-`vrf_next_voter_window`, `vrf_third_voter_window` and `vrf_fourth_voter_window`
+`vrf_next_voter_window`, `vrf_third_voter_window`, `vrf_fourth_voter_window`,
+`vrf_fifth_voter_window` and `vrf_sixth_voter_window`
 export `preflight(output: &Path)`, `capture(bundle_output: &Path, report_output: &Path)`
 and `replay(bundle_input: &Path, report_output: &Path)`, each returning `anyhow::Result<()>`,
 plus fixed `PROFILE` and131072-byte `REPORT_CAP`. They use the same raw-six owner,
@@ -50,6 +51,8 @@ exclusive output/error rules documented above. Their fixed bindings are:
 | vrf_next_voter_window | 264a30e880d3b53bb2cdeb234e34201ebf9a9965 | second | 2/53 |
 | vrf_third_voter_window | 329d40b5f15cfe4de0e9953d0599d2a39a65fc04 | third | 3/54 |
 | vrf_fourth_voter_window | 575910424ac437467726542781508b2220b71ce8 | fourth | 6/57 |
+| vrf_fifth_voter_window | 6bf44c438f6328640b0bc5d7d7766310cf49610f | fifth | 7/58 |
+| vrf_sixth_voter_window | a6cec53b4d7920709f05ca1f7ac0d66338d29cb9 | sixth | 10/61 |
 
 Each selector requires exactly ten complete voters and its full fixed lexicographic
 prefix. All47 original manifest indices, source references and delayed periods
@@ -63,11 +66,13 @@ Each module has corresponding `live_vrf_*_voter_window` and
 `replay_vrf_*_voter_window` bins with the same exact argument forms. Invalid overrides
 fail before admission. Binaries bind a specific voter; wire framing alone does not.
 Tests and reverse controls reject another voter's bundle at Identity/Payload/index0,
-before PayloadTuples charging. Fourth-source tests cover all three earlier bundles.
+before PayloadTuples charging. Sixth-source tests cover all five earlier complete-voter bundles.
 
-Second, third and fourth fact families are independently accepted, bringing the total to208.
-The fifth candidate has only an unreviewed preparation map. A guard admits a bounded metadata freeze only after
-independent READY: third68KiB, fourth128KiB. These artifact caps do not raise DB,
-source, report, stdout, result or timeout ceilings. Current stage and remaining
-blockers are in the checkpoint. Existing historical counts above describe the
-first complete voter only.
+Second through sixth complete-voter families are independently accepted,
+bringing the total to302. The seventh candidate has fresh conditional Astra/Sol
+design reviews; implementation and physical gates remain open. Third guard
+metadata admission is68KiB; fourth through sixth is128KiB. Normal metadata remains
+64KiB, with one reviewed exact87841-byte immutable historical map exception whose
+SHA is checked before parsing. These artifact caps do not raise DB, source, report,
+sink, result or timeout ceilings. Current acceptance and blockers are in the
+checkpoint. Historical counts above describe the first complete voter only.

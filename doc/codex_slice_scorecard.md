@@ -632,3 +632,33 @@ child runtime/billing unknown. Exact final allowance, HEAD and freeze verificati
 /home/fry/artifacts/n4-vrf-round2-01a12d5e-20261012/checkpoint.md.
 Remaining706 VRF+1828 other rows, lambda48, exact cache RLP48 and producer/policy/
 weights/owner/production dependencies. Old budget and unrelated changes preserved.
+
+
+## N4 third bounded VRF round — October 13
+
+Accepted94 further VRF facts in fixed fifth and sixth47 families;302 total,
+six full48-period voters closed. Local source commits b8673ce2af85d866f2b72bb80094154fe0ea7baa and
+42ed7ac9ad9f01d046ef400f6a013791ed22ede6 have fresh independent Sol source review, Astra exact READY and
+complete final fact acceptance. Each single capture has a lead replay, an independent
+byte-equal replay and an immutable old-plan rejection. Nothing was pushed.
+
+Focused6/full105+111/canonical1/CLI19/guard6/quality and builds/cap controls pass;
+each fast gate and actual source hook2130 pass. Storage172/bridge4 evidence is reused
+only after unchanged source/cache pin checks. All62/65 source copies are preserved.
+Review correction: sixth needs actual build --bins in addition to the two-bin build;
+supplemental gate passed. Metadata corrections retain normal64KiB, command128KiB
+and one exact87841-byte/SHA-before-parse historical record. Failed fifth builder
+precheck is preserved; helper reverse-profile/PATH/closed-pipe wait fixes occurred
+before execution. The actual hanging-child timeout regression passed. A tuple-shape
+precheck stopped before any replay child; a separate reviewed helper corrected it.
+The frozen helper and original failure remain preserved.
+
+Luna bounded helpers, fresh Astra authority/final review and fresh Sol predesign/
+source/closeout review ran. Requested medium model routes and startup/results are in
+R3/routing-round3.json. Lead Sol6.1 medium observed; child runtime identity and billing
+unknown, with no routing rejection. Fresh45% baseline/floor35%; final-quota.json
+owns final consumption. Prior exhausted budgets and historical routing stay unchanged.
+
+Remaining612 VRF+1828 other rows, lambda48, raw cache RLP48 and producer/policy/
+owner/weights/cache/finality/19-transfer blockers remain. Seventh has fresh conditional
+design only; no source/read. See [checkpoint](evm_research/n4_next_run_checkpoint.md).
