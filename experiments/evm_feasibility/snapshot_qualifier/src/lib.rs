@@ -27,3 +27,5 @@ pub mod vrf_fourth_voter_window;
 pub mod vrf_fifth_voter_window;
 
 pub mod vrf_sixth_voter_window;
+
+pub mod vrf_shared_window;

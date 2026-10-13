@@ -1,341 +1,66 @@
-//! The fixed sixth complete remaining VRF voter window. The fixed seven-input authority
-//! authenticates raw votes/roots and the prior first-period proof before opens.
-//! Each capture/replay is consuming and qualifies no prefix or voter weight.
-use crate::{
-    artifact_admission as admission, interval_history, native_witness as native,
-    parent_input_handoff, parent_reward_fields as fields, paths, vrf_witness as first,
-};
-use anyhow::{Context, Result, ensure};
-use rustaxa_storage::{
-    ConcreteVrfPlan, ConcreteVrfVoterPlan, ConcreteWitnessLimits, ConcreteWitnessLogical,
-    ConcreteWitnessPhysical, capture_vrf_voter_run, replay_vrf_bundle, replay_vrf_voter_bundle,
-};
-use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::Path,
-};
-
+//! Fixed compatibility entrypoint. All behavior belongs to the sealed shared engine.
+use crate::vrf_shared_window::{self as shared, Profile};
+use anyhow::Result;
+use std::path::Path;
 pub const PROFILE: &str = "n4_remaining_vrf_voter_a6cec53b4d7920709f05ca1f7ac0d66338d29cb9_v1";
 pub const REPORT_CAP: usize = 131072;
+#[cfg(test)]
 const VOTER: &str = "a6cec53b4d7920709f05ca1f7ac0d66338d29cb9";
+#[cfg(test)]
 const FIRST_VOTER: &str = "138c1b9baea7d93a981ba694f5318f735c997298";
-const FIFTH_VOTER: &str = "6bf44c438f6328640b0bc5d7d7766310cf49610f";
-const FOURTH_VOTER: &str = "575910424ac437467726542781508b2220b71ce8";
-const THIRD_VOTER: &str = "329d40b5f15cfe4de0e9953d0599d2a39a65fc04";
-const PREVIOUS_VOTER: &str = "264a30e880d3b53bb2cdeb234e34201ebf9a9965";
-const PRIOR_PATH: &str =
-    "/home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011/vrf-first-d.rcv1";
-const PRIOR_BYTES: usize = 417594;
-const PRIOR_SHA: &str = "6382e8f25cc9ec2225e563111e37b9ad8c8beae4167543cb4d9e915a7d5cbb61";
+#[cfg(test)]
 const FIRST: u64 = 25706894;
-const INDICES: [usize; 47] = [
-    89, 149, 209, 263, 314, 371, 431, 491, 551, 608, 665, 722, 776, 836, 893, 947, 1004, 1061,
-    1121, 1181, 1241, 1301, 1352, 1406, 1457, 1517, 1574, 1631, 1688, 1745, 1802, 1859, 1913, 1967,
-    2027, 2087, 2141, 2201, 2255, 2315, 2372, 2429, 2486, 2546, 2600, 2654, 2714,
-];
-
+/// Authenticate this fixed profile without database access.
+pub fn preflight(output: &Path) -> Result<()> {
+    shared::preflight(Profile::Sixth, output)
+}
+/// Capture this fixed profile through a separately reviewed one-use guard.
+pub fn capture(bundle: &Path, report: &Path) -> Result<()> {
+    shared::capture(Profile::Sixth, bundle, report)
+}
+/// Replay every proof for this fixed profile offline.
+pub fn replay(bundle: &Path, report: &Path) -> Result<()> {
+    shared::replay(Profile::Sixth, bundle, report)
+}
+#[cfg(test)]
+use crate::{
+    artifact_admission as admission, interval_history, parent_input_handoff, vrf_witness as first,
+};
+#[cfg(test)]
+use rustaxa_storage::{
+    ConcreteVrfPlan, ConcreteWitnessLimits, ConcreteWitnessLogical, ConcreteWitnessPhysical,
+    replay_vrf_voter_bundle,
+};
+#[cfg(test)]
+use serde_json::{Value, json};
+#[cfg(test)]
+use shared::{accepted_prior_value, canonical_prior};
+#[cfg(test)]
 fn select(rows: &Value) -> Result<Value> {
-    let rows = rows.as_array().context("complete voter rows")?;
-    ensure!(rows.len() == 2742, "window original count");
-    let mut periods = BTreeMap::<&str, BTreeSet<u64>>::new();
-    for row in rows {
-        if row["semantic_key"] == "fe_vrf_00_04_address" {
-            periods
-                .entry(row["voter_hex"].as_str().context("window voter")?)
-                .or_default()
-                .insert(row["delayed_period"].as_u64().context("window period")?);
-        }
-    }
-    let all: BTreeSet<_> = (FIRST..FIRST + 48).collect();
-    let candidates: Vec<_> = periods
-        .iter()
-        .filter(|(_, p)| **p == all)
-        .map(|(v, _)| *v)
-        .collect();
-    ensure!(
-        candidates.len() == 10
-            && candidates.first() == Some(&FIRST_VOTER)
-            && candidates.get(1) == Some(&PREVIOUS_VOTER)
-            && candidates.get(2) == Some(&THIRD_VOTER)
-            && candidates.get(3) == Some(&FOURTH_VOTER)
-            && candidates.get(4) == Some(&FIFTH_VOTER)
-            && candidates.get(5) == Some(&VOTER),
-        "fixed complete voter selector"
-    );
-    let selected: Vec<_> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| {
-            r["voter_hex"] == VOTER
-                && r["semantic_key"] == "fe_vrf_00_04_address"
-                && r["delayed_period"] != FIRST
-        })
-        .collect();
-    ensure!(selected.len() == 47, "complete remaining voter family");
-    let mut output = Vec::with_capacity(47);
-    for (i, (index, row)) in selected.into_iter().enumerate() {
-        let d = FIRST + 1 + i as u64;
-        ensure!(
-            index == INDICES[i]
-                && row["delayed_period"] == d
-                && row["qualified"] == false
-                && row["value"].is_null()
-                && row["proof"].is_null(),
-            "window request/order drift"
-        );
-        let refs = row["source_references"]
-            .as_array()
-            .context("window vote references")?;
-        ensure!(
-            !refs.is_empty() && refs.iter().all(|r| r["period"] == d + 7),
-            "window source period"
-        );
-        output.push(json!({"parent_manifest_index":index,"source_row":row}));
-    }
-    Ok(json!(output))
+    shared::select(Profile::Sixth, rows)
 }
+#[cfg(test)]
 fn prior(bytes: &[u8], plan: &ConcreteVrfPlan) -> Result<Value> {
-    ensure!(
-        bytes.len() == PRIOR_BYTES && admission::sha(bytes) == PRIOR_SHA,
-        "prior VRF pin drift"
-    );
-    let verified = replay_vrf_bundle(bytes, plan, ConcreteWitnessLimits::default())
-        .map_err(|e| anyhow::anyhow!("prior VRF proof: {e:?}"))?;
-    let index = plan
-        .voters()
-        .iter()
-        .position(|v| hex::encode(v) == VOTER)
-        .context("prior selected voter")?;
-    ensure!(index == 10, "prior selected index");
-    let values = first::decode_values(&verified.logical)?;
-    let value = accepted_prior_value(&verified.logical[index], &verified.physical[index])?;
-    Ok(
-        json!({"input":{"path":PRIOR_PATH,"bytes":PRIOR_BYTES,"sha256":PRIOR_SHA},
-        "actual":native::usage(verified.usage),"semantic_sha256":fields::normalized_digest(&values)?,
-        "selected":{"proof_index":61,"identity":native::identity_json(plan.context().delayed[0]),
-            "voter_hex":VOTER,"value_hex":hex::encode(value),"usable_vrf_key":true}}),
-    )
+    shared::prior(Profile::Sixth, bytes, plan)
 }
-fn accepted_prior_value<'a>(
-    logical: &'a ConcreteWitnessLogical,
-    physical: &ConcreteWitnessPhysical,
-) -> Result<&'a [u8]> {
-    let value = match logical {
-        ConcreteWitnessLogical::Member(v) if v.len() == 32 && v.iter().any(|b| *b != 0) => v,
-        _ => anyhow::bail!("required accepted firstD member unavailable"),
-    };
-    ensure!(
-        matches!(physical,ConcreteWitnessPhysical::Present(v) if v==value),
-        "prior physical member mismatch"
-    );
-    Ok(value)
+#[cfg(test)]
+fn authority() -> Result<(rustaxa_storage::ConcreteVrfVoterPlan, Value, Value)> {
+    shared::authority(Profile::Sixth)
 }
-fn canonical_prior() -> Result<Vec<u8>> {
-    let p = Path::new(PRIOR_PATH);
-    let mut current = std::path::PathBuf::new();
-    for part in p.components() {
-        current.push(part);
-        ensure!(
-            !fs::symlink_metadata(&current)?.file_type().is_symlink(),
-            "prior symlink"
-        );
-    }
-    ensure!(
-        fs::canonicalize(p)? == p && fs::metadata(p)?.is_file(),
-        "prior regular file"
-    );
-    admission::evidence(p, p, PRIOR_SHA, PRIOR_BYTES, PRIOR_BYTES)
+#[cfg(test)]
+fn base(selected: Value, authority: Value) -> Result<Value> {
+    shared::base(Profile::Sixth, selected, authority)
 }
-fn authority() -> Result<(ConcreteVrfVoterPlan, Value, Value)> {
-    let (context, rows, six) = parent_input_handoff::load_authenticated_voter_authority()?;
-    let (first_plan, _) = first::selection(context, &rows)?;
-    let mut selected = select(&rows)?;
-    after_prior(first_plan, &canonical_prior()?, |first_plan, old_proof| {
-        let voter: [u8; 20] = hex::decode(VOTER)?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("fixed voter width"))?;
-        let plan = ConcreteVrfVoterPlan::new(first_plan, voter)?;
-        for (i, row) in selected
-            .as_array_mut()
-            .context("window selection")?
-            .iter_mut()
-            .enumerate()
-        {
-            let tuple = plan.tuples()[i];
-            row["tuple"] = json!({"identity":native::identity_json(tuple.identity),"address_hex":hex::encode(tuple.address),
-            "logical_key_hex":hex::encode(tuple.key.0),"key_preimage_hex":format!("0004{VOTER}")});
-        }
-        Ok((
-            plan,
-            selected,
-            json!({"six_input_owner":six,"prior_first_d":old_proof,
-        "raw_artifact_reads":7,"raw_artifact_bytes":6785636}),
-        ))
-    })
-}
-/// The continuation reaches the window/open stage only after fresh prior proof.
+#[cfg(test)]
 fn after_prior<T>(
     plan: ConcreteVrfPlan,
     bytes: &[u8],
     next: impl FnOnce(ConcreteVrfPlan, Value) -> Result<T>,
 ) -> Result<T> {
-    let proof = prior(bytes, &plan)?;
-    next(plan, proof)
+    shared::after_prior(Profile::Sixth, plan, bytes, next)
 }
-
-fn base(selected: Value, authority: Value) -> Result<Value> {
-    macro_rules! pin {($p:literal)=>{{let b=include_bytes!($p);
-        ensure!(b.len()<=1048576,"window source file cap");
-        json!({"path":$p,"bytes":b.len(),"sha256":admission::sha(b)})}};}
-    let mut sources = first::sources()?
-        .as_array()
-        .context("shared VRF sources")?
-        .clone();
-    sources.extend([
-        pin!("vrf_sixth_voter_window.rs"),
-        pin!("bin/live_vrf_sixth_voter_window.rs"),
-        pin!("bin/replay_vrf_sixth_voter_window.rs"),
-    ]);
-    ensure!(sources.len() == 22, "window source count");
-    let bytes = authority["six_input_owner"]["sources"]
-        .as_array()
-        .context("owner sources")?
-        .iter()
-        .chain(&sources)
-        .try_fold(0u64, |n, p| {
-            n.checked_add(p["bytes"].as_u64().context("source bytes")?)
-                .context("source total")
-        })?;
-    ensure!(bytes <= 4194304, "combined window source cap");
-    let mut bounds = native::policy();
-    bounds["report_bytes"] = json!(REPORT_CAP);
-    bounds["authority_input_bytes"] = json!(6785636);
-    bounds["raw_artifacts_exact"] = json!(7);
-    bounds["payload_tuples_exact"] = json!(47);
-    bounds["proofs_exact"] = json!(98);
-    let digest = fields::normalized_digest(&selected)?;
-    Ok(
-        json!({"schema":1,"profile":PROFILE,"selection":selected,"selection_sha256":digest,
-        "authority":authority,"vrf_sources":sources,"bounds":bounds,
-        "qualification":{"vrf_family_qualified":false,"voter_weights_qualified":false,
-        "reward_cache_equal":false,"owner_ready":false,"producer_verified":false,"production_routing_authorized":false}}),
-    )
-}
-fn publish(output: &Path, report: &Value) -> Result<()> {
-    admission::publish_exclusive(
-        output,
-        &interval_history::encode_bounded(report, REPORT_CAP)?,
-    )
-}
-fn stopped(report: &mut Value, failure: &rustaxa_storage::ConcreteDiagnosticFailure) {
-    let f = native::failure_report(failure);
-    report["status"] = json!("stopped");
-    report["failure"] = f["failure"].clone();
-    report["actual"] = f["actual"].clone();
-    report["values"] = Value::Null;
-}
-/// Preflight repeats raw-seven authentication and prior proof without DB path
-/// inspection. It publishes the complete fixed request/source/bound profile.
-pub fn preflight(output: &Path) -> Result<()> {
-    let output = native::output_path(output)?;
-    let (plan, selected, authority) = authority()?;
-    let mut report = base(selected, authority)?;
-    report["status"] = json!("authority_inputs_authenticated_no_database_open");
-    report["head"] = native::identity_json(plan.context().head);
-    report["parent"] = native::identity_json(plan.context().parent);
-    report["delayed"] = json!(
-        plan.context()
-            .delayed
-            .iter()
-            .copied()
-            .map(native::identity_json)
-            .collect::<Vec<_>>()
-    );
-    report["genesis_hash_hex"] = json!(hex::encode(plan.context().genesis_hash));
-    report["head_header_sha256"] = json!(hex::encode(plan.context().head_header_sha256));
-    publish(&output, &report)
-}
-/// Capture exactly forty-seven remaining requests after complete prior-proof
-/// authority. One failure stops later reads and publishes no accepted prefix.
-pub fn capture(bundle_output: &Path, report_output: &Path) -> Result<()> {
-    let paths = paths::validate(Path::new(native::COPY), bundle_output)?;
-    let reports = paths::validate(Path::new(native::COPY), report_output)?;
-    ensure!(paths.output != reports.output, "window outputs overlap");
-    let (plan, selected, authority) = authority()?;
-    let mut report = base(selected, authority)?;
-    interval_history::encode_bounded(&report, REPORT_CAP)?;
-    match capture_vrf_voter_run(
-        &paths.application,
-        &paths.state,
-        &plan,
-        ConcreteWitnessLimits::default(),
-    ) {
-        Err(f) => {
-            stopped(&mut report, &f);
-            publish(&reports.output, &report)?;
-            anyhow::bail!("window capture stopped; no prefix")
-        }
-        Ok(c) => {
-            ensure!(c.bundle.len() <= native::BUNDLE_CAP, "window bundle cap");
-            report["status"] = json!("captured_requires_offline_replay");
-            report["actual"] = native::usage(c.usage);
-            report["bundle"] = json!({"path":paths.output,"bytes":c.bundle.len(),"sha256":admission::sha(&c.bundle)});
-            let encoded = interval_history::encode_bounded(&report, REPORT_CAP)?;
-            admission::publish_exclusive(&paths.output, &c.bundle)?;
-            admission::publish_exclusive(&reports.output, &encoded)
-        }
-    }
-}
-/// Offline replay repeats raw-seven authority, consumes every proof and returns
-/// all forty-seven canonical values/provenance. No DB input is available.
-pub fn replay(bundle_input: &Path, report_output: &Path) -> Result<()> {
-    let output = native::output_path(report_output)?;
-    let input = fs::canonicalize(bundle_input)?;
-    admission::outside_db(&input)?;
-    ensure!(
-        fs::metadata(&input)?.is_file() && input != output,
-        "window bundle input"
-    );
-    let (plan, selected, authority) = authority()?;
-    let mut report = base(selected, authority)?;
-    let bytes = admission::read_capped(fs::File::open(&input)?, native::BUNDLE_CAP)?;
-    let verified = match replay_vrf_voter_bundle(&bytes, &plan, ConcreteWitnessLimits::default()) {
-        Ok(v) => v,
-        Err(f) => {
-            stopped(&mut report, &f);
-            publish(&output, &report)?;
-            anyhow::bail!("window replay stopped; no prefix")
-        }
-    };
-    let mut values = first::decode_values(&verified.logical)?;
-    for (i, (value, physical)) in values
-        .as_array_mut()
-        .context("window values")?
-        .iter_mut()
-        .zip(verified.physical)
-        .enumerate()
-    {
-        value["proof_index"] = json!(51 + i);
-        value["physical"] = match physical {
-            ConcreteWitnessPhysical::Present(v) => {
-                json!({"kind":"present","bytes":v.len(),"sha256":admission::sha(&v)})
-            }
-            ConcreteWitnessPhysical::Tombstone => json!({"kind":"tombstone"}),
-            ConcreteWitnessPhysical::HistoryUnavailable(id) => {
-                json!({"kind":"successful_seek_without_matching_version","identity":native::identity_json(id)})
-            }
-        };
-    }
-    report["status"] = json!("all_forty_seven_vrf_inputs_authenticated");
-    report["actual"] = native::usage(verified.usage);
-    report["bundle"] = json!({"path":input,"bytes":bytes.len(),"sha256":admission::sha(&bytes)});
-    report["values"] = values;
-    report["qualification"]["vrf_family_qualified"] = json!(true);
-    publish(&output, &report)
-}
-
+#[cfg(test)]
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 mod tests {
     use super::*;
