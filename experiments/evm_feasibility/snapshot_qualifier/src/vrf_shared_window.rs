@@ -1,7 +1,7 @@
 //! Sealed diagnostic VRF windows. Authenticate fixed raw authority and all71 prior
 //! proofs before constructing47 requests. Each profile has fixed vote-row indices;
 //! no caller can supply a voter, root, key or ceiling. Failures qualify no prefix.
-//! Embedded22 source pins require the separately reviewed complete68-source freeze.
+//! Embedded22 source pins require the separately reviewed complete74-source freeze.
 use crate::{
     artifact_admission as admission, interval_history, native_witness as native,
     parent_input_handoff, parent_reward_fields as fields, paths, vrf_witness as first,
@@ -33,8 +33,11 @@ pub(crate) enum Profile {
     Fifth,
     Sixth,
     Seventh,
+    Eighth,
+    Ninth,
+    Tenth,
 }
-const VOTERS: [&str; 7] = [
+const VOTERS: [&str; 10] = [
     "138c1b9baea7d93a981ba694f5318f735c997298",
     "264a30e880d3b53bb2cdeb234e34201ebf9a9965",
     "329d40b5f15cfe4de0e9953d0599d2a39a65fc04",
@@ -42,8 +45,11 @@ const VOTERS: [&str; 7] = [
     "6bf44c438f6328640b0bc5d7d7766310cf49610f",
     "a6cec53b4d7920709f05ca1f7ac0d66338d29cb9",
     "c9b2ed9876bd463f67a412bb7ce3ea269e3fdafa",
+    "d27c327e3dfcfce0acf72438f6e7a7e6c87e06ef",
+    "d6d73e4c65c92787a2bbc80d109c293d8d3477af",
+    "f27d87cda5bc0bfac6ef93222cfd83c6e8dc9f0d",
 ];
-const PROFILES: [&str; 7] = [
+const PROFILES: [&str; 10] = [
     "n4_remaining_vrf_voter_138c1b9baea7d93a981ba694f5318f735c997298_v1",
     "n4_remaining_vrf_voter_264a30e880d3b53bb2cdeb234e34201ebf9a9965_v1",
     "n4_remaining_vrf_voter_329d40b5f15cfe4de0e9953d0599d2a39a65fc04_v1",
@@ -51,9 +57,12 @@ const PROFILES: [&str; 7] = [
     "n4_remaining_vrf_voter_6bf44c438f6328640b0bc5d7d7766310cf49610f_v1",
     "n4_remaining_vrf_voter_a6cec53b4d7920709f05ca1f7ac0d66338d29cb9_v1",
     "n4_remaining_vrf_voter_c9b2ed9876bd463f67a412bb7ce3ea269e3fdafa_v1",
+    "n4_remaining_vrf_voter_d27c327e3dfcfce0acf72438f6e7a7e6c87e06ef_v1",
+    "n4_remaining_vrf_voter_d6d73e4c65c92787a2bbc80d109c293d8d3477af_v1",
+    "n4_remaining_vrf_voter_f27d87cda5bc0bfac6ef93222cfd83c6e8dc9f0d_v1",
 ];
-const PRIOR_INDICES: [usize; 7] = [1, 2, 3, 6, 7, 10, 13];
-const INDICES: [[usize; 47]; 7] = [
+const PRIOR_INDICES: [usize; 10] = [1, 2, 3, 6, 7, 10, 13, 14, 15, 18];
+const INDICES: [[usize; 47]; 10] = [
     [
         65, 122, 182, 239, 293, 347, 404, 464, 524, 581, 641, 698, 752, 809, 869, 923, 980, 1037,
         1094, 1154, 1214, 1274, 1331, 1385, 1433, 1490, 1550, 1607, 1664, 1718, 1775, 1835, 1892,
@@ -88,6 +97,21 @@ const INDICES: [[usize; 47]; 7] = [
         98, 158, 218, 272, 323, 380, 440, 500, 560, 617, 674, 731, 785, 845, 902, 956, 1013, 1070,
         1130, 1190, 1250, 1310, 1361, 1412, 1466, 1526, 1583, 1640, 1697, 1754, 1811, 1868, 1922,
         1976, 2036, 2093, 2150, 2210, 2264, 2324, 2381, 2438, 2495, 2555, 2606, 2663, 2723,
+    ],
+    [
+        101, 161, 221, 275, 326, 383, 443, 503, 563, 620, 677, 734, 788, 848, 905, 959, 1016, 1073,
+        1133, 1193, 1253, 1313, 1364, 1415, 1469, 1529, 1586, 1643, 1700, 1757, 1814, 1871, 1925,
+        1979, 2039, 2096, 2153, 2213, 2267, 2327, 2384, 2441, 2498, 2558, 2609, 2666, 2726,
+    ],
+    [
+        104, 164, 224, 278, 329, 386, 446, 506, 566, 623, 680, 737, 791, 851, 908, 962, 1019, 1076,
+        1136, 1196, 1256, 1316, 1367, 1418, 1472, 1532, 1589, 1646, 1703, 1760, 1817, 1874, 1928,
+        1982, 2042, 2099, 2156, 2216, 2270, 2330, 2387, 2444, 2501, 2561, 2612, 2669, 2729,
+    ],
+    [
+        113, 173, 230, 287, 338, 395, 455, 515, 572, 632, 689, 743, 800, 860, 914, 971, 1028, 1085,
+        1145, 1205, 1265, 1322, 1376, 1424, 1481, 1541, 1598, 1655, 1709, 1769, 1826, 1883, 1937,
+        1991, 2051, 2108, 2165, 2225, 2279, 2339, 2396, 2453, 2510, 2570, 2618, 2678, 2738,
     ],
 ];
 impl Profile {
@@ -236,11 +260,25 @@ pub(crate) fn authority(profile: Profile) -> Result<(ConcreteVrfVoterPlan, Value
                 .enumerate()
             {
                 let tuple = plan.tuples()[i];
-                if profile == Profile::Seventh {
+                let fixed_key = match profile {
+                    Profile::Seventh => {
+                        Some("fdad1437f176f1a0acaf8244356c9d0169241736fde0b7a1355e0d52e1ac2f6f")
+                    }
+                    Profile::Eighth => {
+                        Some("d801919ffd29925243c28612983151535ef289be8872b1db4b4b41885167ee42")
+                    }
+                    Profile::Ninth => {
+                        Some("da94f95efae9d2677940e6f37edbad5613af9bdb4d920a54465aae06f871e07d")
+                    }
+                    Profile::Tenth => {
+                        Some("afff6c972f0508d1a892f0fb547e3044bf50ee2df3293d56c78ba7ab8939aebe")
+                    }
+                    _ => None,
+                };
+                if let Some(key) = fixed_key {
                     ensure!(
-                        hex::encode(tuple.key.0)
-                            == "fdad1437f176f1a0acaf8244356c9d0169241736fde0b7a1355e0d52e1ac2f6f",
-                        "seventh key binding"
+                        hex::encode(tuple.key.0) == key,
+                        "fixed successor key binding"
                     );
                 }
                 row["tuple"] = json!({"identity":native::identity_json(tuple.identity),"address_hex":hex::encode(tuple.address),
@@ -303,6 +341,18 @@ pub(crate) fn base(profile: Profile, selected: Value, authority: Value) -> Resul
         Profile::Seventh => [
             pin!("bin/live_vrf_seventh_voter_window.rs"),
             pin!("bin/replay_vrf_seventh_voter_window.rs"),
+        ],
+        Profile::Eighth => [
+            pin!("bin/live_vrf_eighth_voter_window.rs"),
+            pin!("bin/replay_vrf_eighth_voter_window.rs"),
+        ],
+        Profile::Ninth => [
+            pin!("bin/live_vrf_ninth_voter_window.rs"),
+            pin!("bin/replay_vrf_ninth_voter_window.rs"),
+        ],
+        Profile::Tenth => [
+            pin!("bin/live_vrf_tenth_voter_window.rs"),
+            pin!("bin/replay_vrf_tenth_voter_window.rs"),
         ],
     });
     ensure!(sources.len() == 22, "window source count");
@@ -456,6 +506,45 @@ pub fn seventh_replay(bundle: &Path, report: &Path) -> Result<()> {
     replay(Profile::Seventh, bundle, report)
 }
 
+/// Authenticate the fixed eighth profile offline; errors publish no partial authority.
+pub fn eighth_preflight(output: &Path) -> Result<()> {
+    preflight(Profile::Eighth, output)
+}
+/// Capture the fixed eighth profile through its independently reviewed one-use guard.
+pub fn eighth_capture(bundle: &Path, report: &Path) -> Result<()> {
+    capture(Profile::Eighth, bundle, report)
+}
+/// Replay all fixed eighth proofs offline; errors qualify no prefix.
+pub fn eighth_replay(bundle: &Path, report: &Path) -> Result<()> {
+    replay(Profile::Eighth, bundle, report)
+}
+
+/// Authenticate the fixed ninth profile offline; errors publish no partial authority.
+pub fn ninth_preflight(output: &Path) -> Result<()> {
+    preflight(Profile::Ninth, output)
+}
+/// Capture the fixed ninth profile through its independently reviewed one-use guard.
+pub fn ninth_capture(bundle: &Path, report: &Path) -> Result<()> {
+    capture(Profile::Ninth, bundle, report)
+}
+/// Replay all fixed ninth proofs offline; errors qualify no prefix.
+pub fn ninth_replay(bundle: &Path, report: &Path) -> Result<()> {
+    replay(Profile::Ninth, bundle, report)
+}
+
+/// Authenticate the fixed tenth profile offline; errors publish no partial authority.
+pub fn tenth_preflight(output: &Path) -> Result<()> {
+    preflight(Profile::Tenth, output)
+}
+/// Capture the fixed tenth profile through its independently reviewed one-use guard.
+pub fn tenth_capture(bundle: &Path, report: &Path) -> Result<()> {
+    capture(Profile::Tenth, bundle, report)
+}
+/// Replay all fixed tenth proofs offline; errors qualify no prefix.
+pub fn tenth_replay(bundle: &Path, report: &Path) -> Result<()> {
+    replay(Profile::Tenth, bundle, report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,6 +620,13 @@ mod tests {
                 "35c05787ece4bb2b38a3cbe2fb3137019cbb34d79fd24c9406b857821d5fe187",
                 "vrf_sixth_voter_window.rs",
             ),
+            (
+                Profile::Seventh,
+                "/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013/seventh-voter/vrf-seventh-voter-window-replay.json",
+                59467,
+                "f551c202f8b929616294395d0748f8e269b53352748a8411fd7671a9a37a8c5e",
+                "vrf_shared_window.rs",
+            ),
         ];
         let scratch = Path::new("/home/fry/artifacts").join(format!(
             "shared-vrf-equivalence-{}-{}",
@@ -577,7 +673,7 @@ mod tests {
                 assert_eq!(a.len(), b.len());
                 for (before, after) in a.iter_mut().zip(b.iter()) {
                     let path = before["path"].as_str().unwrap();
-                    let expected = if path == "lib.rs" {
+                    let expected = if path == "lib.rs" && profile != Profile::Seventh {
                         Some(("lib.rs", include_bytes!("lib.rs").as_slice()))
                     } else if path == adapter {
                         Some((
@@ -657,5 +753,111 @@ mod tests {
                 .used(rustaxa_storage::ConcreteWitnessResource::PayloadTuples),
             0
         );
+    }
+
+    #[test]
+    fn fixed_successors_authenticate_prior_and_reject_substitution() {
+        let (_, rows, _) = parent_input_handoff::load_authenticated_voter_authority().unwrap();
+        let prior_bytes = canonical_prior().unwrap();
+        for (profile, key, prior_index) in [
+            (
+                Profile::Eighth,
+                "d801919ffd29925243c28612983151535ef289be8872b1db4b4b41885167ee42",
+                14,
+            ),
+            (
+                Profile::Ninth,
+                "da94f95efae9d2677940e6f37edbad5613af9bdb4d920a54465aae06f871e07d",
+                15,
+            ),
+            (
+                Profile::Tenth,
+                "afff6c972f0508d1a892f0fb547e3044bf50ee2df3293d56c78ba7ab8939aebe",
+                18,
+            ),
+        ] {
+            let (plan, selected, summary) = authority(profile).unwrap();
+            assert_eq!(hex::encode(plan.voter()), profile.voter());
+            assert_eq!(
+                summary["prior_first_d"]["selected"]["proof_index"],
+                51 + prior_index
+            );
+            assert_eq!(selected.as_array().unwrap().len(), 47);
+            for (i, tuple) in plan.tuples().iter().enumerate() {
+                assert_eq!(hex::encode(tuple.key.0), key);
+                assert_eq!(
+                    selected[i]["tuple"]["identity"],
+                    native::identity_json(tuple.identity)
+                );
+                assert_eq!(
+                    selected[i]["parent_manifest_index"],
+                    INDICES[profile as usize][i]
+                );
+            }
+            assert_eq!(
+                select(profile, &rows).unwrap(),
+                select(profile, &rows).unwrap()
+            );
+            for index in [INDICES[profile as usize][0], INDICES[profile as usize][46]] {
+                let mut wrong = rows.clone();
+                wrong[index]["voter_hex"] = json!(VOTERS[6]);
+                assert!(select(profile, &wrong).is_err());
+                let mut wrong = rows.clone();
+                wrong[index]["delayed_period"] = json!(FIRST);
+                assert!(select(profile, &wrong).is_err());
+            }
+            let mut reordered = rows.clone();
+            reordered
+                .as_array_mut()
+                .unwrap()
+                .swap(INDICES[profile as usize][0], INDICES[profile as usize][1]);
+            assert!(select(profile, &reordered).is_err());
+            let mut duplicate = rows.clone();
+            duplicate[INDICES[profile as usize][1]] =
+                duplicate[INDICES[profile as usize][0]].clone();
+            assert!(select(profile, &duplicate).is_err());
+            let mut missing = rows.clone();
+            missing
+                .as_array_mut()
+                .unwrap()
+                .remove(INDICES[profile as usize][0]);
+            assert!(select(profile, &missing).is_err());
+            let (context, _, _) =
+                parent_input_handoff::load_authenticated_voter_authority().unwrap();
+            let (first_plan, _) = first::selection(context, &rows).unwrap();
+            let mut bad_prior = prior_bytes.clone();
+            bad_prior[0] ^= 1;
+            assert!(
+                after_prior(profile, first_plan, &bad_prior, |_, _| -> Result<()> {
+                    panic!("prior failure reached window construction")
+                })
+                .is_err()
+            );
+            let old_path = Path::new(
+                "/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013/seventh-voter/vrf-seventh-voter-window.rcv2",
+            );
+            let old = admission::evidence(
+                old_path,
+                old_path,
+                "a85b207821918e85e687180f94eca13a7e1dab6fc5659cbd4a80d917d476bf9f",
+                680089,
+                680089,
+            )
+            .unwrap();
+            let failure = replay_vrf_voter_bundle(&old, &plan, ConcreteWitnessLimits::default())
+                .err()
+                .unwrap();
+            assert_eq!(
+                failure.error,
+                rustaxa_storage::ConcreteWitnessError::Identity
+            );
+            assert_eq!(failure.index, 0);
+            assert_eq!(
+                failure
+                    .usage
+                    .used(rustaxa_storage::ConcreteWitnessResource::PayloadTuples),
+                0
+            );
+        }
     }
 }

@@ -216,13 +216,126 @@ class Builder(Fixture):
         with patch.object(guard,'PIN_TOTAL',1):
             with self.assertRaises(ValueError): guard.build(path)
         for mutate in [lambda r:r['selection'][0]['tuple'].update(logical_key_hex='0'*64),
-                       lambda r:r['selection'].reverse(),lambda r:r['selection'].pop(),
+                       lambda r:r['authority']['six_input_owner']['sources'].reverse(),
+            lambda r:r['authority']['six_input_owner']['sources'][0].update(path='../src/parent_input_handoff.rs'),
+            lambda r:r['selection'].reverse(),lambda r:r['selection'].pop(),
                        lambda r:r['authority']['prior_first_d']['selected'].update(proof_index=61),
                        lambda r:r['bounds']['storage_resources'][0].update(limit=65),
                        lambda r:r['selection'][0]['tuple']['identity'].update(state_root_hex='0'*64)]:
             bad=copy.deepcopy(report); mutate(bad)
             with self.assertRaises(ValueError): guard.validate_preflight(bad)
 
+
+    def successor_fixture(self, ordinal):
+        path,spec,report = self.fixture()
+        fixed = next((profile,row) for profile,row in guard.SUCCESSORS.items() if row['ordinal']==ordinal)
+        profile,row = fixed
+        mapping=guard.read_json(guard.SHARED_RUN/'seventh-voter/vrf-seventh-voter-window-preflight.json',guard.FREEZE_CAP)
+        # Synthetic request fixtures test binding; they grant no physical authority.
+        raw=guard.read_json(guard.PREPARATION)['rows']
+        indices=row['indices']
+        report['profile']=profile
+        prepared=dict(rows=[],prior_first_d=dict(
+            identity=report['authority']['prior_first_d']['selected']['identity'],
+            selection_index=row['prior_index'],parent_manifest_index=row['prior_index']*3+2,
+            accepted_value=dict(value_hex='ab'*32)))
+        for i,old in enumerate(raw):
+            source=copy.deepcopy(old['source_row']); source['voter_hex']=row['voter']
+            prepared['rows'].append(dict(original_parent_manifest_index=indices[i],source_row=source,
+                                         identity=old['identity'],account_hex=old['account_hex']))
+        report['selection']=[dict(parent_manifest_index=r['original_parent_manifest_index'],source_row=r['source_row'],
+             tuple=dict(identity=r['identity'],address_hex=r['account_hex'],logical_key_hex=row['key'],
+                        key_preimage_hex=f"0004{row['voter']}")) for r in prepared['rows']]
+        report['authority']['prior_first_d']['selected']=dict(proof_index=51+row['prior_index'],
+             identity=prepared['prior_first_d']['identity'],voter_hex=row['voter'],value_hex='ab'*32,usable_vrf_key=True)
+        run=path.parent
+        binaries=[]
+        for kind in ['live','replay']:
+            p=run/f'{kind}-vrf-{ordinal}-voter-window-v1'; p.write_bytes(b'synthetic-no-execution'); binaries.append(guard.pin_file(p))
+        spec['binaries']=binaries
+        report['authority']['six_input_owner']['executable']=binaries[0]
+        for i,kind in enumerate(['live','replay']):
+            source=f'bin/{kind}_vrf_{ordinal}_voter_window.rs'
+            report['vrf_sources'][-2+i]={'path':source,**{k:v for k,v in guard.pin_file(guard.SRC/source).items() if k!='path'}}
+        prep=run/f'vrf-{ordinal}-voter-preparation.json'
+        prep.write_bytes(guard.encoded(prepared,guard.METADATA_CAP))
+        spec['preparation']=guard.pin_file(prep)
+        # Pin immutable history at original paths; current placeholder records are
+        # synthetic evidence and can never make an independently reviewed READY.
+        for name in ['common-authority-review.md','common-authority-amendment.md','code-acceptance-review.md',
+                     'validation-summary.json','storage-validation-reuse.json','source-commit.json','source-commit.log',
+                     'source-hook-summary.json','startup-reconciliation.json','instruction-successor-freeze.json',
+                     'command-ready-review.md','seventh-voter/family-final-review.md','fact-outcome-freeze.json',
+                     'final-closeout-freeze.json','source-freeze.json','seventh-voter/binary-freeze.json',
+                     'seventh-voter/vrf-seventh-voter-window.rcv2','seventh-voter/vrf-seventh-voter-window-replay.json','seventh-voter/vrf-seventh-voter-window-preflight.json','seventh-voter/vrf-seventh-voter-window-command-freeze.json','seventh-voter/exact-commands.json']:
+            spec['evidence'].append(guard.pin_file(guard.SHARED_RUN/name))
+        for name in ['successor-authority-amendment.md','luna-map.md','luna-rows.json',
+                     'source-successor-mapping.json','binary-successor-mapping.json','preparation-comparison.json']:
+            p=self.root/name;p.write_text('synthetic fixture only');spec['evidence'].append(guard.pin_file(p))
+        spec['evidence'].append(spec['preparation'])
+        preflight=Path(spec['preflight']['path']);preflight.write_bytes(guard.encoded(report,guard.FREEZE_CAP))
+        spec['preflight']=guard.pin_file(preflight)
+        path.write_bytes(guard.encoded(spec,guard.METADATA_CAP))
+        return path,spec,report,prepared
+
+    def test_each_sealed_successor_builds_and_binds_outputs(self):
+        for ordinal in ['eighth','ninth','tenth']:
+            # Each fixture has its own isolated path and source-pinned spec.
+            with self.subTest(ordinal=ordinal):
+                case=Builder();case.setUp()
+                try:
+                    path,spec,report,_=case.successor_fixture(ordinal)
+                    data=guard.build(path)
+                    self.assertEqual(data,guard.build(path))
+                    freeze=json.loads(data)
+                    self.assertEqual(freeze['profile'],report['profile'])
+                    self.assertEqual(freeze['source_count'],74)
+                    self.assertIn(f'vrf-{ordinal}-voter-window.rcv2',freeze['capture_command'][2])
+                finally:case.tearDown()
+
+    def test_successor_cross_profile_preparation_root_key_order_and_sources(self):
+        path,spec,report,prepared=self.successor_fixture('eighth')
+        guard.build(path)
+        preflight=Path(spec['preflight']['path'])
+        mutations=[
+            lambda r:r.update(profile='n4_remaining_vrf_voter_unknown_v1'),
+            lambda r:r.update(profile=next(p for p,x in guard.SUCCESSORS.items() if x['ordinal']=='ninth')),
+            lambda r:r['selection'][0]['tuple']['identity'].update(state_root_hex='0'*64),
+            lambda r:r['selection'][0]['tuple'].update(logical_key_hex='0'*64),
+            lambda r:r['authority']['six_input_owner']['sources'].reverse(),
+            lambda r:r['authority']['six_input_owner']['sources'][0].update(path='../src/parent_input_handoff.rs'),
+            lambda r:r['selection'].reverse(),
+            lambda r:r['selection'].pop(),
+            lambda r:r['selection'].__setitem__(1,copy.deepcopy(r['selection'][0])),
+            lambda r:r['authority']['prior_first_d']['selected'].update(proof_index=64),
+            lambda r:r['vrf_sources'][-1].update(path='bin/replay_vrf_ninth_voter_window.rs')]
+        for mutate in mutations:
+            changed=copy.deepcopy(report);mutate(changed)
+            preflight.write_bytes(guard.encoded(changed,guard.FREEZE_CAP))
+            altered=copy.deepcopy(spec);altered['preflight']=guard.pin_file(preflight)
+            path.write_bytes(guard.encoded(altered,guard.METADATA_CAP))
+            with self.assertRaises(ValueError):guard.build(path)
+        preflight.write_bytes(guard.encoded(report,guard.FREEZE_CAP))
+        path.write_bytes(guard.encoded(spec,guard.METADATA_CAP))
+        prep=Path(spec['preparation']['path']);prep.write_bytes(guard.encoded(dict(prepared,rows=[]),guard.METADATA_CAP))
+        with self.assertRaises(ValueError):guard.build(path)
+
+    def test_successor_guard_consumes_own_marker_and_unknown_rejects(self):
+        bounds=Bounds();bounds.root=self.root
+        freeze,sha,value=bounds.trusted_freeze()
+        for profile,row in guard.SUCCESSORS.items():
+            value['profile']=profile
+            freeze.write_bytes(guard.encoded(value,guard.FREEZE_CAP))
+            sha=guard.pin_file(freeze)['sha256']
+            with patch.object(guard,'verify_files',side_effect=ValueError('source drift')) as verify:
+                with self.assertRaisesRegex(ValueError,'source drift'):guard.capture(freeze,sha)
+                self.assertTrue((self.root/f"vrf-{row['ordinal']}-voter-window-attempt.json").is_file())
+                with self.assertRaises(FileExistsError):guard.capture(freeze,sha)
+                self.assertEqual(verify.call_count,1)
+        value['profile']='unknown'
+        freeze.write_bytes(guard.encoded(value,guard.FREEZE_CAP))
+        with patch.object(guard,'exclusive',side_effect=AssertionError('unknown marker')):
+            with self.assertRaises(ValueError):guard.capture(freeze,guard.pin_file(freeze)['sha256'])
 
 if __name__ == '__main__':
     unittest.main()
