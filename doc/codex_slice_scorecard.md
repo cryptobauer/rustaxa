@@ -662,3 +662,39 @@ owns final consumption. Prior exhausted budgets and historical routing stay unch
 Remaining612 VRF+1828 other rows, lambda48, raw cache RLP48 and producer/policy/
 owner/weights/cache/finality/19-transfer blockers remain. Seventh has fresh conditional
 design only; no source/read. See [checkpoint](evm_research/n4_next_run_checkpoint.md).
+
+
+## Shared bounded VRF trial — October 13
+
+Accepted shared sealed engine plus47 new seventh-voter facts:349 total and seven
+complete voters. Source commit3f1eb719 is local only. Six old saved windows have
+complete equivalent reports under verified source/executable successors; no old
+capture was repeated. New seventh capture has exact independent READY, full lead/
+independent byte-equal replay,98 proofs and old-profile rejection at payload0.
+
+Requested routes: Sol6.1 medium lead/independent reviewer; Luna medium bounded map;
+Astra medium common authority and one focused marker/metadata amendment. Lead
+runtime is observed; child runtime and billing remain unknown. Frozen reviewer
+routing transcription is corrected separately in R/sol-routing-correction.md.
+R is /home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013.
+No thread or model routing failure occurred. One lead writer owned implementation.
+
+Corrections: test Debug bound; guard lexical path admission and earlier trusted
+marker consumption with failing-before/passing-after regressions; one metadata
+mock binding. No cap increase or guard retry. Gates113lib/185package/shared2/tool19/
+parity1/CLI19/quality/all-bin/fast2130/source-hook2130 pass. Storage172/ONbridge4
+reuse has106 unchanged pin occurrences, cache/evidence checks and explicit qualifier
+successors. Fact seal293 pin occurrences/415153441 bytes stays under400/450MiB.
+
+Measured gate time: shared focused191.25s, qualifier package250.65s, quality/all-bin10s,
+fast253.92s and source hook231.78s. Capture27.64s; lead replay25.85s and reverse
+25.98s are outer invocation times with bounded child records. Independent times and review/correction records
+stay in R. Fresh100% baseline/floor90%; R/final-quota.json owns final consumption
+and reset1792497899. Allowance does not measure tokens or billing. This checked
+trial is evidence for a later scope-matched cost audit; no saving is inferred here.
+
+All seven historical guards plus the new marker are consumed. Remaining565 VRF+
+1828 stake/jail rows and lambda/cache/producer/weights/owner/finality/real-replay
+blockers remain. No production routing or push. Read the current
+[checkpoint](evm_research/n4_next_run_checkpoint.md) and
+[shared contract](evm_research/n4_shared_bounded_vrf.md).

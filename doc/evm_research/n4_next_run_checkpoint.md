@@ -1,93 +1,60 @@
-# N4 VRF checkpoint — October 13, third round
+# N4 shared VRF checkpoint — October 13
 
-This round accepted 94 new VRF facts: the fifth and sixth fixed 47-row families.
-The total is 302. Six complete voters each have all 48 VRF periods closed.
-All source commits are local. Nothing was pushed. Production routing is unchanged.
+Accepted source HEAD `3f1eb719d84bd30c682daf65f92235eab8f3913d` is local only.
+The shared sealed path and voter seven are accepted. Exactly47 new VRF facts
+raise the total to349; seven complete48-period voters are closed. The seven old
+physical guards and the new seventh guard are consumed. Never rerun them.
 
-R3 is `/home/fry/artifacts/n4-vrf-round3-01a12d5e-20261013`. P5 and P6 are its fifth-voter and sixth-voter directories.
-Prior accepted history is in `/home/fry/artifacts/n4-vrf-round2-01a12d5e-20261012`
-(R2), including its checkpoint, immutable source copies and final acceptance.
-The first-period 20 and prior four complete voter families remain accepted.
+R is `/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013`.
+Read R/checkpoint-final.md for final documentation HEAD and quota. Accepted common
+Astra contract/amendment, independent Sol implementation ACCEPT, exact READY and
+full fact ACCEPT are in R. R/fact-outcome-freeze.json seals the fixed parent and
+outcome:293 pin occurrences/415153441 bytes, within400/450MiB. Historical R2/R3
+freezes, captures, budgets and345 source copies stay intact. R/owned-doc-predecessors.json
+preserves the two documentary predecessors replaced by this closeout.
 
-## Closed dependencies
+The new68-source closure is the old65 paths plus shared Rust engine and two fixed
+seventh CLIs. Seven changed paths are lib.rs and six thin wrappers;58 owner/source
+paths are unchanged. Two Python tool/test sources bring the measured source sum
+to1293055 bytes. The embedded22 report pins have an explicit wrapper-to-shared
+mapping and keep the repeated1041247-byte sum. Old source68 draft is history;
+its path model was not reused. See [shared contract](n4_shared_bounded_vrf.md).
 
-The offline overlap audit remains closed. The 69 unavailable probes are
-undelegation-count tuples, with zero complete tuple overlap with VRF. Shared roots,
-FE account or periods do not prove retention and do not authorize retries.
+All six accepted saved windows have complete equivalent reports under checked
+source/executable successors. Gates pass:113 qualifier library/185 package tests,
+shared2, tool19, canonical parity1,19 actual argv rejections, fmt/clippy/all-bin,
+fast2130 and actual source hook2130. Storage172/Rust-enabled bridge4 evidence is
+reused after106 unchanged pin occurrences, cache and evidence checks; changed
+qualifier pins use fresh equivalence/package checks. No storage or C++ changed.
 
-Fifth source commit `b8673ce2af85d866f2b72bb80094154fe0ea7baa` adds the fixed voter
-`6bf44c438f6328640b0bc5d7d7766310cf49610f`, prior selection7/proof58.
-P5/family-final-review.md accepts all 47 D25706895..25706941 facts.
-Bundle: 677739 bytes, SHA256 aef483116caabce7b5080bcbf2a7a67db51cdbcdf2465b1024cced711f8a30a7.
-Replay: 59403 bytes, SHA256 9f3124ada4f7c88dd2c8037ec0ac7c7e87907bcea61d683df8746054d9f39fce.
+Seventh voter `c9b2ed9876bd463f67a412bb7ce3ea269e3fdafa` has all47 remaining
+D25706895..25706941 facts. First-D parent41/selection13/proof64 remains a fresh
+complete71-proof barrier. The single guarded capture succeeded; lead and independent
+full98-proof replays match byte for byte. Original first profile rejects at
+Identity/Payload/index0 with zero payload tuples. Values are physical Present,
+logical Member,32 bytes and nonzero. Before/after fixed metadata records match;
+this is narrower than full database byte preservation.
 
-Sixth source commit `42ed7ac9ad9f01d046ef400f6a013791ed22ede6` adds the fixed voter
-`a6cec53b4d7920709f05ca1f7ac0d66338d29cb9`, prior selection10/proof61.
-P6/family-final-review.md accepts all 47 facts over the same delayed periods.
-Bundle: 678585 bytes, SHA256 7b270eb9a7bd023d66a74e7f3cf775e07321ad5361db08ed083756f54cf04d5b.
-Replay: 59404 bytes, SHA256 35c05787ece4bb2b38a3cbe2fb3137019cbb34d79fd24c9406b857821d5fe187.
+Bundle680089 bytes/SHAa85b207821918e85e687180f94eca13a7e1dab6fc5659cbd4a80d917d476bf9f.
+Replay59467 bytes/SHAf551c202f8b929616294395d0748f8e269b53352748a8411fd7671a9a37a8c5e.
+All13 ceilings,47-payload scope, metadata64KiB/command128KiB, the one exact historical
+87841-byte exception, sink64KiB/result16KiB/deadline300s remain. Lexical path admission
+and earlier trusted-attempt consumption have retained failure/pass regressions and
+independent review. Invalid freezes cannot choose a marker; every admitted failure
+consumes it. No prefix, zero substitution, cap expansion or physical retry occurred.
 
-Each family has independent exact-command READY, one guarded capture, a complete
-lead replay, an independent byte-identical replay and an old-plan rejection at
-Identity/Payload/index0 with PayloadTuples used0. Values are Member/Present,
-32 bytes and nonzero as a whole. Outer invocation records retain actual tool exits.
-All seven physical VRF guards across the three rounds are consumed. Never rerun them.
-Metadata equality is narrower than complete database byte preservation.
+Fresh lead baseline100%, floor90%, reset1792497899; preserve R/quota-budget.json on
+same-session resume. R/final-quota.json owns the final observed consumption. Requested
+routes: Sol6.1 medium lead/reviewer, Luna medium map, Astra medium common authority;
+lead runtime is observed, child runtimes are unknown. A separate routing correction
+preserves the frozen reviewer transcription. Do not infer billing from allowance.
 
-All 62 fifth and 65 sixth source copies are preserved in R3/frozen-fifth-source
-and R3/frozen-sixth-source, with exact manifests. Historical R2 copies remain intact.
-Use archived copies for superseded shared-source hashes. Do not rehash stale workspace
-paths as if they represented an earlier source commit.
+Remaining565 VRF+1828 stake/jail=2393 voter rows. Lambda48 with producer/source/custody/
+policy/export provenance, raw expected cache RLP48, producer/configuration authority,
+weights/cache equality, owner/public finality and real19-transfer replay stay open.
+No production routing, push, fallback/protocol change or wider campaign is authorized.
 
-## Validation and reviewed bounds
-
-Both profiles pass focused6, full qualifier105/111, canonical parity1, CLI19,
-guard6, cap-boundary and historical admission controls, fmt/check/clippy and builds.
-Sixth review required an additional actual all-bin build; it passed and is frozen.
-Each fast gate and actual source commit hook passed 2130 tests with zero failures.
-Storage172/bridge4 evidence is reused after exact checks of 52 unchanged R2 pins,
-58/61 unchanged parent pins and the Rust-enabled CMake cache. No storage/C++ changed.
-
-Command-freeze admission remains128KiB; normal metadata admission remains64KiB.
-One immutable R2 startup map has an exact87841-byte/SHA-before-parse exception,
-with growth, short, cap+1 and same-size hash-drift rejection tests. This exception
-does not raise other metadata caps. All13 witness ceilings, 47 payloads/98 proofs,
-raw7 authentication and full71-prior-proof barrier remain unchanged. Sink64KiB,
-result16KiB and300-second timeout remain fixed. No prefix acceptance or retry occurred.
-The fifth builder's pre-publication missing-path failure and its correction remain
-recorded. A sixth helper's reverse-profile/PATH and closed-pipe wait defects were fixed before
-execution. Its actual hanging-child regression confirms deadline termination.
-A later offline helper tuple-shape precheck failed before any replay child started;
-the frozen helper remained intact and a separately reviewed corrected helper was used.
-
-## Exact remaining blockers
-
-612 VRF rows plus1828 stake/per-voter-jail rows remain:2440 voter rows.
-Also open: lambda48 with producer/source/custody/policy/bounded-export provenance;
-exact raw expected reward-cache RLP48; producer and configuration authority;
-weights, cache equality, owner readiness, public finality and real19-transfer execution.
-Public roots do not authenticate auxiliary lambda columns. No default is substituted.
-Diagnostic VRF facts do not grant production authority.
-
-Next candidate is `c9b2ed9876bd463f67a412bb7ce3ea269e3fdafa`, seventh of ten
-complete voters. Fresh Astra and Sol conditional design records are in R3. A syntax-only guard/test
-preparation has independent conditional review; no seventh guard or test ran.
-First-D parent41/selection13/proof64; logical key
-`fdad1437f176f1a0acaf8244356c9d0169241736fde0b7a1355e0d52e1ac2f6f`.
-Sixth acceptance and immutable65 source copies are now closed dependencies.
-Seventh implementation, required gates, final source review/local hook, complete
-command freeze and independent READY remain open. No seventh source or read started.
-
-## Budget and handoff
-
-The third authorized round preserves baseline45% and floor35% in R3/quota-budget.json.
-R3/final-quota.json and checkpoint.md own the final observed allowance and HEAD.
-Previous R2 55/45 and original64/54 budget files remain unchanged. Never reset a saved
-budget on resume. At the floor, stop new work/delegation/gates and finish only atomic
-in-flight work and minimal closeout. Further work needs new quota authorization.
-Quota percentage points do not measure task tokens or billing.
-
-Luna bounded helpers and fresh Astra/Sol profile reviewers ran. Requested models,
-startup and results are in R3/routing-round3.json; lead Sol6.1 medium was observed.
-Child runtime identity and billing remain unknown; no routing rejection occurred.
-All eight unrelated user-file pins are preserved and excluded from owned commits.
+This trial is complete. Next action: review a fixed eighth successor and its sealed
+profile/source/command delta before implementation or execution. Current code accepts
+only seven fixed profiles; do not expand eligibility or retarget a consumed command
+without the required authority review, fresh quota and independent exact READY.
