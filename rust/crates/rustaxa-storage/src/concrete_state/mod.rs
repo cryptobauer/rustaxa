@@ -20,11 +20,12 @@ pub use witness::{
     ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
     ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,
     ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, ConcreteStorageWitness, ConcreteVrfPlan,
-    ConcreteVrfReplay, ConcreteVrfVoterPlan, ConcreteVrfVoterReplay, ConcreteWitnessBudget,
-    ConcreteWitnessError, ConcreteWitnessLimits, ConcreteWitnessLogical, ConcreteWitnessPhysical,
-    ConcreteWitnessReplay, ConcreteWitnessResource, ConcreteWitnessUsage, capture_diagnostic_run,
-    capture_vrf_run, capture_vrf_voter_run, replay_diagnostic_bundle, replay_storage_witness,
-    replay_vrf_bundle, replay_vrf_voter_bundle,
+    ConcreteVrfReplay, ConcreteVrfResidualPlan, ConcreteVrfResidualReplay, ConcreteVrfVoterPlan,
+    ConcreteVrfVoterReplay, ConcreteWitnessBudget, ConcreteWitnessError, ConcreteWitnessLimits,
+    ConcreteWitnessLogical, ConcreteWitnessPhysical, ConcreteWitnessReplay,
+    ConcreteWitnessResource, ConcreteWitnessUsage, capture_diagnostic_run,
+    capture_vrf_residual_run, capture_vrf_run, capture_vrf_voter_run, replay_diagnostic_bundle,
+    replay_storage_witness, replay_vrf_bundle, replay_vrf_residual_bundle, replay_vrf_voter_bundle,
 };
 mod writer;
 

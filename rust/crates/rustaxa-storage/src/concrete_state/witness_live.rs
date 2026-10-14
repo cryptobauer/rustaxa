@@ -151,6 +151,63 @@ pub struct ConcreteVrfVoterReplay {
     pub physical: [ConcreteWitnessPhysical; 47],
     pub usage: ConcreteWitnessUsage,
 }
+/// Fixed partial-period residual VRF family for voter
+/// 03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b. Shape validation does not
+/// authenticate raw votes, comparison roots or the first-period positive prior;
+/// the caller must authenticate those before construction or any database open.
+/// All 48 delayed identities remain in the constructor context. The omitted
+/// index 5 is no payload request and establishes no state or history fact.
+pub struct ConcreteVrfResidualPlan {
+    context: ConcreteDiagnosticPlan,
+    tuples: [ConcreteDiagnosticTuple; 46],
+}
+impl ConcreteVrfResidualPlan {
+    /// Consume a valid first-period plan containing the fixed voter and derive
+    /// delayed indices 1..=47 except 5 in order, with its derived account/key.
+    /// Accept no voter, count, index, root, key or profile override. Missing voter
+    /// or malformed context returns Request or the context validation error.
+    pub fn new(first: ConcreteVrfPlan) -> Result<Self, ConcreteWitnessError> {
+        validate_plan(&first.context)?;
+        let index = first
+            .voters
+            .iter()
+            .position(|v| *v == Self::VOTER)
+            .ok_or(ConcreteWitnessError::Request)?;
+        let tuple = first.tuples[index];
+        let tuples = std::array::from_fn(|i| ConcreteDiagnosticTuple {
+            identity: first.context.delayed[if i < 4 { i + 1 } else { i + 2 }],
+            ..tuple
+        });
+        Ok(Self {
+            context: first.context,
+            tuples,
+        })
+    }
+    const VOTER: [u8; 20] = [
+        0x03, 0xbc, 0xf4, 0x07, 0x9a, 0x8a, 0xaf, 0x26, 0x6a, 0xaa, 0x8e, 0x07, 0xca, 0x2a, 0x4c,
+        0x5a, 0x63, 0xf6, 0x88, 0x1b,
+    ];
+    /// Borrow the complete fixed pair and all 48 delayed comparison identities.
+    pub fn context(&self) -> &ConcreteDiagnosticPlan {
+        &self.context
+    }
+    /// Return the only voter admitted by this residual instance.
+    pub fn voter(&self) -> [u8; 20] {
+        Self::VOTER
+    }
+    /// Borrow exactly 46 ordered payload tuples. Index 0 and index 5 are absent.
+    pub fn tuples(&self) -> &[ConcreteDiagnosticTuple; 46] {
+        &self.tuples
+    }
+}
+/// Fully consumed RCV3 result with exactly 46 payload dispositions and one
+/// shared usage record. Physical provenance supplies no logical nonmembership
+/// authority. Raw selected keys and versions remain in the complete bundle.
+pub struct ConcreteVrfResidualReplay {
+    pub logical: [ConcreteWitnessLogical; 46],
+    pub physical: [ConcreteWitnessPhysical; 46],
+    pub usage: ConcreteWitnessUsage,
+}
 /// Fixed capture/replay phase for first-failure retention evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConcreteDiagnosticPhase {
@@ -865,6 +922,26 @@ pub fn capture_vrf_voter_run(
         limits,
     )
 }
+/// Capture the fixed residual requests and all 51 constructor proofs through
+/// the existing read-only owners. Strict history and the shared sticky budget
+/// stop at the first failure; no successful prefix is returned.
+#[allow(clippy::result_large_err)]
+pub fn capture_vrf_residual_run(
+    application: &Path,
+    state: &Path,
+    plan: &ConcreteVrfResidualPlan,
+    limits: ConcreteWitnessLimits,
+) -> Result<ConcreteDiagnosticCapture, ConcreteDiagnosticFailure> {
+    capture_family(
+        application,
+        state,
+        &plan.context,
+        &plan.tuples,
+        bundle::Profile::VrfResidual,
+        true,
+        limits,
+    )
+}
 #[allow(clippy::result_large_err, clippy::too_many_arguments)]
 fn capture_family(
     application: &Path,
@@ -1052,6 +1129,30 @@ pub fn replay_vrf_voter_bundle(
         limits,
     )
     .map(|r| ConcreteVrfVoterReplay {
+        logical: r.logical,
+        physical: r.physical,
+        usage: r.usage,
+    })
+}
+/// Admit the complete RCV3 envelope and replay all 97 proofs against the
+/// external context on one fresh budget, including omitted-period retention.
+/// Wrong profile, malformed proof, history error or unused bytes returns the
+/// first failure without a partial result. Success consumes the exact EOF.
+#[allow(clippy::result_large_err)]
+pub fn replay_vrf_residual_bundle(
+    bytes: &[u8],
+    plan: &ConcreteVrfResidualPlan,
+    limits: ConcreteWitnessLimits,
+) -> Result<ConcreteVrfResidualReplay, ConcreteDiagnosticFailure> {
+    replay_family::<46, 97>(
+        bytes,
+        &plan.context,
+        &plan.tuples,
+        bundle::Profile::VrfResidual,
+        true,
+        limits,
+    )
+    .map(|r| ConcreteVrfResidualReplay {
         logical: r.logical,
         physical: r.physical,
         usage: r.usage,

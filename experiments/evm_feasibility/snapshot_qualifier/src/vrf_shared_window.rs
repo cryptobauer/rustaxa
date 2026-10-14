@@ -8,8 +8,10 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use rustaxa_storage::{
-    ConcreteVrfPlan, ConcreteVrfVoterPlan, ConcreteWitnessLimits, ConcreteWitnessLogical,
-    ConcreteWitnessPhysical, capture_vrf_voter_run, replay_vrf_bundle, replay_vrf_voter_bundle,
+    ConcreteDiagnosticPlan, ConcreteDiagnosticTuple, ConcreteVrfPlan, ConcreteVrfResidualPlan,
+    ConcreteVrfVoterPlan, ConcreteWitnessLimits, ConcreteWitnessLogical, ConcreteWitnessPhysical,
+    capture_vrf_residual_run, capture_vrf_voter_run, replay_vrf_bundle, replay_vrf_residual_bundle,
+    replay_vrf_voter_bundle,
 };
 use serde_json::{Value, json};
 use std::{
@@ -36,7 +38,16 @@ pub(crate) enum Profile {
     Eighth,
     Ninth,
     Tenth,
+    ResidualFirst,
 }
+const RESIDUAL_VOTER: &str = "03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b";
+const RESIDUAL_PROFILE: &str = "n4_residual_vrf_03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b_v1";
+const RESIDUAL_KEY: &str = "89ef37281f8220316458526a5c28a4518ec2cd3eaf487baa7055e8831cb89c5b";
+const RESIDUAL_INDICES: [usize; 46] = [
+    62, 119, 179, 236, 344, 401, 461, 521, 578, 638, 695, 749, 806, 866, 920, 977, 1034, 1091,
+    1151, 1211, 1271, 1328, 1382, 1430, 1487, 1547, 1604, 1661, 1715, 1772, 1832, 1889, 1943, 1997,
+    2057, 2114, 2171, 2231, 2285, 2345, 2399, 2459, 2516, 2576, 2624, 2684,
+];
 const VOTERS: [&str; 10] = [
     "138c1b9baea7d93a981ba694f5318f735c997298",
     "264a30e880d3b53bb2cdeb234e34201ebf9a9965",
@@ -116,13 +127,34 @@ const INDICES: [[usize; 47]; 10] = [
 ];
 impl Profile {
     fn voter(self) -> &'static str {
-        VOTERS[self as usize]
+        if self == Self::ResidualFirst {
+            RESIDUAL_VOTER
+        } else {
+            VOTERS[self as usize]
+        }
     }
     fn name(self) -> &'static str {
-        PROFILES[self as usize]
+        if self == Self::ResidualFirst {
+            RESIDUAL_PROFILE
+        } else {
+            PROFILES[self as usize]
+        }
+    }
+    fn prior_index(self) -> usize {
+        if self == Self::ResidualFirst {
+            0
+        } else {
+            PRIOR_INDICES[self as usize]
+        }
+    }
+    fn payloads(self) -> usize {
+        if self == Self::ResidualFirst { 46 } else { 47 }
     }
 }
 pub(crate) fn select(profile: Profile, rows: &Value) -> Result<Value> {
+    if profile == Profile::ResidualFirst {
+        return select_residual(rows);
+    }
     let rows = rows.as_array().context("complete voter rows")?;
     ensure!(rows.len() == 2742, "window original count");
     let mut periods = BTreeMap::<&str, BTreeSet<u64>>::new();
@@ -176,6 +208,44 @@ pub(crate) fn select(profile: Profile, rows: &Value) -> Result<Value> {
     }
     Ok(json!(output))
 }
+/// Select the fixed partial-period raw request set. The omitted period has no
+/// payload; it remains in the authenticated constructor/retention context.
+fn select_residual(rows: &Value) -> Result<Value> {
+    let rows = rows.as_array().context("residual original rows")?;
+    ensure!(rows.len() == 2742, "residual original count");
+    let selected: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r["voter_hex"] == RESIDUAL_VOTER
+                && r["semantic_key"] == "fe_vrf_00_04_address"
+                && r["delayed_period"] != FIRST
+        })
+        .collect();
+    ensure!(selected.len() == 46, "fixed residual count");
+    let mut out = Vec::with_capacity(46);
+    for (i, (index, row)) in selected.into_iter().enumerate() {
+        let delayed_index = if i < 4 { i + 1 } else { i + 2 };
+        let d = FIRST + delayed_index as u64;
+        ensure!(
+            index == RESIDUAL_INDICES[i]
+                && row["delayed_period"] == d
+                && row["qualified"] == false
+                && row["value"].is_null()
+                && row["proof"].is_null(),
+            "residual request/order drift"
+        );
+        let refs = row["source_references"]
+            .as_array()
+            .context("residual vote references")?;
+        ensure!(
+            !refs.is_empty() && refs.iter().all(|r| r["period"] == d + 7),
+            "residual source period"
+        );
+        out.push(json!({"parent_manifest_index":index,"source_row":row}));
+    }
+    Ok(json!(out))
+}
 pub(crate) fn prior(profile: Profile, bytes: &[u8], plan: &ConcreteVrfPlan) -> Result<Value> {
     ensure!(
         bytes.len() == PRIOR_BYTES && admission::sha(bytes) == PRIOR_SHA,
@@ -188,12 +258,18 @@ pub(crate) fn prior(profile: Profile, bytes: &[u8], plan: &ConcreteVrfPlan) -> R
         .iter()
         .position(|v| hex::encode(v) == profile.voter())
         .context("prior selected voter")?;
-    ensure!(
-        index == PRIOR_INDICES[profile as usize],
-        "prior selected index"
-    );
+    ensure!(index == profile.prior_index(), "prior selected index");
     let values = first::decode_values(&verified.logical)?;
     let value = accepted_prior_value(&verified.logical[index], &verified.physical[index])?;
+    if profile == Profile::ResidualFirst {
+        ensure!(
+            hex::encode(value)
+                == "6fabaf3eaa629b97b1dfaf77b9025072a1197299dd90cb19e46038794e91447b"
+                && admission::sha(value)
+                    == "1840cc6d06879636b32f20952e587930ba6c2cd12a32c48a3c72261574db4862",
+            "fixed residual prior binding"
+        );
+    }
     Ok(
         json!({"input":{"path":PRIOR_PATH,"bytes":PRIOR_BYTES,"sha256":PRIOR_SHA},
         "actual":native::usage(verified.usage),"semantic_sha256":fields::normalized_digest(&values)?,
@@ -231,11 +307,71 @@ pub(crate) fn canonical_prior() -> Result<Vec<u8>> {
     );
     admission::evidence(p, p, PRIOR_SHA, PRIOR_BYTES, PRIOR_BYTES)
 }
+trait PlanView {
+    fn context(&self) -> &ConcreteDiagnosticPlan;
+    fn tuples(&self) -> &[ConcreteDiagnosticTuple];
+}
+impl PlanView for ConcreteVrfVoterPlan {
+    fn context(&self) -> &ConcreteDiagnosticPlan {
+        self.context()
+    }
+    fn tuples(&self) -> &[ConcreteDiagnosticTuple] {
+        self.tuples()
+    }
+}
+impl PlanView for ConcreteVrfResidualPlan {
+    fn context(&self) -> &ConcreteDiagnosticPlan {
+        self.context()
+    }
+    fn tuples(&self) -> &[ConcreteDiagnosticTuple] {
+        self.tuples()
+    }
+}
+enum WindowPlan {
+    Complete(ConcreteVrfVoterPlan),
+    Residual(ConcreteVrfResidualPlan),
+}
+impl PlanView for WindowPlan {
+    fn context(&self) -> &ConcreteDiagnosticPlan {
+        match self {
+            Self::Complete(p) => p.context(),
+            Self::Residual(p) => p.context(),
+        }
+    }
+    fn tuples(&self) -> &[ConcreteDiagnosticTuple] {
+        match self {
+            Self::Complete(p) => p.tuples(),
+            Self::Residual(p) => p.tuples(),
+        }
+    }
+}
+fn window_authority(profile: Profile) -> Result<(WindowPlan, Value, Value)> {
+    if profile == Profile::ResidualFirst {
+        let (p, s, a) =
+            authority_with(profile, |first, _| Ok(ConcreteVrfResidualPlan::new(first)?))?;
+        Ok((WindowPlan::Residual(p), s, a))
+    } else {
+        let (p, s, a) = authority(profile)?;
+        Ok((WindowPlan::Complete(p), s, a))
+    }
+}
 pub(crate) fn authority(profile: Profile) -> Result<(ConcreteVrfVoterPlan, Value, Value)> {
+    ensure!(
+        profile != Profile::ResidualFirst,
+        "complete profile required"
+    );
+    authority_with(profile, |first, voter| {
+        Ok(ConcreteVrfVoterPlan::new(first, voter)?)
+    })
+}
+fn authority_with<T: PlanView>(
+    profile: Profile,
+    build: impl FnOnce(ConcreteVrfPlan, [u8; 20]) -> Result<T>,
+) -> Result<(T, Value, Value)> {
     let (context, rows, six) = parent_input_handoff::load_authenticated_voter_authority()?;
     let (first_plan, first_selected) = first::selection(context, &rows)?;
     let mut selected = select(profile, &rows)?;
-    let prior_index = PRIOR_INDICES[profile as usize];
+    let prior_index = profile.prior_index();
     ensure!(
         first_selected[prior_index]["parent_manifest_index"] == prior_index * 3 + 2,
         "prior parent index"
@@ -252,7 +388,11 @@ pub(crate) fn authority(profile: Profile) -> Result<(ConcreteVrfVoterPlan, Value
             let voter: [u8; 20] = hex::decode(profile.voter())?
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("fixed voter width"))?;
-            let plan = ConcreteVrfVoterPlan::new(first_plan, voter)?;
+            let plan = build(first_plan, voter)?;
+            ensure!(
+                plan.tuples().len() == profile.payloads(),
+                "fixed payload count"
+            );
             for (i, row) in selected
                 .as_array_mut()
                 .context("window selection")?
@@ -273,6 +413,7 @@ pub(crate) fn authority(profile: Profile) -> Result<(ConcreteVrfVoterPlan, Value
                     Profile::Tenth => {
                         Some("afff6c972f0508d1a892f0fb547e3044bf50ee2df3293d56c78ba7ab8939aebe")
                     }
+                    Profile::ResidualFirst => Some(RESIDUAL_KEY),
                     _ => None,
                 };
                 if let Some(key) = fixed_key {
@@ -281,6 +422,10 @@ pub(crate) fn authority(profile: Profile) -> Result<(ConcreteVrfVoterPlan, Value
                         "fixed successor key binding"
                     );
                 }
+                ensure!(
+                    row["source_row"]["delayed_period"] == tuple.identity.period.as_u64(),
+                    "authenticated tuple period"
+                );
                 row["tuple"] = json!({"identity":native::identity_json(tuple.identity),"address_hex":hex::encode(tuple.address),
             "logical_key_hex":hex::encode(tuple.key.0),"key_preimage_hex":format!("0004{}", profile.voter())});
             }
@@ -354,6 +499,10 @@ pub(crate) fn base(profile: Profile, selected: Value, authority: Value) -> Resul
             pin!("bin/live_vrf_tenth_voter_window.rs"),
             pin!("bin/replay_vrf_tenth_voter_window.rs"),
         ],
+        Profile::ResidualFirst => [
+            pin!("bin/live_vrf_residual_first.rs"),
+            pin!("bin/replay_vrf_residual_first.rs"),
+        ],
     });
     ensure!(sources.len() == 22, "window source count");
     let bytes = authority["six_input_owner"]["sources"]
@@ -370,8 +519,8 @@ pub(crate) fn base(profile: Profile, selected: Value, authority: Value) -> Resul
     bounds["report_bytes"] = json!(REPORT_CAP);
     bounds["authority_input_bytes"] = json!(6785636);
     bounds["raw_artifacts_exact"] = json!(7);
-    bounds["payload_tuples_exact"] = json!(47);
-    bounds["proofs_exact"] = json!(98);
+    bounds["payload_tuples_exact"] = json!(profile.payloads());
+    bounds["proofs_exact"] = json!(51 + profile.payloads());
     let digest = fields::normalized_digest(&selected)?;
     Ok(
         json!({"schema":1,"profile":profile.name(),"selection":selected,"selection_sha256":digest,
@@ -397,7 +546,7 @@ fn stopped(report: &mut Value, failure: &rustaxa_storage::ConcreteDiagnosticFail
 /// inspection. It publishes the complete fixed request/source/bound profile.
 pub(crate) fn preflight(profile: Profile, output: &Path) -> Result<()> {
     let output = native::output_path(output)?;
-    let (plan, selected, authority) = authority(profile)?;
+    let (plan, selected, authority) = window_authority(profile)?;
     let mut report = base(profile, selected, authority)?;
     report["status"] = json!("authority_inputs_authenticated_no_database_open");
     report["head"] = native::identity_json(plan.context().head);
@@ -420,15 +569,24 @@ pub(crate) fn capture(profile: Profile, bundle_output: &Path, report_output: &Pa
     let paths = paths::validate(Path::new(native::COPY), bundle_output)?;
     let reports = paths::validate(Path::new(native::COPY), report_output)?;
     ensure!(paths.output != reports.output, "window outputs overlap");
-    let (plan, selected, authority) = authority(profile)?;
+    let (plan, selected, authority) = window_authority(profile)?;
     let mut report = base(profile, selected, authority)?;
     interval_history::encode_bounded(&report, REPORT_CAP)?;
-    match capture_vrf_voter_run(
-        &paths.application,
-        &paths.state,
-        &plan,
-        ConcreteWitnessLimits::default(),
-    ) {
+    let captured = match &plan {
+        WindowPlan::Complete(p) => capture_vrf_voter_run(
+            &paths.application,
+            &paths.state,
+            p,
+            ConcreteWitnessLimits::default(),
+        ),
+        WindowPlan::Residual(p) => capture_vrf_residual_run(
+            &paths.application,
+            &paths.state,
+            p,
+            ConcreteWitnessLimits::default(),
+        ),
+    };
+    match captured {
         Err(f) => {
             stopped(&mut report, &f);
             publish(&reports.output, &report)?;
@@ -455,23 +613,48 @@ pub(crate) fn replay(profile: Profile, bundle_input: &Path, report_output: &Path
         fs::metadata(&input)?.is_file() && input != output,
         "window bundle input"
     );
-    let (plan, selected, authority) = authority(profile)?;
+    let (plan, selected, authority) = window_authority(profile)?;
     let mut report = base(profile, selected, authority)?;
     let bytes = admission::read_capped(fs::File::open(&input)?, native::BUNDLE_CAP)?;
-    let verified = match replay_vrf_voter_bundle(&bytes, &plan, ConcreteWitnessLimits::default()) {
-        Ok(v) => v,
+    let result = match &plan {
+        WindowPlan::Complete(p) => {
+            replay_vrf_voter_bundle(&bytes, p, ConcreteWitnessLimits::default())
+                .map(|v| replay_values(v.logical, v.physical).map(|values| (values, v.usage)))
+        }
+        WindowPlan::Residual(p) => {
+            replay_vrf_residual_bundle(&bytes, p, ConcreteWitnessLimits::default())
+                .map(|v| replay_values(v.logical, v.physical).map(|values| (values, v.usage)))
+        }
+    };
+    let (values, usage) = match result {
+        Ok(v) => v?,
         Err(f) => {
             stopped(&mut report, &f);
             publish(&output, &report)?;
             anyhow::bail!("window replay stopped; no prefix")
         }
     };
-    let mut values = first::decode_values(&verified.logical)?;
+    report["status"] = json!(if profile == Profile::ResidualFirst {
+        "all_forty_six_residual_vrf_inputs_authenticated"
+    } else {
+        "all_forty_seven_vrf_inputs_authenticated"
+    });
+    report["actual"] = native::usage(usage);
+    report["bundle"] = json!({"path":input,"bytes":bytes.len(),"sha256":admission::sha(&bytes)});
+    report["values"] = values;
+    report["qualification"]["vrf_family_qualified"] = json!(true);
+    publish(&output, &report)
+}
+fn replay_values<const N: usize>(
+    logical: [ConcreteWitnessLogical; N],
+    physical: [ConcreteWitnessPhysical; N],
+) -> Result<Value> {
+    let mut values = first::decode_values(&logical)?;
     for (i, (value, physical)) in values
         .as_array_mut()
         .context("window values")?
         .iter_mut()
-        .zip(verified.physical)
+        .zip(physical)
         .enumerate()
     {
         value["proof_index"] = json!(51 + i);
@@ -485,12 +668,7 @@ pub(crate) fn replay(profile: Profile, bundle_input: &Path, report_output: &Path
             }
         };
     }
-    report["status"] = json!("all_forty_seven_vrf_inputs_authenticated");
-    report["actual"] = native::usage(verified.usage);
-    report["bundle"] = json!({"path":input,"bytes":bytes.len(),"sha256":admission::sha(&bytes)});
-    report["values"] = values;
-    report["qualification"]["vrf_family_qualified"] = json!(true);
-    publish(&output, &report)
+    Ok(values)
 }
 
 /// Authenticate the fixed seventh profile offline and publish its bounded manifest.
@@ -545,10 +723,62 @@ pub fn tenth_replay(bundle: &Path, report: &Path) -> Result<()> {
     replay(Profile::Tenth, bundle, report)
 }
 
+/// Authenticate six raw files and all 71 prior proofs, then publish the fixed
+/// 46-row partial-period manifest at an exclusive outside-DB path. No DB open
+/// occurs. Invalid authority or output admission returns an error; no prefix
+/// supplies authority. Omitted periods remain in the full retention context.
+pub fn residual_first_preflight(output: &Path) -> Result<()> {
+    preflight(Profile::ResidualFirst, output)
+}
+/// Capture the sealed 46-row profile from the fixed read-only copy after exact
+/// independent guard READY. Exclusive bundle/report outputs must be distinct
+/// and outside the DB. All 97 proofs are required. A diagnostic failure attempts
+/// a stopped report and returns an error; publication errors may leave no report.
+/// No prefix qualifies and no omitted period is assigned a value.
+pub fn residual_first_capture(bundle: &Path, report: &Path) -> Result<()> {
+    capture(Profile::ResidualFirst, bundle, report)
+}
+/// Replay a bounded RCV3 bundle without DB input and publish all 46 logical
+/// values and physical provenance at an exclusive outside-DB path. Fresh raw
+/// authentication, the 71-proof prior barrier, all 97 bundle proofs and exact EOF
+/// are required. Errors qualify no prefix and attempt a stopped report when
+/// possible. Fact acceptance separately requires all 46 positive members.
+pub fn residual_first_replay(bundle: &Path, report: &Path) -> Result<()> {
+    replay(Profile::ResidualFirst, bundle, report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read;
+    // Only reviewed changed storage source pins can differ. Semantic fields
+    // remain compared in full; this is an exact source-successor mapping.
+    fn storage_successor(path: &str) -> Option<&'static [u8]> {
+        match path {
+            "../../../../rust/crates/rustaxa-storage/src/lib.rs" => Some(include_bytes!(
+                "../../../../rust/crates/rustaxa-storage/src/lib.rs"
+            )),
+            "../../../../rust/crates/rustaxa-storage/src/concrete_state/mod.rs" => Some(
+                include_bytes!("../../../../rust/crates/rustaxa-storage/src/concrete_state/mod.rs"),
+            ),
+            "../../../../rust/crates/rustaxa-storage/src/concrete_state/witness.rs" => {
+                Some(include_bytes!(
+                    "../../../../rust/crates/rustaxa-storage/src/concrete_state/witness.rs"
+                ))
+            }
+            "../../../../rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs" => {
+                Some(include_bytes!(
+                    "../../../../rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs"
+                ))
+            }
+            "../../../../rust/crates/rustaxa-storage/src/concrete_state/witness_bundle.rs" => {
+                Some(include_bytes!(
+                    "../../../../rust/crates/rustaxa-storage/src/concrete_state/witness_bundle.rs"
+                ))
+            }
+            _ => None,
+        }
+    }
     fn verify_pin(pin: &Value) {
         use sha2::{Digest, Sha256};
         let p = Path::new(pin["path"].as_str().unwrap());
@@ -627,6 +857,27 @@ mod tests {
                 "f551c202f8b929616294395d0748f8e269b53352748a8411fd7671a9a37a8c5e",
                 "vrf_shared_window.rs",
             ),
+            (
+                Profile::Eighth,
+                "/home/fry/artifacts/n4-vrf-successors-01a13763-641e-7371-96ad-102630143805-20261013/eighth-voter/vrf-eighth-voter-window-replay.json",
+                59470,
+                "59280657393129d87ead097ecb1ce967f24e6ce5974ec8f3f926aed328f7631d",
+                "vrf_shared_window.rs",
+            ),
+            (
+                Profile::Ninth,
+                "/home/fry/artifacts/n4-vrf-successors-01a13763-641e-7371-96ad-102630143805-20261013/ninth-voter/vrf-ninth-voter-window-replay.json",
+                59464,
+                "3833e18901c4c633e48962f607248a5850c2ce24e759eca94e37955f2c435d5d",
+                "vrf_shared_window.rs",
+            ),
+            (
+                Profile::Tenth,
+                "/home/fry/artifacts/n4-vrf-successors-01a13763-641e-7371-96ad-102630143805-20261013/tenth-voter/vrf-tenth-voter-window-replay.json",
+                59464,
+                "760aab8712c5047c4efd9a1ee3c7ab518d2dd1af468a4f975e65cfa3e2ff9d90",
+                "vrf_shared_window.rs",
+            ),
         ];
         let scratch = Path::new("/home/fry/artifacts").join(format!(
             "shared-vrf-equivalence-{}-{}",
@@ -681,7 +932,7 @@ mod tests {
                             include_bytes!("vrf_shared_window.rs").as_slice(),
                         ))
                     } else {
-                        None
+                        storage_successor(path).map(|bytes| (path, bytes))
                     };
                     if let Some((name, bytes)) = expected {
                         assert_eq!(
@@ -699,6 +950,85 @@ mod tests {
             assert_eq!(new["qualification"]["vrf_family_qualified"], true);
         }
         fs::remove_dir_all(scratch).unwrap();
+    }
+    #[test]
+    fn residual_fixed_selection_prior_and_complete_guard() {
+        let (_, rows, _) = parent_input_handoff::load_authenticated_voter_authority().unwrap();
+        let selected = select(Profile::ResidualFirst, &rows).unwrap();
+        assert_eq!(selected.as_array().unwrap().len(), 46);
+        for i in 0..46 {
+            assert_eq!(selected[i]["parent_manifest_index"], RESIDUAL_INDICES[i]);
+            assert_ne!(selected[i]["source_row"]["delayed_period"], FIRST + 5);
+        }
+        for (field, value) in [
+            ("voter_hex", json!(VOTERS[0])),
+            ("delayed_period", json!(FIRST + 5)),
+            ("qualified", json!(true)),
+            ("proof", json!({})),
+            ("value", json!("00")),
+        ] {
+            let mut bad = rows.clone();
+            bad[RESIDUAL_INDICES[0]][field] = value;
+            assert!(select(Profile::ResidualFirst, &bad).is_err());
+        }
+        let mut duplicate = rows.clone();
+        duplicate[RESIDUAL_INDICES[1]] = duplicate[RESIDUAL_INDICES[0]].clone();
+        assert!(select(Profile::ResidualFirst, &duplicate).is_err());
+        let mut reorder = rows.clone();
+        reorder
+            .as_array_mut()
+            .unwrap()
+            .swap(RESIDUAL_INDICES[0], RESIDUAL_INDICES[1]);
+        assert!(select(Profile::ResidualFirst, &reorder).is_err());
+        let mut missing = rows.clone();
+        missing.as_array_mut().unwrap().remove(RESIDUAL_INDICES[0]);
+        assert!(select(Profile::ResidualFirst, &missing).is_err());
+        let mut extra = rows.clone();
+        extra[65]["voter_hex"] = json!(RESIDUAL_VOTER);
+        assert!(select(Profile::ResidualFirst, &extra).is_err());
+        let mut refs = rows.clone();
+        refs[RESIDUAL_INDICES[0]]["source_references"] = json!([]);
+        assert!(select(Profile::ResidualFirst, &refs).is_err());
+        assert!(authority(Profile::ResidualFirst).is_err());
+        let mut partial_complete = rows.clone();
+        partial_complete[INDICES[0][4]]["voter_hex"] = json!(RESIDUAL_VOTER);
+        assert!(select(Profile::First, &partial_complete).is_err());
+        let (plan, selected, summary) = window_authority(Profile::ResidualFirst).unwrap();
+        assert_eq!(summary["prior_first_d"]["selected"]["proof_index"], 51);
+        assert_eq!(
+            summary["prior_first_d"]["actual"]["admitted_input_bytes"],
+            PRIOR_BYTES
+        );
+        assert_eq!(plan.context().delayed.len(), 48);
+        assert_eq!(plan.tuples().len(), 46);
+        for (i, t) in plan.tuples().iter().enumerate() {
+            assert_eq!(hex::encode(t.key.0), RESIDUAL_KEY);
+            assert_eq!(
+                selected[i]["tuple"]["identity"],
+                native::identity_json(t.identity)
+            );
+        }
+        let report = base(Profile::ResidualFirst, selected, summary).unwrap();
+        assert_eq!(report["bounds"]["proofs_exact"], 97);
+        assert_eq!(report["bounds"]["payload_tuples_exact"], 46);
+        assert!(
+            report["qualification"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|v| v == false)
+        );
+        let (context, _, _) = parent_input_handoff::load_authenticated_voter_authority().unwrap();
+        let (first, _) = first::selection(context, &rows).unwrap();
+        let mut bad = canonical_prior().unwrap();
+        let last = bad.len() - 1;
+        bad[last] ^= 1;
+        assert!(
+            after_prior(Profile::ResidualFirst, first, &bad, |_, _| -> Result<()> {
+                panic!("bad prior reached residual constructor")
+            })
+            .is_err()
+        );
     }
     #[test]
     fn seventh_is_fixed_derived_and_reverse_rejected() {

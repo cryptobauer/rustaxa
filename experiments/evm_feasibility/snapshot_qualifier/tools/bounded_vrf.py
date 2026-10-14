@@ -24,6 +24,28 @@ VOTER = 'c9b2ed9876bd463f67a412bb7ce3ea269e3fdafa'
 PROFILE = f'n4_remaining_vrf_voter_{VOTER}_v1'
 KEY = 'fdad1437f176f1a0acaf8244356c9d0169241736fde0b7a1355e0d52e1ac2f6f'
 SHARED_RUN = Path("/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013")
+RESIDUAL_RUN = Path('/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014')
+PREVIOUS_RUN = Path('/home/fry/artifacts/n4-vrf-successors-01a13763-641e-7371-96ad-102630143805-20261013')
+RESIDUAL_VOTER = '03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b'
+RESIDUAL_PROFILE = f'n4_residual_vrf_{RESIDUAL_VOTER}_v1'
+RESIDUAL_KEY = '89ef37281f8220316458526a5c28a4518ec2cd3eaf487baa7055e8831cb89c5b'
+RESIDUAL_INDICES = [62,119,179,236,344,401,461,521,578,638,695,749,806,866,920,977,1034,1091,1151,1211,1271,1328,1382,1430,1487,1547,1604,1661,1715,1772,1832,1889,1943,1997,2057,2114,2171,2231,2285,2345,2399,2459,2516,2576,2624,2684]
+RESIDUAL_PREFIXES = [str(REPO),
+    '/home/fry/artifacts/n4-binding-resume-20261011',
+    '/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010',
+    '/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261011-round2',
+    '/home/fry/artifacts/n4-run-01a12b7a-2f06-7661-9183-a37257d00590-20261011',
+    '/home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011',
+    '/home/fry/artifacts/n4-vrf-round2-01a12d5e-20261012', str(R3), str(SHARED_RUN), str(PREVIOUS_RUN),
+    '/home/fry/artifacts/vrf-shared-trial-preparation-20261013',
+    '/home/fry/artifacts/vrf-successor-preparation-20261013', str(RESIDUAL_RUN),
+    '/home/fry/artifacts/vrf-residual-preparation-20261014']
+RESIDUAL_GATES = [
+    'qualifier-all-package','qualifier-focused-first','qualifier-quality',
+    'tool-residual-positive-final-2','storage-package','storage-bridge-build',
+    'storage-bridge-tests','canonical-parity','native-compatibility-corrected',
+    'first-d-compatibility-replay','native-first-complete-equivalence-final',
+    'argument-rejection','fast-gate','actual-hook-gate']
 SUCCESSORS = {
     "n4_remaining_vrf_voter_d27c327e3dfcfce0acf72438f6e7a7e6c87e06ef_v1": dict(ordinal='eighth', voter='d27c327e3dfcfce0acf72438f6e7a7e6c87e06ef', key='d801919ffd29925243c28612983151535ef289be8872b1db4b4b41885167ee42', prior_index=14, indices=[101, 161, 221, 275, 326, 383, 443, 503, 563, 620, 677, 734, 788, 848, 905, 959, 1016, 1073, 1133, 1193, 1253, 1313, 1364, 1415, 1469, 1529, 1586, 1643, 1700, 1757, 1814, 1871, 1925, 1979, 2039, 2096, 2153, 2213, 2267, 2327, 2384, 2441, 2498, 2558, 2609, 2666, 2726]),
     "n4_remaining_vrf_voter_d6d73e4c65c92787a2bbc80d109c293d8d3477af_v1": dict(ordinal='ninth', voter='d6d73e4c65c92787a2bbc80d109c293d8d3477af', key='da94f95efae9d2677940e6f37edbad5613af9bdb4d920a54465aae06f871e07d', prior_index=15, indices=[104, 164, 224, 278, 329, 386, 446, 506, 566, 623, 680, 737, 791, 851, 908, 962, 1019, 1076, 1136, 1196, 1256, 1316, 1367, 1418, 1472, 1532, 1589, 1646, 1703, 1760, 1817, 1874, 1928, 1982, 2042, 2099, 2156, 2216, 2270, 2330, 2387, 2444, 2501, 2561, 2612, 2669, 2729]),
@@ -34,9 +56,48 @@ def sealed_profile(profile):
     """Select only a fixed reviewed identity; unknown profiles supply no authority."""
     if profile == PROFILE:
         return dict(ordinal='seventh', voter=VOTER, key=KEY, prior_index=13)
+    if profile == RESIDUAL_PROFILE:
+        return dict(ordinal='residual-first', voter=RESIDUAL_VOTER, key=RESIDUAL_KEY,
+                    prior_index=0, indices=RESIDUAL_INDICES)
     if profile not in SUCCESSORS:
         raise ValueError('unknown sealed profile')
     return SUCCESSORS[profile]
+
+
+def expand_residual_evidence(value):
+    """Expand the reviewed explicit prefix representation once, without I/O.
+
+    Order and identical duplicate occurrences survive. A conflicting repeated
+    path or invalid type/lexical suffix rejects before any row file inspection.
+    Count/body charges remain those of the fully expanded freeze.
+    """
+    if not isinstance(value, dict) or set(value) != {'prefixes', 'pins'} or value['prefixes'] != RESIDUAL_PREFIXES:
+        raise ValueError('fixed residual evidence prefixes')
+    rows = value['pins']
+    # The fixed residual closure has 76+2 sources, two binaries, preflight,
+    # preparation and spec: 83 directly represented occurrences.
+    if not isinstance(rows, list) or len(rows) + 83 > PIN_COUNT:
+        raise ValueError('expanded evidence count')
+    result, seen = [], {}
+    for row in rows:
+        if not isinstance(row, list) or len(row) != 4:
+            raise ValueError('compressed pin shape')
+        index, suffix, size, sha = row
+        if type(index) is not int or not 0 <= index < len(RESIDUAL_PREFIXES) or type(size) is not int or not 0 <= size <= FILE_CAP:
+            raise ValueError('compressed pin integer bounds')
+        if not isinstance(suffix, str) or not suffix or '\\' in suffix or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in suffix):
+            raise ValueError('compressed pin suffix')
+        if any(part in ('', '.', '..', 'AI.md') for part in suffix.split('/')):
+            raise ValueError('compressed pin lexical escape')
+        if not isinstance(sha, str) or len(sha) != 64 or any(c not in '0123456789abcdef' for c in sha):
+            raise ValueError('compressed pin SHA')
+        path = str(outside_database(RESIDUAL_PREFIXES[index] + '/' + suffix))
+        pin = dict(path=path, bytes=size, sha256=sha)
+        if path in seen and seen[path] != pin:
+            raise ValueError('conflicting repeated evidence pin')
+        seen[path] = pin
+        result.append(pin)
+    return result
 
 ENV = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'}
 METADATA_CAP = 65536
@@ -135,7 +196,7 @@ def exclusive(path, data):
         stream.write(data)
 
 
-def expected_source_paths():
+def expected_source_paths(profile=None):
     path = R3 / 'sixth-voter/source-freeze.json'
     pin_file(path, dict(path=str(path), bytes=13765,
                        sha256='669add9d030f189bc7a6b68023d1a63aa3ac39186bb12e45984805230cea1962'))
@@ -143,22 +204,27 @@ def expected_source_paths():
     paths = [row['path'] for row in legacy]
     if len(paths) != 65 or len(set(paths)) != 65:
         raise ValueError('legacy source closure')
-    return paths + [str(SRC / name) for name in [
+    result = paths + [str(SRC / name) for name in [
         'vrf_shared_window.rs', 'bin/live_vrf_seventh_voter_window.rs',
         'bin/replay_vrf_seventh_voter_window.rs']]+[str(SRC / f'bin/{kind}_vrf_{ordinal}_voter_window.rs') for ordinal in ['eighth','ninth','tenth'] for kind in ['live','replay']]
+    if profile == RESIDUAL_PROFILE:
+        result += [str(SRC / f'bin/{kind}_vrf_residual_first.rs') for kind in ['live','replay']]
+    return result
 
 
 def validate_preflight(report, preparation=None):
     pin_file(PREPARATION, dict(path=str(PREPARATION), bytes=60570, sha256=PREPARATION_SHA))
     common_prepared = read_json(PREPARATION)
     fixed = sealed_profile(report['profile'])
+    residual = report['profile'] == RESIDUAL_PROFILE
+    count = 46 if residual else 47
     voter, key = fixed['voter'], fixed['key']
     prepared = common_prepared if preparation is None else read_json(preparation)
     baseline = read_json(R3 / 'sixth-voter/vrf-sixth-voter-window-preflight.json', FREEZE_CAP)
     if report['status'] != 'authority_inputs_authenticated_no_database_open':
         raise ValueError('fixed profile preflight')
     selected = report['selection']
-    if len(selected) != 47 or len(prepared['rows']) != 47:
+    if len(selected) != count or len(prepared['rows']) != count:
         raise ValueError('complete fixed selection')
     for i, (actual, expected) in enumerate(zip(selected, prepared['rows'])):
         if actual['parent_manifest_index'] != expected['original_parent_manifest_index'] or actual['source_row'] != expected['source_row']:
@@ -167,7 +233,8 @@ def validate_preflight(report, preparation=None):
         if tuple_ != dict(identity=expected['identity'], address_hex=expected['account_hex'],
                           logical_key_hex=key, key_preimage_hex=f'0004{voter}'):
             raise ValueError('authenticated tuple binding')
-        if tuple_['identity']['period'] != 25706895 + i:
+        delayed_index = (i + 1 if i < 4 else i + 2) if residual else i + 1
+        if tuple_['identity']['period'] != 25706894 + delayed_index:
             raise ValueError('tuple order')
     authority = report['authority']
     if [r['path'] for r in authority['six_input_owner']['sources']] != [
@@ -180,22 +247,68 @@ def validate_preflight(report, preparation=None):
     for key in ['input', 'actual', 'semantic_sha256']:
         if authority['prior_first_d'][key] != baseline['authority']['prior_first_d'][key]:
             raise ValueError('complete prior proof provenance')
-    if report['bounds'] != baseline['bounds'] or authority['six_input_owner']['bounds'] != baseline['authority']['six_input_owner']['bounds']:
+    expected_bounds = dict(baseline['bounds'], payload_tuples_exact=count, proofs_exact=51+count)
+    if report['bounds'] != expected_bounds or authority['six_input_owner']['bounds'] != baseline['authority']['six_input_owner']['bounds']:
         raise ValueError('all thirteen ceilings and admission bounds')
     prior = authority['prior_first_d']['selected']
     expected = prepared['prior_first_d']
     if prior != dict(proof_index=51+fixed['prior_index'], identity=expected['identity'], voter_hex=voter,
                      value_hex=expected['accepted_value']['value_hex'], usable_vrf_key=True):
         raise ValueError('complete prior binding')
-    if report['profile'] in SUCCESSORS:
+    if report['profile'] in SUCCESSORS or residual:
         if [r['parent_manifest_index'] for r in selected] != fixed['indices']:
             raise ValueError('sealed successor row indices')
         if expected['selection_index'] != fixed['prior_index'] or expected['parent_manifest_index'] != fixed['prior_index']*3+2:
             raise ValueError('sealed successor prior indices')
-    if report['bounds']['payload_tuples_exact'] != 47 or report['bounds']['proofs_exact'] != 98:
+    if residual and (prior['value_hex'] != '6fabaf3eaa629b97b1dfaf77b9025072a1197299dd90cb19e46038794e91447b'
+                     or prior['identity'] != baseline['authority']['prior_first_d']['selected']['identity']):
+        raise ValueError('fixed residual prior value/root')
+    if report['bounds']['payload_tuples_exact'] != count or report['bounds']['proofs_exact'] != 51+count:
         raise ValueError('proof scope')
     if any(report['qualification'].values()):
         raise ValueError('preflight cannot qualify facts')
+
+
+def validate_residual_history(evidence):
+    """Keep the full inherited sequence; substitute only four reviewed tuples.
+
+    This reads two fixed, explicitly charged records and four required archived
+    predecessors. It does not recursively expand their references. All new
+    evidence follows the preserved inherited occurrence sequence.
+    """
+    old_spec = PREVIOUS_RUN/'eighth-voter/instance-spec.json'
+    pin_file(old_spec, dict(path=str(old_spec),bytes=65434,
+                           sha256='66d8e9d89808af7d42632df0be37016da31a7a8ba21b80e14354d24a97897abd'))
+    manifest = Path(RESIDUAL_PREFIXES[13])/'manifest.json'
+    pin_file(manifest,dict(path=str(manifest),bytes=1893,
+                         sha256='e094ad41fdae2a5ae0edf9d1b0eed9839532d2ab4a8e5dd1e03b99ac67bc2565'))
+    mapping = read_json(manifest)['authorized_instruction_paths']
+    archives = {
+        str(REPO/'doc/evm_research/n4_next_10point_plan.md'):'3-n4_next_10point_plan.md',
+        str(REPO/'next_executable_slice_prompt.md'):'6-next_executable_slice_prompt.md',
+        str(REPO/'doc/evm_research/n6_restart_checkpoint.md'):'4-n6_restart_checkpoint.md',
+        str(REPO/'doc/evm_research/n6_remaining_branch_queue.md'):'5-n6_remaining_branch_queue.md'}
+    replacements = {}
+    for item in mapping:
+        predecessor = dict(item['preparation_predecessor'],path=item['path'])
+        successor = {k:item[k] for k in ['path','bytes','sha256']}
+        archive = PREVIOUS_RUN/'frozen-instructions'/archives[item['path']]
+        archive_pin = dict(predecessor,path=str(archive))
+        if archive_pin not in evidence:
+            raise ValueError('missing archived instruction predecessor')
+        pin_file(archive,archive_pin)
+        replacements[item['path']] = (predecessor,successor)
+    expected = []
+    for pin in read_json(old_spec)['evidence']:
+        if pin['path'] in replacements:
+            predecessor,successor = replacements[pin['path']]
+            if pin != predecessor:
+                raise ValueError('instruction predecessor drift')
+            expected.append(successor)
+        else:
+            expected.append(pin)
+    if len(expected) != 233 or evidence[:233] != expected:
+        raise ValueError('full inherited evidence sequence')
 
 
 def build(spec_path):
@@ -208,17 +321,24 @@ def build(spec_path):
     pin_file(spec['preflight']['path'], spec['preflight'], FREEZE_CAP)
     report = read_json(spec['preflight']['path'], FREEZE_CAP)
     fixed = sealed_profile(report['profile'])
+    residual = report['profile'] == RESIDUAL_PROFILE
     ordinal = fixed['ordinal']
     fields = {'schema', 'run', 'source_commit', 'sources', 'tool_sources', 'binaries', 'preflight', 'evidence', 'copy_metadata'}
-    if report['profile'] in SUCCESSORS:
+    if report['profile'] in SUCCESSORS or residual:
         fields.add('preparation')
     if set(spec) != fields or spec['schema'] != 1:
         raise ValueError('instance spec schema')
     run = outside_database(spec['run'])
     if not run.is_relative_to(Path('/home/fry/artifacts')) or run.resolve(strict=True) != run:
         raise ValueError('persistent canonical run required')
+    if residual and run != RESIDUAL_RUN / 'residual-first':
+        raise ValueError('fixed residual run')
+    evidence = expand_residual_evidence(spec['evidence']) if residual else spec['evidence']
+    if not residual and not isinstance(evidence, list):
+        raise ValueError('complete profile evidence representation')
     sources = spec['sources']
-    if [row['path'] for row in sources] != expected_source_paths() or len(sources) != 74:
+    source_count = 76 if residual else 74
+    if [row['path'] for row in sources] != expected_source_paths(report['profile']) or len(sources) != source_count:
         raise ValueError('exact successor source closure')
     expected_tools = [str(Path(__file__).resolve()), str(Path(__file__).resolve().with_name('test_bounded_vrf.py'))]
     if [row['path'] for row in spec['tool_sources']] != expected_tools:
@@ -229,11 +349,16 @@ def build(spec_path):
         source_total += row['bytes']
         if source_total > SOURCE_TOTAL:
             raise ValueError('complete source aggregate cap')
-    shared_freeze = SHARED_RUN / 'source-freeze.json'
-    pin_file(shared_freeze, dict(path=str(shared_freeze), bytes=14455,
-             sha256='51d3654490a4024c5a4479d383401e943f0cc773af62ef6c1d4204de82e12ee3'))
+    shared_freeze = (PREVIOUS_RUN if residual else SHARED_RUN) / 'source-freeze.json'
+    pin_file(shared_freeze, dict(path=str(shared_freeze), bytes=15861 if residual else 14455,
+             sha256='af2315a94cbb1236c35b3c4ecf0622fe33ee1d9511ce726d8c612a00d85e2644' if residual else '51d3654490a4024c5a4479d383401e943f0cc773af62ef6c1d4204de82e12ee3'))
     legacy = read_json(shared_freeze)
     changed = {str(SRC / 'vrf_shared_window.rs')}
+    # These additive storage successors also affect the old embedded provenance.
+    # Their full old-profile equivalence and exact mappings require source review.
+    changed |= {str(REPO/'rust/crates/rustaxa-storage/src'/name) for name in [
+            'lib.rs','concrete_state/mod.rs','concrete_state/witness.rs',
+            'concrete_state/witness_live.rs','concrete_state/witness_bundle.rs','concrete_state/witness_live_tests.rs']}
     for before, after in zip(legacy, sources):
         if before['path'] not in changed and before != after:
             raise ValueError('undeclared owner source drift')
@@ -242,7 +367,7 @@ def build(spec_path):
         raise ValueError('fixed executable names')
     pin_file(spec['preflight']['path'], spec['preflight'], FREEZE_CAP)
     preparation = None
-    if report['profile'] in SUCCESSORS:
+    if report['profile'] in SUCCESSORS or residual:
         preparation = run / f'vrf-{ordinal}-voter-preparation.json'
         if spec['preparation']['path'] != str(preparation):
             raise ValueError('fixed preparation path')
@@ -260,7 +385,7 @@ def build(spec_path):
     baseline_report = read_json(baseline_path, FREEZE_CAP)
     baseline_sources = baseline_report['vrf_sources']
     expected_report_paths = [r['path'] for r in baseline_sources[:19]] + ['vrf_shared_window.rs'] + [
-        f'bin/{kind}_vrf_{ordinal}_voter_window.rs' for kind in ['live', 'replay']]
+        f'bin/{kind}_vrf_residual_first.rs' if residual else f'bin/{kind}_vrf_{ordinal}_voter_window.rs' for kind in ['live', 'replay']]
     if [r['path'] for r in report['vrf_sources']] != expected_report_paths:
         raise ValueError('fixed embedded profile source closure')
     if [r['path'] for r in report['authority']['six_input_owner']['sources']] != [
@@ -276,7 +401,7 @@ def build(spec_path):
             raise ValueError('report aggregate source cap')
     if len(spec['source_commit']) != 40 or any(c not in '0123456789abcdef' for c in spec['source_commit']):
         raise ValueError('source HEAD shape')
-    pins = sources + spec['tool_sources'] + binaries + [spec['preflight']] + spec['evidence'] + ([spec['preparation']] if preparation is not None else []) + [pin_file(spec_path, cap=METADATA_CAP)]
+    pins = sources + spec['tool_sources'] + binaries + [spec['preflight']] + evidence + ([spec['preparation']] if preparation is not None else []) + [pin_file(spec_path, cap=METADATA_CAP)]
     if len(pins) > PIN_COUNT:
         raise ValueError('command pin count')
     total = 0
@@ -285,19 +410,19 @@ def build(spec_path):
         total += row['bytes']
         if total > PIN_TOTAL:
             raise ValueError('command pin aggregate')
-    evidence_paths = {row['path'] for row in spec['evidence']}
+    evidence_paths = {row['path'] for row in evidence}
     required = [run.parent / name for name in [
         'common-authority-review.md', 'common-authority-amendment.md', 'code-acceptance-review.md', 'validation-summary.json',
         'storage-validation-reuse.json', 'source-commit.json', 'source-commit.log',
         'source-hook-summary.json', 'startup-reconciliation.json', 'instruction-successor-freeze.json']]
-    if report['profile'] in SUCCESSORS:
+    if report['profile'] in SUCCESSORS or residual:
         required = [p for p in required if p.name not in {'common-authority-review.md', 'common-authority-amendment.md'}]
     required += [R3 / name for name in ['round3-closeout-freeze.json',
         'frozen-sixth-source-manifest.json', 'sixth-voter/source-freeze.json',
         'sixth-voter/vrf-sixth-voter-window-preflight.json', 'sixth-voter/family-final-review.md',
         'seventh-voter/dependencies-closed.json', 'seventh-voter/builder-draft-dependencies-closed.json']]
     required += [PREPARATION]
-    if report['profile'] in SUCCESSORS:
+    if report['profile'] in SUCCESSORS or residual:
         # Historical evidence stays at its accepted path, never a retargeted copy.
         required += [SHARED_RUN / name for name in [
             'common-authority-review.md', 'common-authority-amendment.md',
@@ -313,10 +438,28 @@ def build(spec_path):
             'seventh-voter/vrf-seventh-voter-window-preflight.json',
             'seventh-voter/vrf-seventh-voter-window.rcv2',
             'seventh-voter/vrf-seventh-voter-window-replay.json']]
-        required += [run.parent / name for name in [
+        required += [(PREVIOUS_RUN if residual else run.parent) / name for name in [
             'successor-authority-amendment.md', 'luna-map.md', 'luna-rows.json',
             'source-successor-mapping.json', 'binary-successor-mapping.json', 'preparation-comparison.json']]
         required += [preparation]
+
+    if residual:
+        validate_residual_history(evidence)
+        required = [p for p in required if p != run.parent / 'storage-validation-reuse.json']
+        required += [RESIDUAL_RUN/name for name in [
+            'residual-authority-review.md','residual-metadata-encoding-review.md',
+            'sol-review/map-acceptance.md','luna-map/residual-424-corrected-v1.json',
+            'luna-map/provenance-corrected-v1.json','luna-map/integrity-corrected-v1.json',
+            'luna-map/build_residual_map_corrected_v1.py','source-successor-mapping.json',
+            'binary-successor-mapping.json','preparation-comparison.json',
+            'storage-validation-current.json','code-and-gates-freeze.json']]
+        required += [Path(RESIDUAL_PREFIXES[13])/'manifest.json',
+                     PREVIOUS_RUN/'eighth-voter/instance-spec.json']
+        required += [RESIDUAL_RUN/(name+suffix) for name in RESIDUAL_GATES for suffix in ['.json','.log']]
+        required += [RESIDUAL_RUN/'storage/correction-test.json',
+                     RESIDUAL_RUN/'storage/correction-test.log',
+                     RESIDUAL_RUN/'source-freeze.json',RESIDUAL_RUN/'tool-source-freeze.json',
+                     RESIDUAL_RUN/'residual-authority-draft.json']
 
     if not {str(path) for path in required}.issubset(evidence_paths):
         raise ValueError('missing mandatory review/history evidence')
@@ -325,12 +468,13 @@ def build(spec_path):
     for row in spec['copy_metadata']:
         if set(row) != {'path', 'device', 'inode', 'mode', 'mtime_ns'}:
             raise ValueError('copy metadata shape')
-    command = [binaries[0]['path'], '--bundle-output', str(run/f'vrf-{ordinal}-voter-window.rcv2'),
+    extension = 'rcv3' if residual else 'rcv2'
+    command = [binaries[0]['path'], '--bundle-output', str(run/f'vrf-{ordinal}-voter-window.{extension}'),
                '--report-output', str(run/f'vrf-{ordinal}-voter-window-capture.json')]
     return encoded(dict(schema=1, profile=report['profile'], run=str(run), source_commit=spec['source_commit'],
                         cwd=str(REPO), environment=ENV, capture_command=command,
                         pins=pins, pin_count=len(pins), pinned_file_bytes=total,
-                        source_count=74, complete_source_bytes=source_total,
+                        source_count=source_count, complete_source_bytes=source_total,
                         embedded_source_bytes=report_total,
                         copy_metadata=spec['copy_metadata'], accepted=False), FREEZE_CAP)
 
@@ -419,11 +563,14 @@ def capture(freeze_path, expected_sha):
     if not isinstance(freeze, dict) or set(freeze) != expected_fields or freeze['accepted'] is not False:
         raise ValueError('trusted freeze schema')
     run = outside_database(freeze['run'])
-    if freeze.get('schema') != 1 or freeze.get('profile') not in {PROFILE, *SUCCESSORS} or run != freeze_path.parent \
+    if freeze.get('schema') != 1 or freeze.get('profile') not in {PROFILE, *SUCCESSORS, RESIDUAL_PROFILE} or run != freeze_path.parent \
             or not run.is_relative_to(Path('/home/fry/artifacts')) or run.resolve(strict=True) != run:
         raise ValueError('trusted freeze/run binding')
     fixed = sealed_profile(freeze['profile'])
     ordinal = fixed['ordinal']
+    residual = freeze['profile'] == RESIDUAL_PROFILE
+    if residual and run != RESIDUAL_RUN/'residual-first':
+        raise ValueError('fixed residual guard run')
     # Trusted admission ends here. All later failures permanently consume this
     # attempt, including offline pin, HEAD, output and metadata failures.
     exclusive(run/f'vrf-{ordinal}-voter-window-attempt.json', encoded(
@@ -433,12 +580,12 @@ def capture(freeze_path, expected_sha):
     spec_pin = freeze['pins'][-1]
     if build(Path(spec_pin['path'])) != frozen_bytes:
         raise ValueError('freeze not deterministic builder output')
-    if freeze['profile'] not in {PROFILE, *SUCCESSORS} or freeze['cwd'] != str(REPO) or freeze['environment'] != ENV or Path.cwd() != REPO:
+    if freeze['profile'] not in {PROFILE, *SUCCESSORS, RESIDUAL_PROFILE} or freeze['cwd'] != str(REPO) or freeze['environment'] != ENV or Path.cwd() != REPO:
         raise ValueError('exact invocation binding')
     head = subprocess.check_output(['/usr/bin/git', 'rev-parse', 'HEAD'], cwd=REPO, env=ENV).decode().strip()
     if head != freeze['source_commit']:
         raise ValueError('source HEAD drift')
-    outputs = [f'vrf-{ordinal}-voter-window{suffix}' for suffix in ['.rcv2', '-capture.json', '-live.log', '-live-result.json']]
+    outputs = [f'vrf-{ordinal}-voter-window{suffix}' for suffix in ['.rcv3' if residual else '.rcv2', '-capture.json', '-live.log', '-live-result.json']]
     if any(os.path.lexists(run/name) for name in outputs):
         raise ValueError('single-use output collision')
     before = copy_metadata(freeze['copy_metadata'])

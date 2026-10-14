@@ -10,10 +10,12 @@ pub(super) enum Profile {
     Native,
     FirstVrf,
     VrfVoterWindow,
+    VrfResidual,
 }
 impl Profile {
     fn header(self) -> [u8; 16] {
         match self {
+            Self::VrfResidual => [b'R', b'C', b'V', b'3', 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 46, 0],
             Self::Native => HEADER,
             Self::FirstVrf => [b'R', b'C', b'V', b'1', 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 20, 0],
             Self::VrfVoterWindow => [b'R', b'C', b'V', b'2', 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 47, 0],
@@ -21,6 +23,7 @@ impl Profile {
     }
     pub(super) fn proofs(self) -> usize {
         match self {
+            Self::VrfResidual => 97,
             Self::Native => PROOFS,
             Self::FirstVrf => 71,
             Self::VrfVoterWindow => 98,
