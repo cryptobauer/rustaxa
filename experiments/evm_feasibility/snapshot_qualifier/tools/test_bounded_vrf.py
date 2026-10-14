@@ -94,18 +94,28 @@ class EvidenceSuccessor(Fixture):
         code_path = folder/'code-and-gates-freeze.json'
         review = folder/'code-acceptance-review.md'
         closure = folder/'fourth-command-closure-review.md'
-        placements = [dict(destination=str(review), members=[dict(role=f'failure-{i}', **guard.pin_file(body)) for i in range(12)]),
+        placements = [dict(destination=str(review), members=[dict(role=f'failure-{i}', **guard.pin_file(body)) for i in range(20)]),
                       dict(destination=str(code_path), members=[dict(role=f'code-failure-{i}', **guard.pin_file(body)) for i in range(2)]),
-                      dict(destination=str(closure), members=[dict(role=f'closure-failure-{i}', **guard.pin_file(body)) for i in range(6)])]
+                      dict(destination=str(closure), members=[dict(role=f'closure-failure-{i}', **guard.pin_file(body)) for i in range(7)])]
+        original = self.root/'full-result-equivalence.json'
+        original.write_text(json.dumps(dict(schema=1, full_gate_output='complete gate output',
+                                           matched_tests=11, new_facts=0, complete_equal=True)))
+        placements[1]['members'] += [dict(role='full-result-equivalence', **guard.pin_file(original)),
+                                     dict(role='previous-code-freeze', **guard.pin_file(body)),
+                                     dict(role='builder-first-failure', **guard.pin_file(body))]
+        summary_path = self.root/'equivalence-summary.json'
+        summary_path.write_text(json.dumps(guard.equivalence_summary(json.loads(original.read_bytes()))))
         contract = dict(reference_placements=placements, instruction_reference_rows=instructions,
-                        pending_validation_rows=dict(roles=roles, paths=[str(p) for p in paths], caps=[65536]*8))
+                        equivalence_summary=dict(path=str(summary_path), cap_bytes=16384,
+                                                 full_record_role='full-result-equivalence'),
+                        pending_validation_rows=dict(placement=str(code_path), roles=roles, paths=[str(p) for p in paths], caps=[65536]*8))
         for placement in placements:
             expected = placement['members'] + (pending + instructions if placement['destination'] == str(code_path) else [])
             wrapper = records.decode(records.build(placement['destination'], contract_pin, '', expected))
             if placement['destination'] == str(code_path):
                 wrapper = dict(record_tool_pins=pending, evidence_record=wrapper)
             Path(placement['destination']).write_text(json.dumps(wrapper))
-        evidence = [guard.pin_file(Path(p['destination'])) for p in placements]
+        evidence = [guard.pin_file(Path(p['destination'])) for p in placements] + [guard.pin_file(summary_path)]
         return contract, contract_pin, evidence, body, code_path
 
     def run_verifier(self, contract, contract_pin, evidence):
@@ -116,8 +126,13 @@ class EvidenceSuccessor(Fixture):
 
     def test_shared_frozen_verifier_full_occurrences_and_charges(self):
         contract, pin, evidence, body, _ = self.fixture()
-        result = self.run_verifier(contract, pin, evidence)
-        self.assertEqual(result['reference_count'], 49)
+        with patch.object(guard, 'pin_file', wraps=guard.pin_file) as hashes:
+            result = self.run_verifier(contract, pin, evidence)
+        full = next(row for row in contract['reference_placements'][1]['members']
+                    if row['role'] == 'full-result-equivalence')
+        self.assertFalse(any(str(call.args[0]) == full['path'] for call in hashes.call_args_list))
+        self.assertEqual(result['semantic_read_bytes'], full['bytes'])
+        self.assertEqual(result['reference_count'], 61)
         self.assertEqual(result['streamed_bytes'], result['referenced_bytes'])
         self.assertGreater(result['referenced_bytes'], result['source_bytes'] + 38*body.stat().st_size)
 
@@ -135,6 +150,46 @@ class EvidenceSuccessor(Fixture):
         evidence = [guard.pin_file(Path(row['path'])) for row in evidence]
         with self.assertRaisesRegex(ValueError, 'fixed record tooling row'):
             self.run_verifier(contract, pin, evidence)
+
+    def test_projection_keeps_all_semantic_fields_and_full_output_digest(self):
+        full = dict(schema=1, full_gate_output='complete output\n', sources=[dict(hash='exact')],
+                    selectors=['all-required'], matched_tests=11, new_facts=0)
+        summary = guard.equivalence_summary(full)
+        self.assertEqual(summary['projection'], {k: v for k, v in full.items() if k != 'full_gate_output'})
+        guard.verify_equivalence_summary(summary, full)
+        for mutate in [lambda v: v['projection'].update(matched_tests=10),
+                       lambda v: v['projection'].update(new_facts=False),
+                       lambda v: v['omitted_output'].update(sha256='0'*64),
+                       lambda v: v.update(full_record_role='unreviewed'),
+                       lambda v: v.update(accepted=True),
+                       lambda v: v.update(extra='unconsumed')]:
+            value = copy.deepcopy(summary)
+            mutate(value)
+            with self.assertRaises(ValueError):
+                guard.verify_equivalence_summary(value, full)
+
+    def test_summary_slot_tamper_rejects_even_with_its_new_pin(self):
+        contract, pin, evidence, _, _ = self.fixture()
+        summary_path = Path(contract['equivalence_summary']['path'])
+        summary = json.loads(summary_path.read_bytes())
+        summary['projection']['matched_tests'] = 10
+        summary_path.write_text(json.dumps(summary))
+        evidence = [guard.pin_file(Path(row['path'])) for row in evidence]
+        with self.assertRaisesRegex(ValueError, 'exact full equivalence projection'):
+            self.run_verifier(contract, pin, evidence)
+
+    def test_full_result_role_binding_rejects(self):
+        contract, pin, evidence, _, _ = self.fixture()
+        contract['equivalence_summary']['full_record_role'] = 'missing-child'
+        with self.assertRaisesRegex(ValueError, 'unique full equivalence body role'):
+            self.run_verifier(contract, pin, evidence)
+
+    def test_equivalence_projection_cap_and_full_output_type(self):
+        with self.assertRaises(ValueError):
+            guard.equivalence_summary(dict(full_gate_output=None))
+        full = dict(full_gate_output='', semantic='x'*16384)
+        with self.assertRaises(ValueError):
+            guard.verify_equivalence_summary(guard.equivalence_summary(full), full)
 
 
 class Bounds(Fixture):

@@ -161,8 +161,18 @@ TIMEOUT = 300
 HISTORICAL_MAP = Path('/home/fry/artifacts/n4-vrf-round2-01a12d5e-20261012/startup-pin-map.json')
 HISTORICAL_MAP_SHA = 'bd5beab4dbd66c67d242d410c072540cf753dc3831771aa20f6f190a890a332b'
 FOURTH_RECORD_CONTRACT = dict(
-    path='/home/fry/artifacts/n4-evidence-01a13c53-b487-7dc2-954a-ba9af3ad695d-20261014/astra/contract-manifest-v4.json',
-    bytes=124643, sha256='f3adc242bb7f764c438f873c13e1bdaf4a08a3309ba7b81603ad33aef3a6d664')
+    path='/home/fry/artifacts/n4-evidence-01a13c53-b487-7dc2-954a-ba9af3ad695d-20261014/astra/contract-manifest-v7-final.json',
+    bytes=132703, sha256='05cb4625567bf6f722a3aee20818fe0824aa8f8e6cbc9bb08b23035e8e722017')
+
+# The seven reviewed successor paths retain their exact positions and caps.
+for _slot, _name in [(28, 'code-acceptance-review-v5.md'),
+                     (30, 'source-commit-v5.json'),
+                     (31, 'source-commit-v5.log'),
+                     (32, 'source-hook-summary-v5.json'),
+                     (37, 'code-and-gates-freeze-v7.json'),
+                     (46, 'fourth-result-equivalence-summary-v5.json'),
+                     (49, 'fourth-command-closure-review-v7.md')]:
+    FOURTH_EVIDENCE_TAIL[_slot] = str(RESIDUAL_RUN/'fourth-source'/_name)
 
 
 def fourth_record_contract():
@@ -179,7 +189,7 @@ def verify_fourth_records(evidence):
     any missing, changed, aliased or extra reference raises before physical reads.
     """
     contract = fourth_record_contract()
-    code_path = str(RESIDUAL_RUN/'fourth-source/code-and-gates-freeze.json')
+    code_path = contract['pending_validation_rows']['placement']
     by_path = {row['path']: row for row in evidence}
     pin_file(code_path, by_path[code_path], FREEZE_CAP)
     code = read_json(code_path, FREEZE_CAP)
@@ -232,11 +242,54 @@ def verify_fourth_records(evidence):
         streamed += result['streamed_bytes']
         if count > 64 or total > 1048576:
             raise ValueError('all record child count/byte cap')
-    if count != 49:
+    if count != 61:
         raise ValueError('exact finite record child coverage')
+    summary_spec = contract['equivalence_summary']
+    full_rows = [row for row in code['evidence_record']['references']
+                 if row['role'] == summary_spec['full_record_role']]
+    if len(full_rows) != 1:
+        raise ValueError('unique full equivalence body role')
+    full_pin = {key: full_rows[0][key] for key in ('path', 'bytes', 'sha256')}
+    # The body has already been authenticated as its one semantic occurrence.
+    # Recheck bytes on the bounded parse pass; report that additional read.
+    if type(full_pin['bytes']) is not int or not 0 <= full_pin['bytes'] <= METADATA_CAP:
+        raise ValueError('full equivalence parse admission')
+    with regular_path(full_pin['path']).open('rb') as stream:
+        full_raw = stream.read(METADATA_CAP + 1)
+    if len(full_raw) != full_pin['bytes'] or hashlib.sha256(full_raw).hexdigest() != full_pin['sha256']:
+        raise ValueError('full equivalence parse drift')
+    full = module.decode(full_raw, METADATA_CAP)
+    summary_path = summary_spec['path']
+    pin_file(summary_path, by_path[summary_path], summary_spec['cap_bytes'])
+    summary = read_json(summary_path, summary_spec['cap_bytes'])
+    verify_equivalence_summary(summary, full)
     source_bytes = pending[0]['bytes'] + pending[1]['bytes']
     return dict(reference_count=count, referenced_bytes=total,
-                streamed_bytes=streamed, source_bytes=source_bytes)
+                streamed_bytes=streamed, semantic_read_bytes=len(full_raw),
+                source_bytes=source_bytes)
+
+
+def equivalence_summary(full):
+    """Project every original semantic field; reference the sole full log child."""
+    if not isinstance(full, dict) or not isinstance(full.get('full_gate_output'), str):
+        raise ValueError('full equivalence record shape')
+    output = full['full_gate_output'].encode('utf-8')
+    return dict(schema='n4-result-equivalence-summary-v1',
+                full_record_role='full-result-equivalence',
+                projection={key: value for key, value in full.items() if key != 'full_gate_output'},
+                omitted_output=dict(bytes=len(output), sha256=hashlib.sha256(output).hexdigest()),
+                accepted=False)
+
+
+def verify_equivalence_summary(summary, full):
+    """Reject all mismatched fields before accepting a bounded projection."""
+    expected = equivalence_summary(full)
+    if not isinstance(summary, dict) or set(summary) != set(expected) or summary.get('accepted') is not False or summary != expected:
+        raise ValueError('exact full equivalence projection')
+    # JSON bool/int equality must not make an invented zero/false acceptable.
+    if type(summary['omitted_output'].get('bytes')) is not int or encoded(summary, 16384) != encoded(expected, 16384):
+        raise ValueError('equivalence projection scalar identity')
+
 
 
 def unique_object(pairs):
