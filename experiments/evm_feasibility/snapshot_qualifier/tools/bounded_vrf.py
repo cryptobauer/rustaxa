@@ -30,6 +30,16 @@ RESIDUAL_VOTER = '03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b'
 RESIDUAL_PROFILE = f'n4_residual_vrf_{RESIDUAL_VOTER}_v1'
 RESIDUAL_KEY = '89ef37281f8220316458526a5c28a4518ec2cd3eaf487baa7055e8831cb89c5b'
 RESIDUAL_INDICES = [62,119,179,236,344,401,461,521,578,638,695,749,806,866,920,977,1034,1091,1151,1211,1271,1328,1382,1430,1487,1547,1604,1661,1715,1772,1832,1889,1943,1997,2057,2114,2171,2231,2285,2345,2399,2459,2516,2576,2624,2684]
+FIRST_CODE_RECORD = RESIDUAL_RUN/'code-and-gates-freeze.json'
+FIRST_COMMAND_RECORD = RESIDUAL_RUN/'residual-first/vrf-residual-first-voter-window-command-freeze.json'
+FIRST_OUTCOME_RECORD = RESIDUAL_RUN/'residual-first/fact-outcome-freeze.json'
+SECOND_VOTER = 'b92a29912b08b4fa7404b02dfa2b8a971abdeda1'
+SECOND_PROFILE = f'n4_residual_vrf_{SECOND_VOTER}_v1'
+SECOND_KEY = '92f670429dc4076aa7771488f1512225a3bbf93eb17aa2e37a8cedcd463fff65'
+SECOND_INDICES = [95,155,215,269,320,377,437,497,557,614,671,728,782,842,899,953,1010,1067,1127,1187,1247,1307,1358,1409,1463,1523,1580,1637,1694,1751,1808,1865,1919,1973,2033,2147,2207,2261,2321,2378,2435,2492,2552,2603,2660,2720]
+RESIDUAL_PROFILES = {RESIDUAL_PROFILE, SECOND_PROFILE}
+SECOND_EVIDENCE_TAIL = ['/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/vrf-residual-first-voter-window-command-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/fact-outcome-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-all-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-all-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-focused-first.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-focused-first.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-quality.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-quality.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/tool-residual-positive-final-2.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/tool-residual-positive-final-2.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-build.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-build.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-tests.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-tests.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/canonical-parity.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/canonical-parity.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-compatibility-corrected.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-compatibility-corrected.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/first-d-compatibility-replay.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/first-d-compatibility-replay.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-first-complete-equivalence-final.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-first-complete-equivalence-final.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/argument-rejection.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/argument-rejection.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fast-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fast-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/actual-hook-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/actual-hook-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-acceptance-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/validation-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-commit.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-commit.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-hook-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/binary-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/preparation-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/storage-validation-current.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/tool-source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/residual-authority-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/b92a46-independent-map-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-spec-candidate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-structural-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-pins.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-map/build_residual_map_corrected_v1.py', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-map/residual-424-corrected-v1.json', '/home/fry/artifacts/vrf-residual-preparation-20261014/manifest.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/instance-spec.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/vrf-residual-first-voter-preparation.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/first-result-equivalence.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/first-result-equivalence.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/second-correction-record.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/second-command-closure-review.md']
+
 RESIDUAL_PREFIXES = [str(REPO),
     '/home/fry/artifacts/n4-binding-resume-20261011',
     '/home/fry/artifacts/n4-run-01a126b2-3ae0-7883-a5e3-b4618ade8cd5-20261010',
@@ -59,12 +69,15 @@ def sealed_profile(profile):
     if profile == RESIDUAL_PROFILE:
         return dict(ordinal='residual-first', voter=RESIDUAL_VOTER, key=RESIDUAL_KEY,
                     prior_index=0, indices=RESIDUAL_INDICES)
+    if profile == SECOND_PROFILE:
+        return dict(ordinal='residual-second', voter=SECOND_VOTER, key=SECOND_KEY,
+                    prior_index=12, indices=SECOND_INDICES)
     if profile not in SUCCESSORS:
         raise ValueError('unknown sealed profile')
     return SUCCESSORS[profile]
 
 
-def expand_residual_evidence(value):
+def expand_residual_evidence(value, profile=RESIDUAL_PROFILE):
     """Expand the reviewed explicit prefix representation once, without I/O.
 
     Order and identical duplicate occurrences survive. A conflicting repeated
@@ -74,9 +87,12 @@ def expand_residual_evidence(value):
     if not isinstance(value, dict) or set(value) != {'prefixes', 'pins'} or value['prefixes'] != RESIDUAL_PREFIXES:
         raise ValueError('fixed residual evidence prefixes')
     rows = value['pins']
-    # The fixed residual closure has 76+2 sources, two binaries, preflight,
-    # preparation and spec: 83 directly represented occurrences.
-    if not isinstance(rows, list) or len(rows) + 83 > PIN_COUNT:
+    # First uses 76+2 sources; second preserves those and adds two fixed CLIs.
+    # Binaries, preflight, preparation and spec make 83/85 direct occurrences.
+    if profile not in RESIDUAL_PROFILES:
+        raise ValueError('fixed residual evidence profile')
+    direct = 85 if profile == SECOND_PROFILE else 83
+    if not isinstance(rows, list) or len(rows) + direct > PIN_COUNT:
         raise ValueError('expanded evidence count')
     result, seen = [], {}
     for row in rows:
@@ -207,8 +223,10 @@ def expected_source_paths(profile=None):
     result = paths + [str(SRC / name) for name in [
         'vrf_shared_window.rs', 'bin/live_vrf_seventh_voter_window.rs',
         'bin/replay_vrf_seventh_voter_window.rs']]+[str(SRC / f'bin/{kind}_vrf_{ordinal}_voter_window.rs') for ordinal in ['eighth','ninth','tenth'] for kind in ['live','replay']]
-    if profile == RESIDUAL_PROFILE:
+    if profile in RESIDUAL_PROFILES:
         result += [str(SRC / f'bin/{kind}_vrf_residual_first.rs') for kind in ['live','replay']]
+    if profile == SECOND_PROFILE:
+        result += [str(SRC / f'bin/{kind}_vrf_residual_b92a.rs') for kind in ['live','replay']]
     return result
 
 
@@ -216,7 +234,7 @@ def validate_preflight(report, preparation=None):
     pin_file(PREPARATION, dict(path=str(PREPARATION), bytes=60570, sha256=PREPARATION_SHA))
     common_prepared = read_json(PREPARATION)
     fixed = sealed_profile(report['profile'])
-    residual = report['profile'] == RESIDUAL_PROFILE
+    residual = report['profile'] in RESIDUAL_PROFILES
     count = 46 if residual else 47
     voter, key = fixed['voter'], fixed['key']
     prepared = common_prepared if preparation is None else read_json(preparation)
@@ -233,7 +251,8 @@ def validate_preflight(report, preparation=None):
         if tuple_ != dict(identity=expected['identity'], address_hex=expected['account_hex'],
                           logical_key_hex=key, key_preimage_hex=f'0004{voter}'):
             raise ValueError('authenticated tuple binding')
-        delayed_index = (i + 1 if i < 4 else i + 2) if residual else i + 1
+        omitted = 36 if report['profile'] == SECOND_PROFILE else 5
+        delayed_index = (i + 1 if i < omitted - 1 else i + 2) if residual else i + 1
         if tuple_['identity']['period'] != 25706894 + delayed_index:
             raise ValueError('tuple order')
     authority = report['authority']
@@ -260,7 +279,10 @@ def validate_preflight(report, preparation=None):
             raise ValueError('sealed successor row indices')
         if expected['selection_index'] != fixed['prior_index'] or expected['parent_manifest_index'] != fixed['prior_index']*3+2:
             raise ValueError('sealed successor prior indices')
-    if residual and (prior['value_hex'] != '6fabaf3eaa629b97b1dfaf77b9025072a1197299dd90cb19e46038794e91447b'
+    residual_value = ('04d5cbb4aed88f984596c757d953bd962bf9e1353046b3e28af0aac6366cab93'
+                      if report['profile'] == SECOND_PROFILE else
+                      '6fabaf3eaa629b97b1dfaf77b9025072a1197299dd90cb19e46038794e91447b')
+    if residual and (prior['value_hex'] != residual_value
                      or prior['identity'] != baseline['authority']['prior_first_d']['selected']['identity']):
         raise ValueError('fixed residual prior value/root')
     if report['bounds']['payload_tuples_exact'] != count or report['bounds']['proofs_exact'] != 51+count:
@@ -269,12 +291,14 @@ def validate_preflight(report, preparation=None):
         raise ValueError('preflight cannot qualify facts')
 
 
-def validate_residual_history(evidence):
+def validate_residual_history(evidence, profile=RESIDUAL_PROFILE):
     """Keep the full inherited sequence; substitute only four reviewed tuples.
 
-    This reads two fixed, explicitly charged records and four required archived
-    predecessors. It does not recursively expand their references. All new
-    evidence follows the preserved inherited occurrence sequence.
+    First reads the fixed predecessor spec/manifest and archived predecessors.
+    Second retains the exact accepted first command/outcome records and checks
+    the six named immutable originals. No recursive expansion occurs. The
+    mandatory 233 inherited occurrences retain their order and multiplicity;
+    the second profile additionally requires its fixed 57-path evidence tail.
     """
     old_spec = PREVIOUS_RUN/'eighth-voter/instance-spec.json'
     pin_file(old_spec, dict(path=str(old_spec),bytes=65434,
@@ -294,7 +318,7 @@ def validate_residual_history(evidence):
         successor = {k:item[k] for k in ['path','bytes','sha256']}
         archive = PREVIOUS_RUN/'frozen-instructions'/archives[item['path']]
         archive_pin = dict(predecessor,path=str(archive))
-        if archive_pin not in evidence:
+        if archive_pin not in evidence and profile != SECOND_PROFILE:
             raise ValueError('missing archived instruction predecessor')
         pin_file(archive,archive_pin)
         replacements[item['path']] = (predecessor,successor)
@@ -309,6 +333,44 @@ def validate_residual_history(evidence):
             expected.append(pin)
     if len(expected) != 233 or evidence[:233] != expected:
         raise ValueError('full inherited evidence sequence')
+    if profile == SECOND_PROFILE:
+        # Named six-record successor representation: no recursive expansion or
+        # removal from the mandatory 233 historical occurrence sequence.
+        pin_file(FIRST_CODE_RECORD, dict(path=str(FIRST_CODE_RECORD), bytes=32274,
+                 sha256='7ec9fa0a8ca4e813537cdadcbae9ff7fdbc9d08e543c8b08f7e8de246bc07e3b'))
+        first_command = FIRST_COMMAND_RECORD
+        first_outcome = FIRST_OUTCOME_RECORD
+        pin_file(first_command, dict(path=str(first_command), bytes=92315,
+                 sha256='6d5e43bb1f64bcece4804b1b81d047c633b407dace111c3c8d86f2651ec9d61b'))
+        pin_file(first_outcome, dict(path=str(first_outcome), bytes=12440,
+                 sha256='04badad6795a837ee5a9c2e313d4854f5dfd40eb850236a498bdaca281c13019'))
+        first = read_json(first_command, FREEZE_CAP)
+        if first['pin_count'] != 375 or first['pinned_file_bytes'] != 418519918:
+            raise ValueError('first historical command scope')
+        retained = read_json(first_outcome)
+        if retained['command_freeze'] != pin_file(first_command):
+            raise ValueError('first accepted outcome parent')
+        for index in [319, 320, 366, 367, 368, 369]:
+            old = first['pins'][index]
+            pin_file(old['path'], old)
+            if old in evidence[233:]:
+                raise ValueError('unreviewed six-record successor representation')
+        if len(evidence) != 290 or [r['path'] for r in evidence[233:]] != SECOND_EVIDENCE_TAIL:
+            raise ValueError('exact second evidence sequence')
+
+
+
+def _validate_second_fit(pins, binaries):
+    """Enforce the named stricter second-profile body limits after pin validation.
+
+    Inputs are the complete charged occurrence list and its two fixed binary
+    entries. Duplicate occurrences remain charged. Reject either limit with
+    ValueError; no file inspection, publication or qualification occurs here.
+    """
+    binary_bytes = sum(row['bytes'] for row in binaries)
+    other_bytes = sum(row['bytes'] for row in pins) - binary_bytes
+    if binary_bytes > 440401920 or other_bytes > 31457280:
+        raise ValueError('strict second command fit')
 
 
 def build(spec_path):
@@ -321,7 +383,7 @@ def build(spec_path):
     pin_file(spec['preflight']['path'], spec['preflight'], FREEZE_CAP)
     report = read_json(spec['preflight']['path'], FREEZE_CAP)
     fixed = sealed_profile(report['profile'])
-    residual = report['profile'] == RESIDUAL_PROFILE
+    residual = report['profile'] in RESIDUAL_PROFILES
     ordinal = fixed['ordinal']
     fields = {'schema', 'run', 'source_commit', 'sources', 'tool_sources', 'binaries', 'preflight', 'evidence', 'copy_metadata'}
     if report['profile'] in SUCCESSORS or residual:
@@ -331,13 +393,13 @@ def build(spec_path):
     run = outside_database(spec['run'])
     if not run.is_relative_to(Path('/home/fry/artifacts')) or run.resolve(strict=True) != run:
         raise ValueError('persistent canonical run required')
-    if residual and run != RESIDUAL_RUN / 'residual-first':
+    if residual and run != RESIDUAL_RUN / ordinal:
         raise ValueError('fixed residual run')
-    evidence = expand_residual_evidence(spec['evidence']) if residual else spec['evidence']
+    evidence = expand_residual_evidence(spec['evidence'], report['profile']) if residual else spec['evidence']
     if not residual and not isinstance(evidence, list):
         raise ValueError('complete profile evidence representation')
     sources = spec['sources']
-    source_count = 76 if residual else 74
+    source_count = 78 if report['profile'] == SECOND_PROFILE else 76 if residual else 74
     if [row['path'] for row in sources] != expected_source_paths(report['profile']) or len(sources) != source_count:
         raise ValueError('exact successor source closure')
     expected_tools = [str(Path(__file__).resolve()), str(Path(__file__).resolve().with_name('test_bounded_vrf.py'))]
@@ -385,7 +447,7 @@ def build(spec_path):
     baseline_report = read_json(baseline_path, FREEZE_CAP)
     baseline_sources = baseline_report['vrf_sources']
     expected_report_paths = [r['path'] for r in baseline_sources[:19]] + ['vrf_shared_window.rs'] + [
-        f'bin/{kind}_vrf_residual_first.rs' if residual else f'bin/{kind}_vrf_{ordinal}_voter_window.rs' for kind in ['live', 'replay']]
+        f'bin/{kind}_vrf_residual_b92a.rs' if report['profile'] == SECOND_PROFILE else f'bin/{kind}_vrf_residual_first.rs' if residual else f'bin/{kind}_vrf_{ordinal}_voter_window.rs' for kind in ['live', 'replay']]
     if [r['path'] for r in report['vrf_sources']] != expected_report_paths:
         raise ValueError('fixed embedded profile source closure')
     if [r['path'] for r in report['authority']['six_input_owner']['sources']] != [
@@ -404,6 +466,8 @@ def build(spec_path):
     pins = sources + spec['tool_sources'] + binaries + [spec['preflight']] + evidence + ([spec['preparation']] if preparation is not None else []) + [pin_file(spec_path, cap=METADATA_CAP)]
     if len(pins) > PIN_COUNT:
         raise ValueError('command pin count')
+    if report['profile'] == SECOND_PROFILE:
+        _validate_second_fit(pins, binaries)
     total = 0
     for row in pins:
         pin_file(row['path'], row)
@@ -444,23 +508,25 @@ def build(spec_path):
         required += [preparation]
 
     if residual:
-        validate_residual_history(evidence)
+        validate_residual_history(evidence, report['profile'])
         required = [p for p in required if p != run.parent / 'storage-validation-reuse.json']
-        required += [RESIDUAL_RUN/name for name in [
-            'residual-authority-review.md','residual-metadata-encoding-review.md',
-            'sol-review/map-acceptance.md','luna-map/residual-424-corrected-v1.json',
-            'luna-map/provenance-corrected-v1.json','luna-map/integrity-corrected-v1.json',
-            'luna-map/build_residual_map_corrected_v1.py','source-successor-mapping.json',
-            'binary-successor-mapping.json','preparation-comparison.json',
-            'storage-validation-current.json','code-and-gates-freeze.json']]
-        required += [Path(RESIDUAL_PREFIXES[13])/'manifest.json',
-                     PREVIOUS_RUN/'eighth-voter/instance-spec.json']
-        required += [RESIDUAL_RUN/(name+suffix) for name in RESIDUAL_GATES for suffix in ['.json','.log']]
-        required += [RESIDUAL_RUN/'storage/correction-test.json',
-                     RESIDUAL_RUN/'storage/correction-test.log',
-                     RESIDUAL_RUN/'source-freeze.json',RESIDUAL_RUN/'tool-source-freeze.json',
-                     RESIDUAL_RUN/'residual-authority-draft.json']
-
+        if report['profile'] == SECOND_PROFILE:
+            required = [Path(row['path']) for row in evidence]
+        else:
+            required += [RESIDUAL_RUN/name for name in [
+                'residual-authority-review.md','residual-metadata-encoding-review.md',
+                'sol-review/map-acceptance.md','luna-map/residual-424-corrected-v1.json',
+                'luna-map/provenance-corrected-v1.json','luna-map/integrity-corrected-v1.json',
+                'luna-map/build_residual_map_corrected_v1.py','source-successor-mapping.json',
+                'binary-successor-mapping.json','preparation-comparison.json',
+                'storage-validation-current.json','code-and-gates-freeze.json']]
+            required += [Path(RESIDUAL_PREFIXES[13])/'manifest.json',
+                         PREVIOUS_RUN/'eighth-voter/instance-spec.json']
+            required += [RESIDUAL_RUN/(name+suffix) for name in RESIDUAL_GATES for suffix in ['.json','.log']]
+            required += [RESIDUAL_RUN/'storage/correction-test.json',
+                         RESIDUAL_RUN/'storage/correction-test.log',
+                         RESIDUAL_RUN/'source-freeze.json',RESIDUAL_RUN/'tool-source-freeze.json',
+                         RESIDUAL_RUN/'residual-authority-draft.json']
     if not {str(path) for path in required}.issubset(evidence_paths):
         raise ValueError('missing mandatory review/history evidence')
     if [row['path'] for row in spec['copy_metadata']] != [str(COPY), str(COPY/'db/db'), str(COPY/'db/state_db')]:
@@ -563,13 +629,13 @@ def capture(freeze_path, expected_sha):
     if not isinstance(freeze, dict) or set(freeze) != expected_fields or freeze['accepted'] is not False:
         raise ValueError('trusted freeze schema')
     run = outside_database(freeze['run'])
-    if freeze.get('schema') != 1 or freeze.get('profile') not in {PROFILE, *SUCCESSORS, RESIDUAL_PROFILE} or run != freeze_path.parent \
+    if freeze.get('schema') != 1 or freeze.get('profile') not in {PROFILE, *SUCCESSORS, *RESIDUAL_PROFILES} or run != freeze_path.parent \
             or not run.is_relative_to(Path('/home/fry/artifacts')) or run.resolve(strict=True) != run:
         raise ValueError('trusted freeze/run binding')
     fixed = sealed_profile(freeze['profile'])
     ordinal = fixed['ordinal']
-    residual = freeze['profile'] == RESIDUAL_PROFILE
-    if residual and run != RESIDUAL_RUN/'residual-first':
+    residual = freeze['profile'] in RESIDUAL_PROFILES
+    if residual and run != RESIDUAL_RUN/ordinal:
         raise ValueError('fixed residual guard run')
     # Trusted admission ends here. All later failures permanently consume this
     # attempt, including offline pin, HEAD, output and metadata failures.
@@ -580,7 +646,7 @@ def capture(freeze_path, expected_sha):
     spec_pin = freeze['pins'][-1]
     if build(Path(spec_pin['path'])) != frozen_bytes:
         raise ValueError('freeze not deterministic builder output')
-    if freeze['profile'] not in {PROFILE, *SUCCESSORS, RESIDUAL_PROFILE} or freeze['cwd'] != str(REPO) or freeze['environment'] != ENV or Path.cwd() != REPO:
+    if freeze['profile'] not in {PROFILE, *SUCCESSORS, *RESIDUAL_PROFILES} or freeze['cwd'] != str(REPO) or freeze['environment'] != ENV or Path.cwd() != REPO:
         raise ValueError('exact invocation binding')
     head = subprocess.check_output(['/usr/bin/git', 'rev-parse', 'HEAD'], cwd=REPO, env=ENV).decode().strip()
     if head != freeze['source_commit']:

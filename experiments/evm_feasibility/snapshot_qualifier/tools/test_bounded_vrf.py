@@ -430,6 +430,15 @@ class ResidualBuilder(Fixture):
         # command fixtures. Placeholder acceptance records grant no READY.
         draft=Path('/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-authority-draft.json')
         report=guard.read_json(draft,guard.FREEZE_CAP)
+        # Only the declared source successors change this saved authority fixture.
+        # All selection, proof, value and authority fields stay intact.
+        owned = {guard.SRC/'vrf_shared_window.rs',
+                 guard.REPO/'rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs'}
+        for row in report['vrf_sources'] + report['authority']['six_input_owner']['sources']:
+            actual = (guard.SRC/row['path']).resolve()
+            if actual in owned:
+                current = guard.pin_file(actual)
+                row.update(bytes=current['bytes'], sha256=current['sha256'])
         run=self.root/'residual-first';run.mkdir()
         binaries=[]
         for kind in ['live','replay']:
@@ -522,6 +531,152 @@ class ResidualBuilder(Fixture):
         preflight.write_bytes(guard.encoded(report,guard.FREEZE_CAP));path.write_text(json.dumps(spec,separators=(',',':'))+'\n')
         prep=Path(spec['preparation']['path']);prep.write_bytes(guard.encoded(dict(prepared,rows=[]),guard.METADATA_CAP))
         with self.assertRaises(ValueError):guard.build(path)
+
+
+class SecondResidualBuilder(Fixture):
+    def setUp(self):
+        # Keep historical records at their immutable paths; only new test-owned
+        # paths move. The fixed prefix table remains the production table.
+        self.original_run = guard.RESIDUAL_RUN
+        self.temp = tempfile.TemporaryDirectory(prefix='second-fixture-', dir=self.original_run)
+        self.root = Path(self.temp.name)
+        tail = [str(self.root / Path(p).relative_to(self.original_run))
+                if Path(p) not in [self.original_run/'code-and-gates-freeze.json',
+                                  guard.FIRST_COMMAND_RECORD, guard.FIRST_OUTCOME_RECORD]
+                and Path(p).is_relative_to(self.original_run) else p
+                for p in guard.SECOND_EVIDENCE_TAIL]
+        self.run_patch = patch.object(guard, 'RESIDUAL_RUN', self.root)
+        self.tail_patch = patch.object(guard, 'SECOND_EVIDENCE_TAIL', tail)
+        self.run_patch.start(); self.tail_patch.start()
+        self.addCleanup(self.run_patch.stop); self.addCleanup(self.tail_patch.stop)
+
+    def fixture(self):
+        report = guard.read_json(self.original_run/'residual-authority-draft.json',guard.FREEZE_CAP)
+        candidate_path = self.original_run/'luna-next/b92a46-spec-candidate.json'
+        guard.pin_file(candidate_path, dict(path=str(candidate_path),bytes=74979,
+                       sha256='1bd797ee59d36855cd52fdf80109c984d90f3a67059af2dbfe63b80952f0483e'))
+        candidate=json.loads(candidate_path.read_bytes())
+        report['profile']=guard.SECOND_PROFILE
+        report['selection']=[]
+        for row in candidate['requests']:
+            source=dict(delayed_period=row['delayed_period'],proof=None,qualified=False,
+                        semantic_key=row['semantic_key'],source_references=row['source_references'],
+                        value=None,voter_hex=row['voter_hex'])
+            report['selection'].append(dict(parent_manifest_index=row['parent_manifest_index'],
+                source_row=source,tuple=dict(identity=dict(period=row['delayed_period'],state_root_hex=row['state_root_hex']),
+                address_hex=row['account_hex'],logical_key_hex=row['logical_key_hex'],key_preimage_hex=row['key_preimage_hex'])))
+        prior=report['authority']['prior_first_d']['selected']
+        prior.update(proof_index=63,voter_hex=guard.SECOND_VOTER,value_hex=candidate['prior_first_d']['value_hex'])
+        report['vrf_sources'][-2]['path']='bin/live_vrf_residual_b92a.rs'
+        report['vrf_sources'][-1]['path']='bin/replay_vrf_residual_b92a.rs'
+        sources=[guard.pin_file(p) for p in guard.expected_source_paths(guard.SECOND_PROFILE)]
+        source_map={p['path']:p for p in sources}
+        for row in report['vrf_sources']+report['authority']['six_input_owner']['sources']:
+            pin=source_map[str((guard.SRC/row['path']).resolve())]
+            row.update(bytes=pin['bytes'],sha256=pin['sha256'])
+        run=self.root/'residual-second';run.mkdir()
+        binaries=[]
+        for kind in ['live','replay']:
+            p=run/f'{kind}-vrf-residual-second-voter-window-v1';p.write_bytes(b'synthetic-no-execution')
+            binaries.append(guard.pin_file(p))
+        report['authority']['six_input_owner']['executable']=binaries[0]
+        prepared=dict(schema=1,profile=guard.SECOND_PROFILE,
+            raw_authority_inputs=guard.read_json(guard.PREPARATION)['raw_authority_inputs'],
+            rows=[dict(original_parent_manifest_index=r['parent_manifest_index'],source_row=r['source_row'],
+                       identity=r['tuple']['identity'],account_hex=r['tuple']['address_hex']) for r in report['selection']],
+            prior_first_d=dict(identity=prior['identity'],selection_index=12,parent_manifest_index=38,
+                              accepted_value=dict(value_hex=prior['value_hex'])))
+        prep=run/'vrf-residual-second-voter-preparation.json';prep.write_bytes(guard.encoded(prepared,guard.METADATA_CAP))
+        preflight=run/'preflight.json';preflight.write_bytes(guard.encoded(report,guard.FREEZE_CAP))
+        first=guard.read_json(guard.FIRST_COMMAND_RECORD,guard.FREEZE_CAP)
+        # Use the authenticated first spec prefix, not a freeze-position guess.
+        first_spec=guard.read_json(self.original_run/'residual-first/instance-spec.json')
+        evidence=guard.expand_residual_evidence(first_spec['evidence'])[:233]
+        for name in guard.SECOND_EVIDENCE_TAIL:
+            p=Path(name)
+            if p.is_relative_to(self.root):
+                p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'synthetic fixture, no acceptance')
+            evidence.append(guard.pin_file(p))
+        self.assertEqual(len(evidence),290)
+        encoded=[]
+        for pin in evidence:
+            matches=[(i,p) for i,p in enumerate(guard.RESIDUAL_PREFIXES) if pin['path'].startswith(p+'/')]
+            self.assertEqual(len(matches),1)
+            i,p=matches[0];encoded.append([i,pin['path'][len(p)+1:],pin['bytes'],pin['sha256']])
+        spec=dict(schema=1,run=str(run),source_commit='0'*40,sources=sources,
+                  tool_sources=[guard.pin_file(guard.__file__),guard.pin_file(__file__)],binaries=binaries,
+                  preflight=guard.pin_file(preflight),preparation=guard.pin_file(prep),
+                  evidence=dict(prefixes=guard.RESIDUAL_PREFIXES,pins=encoded),
+                  copy_metadata=[dict(path=str(p),device=0,inode=0,mode=0,mtime_ns=0)
+                    for p in [guard.COPY,guard.COPY/'db/db',guard.COPY/'db/state_db']])
+        path=run/'spec.json';path.write_text(json.dumps(spec,separators=(',',':'))+'\n')
+        return path,spec,report,prepared
+
+    def test_positive_second_exact375_preserves_first_sources(self):
+        path,spec,_,_=self.fixture()
+        result=guard.build(path);self.assertEqual(result,guard.build(path))
+        freeze=json.loads(result)
+        self.assertEqual(freeze['source_count'],78);self.assertEqual(freeze['pin_count'],375)
+        self.assertEqual(freeze['pinned_file_bytes'],sum(r['bytes'] for r in freeze['pins']))
+        self.assertFalse(freeze['accepted']);self.assertIn('.rcv3',freeze['capture_command'][2])
+        self.assertTrue(any(r['path'].endswith('bin/live_vrf_residual_first.rs') for r in spec['sources']))
+
+    def test_second_rejects_changed_sequence_and_cross_profile(self):
+        path,spec,report,_=self.fixture();guard.build(path)
+        for change in [lambda s:s['evidence']['pins'].pop(),
+                       lambda s:s['evidence']['pins'].__setitem__(slice(233,235),s['evidence']['pins'][233:235][::-1]),
+                       lambda s:s['sources'].pop(),lambda s:s['binaries'].reverse()]:
+            bad=copy.deepcopy(spec);change(bad);path.write_text(json.dumps(bad,separators=(',',':'))+'\n')
+            with self.assertRaises(ValueError):guard.build(path)
+        for change in [lambda r:r.update(profile=guard.RESIDUAL_PROFILE),
+                       lambda r:r['authority']['prior_first_d']['selected'].update(proof_index=51),
+                       lambda r:r['selection'][35]['tuple']['identity'].update(period=25706930),
+                       lambda r:r['selection'][0]['tuple'].update(logical_key_hex=guard.RESIDUAL_KEY),
+                       lambda r:r['vrf_sources'][-1].update(path='bin/replay_vrf_residual_first.rs')]:
+            bad=copy.deepcopy(report);change(bad)
+            preflight=Path(spec['preflight']['path']);preflight.write_bytes(guard.encoded(bad,guard.FREEZE_CAP))
+            altered=copy.deepcopy(spec);altered['preflight']=guard.pin_file(preflight)
+            path.write_text(json.dumps(altered,separators=(',',':'))+'\n')
+            with self.assertRaises(ValueError):guard.build(path)
+
+    def test_second_rejects_same_size_forged_first_code_record(self):
+        path,_,_,_=self.fixture();guard.build(path)
+        original=guard.FIRST_CODE_RECORD.read_bytes()
+        changed=bytearray(original);changed[-1]^=1
+        forged=self.root/'forged-first-code.json';forged.write_bytes(changed)
+        self.assertEqual(len(original),forged.stat().st_size)
+        with patch.object(guard,'FIRST_CODE_RECORD',forged):
+            with self.assertRaises(ValueError):guard.build(path)
+
+    def test_second_strict_body_boundaries_charge_repeated_occurrences(self):
+        binaries=[dict(bytes=220200960),dict(bytes=220200960)]
+        other=dict(bytes=15728640)
+        guard._validate_second_fit(binaries+[other,other],binaries)
+        with self.assertRaisesRegex(ValueError,'strict second command fit'):
+            guard._validate_second_fit(binaries+[other,other,dict(bytes=1)],binaries)
+        too_large=[dict(bytes=220200961),dict(bytes=220200960)]
+        with self.assertRaisesRegex(ValueError,'strict second command fit'):
+            guard._validate_second_fit(too_large,too_large)
+        guard._validate_second_fit([dict(bytes=31457280)],[])
+        with self.assertRaisesRegex(ValueError,'strict second command fit'):
+            guard._validate_second_fit([dict(bytes=31457281)],[])
+
+    def test_second_marker_and_profile_specific_count_limit(self):
+        fixed=guard.sealed_profile(guard.SECOND_PROFILE)
+        self.assertEqual(fixed['prior_index'],12);self.assertEqual(fixed['indices'],guard.SECOND_INDICES)
+        rows=[[12,'zero.log',0,'0'*64]]*315
+        value=dict(prefixes=guard.RESIDUAL_PREFIXES,pins=rows)
+        self.assertEqual(len(guard.expand_residual_evidence(value,guard.SECOND_PROFILE)),315)
+        with self.assertRaises(ValueError):guard.expand_residual_evidence(dict(value,pins=rows+rows[:1]),guard.SECOND_PROFILE)
+        with self.assertRaises(ValueError):guard.expand_residual_evidence(value,'unknown')
+        run=self.root/'residual-second';run.mkdir();bounds=Bounds();bounds.root=run
+        freeze,_,v=bounds.trusted_freeze();v['profile']=guard.SECOND_PROFILE
+        freeze.write_bytes(guard.encoded(v,guard.FREEZE_CAP));sha=guard.pin_file(freeze)['sha256']
+        with patch.object(guard,'verify_files',side_effect=ValueError('second offline drift')) as verify:
+            with self.assertRaisesRegex(ValueError,'second offline drift'):guard.capture(freeze,sha)
+            self.assertTrue((run/'vrf-residual-second-voter-window-attempt.json').is_file())
+            with self.assertRaises(FileExistsError):guard.capture(freeze,sha)
+            self.assertEqual(verify.call_count,1)
 
 if __name__ == '__main__':
     unittest.main()
