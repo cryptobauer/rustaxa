@@ -151,12 +151,12 @@ pub struct ConcreteVrfVoterReplay {
     pub physical: [ConcreteWitnessPhysical; 47],
     pub usage: ConcreteWitnessUsage,
 }
-/// One of two named fixed partial-period residual VRF families. Shape
+/// One of three named fixed partial-period residual VRF families. Shape
 /// validation does not
 /// authenticate raw votes, comparison roots or the first-period positive prior;
 /// the caller must authenticate those before construction or any database open.
 /// All 48 delayed identities remain in the constructor context. The omitted
-/// index (5 for the first voter, 36 for b92a) is no payload request and
+/// index (5 for the first voter, 36 for b92a, 12 for e50b) is no payload request and
 /// establishes no state or history fact.
 pub struct ConcreteVrfResidualPlan {
     voter: [u8; 20],
@@ -182,6 +182,17 @@ impl ConcreteVrfResidualPlan {
     pub fn new_b92a(first: ConcreteVrfPlan) -> Result<Self, ConcreteWitnessError> {
         Self::fixed(first, Self::B92A, 36)
     }
+    /// Consume a valid first-period plan containing the named third residual
+    /// voter e50b5452b2e8435404dbe06e6a05410c47b7583d.
+    /// Derive its account/key at delayed indices 1..=47 except 12. Preserve all
+    /// 48 context identities, including index 12; omission supplies no state
+    /// or history fact. Accept no caller voter/key/root/count/index/profile.
+    /// Missing voter or malformed context returns Request or the validation
+    /// error before database access. Fresh raw/root and positive-prior
+    /// authentication remain the caller's responsibility before construction.
+    pub fn new_e50b(first: ConcreteVrfPlan) -> Result<Self, ConcreteWitnessError> {
+        Self::fixed(first, Self::E50B, 12)
+    }
     fn fixed(
         first: ConcreteVrfPlan,
         voter: [u8; 20],
@@ -204,6 +215,10 @@ impl ConcreteVrfResidualPlan {
             tuples,
         })
     }
+    const E50B: [u8; 20] = [
+        0xe5, 0x0b, 0x54, 0x52, 0xb2, 0xe8, 0x43, 0x54, 0x04, 0xdb, 0xe0, 0x6e, 0x6a, 0x05, 0x41,
+        0x0c, 0x47, 0xb7, 0x58, 0x3d,
+    ];
     const B92A: [u8; 20] = [
         0xb9, 0x2a, 0x29, 0x91, 0x2b, 0x08, 0xb4, 0xfa, 0x74, 0x04, 0xb0, 0x2d, 0xfa, 0x2b, 0x8a,
         0x97, 0x1a, 0xbd, 0xed, 0xa1,
@@ -221,7 +236,7 @@ impl ConcreteVrfResidualPlan {
         self.voter
     }
     /// Borrow exactly 46 ordered payload tuples. Index 0 and the instance
-    /// omission (5 for the first voter, 36 for b92a) are absent.
+    /// omission (5 for the first voter, 36 for b92a, 12 for e50b) are absent.
     pub fn tuples(&self) -> &[ConcreteDiagnosticTuple; 46] {
         &self.tuples
     }

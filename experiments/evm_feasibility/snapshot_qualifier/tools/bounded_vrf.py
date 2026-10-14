@@ -37,7 +37,17 @@ SECOND_VOTER = 'b92a29912b08b4fa7404b02dfa2b8a971abdeda1'
 SECOND_PROFILE = f'n4_residual_vrf_{SECOND_VOTER}_v1'
 SECOND_KEY = '92f670429dc4076aa7771488f1512225a3bbf93eb17aa2e37a8cedcd463fff65'
 SECOND_INDICES = [95,155,215,269,320,377,437,497,557,614,671,728,782,842,899,953,1010,1067,1127,1187,1247,1307,1358,1409,1463,1523,1580,1637,1694,1751,1808,1865,1919,1973,2033,2147,2207,2261,2321,2378,2435,2492,2552,2603,2660,2720]
-RESIDUAL_PROFILES = {RESIDUAL_PROFILE, SECOND_PROFILE}
+
+THIRD_VOTER = 'e50b5452b2e8435404dbe06e6a05410c47b7583d'
+THIRD_PROFILE = f'n4_residual_vrf_{THIRD_VOTER}_v1'
+THIRD_KEY = '97c2d7a6a0dc3ae78ab1fe9147bd5db10088db1c01850d9b8bce75ae287361d2'
+THIRD_INDICES = [107, 167, 227, 281, 332, 389, 449, 509, 569, 626, 683, 794, 854, 911, 965, 1022, 1079, 1139, 1199, 1259, 1319, 1370, 1421, 1475, 1535, 1592, 1649, 1706, 1763, 1820, 1877, 1931, 1985, 2045, 2102, 2159, 2219, 2273, 2333, 2390, 2447, 2504, 2564, 2615, 2672, 2732]
+THIRD_EVIDENCE_TAIL = ['/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/qualifier-all-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/qualifier-all-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/qualifier-focused-first.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/qualifier-focused-first.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/qualifier-quality.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/qualifier-quality.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/tool-residual-positive-final-2.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/tool-residual-positive-final-2.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/storage-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/storage-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/storage-bridge-build.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/storage-bridge-build.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/storage-bridge-tests.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/storage-bridge-tests.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/canonical-parity.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/canonical-parity.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/native-compatibility-corrected.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/native-compatibility-corrected.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/first-d-compatibility-replay.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/first-d-compatibility-replay.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/native-first-complete-equivalence-final.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/native-first-complete-equivalence-final.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/argument-rejection.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/argument-rejection.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/fast-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/fast-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/actual-hook-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/actual-hook-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/code-acceptance-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/validation-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/source-commit.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/source-commit.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/source-hook-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/source-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/binary-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/preparation-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/storage-validation-current.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/tool-source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/residual-authority-review-v2.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/e50b46-independent-map-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-third/e50b46-candidate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-third/e50b46-structural-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-third/e50b46-pins.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-map/build_residual_map_corrected_v1.py', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-map/residual-424-corrected-v1.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/vrf-residual-second-voter-window-command-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fact-outcome-freeze.json', '/home/fry/artifacts/vrf-residual-preparation-20261014/manifest.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/third-result-equivalence.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/third-result-equivalence.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/third-correction-record.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/third-command-closure-review.md']
+THIRD_EVIDENCE_CAPS = [16384, 131544, 16384, 67436, 16384, 130554, 16384, 65536, 16384, 92706, 16384, 81324, 16384, 65536, 16384, 65536, 16384, 65536, 16384, 65536, 16384, 65536, 16384, 65536, 16384, 583136, 16384, 582060, 131072, 131072, 131072, 1048576, 131072, 131072, 131072, 131072, 131072, 131072, 131072, 131072, 131072, 131072, 41913, 923, 1487, 14706, 437589, 34625, 92988, 7371, 1893, 131072, 131072, 131072, 131072]
+SECOND_HISTORY_PINS = [{'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-and-gates-freeze.json', 'bytes': 34625, 'sha256': 'fccb5d38776b207ea74c3bb360f5c220586a181c9f592d81a83ae6da3cfbc03b'}, {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/vrf-residual-second-voter-window-command-freeze.json', 'bytes': 92988, 'sha256': 'd5db0ec359003df0141f8f5468e418f2fe7d3a2f6b679b658abdadea6aba6725'}, {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fact-outcome-freeze.json', 'bytes': 7371, 'sha256': '0466b004e68244355bb51bd7feb4fe202123d4361cfc2dbd608602cee6c4b386'}]
+THIRD_CORRECTION_PIN = dict(path=str(RESIDUAL_RUN/'third-source/third-correction-record.json'), bytes=126549, sha256='c82bc82761b014e365bc8eb7870775f5b937d2362b2e80277b1806cb1a5e9874')
+THIRD_AUTHORITY_PIN = dict(path=str(RESIDUAL_RUN/'third-source/residual-authority-review-v2.md'), bytes=10473, sha256='3cf3a409417250c152a675cbc9e0a2a33fa1406d3a4d4cf6e1f5e91074e0e842')
+RESIDUAL_PROFILES = {RESIDUAL_PROFILE, SECOND_PROFILE, THIRD_PROFILE}
 SECOND_EVIDENCE_TAIL = ['/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/vrf-residual-first-voter-window-command-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/fact-outcome-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-all-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-all-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-focused-first.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-focused-first.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-quality.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-quality.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/tool-residual-positive-final-2.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/tool-residual-positive-final-2.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-build.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-build.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-tests.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-tests.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/canonical-parity.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/canonical-parity.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-compatibility-corrected.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-compatibility-corrected.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/first-d-compatibility-replay.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/first-d-compatibility-replay.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-first-complete-equivalence-final.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-first-complete-equivalence-final.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/argument-rejection.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/argument-rejection.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fast-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fast-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/actual-hook-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/actual-hook-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-acceptance-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/validation-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-commit.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-commit.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-hook-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/binary-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/preparation-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/storage-validation-current.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/tool-source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/residual-authority-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/b92a46-independent-map-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-spec-candidate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-structural-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-pins.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-map/build_residual_map_corrected_v1.py', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-map/residual-424-corrected-v1.json', '/home/fry/artifacts/vrf-residual-preparation-20261014/manifest.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/instance-spec.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/vrf-residual-first-voter-preparation.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/first-result-equivalence.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/first-result-equivalence.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/second-correction-record.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/second-command-closure-review.md']
 
 RESIDUAL_PREFIXES = [str(REPO),
@@ -72,6 +82,9 @@ def sealed_profile(profile):
     if profile == SECOND_PROFILE:
         return dict(ordinal='residual-second', voter=SECOND_VOTER, key=SECOND_KEY,
                     prior_index=12, indices=SECOND_INDICES)
+    if profile == THIRD_PROFILE:
+        return dict(ordinal='residual-third', voter=THIRD_VOTER, key=THIRD_KEY,
+                    prior_index=16, indices=THIRD_INDICES)
     if profile not in SUCCESSORS:
         raise ValueError('unknown sealed profile')
     return SUCCESSORS[profile]
@@ -87,11 +100,11 @@ def expand_residual_evidence(value, profile=RESIDUAL_PROFILE):
     if not isinstance(value, dict) or set(value) != {'prefixes', 'pins'} or value['prefixes'] != RESIDUAL_PREFIXES:
         raise ValueError('fixed residual evidence prefixes')
     rows = value['pins']
-    # First uses 76+2 sources; second preserves those and adds two fixed CLIs.
-    # Binaries, preflight, preparation and spec make 83/85 direct occurrences.
+    # The fixed residual closures use 76/78/80 owner sources and two tools.
+    # Two binaries, preflight, preparation and spec make 83/85/87 occurrences.
     if profile not in RESIDUAL_PROFILES:
         raise ValueError('fixed residual evidence profile')
-    direct = 85 if profile == SECOND_PROFILE else 83
+    direct = 87 if profile == THIRD_PROFILE else 85 if profile == SECOND_PROFILE else 83
     if not isinstance(rows, list) or len(rows) + direct > PIN_COUNT:
         raise ValueError('expanded evidence count')
     result, seen = [], {}
@@ -225,8 +238,10 @@ def expected_source_paths(profile=None):
         'bin/replay_vrf_seventh_voter_window.rs']]+[str(SRC / f'bin/{kind}_vrf_{ordinal}_voter_window.rs') for ordinal in ['eighth','ninth','tenth'] for kind in ['live','replay']]
     if profile in RESIDUAL_PROFILES:
         result += [str(SRC / f'bin/{kind}_vrf_residual_first.rs') for kind in ['live','replay']]
-    if profile == SECOND_PROFILE:
+    if profile in {SECOND_PROFILE, THIRD_PROFILE}:
         result += [str(SRC / f'bin/{kind}_vrf_residual_b92a.rs') for kind in ['live','replay']]
+    if profile == THIRD_PROFILE:
+        result += [str(SRC / f'bin/{kind}_vrf_residual_e50b.rs') for kind in ['live','replay']]
     return result
 
 
@@ -251,7 +266,7 @@ def validate_preflight(report, preparation=None):
         if tuple_ != dict(identity=expected['identity'], address_hex=expected['account_hex'],
                           logical_key_hex=key, key_preimage_hex=f'0004{voter}'):
             raise ValueError('authenticated tuple binding')
-        omitted = 36 if report['profile'] == SECOND_PROFILE else 5
+        omitted = 12 if report['profile'] == THIRD_PROFILE else 36 if report['profile'] == SECOND_PROFILE else 5
         delayed_index = (i + 1 if i < omitted - 1 else i + 2) if residual else i + 1
         if tuple_['identity']['period'] != 25706894 + delayed_index:
             raise ValueError('tuple order')
@@ -279,7 +294,8 @@ def validate_preflight(report, preparation=None):
             raise ValueError('sealed successor row indices')
         if expected['selection_index'] != fixed['prior_index'] or expected['parent_manifest_index'] != fixed['prior_index']*3+2:
             raise ValueError('sealed successor prior indices')
-    residual_value = ('04d5cbb4aed88f984596c757d953bd962bf9e1353046b3e28af0aac6366cab93'
+    residual_value = ('d25384032e092d1e74d81fc2819cdade58bae55c144d4a4f47ebf4449fc89a7a'
+                      if report['profile'] == THIRD_PROFILE else '04d5cbb4aed88f984596c757d953bd962bf9e1353046b3e28af0aac6366cab93'
                       if report['profile'] == SECOND_PROFILE else
                       '6fabaf3eaa629b97b1dfaf77b9025072a1197299dd90cb19e46038794e91447b')
     if residual and (prior['value_hex'] != residual_value
@@ -298,7 +314,8 @@ def validate_residual_history(evidence, profile=RESIDUAL_PROFILE):
     Second retains the exact accepted first command/outcome records and checks
     the six named immutable originals. No recursive expansion occurs. The
     mandatory 233 inherited occurrences retain their order and multiplicity;
-    the second profile additionally requires its fixed 57-path evidence tail.
+    the second requires its fixed 57-path tail; the third requires its named
+    55-path tail with only the two exact historical input representations.
     """
     old_spec = PREVIOUS_RUN/'eighth-voter/instance-spec.json'
     pin_file(old_spec, dict(path=str(old_spec),bytes=65434,
@@ -318,7 +335,7 @@ def validate_residual_history(evidence, profile=RESIDUAL_PROFILE):
         successor = {k:item[k] for k in ['path','bytes','sha256']}
         archive = PREVIOUS_RUN/'frozen-instructions'/archives[item['path']]
         archive_pin = dict(predecessor,path=str(archive))
-        if archive_pin not in evidence and profile != SECOND_PROFILE:
+        if archive_pin not in evidence and profile not in {SECOND_PROFILE, THIRD_PROFILE}:
             raise ValueError('missing archived instruction predecessor')
         pin_file(archive,archive_pin)
         replacements[item['path']] = (predecessor,successor)
@@ -333,6 +350,8 @@ def validate_residual_history(evidence, profile=RESIDUAL_PROFILE):
             expected.append(pin)
     if len(expected) != 233 or evidence[:233] != expected:
         raise ValueError('full inherited evidence sequence')
+    if profile == THIRD_PROFILE:
+        _validate_third_history(evidence)
     if profile == SECOND_PROFILE:
         # Named six-record successor representation: no recursive expansion or
         # removal from the mandatory 233 historical occurrence sequence.
@@ -358,6 +377,71 @@ def validate_residual_history(evidence, profile=RESIDUAL_PROFILE):
         if len(evidence) != 290 or [r['path'] for r in evidence[233:]] != SECOND_EVIDENCE_TAIL:
             raise ValueError('exact second evidence sequence')
 
+
+
+def _validate_third_history(evidence):
+    """Validate only the named third historical representation and fixed tail.
+
+    Preserve every inherited occurrence. Authenticate the three immutable second
+    records, their exact first-history members and two original input members.
+    Charge records once at their reviewed positions; never discover or expand
+    ancestry. Unknown tails, forged same-size records and excess bodies reject.
+    """
+    if len(evidence) != 288 or [r['path'] for r in evidence[233:]] != THIRD_EVIDENCE_TAIL:
+        raise ValueError('exact third evidence sequence')
+    for row, cap in zip(evidence[233:], THIRD_EVIDENCE_CAPS):
+        if row['bytes'] > cap:
+            raise ValueError('strict third evidence body cap')
+    for pin in SECOND_HISTORY_PINS + [THIRD_CORRECTION_PIN, THIRD_AUTHORITY_PIN]:
+        pin_file(pin['path'], pin)
+        if pin not in evidence[233:]:
+            raise ValueError('third immutable history/correction membership')
+    command = read_json(SECOND_HISTORY_PINS[1]['path'], FREEZE_CAP)
+    outcome = read_json(SECOND_HISTORY_PINS[2]['path'])
+    if command['pin_count'] != 375 or command['pinned_file_bytes'] != 418995822 \
+            or outcome['command_freeze'] != SECOND_HISTORY_PINS[1] \
+            or outcome['total_occurrences_with_fixed_parent'] != 399 \
+            or outcome['total_bytes_with_fixed_parent'] != 420013586:
+        raise ValueError('second accepted historical scope')
+    first_pins = [dict(path=str(FIRST_CODE_RECORD), bytes=32274,
+        sha256='7ec9fa0a8ca4e813537cdadcbae9ff7fdbc9d08e543c8b08f7e8de246bc07e3b'),
+        dict(path=str(FIRST_COMMAND_RECORD), bytes=92315,
+        sha256='6d5e43bb1f64bcece4804b1b81d047c633b407dace111c3c8d86f2651ec9d61b'),
+        dict(path=str(FIRST_OUTCOME_RECORD), bytes=12440,
+        sha256='04badad6795a837ee5a9c2e313d4854f5dfd40eb850236a498bdaca281c13019')]
+    for index, pin in zip([316,317,318], first_pins):
+        if command['pins'][index] != pin:
+            raise ValueError('fixed first history inside second command')
+        pin_file(pin['path'], pin)
+    # Preserve the existing six-record relationship explicitly. This is the
+    # fixed accepted first command, never a recursive ancestry traversal.
+    first_command = read_json(FIRST_COMMAND_RECORD, FREEZE_CAP)
+    if first_command['pin_count'] != 375 or first_command['pinned_file_bytes'] != 418519918:
+        raise ValueError('first accepted historical scope')
+    for index in [319,320,366,367,368,369]:
+        original = first_command['pins'][index]
+        pin_file(original['path'], original)
+        if original in evidence[233:]:
+            raise ValueError('unreviewed six-record successor representation')
+    omitted = [dict(path=str(FIRST_COMMAND_RECORD.parent/'instance-spec.json'), bytes=52511,
+        sha256='c9355181f75a48976a4a858de71966c0e8e77dad0a5b51a97b6a1b5f18772f7f'),
+        dict(path=str(FIRST_COMMAND_RECORD.parent/'vrf-residual-first-voter-preparation.json'), bytes=35410,
+        sha256='438ca3651e81f955016d705108791eaac6603054927a678f14fbaa02b9f9cdb9')]
+    for index, pin in zip([367,368], omitted):
+        if command['pins'][index] != pin or pin in evidence[233:]:
+            raise ValueError('exact two third historical input representations')
+        pin_file(pin['path'], pin)
+
+
+def _validate_third_fit(pins, binaries):
+    """Keep the third fixed pair at 420 MiB and each executable at 210 MiB.
+
+    All repeated body occurrences remain charged under the 30 MiB other-body
+    bound. No file reads or acceptance occur; excess inputs raise ValueError.
+    """
+    if any(row['bytes'] > 220200960 for row in binaries):
+        raise ValueError('strict third executable body cap')
+    _validate_second_fit(pins, binaries)
 
 
 def _validate_second_fit(pins, binaries):
@@ -399,7 +483,7 @@ def build(spec_path):
     if not residual and not isinstance(evidence, list):
         raise ValueError('complete profile evidence representation')
     sources = spec['sources']
-    source_count = 78 if report['profile'] == SECOND_PROFILE else 76 if residual else 74
+    source_count = 80 if report['profile'] == THIRD_PROFILE else 78 if report['profile'] == SECOND_PROFILE else 76 if residual else 74
     if [row['path'] for row in sources] != expected_source_paths(report['profile']) or len(sources) != source_count:
         raise ValueError('exact successor source closure')
     expected_tools = [str(Path(__file__).resolve()), str(Path(__file__).resolve().with_name('test_bounded_vrf.py'))]
@@ -447,7 +531,7 @@ def build(spec_path):
     baseline_report = read_json(baseline_path, FREEZE_CAP)
     baseline_sources = baseline_report['vrf_sources']
     expected_report_paths = [r['path'] for r in baseline_sources[:19]] + ['vrf_shared_window.rs'] + [
-        f'bin/{kind}_vrf_residual_b92a.rs' if report['profile'] == SECOND_PROFILE else f'bin/{kind}_vrf_residual_first.rs' if residual else f'bin/{kind}_vrf_{ordinal}_voter_window.rs' for kind in ['live', 'replay']]
+        f'bin/{kind}_vrf_residual_e50b.rs' if report['profile'] == THIRD_PROFILE else f'bin/{kind}_vrf_residual_b92a.rs' if report['profile'] == SECOND_PROFILE else f'bin/{kind}_vrf_residual_first.rs' if residual else f'bin/{kind}_vrf_{ordinal}_voter_window.rs' for kind in ['live', 'replay']]
     if [r['path'] for r in report['vrf_sources']] != expected_report_paths:
         raise ValueError('fixed embedded profile source closure')
     if [r['path'] for r in report['authority']['six_input_owner']['sources']] != [
@@ -466,7 +550,9 @@ def build(spec_path):
     pins = sources + spec['tool_sources'] + binaries + [spec['preflight']] + evidence + ([spec['preparation']] if preparation is not None else []) + [pin_file(spec_path, cap=METADATA_CAP)]
     if len(pins) > PIN_COUNT:
         raise ValueError('command pin count')
-    if report['profile'] == SECOND_PROFILE:
+    if report['profile'] == THIRD_PROFILE:
+        _validate_third_fit(pins, binaries)
+    elif report['profile'] == SECOND_PROFILE:
         _validate_second_fit(pins, binaries)
     total = 0
     for row in pins:
@@ -510,7 +596,7 @@ def build(spec_path):
     if residual:
         validate_residual_history(evidence, report['profile'])
         required = [p for p in required if p != run.parent / 'storage-validation-reuse.json']
-        if report['profile'] == SECOND_PROFILE:
+        if report['profile'] in {SECOND_PROFILE, THIRD_PROFILE}:
             required = [Path(row['path']) for row in evidence]
         else:
             required += [RESIDUAL_RUN/name for name in [
