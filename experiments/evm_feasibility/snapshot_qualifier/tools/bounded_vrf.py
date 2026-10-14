@@ -13,6 +13,7 @@ import selectors
 import subprocess
 import sys
 import time
+import types
 
 REPO = Path('/workspaces/rustaxa-evm')
 SRC = REPO / 'experiments/evm_feasibility/snapshot_qualifier/src'
@@ -47,7 +48,22 @@ THIRD_EVIDENCE_CAPS = [16384, 131544, 16384, 67436, 16384, 130554, 16384, 65536,
 SECOND_HISTORY_PINS = [{'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-and-gates-freeze.json', 'bytes': 34625, 'sha256': 'fccb5d38776b207ea74c3bb360f5c220586a181c9f592d81a83ae6da3cfbc03b'}, {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/vrf-residual-second-voter-window-command-freeze.json', 'bytes': 92988, 'sha256': 'd5db0ec359003df0141f8f5468e418f2fe7d3a2f6b679b658abdadea6aba6725'}, {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fact-outcome-freeze.json', 'bytes': 7371, 'sha256': '0466b004e68244355bb51bd7feb4fe202123d4361cfc2dbd608602cee6c4b386'}]
 THIRD_CORRECTION_PIN = dict(path=str(RESIDUAL_RUN/'third-source/third-correction-record.json'), bytes=126549, sha256='c82bc82761b014e365bc8eb7870775f5b937d2362b2e80277b1806cb1a5e9874')
 THIRD_AUTHORITY_PIN = dict(path=str(RESIDUAL_RUN/'third-source/residual-authority-review-v2.md'), bytes=10473, sha256='3cf3a409417250c152a675cbc9e0a2a33fa1406d3a4d4cf6e1f5e91074e0e842')
-RESIDUAL_PROFILES = {RESIDUAL_PROFILE, SECOND_PROFILE, THIRD_PROFILE}
+
+FOURTH_VOTER = '49f85534bbcf461d44fd3fc96feecf9abb6d38ad'
+FOURTH_PROFILE = f'n4_residual_vrf_{FOURTH_VOTER}_v1'
+FOURTH_KEY = '446a40c15b86d1effc8e92cf6bb7db72c56131bd9491c6a6bcb70cd0c0bac9f2'
+FOURTH_INDICES = [77, 134, 194, 248, 305, 356, 416, 476, 536, 593, 653, 761, 821, 878, 935, 989, 1046, 1106, 1166, 1226, 1286, 1343, 1394, 1442, 1502, 1562, 1616, 1676, 1730, 1787, 1844, 1901, 1955, 2012, 2072, 2129, 2186, 2243, 2300, 2357, 2414, 2471, 2531, 2639, 2699]
+FOURTH_EVIDENCE_TAIL = ['/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/qualifier-all-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/qualifier-all-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/qualifier-focused-corrected.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/qualifier-focused-corrected.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/qualifier-quality-corrected.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/qualifier-quality-corrected.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/tool-residual-positive-final-3.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/tool-residual-positive-final-3.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/storage-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/storage-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/storage-bridge-build.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/storage-bridge-build.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/storage-bridge-tests.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/storage-bridge-tests.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/canonical-parity.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/canonical-parity.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/native-compatibility-corrected.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/native-compatibility-corrected.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/first-d-compatibility-replay.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/first-d-compatibility-replay.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/native-first-complete-equivalence-final.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/native-first-complete-equivalence-final.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/argument-rejection.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/argument-rejection.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/fast-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/fast-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/actual-hook-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/actual-hook-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/code-acceptance-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/validation-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/source-commit.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/source-commit.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/source-hook-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/source-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/binary-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/preparation-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/storage-validation-current.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/tool-source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/residual-authority-review-45.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/independent-45-map-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-candidate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-pins.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-failure-history.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/fourth-result-equivalence.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/fourth-result-equivalence.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/fourth-correction-record.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/fourth-command-closure-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/vrf-residual-third-voter-window-command-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/fact-outcome-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-finite-projection-history-successor.json']
+FOURTH_EVIDENCE_CAPS = [16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 131072, 65536, 65536, 327680, 16384, 131072, 16384, 131072, 65536, 131072, 131072, 16384, 131072, 131072, 41550, 4670, 1341, 2606, 16384, 327680, 131072, 131072, 36042, 92897, 131072, 1048576]
+FOURTH_HISTORY_PINS = [{'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/code-and-gates-freeze.json', 'bytes': 36042, 'sha256': 'b42c90053574348079ae5038098231a329d85638d84247139c8ba3cbed138271'}, {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/vrf-residual-third-voter-window-command-freeze.json', 'bytes': 92897, 'sha256': '16e2656fcbc9155fa114755357928926d5a7b50e5b514724c0d9af12eca6a715'}, {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/fact-outcome-freeze.json', 'bytes': 7342, 'sha256': 'c5ff42f1428d74ac208ee647b6e10568d80944e7b9b1a6016280de8e7bddcbc0'}]
+FOURTH_ENVELOPE_PIN = {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-finite-projection-history.json', 'bytes': 448801, 'sha256': 'd8e3d5d93da58ff548978874f9089002bcefbe74e1793991f6c7a6b7ac1be071'}
+FOURTH_ENVELOPE_MEMBERS = [{'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/next-45-list/projection-v1.json', 'bytes': 172884, 'sha256': '57fbf2a431ab253710dadf281226c246e1504c3c5dbaa4d6bffbf18d3042e8b0'}, {'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/next-45-list/projection-v2.json', 'bytes': 179390, 'sha256': '7fa23bcba9fac817f75f7f751c73f68c764a384cfd14080b318c36b6541ede82'}, {'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/next-45-authority/design-checkpoint.md', 'bytes': 11530, 'sha256': 'ecc0e7a4bd723a95eb7d2ff8b3588cb2b2db538b87e7549bbfaef19d9967920f'}, {'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/next-45-authority/evidence-conditional-review.md', 'bytes': 7883, 'sha256': '30c59203e30528694157c4fa2577a8d05185ce2dba31c92afea444546a14279a'}, {'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/next-45-list/projection-v2-correction-evidence.json', 'bytes': 4278, 'sha256': 'c5305799a28ddc6da9c928e0aec2655366f773a2bb186c473142e57f50cf8d15'}, {'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/next-45-authority/evidence-v2-review.md', 'bytes': 11007, 'sha256': '2407e5b08552735b82ca61808c3d3d17abde7371903d3c2a3fe33e010b1db609'}, {'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/next-45-list/v2-first-failed-invocation.json', 'bytes': 36362, 'sha256': '44e8478cee341796082928f1291089ac3434d689e844e32deb991787b776041e'}]
+FOURTH_AUTHORITY_PIN = {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/residual-authority-review-45.md', 'bytes': 124048, 'sha256': '911be93ffa8f72a38359afd43b90fa6520253919c47b0d6c5aad923adbbfd3d3'}
+FOURTH_CORRECTION_PIN = {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/fourth-correction-record.json', 'bytes': 111165, 'sha256': '10a467bad6a5e83beaa6c8e2d292237303f14429d9f82e1a8cd0d4e8af400e8f'}
+
+FOURTH_SUCCESSOR_ENVELOPE_PIN = {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-finite-projection-history-successor.json', 'bytes': 749065, 'sha256': 'cfadd1196bebcab7db7b78070325acc2983c493f3664c4bc4dc37ece2b18dd60'}
+FOURTH_SUCCESSOR_MEMBERS = [{'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-finite-projection-history.json', 'bytes': 448801, 'sha256': 'd8e3d5d93da58ff548978874f9089002bcefbe74e1793991f6c7a6b7ac1be071'}, {'path': '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-source/tool-test-handoff.json', 'bytes': 82937, 'sha256': 'c56d4424337896e287431668bd3496b65c2e6d4c9025e149d8724d3986c0cd00'}, {'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/review/fourth-qualifier-first-failure-full.json', 'bytes': 159238, 'sha256': '572646575e119fc191ec788eae42b28a6abe670aa15af0542dbce092f58d6341'}, {'path': '/home/fry/artifacts/n4-vrf-residual-round2-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/next-45-authority/first-source-failure-retention-addendum.md', 'bytes': 7780, 'sha256': '02d5b6f7c672ce352f9e99280d704f9e111820e222391a765b6a5b0ab61db17d'}]
+RESIDUAL_PROFILES = {RESIDUAL_PROFILE, SECOND_PROFILE, THIRD_PROFILE, FOURTH_PROFILE}
 SECOND_EVIDENCE_TAIL = ['/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/vrf-residual-first-voter-window-command-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/fact-outcome-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-all-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-all-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-focused-first.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-focused-first.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-quality.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/qualifier-quality.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/tool-residual-positive-final-2.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/tool-residual-positive-final-2.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-package.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-package.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-build.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-build.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-tests.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/storage-bridge-tests.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/canonical-parity.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/canonical-parity.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-compatibility-corrected.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-compatibility-corrected.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/first-d-compatibility-replay.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/first-d-compatibility-replay.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-first-complete-equivalence-final.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/native-first-complete-equivalence-final.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/argument-rejection.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/argument-rejection.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fast-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/fast-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/actual-hook-gate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-second/actual-hook-gate.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-acceptance-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/validation-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-commit.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-commit.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-hook-summary.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/binary-successor-mapping.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/preparation-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/storage-validation-current.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/code-and-gates-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/tool-source-freeze.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/residual-authority-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/b92a46-independent-map-review.md', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-spec-candidate.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-structural-comparison.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-next/b92a46-pins.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-map/build_residual_map_corrected_v1.py', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/luna-map/residual-424-corrected-v1.json', '/home/fry/artifacts/vrf-residual-preparation-20261014/manifest.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/instance-spec.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-first/vrf-residual-first-voter-preparation.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/first-result-equivalence.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/first-result-equivalence.log', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/second-correction-record.json', '/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/second-source/second-command-closure-review.md']
 
 RESIDUAL_PREFIXES = [str(REPO),
@@ -85,6 +101,9 @@ def sealed_profile(profile):
     if profile == THIRD_PROFILE:
         return dict(ordinal='residual-third', voter=THIRD_VOTER, key=THIRD_KEY,
                     prior_index=16, indices=THIRD_INDICES)
+    if profile == FOURTH_PROFILE:
+        return dict(ordinal='residual-fourth', voter=FOURTH_VOTER, key=FOURTH_KEY,
+                    prior_index=5, indices=FOURTH_INDICES)
     if profile not in SUCCESSORS:
         raise ValueError('unknown sealed profile')
     return SUCCESSORS[profile]
@@ -104,7 +123,7 @@ def expand_residual_evidence(value, profile=RESIDUAL_PROFILE):
     # Two binaries, preflight, preparation and spec make 83/85/87 occurrences.
     if profile not in RESIDUAL_PROFILES:
         raise ValueError('fixed residual evidence profile')
-    direct = 87 if profile == THIRD_PROFILE else 85 if profile == SECOND_PROFILE else 83
+    direct = 89 if profile == FOURTH_PROFILE else 87 if profile == THIRD_PROFILE else 85 if profile == SECOND_PROFILE else 83
     if not isinstance(rows, list) or len(rows) + direct > PIN_COUNT:
         raise ValueError('expanded evidence count')
     result, seen = [], {}
@@ -141,6 +160,83 @@ RESULT_CAP = 16384
 TIMEOUT = 300
 HISTORICAL_MAP = Path('/home/fry/artifacts/n4-vrf-round2-01a12d5e-20261012/startup-pin-map.json')
 HISTORICAL_MAP_SHA = 'bd5beab4dbd66c67d242d410c072540cf753dc3831771aa20f6f190a890a332b'
+FOURTH_RECORD_CONTRACT = dict(
+    path='/home/fry/artifacts/n4-evidence-01a13c53-b487-7dc2-954a-ba9af3ad695d-20261014/astra/contract-manifest-v4.json',
+    bytes=124643, sha256='f3adc242bb7f764c438f873c13e1bdaf4a08a3309ba7b81603ad33aef3a6d664')
+
+
+def fourth_record_contract():
+    """Read only the independently accepted fixed roster, without ancestry walks."""
+    pin_file(FOURTH_RECORD_CONTRACT['path'], FOURTH_RECORD_CONTRACT, 262144)
+    return read_json(FOURTH_RECORD_CONTRACT['path'], 262144)
+
+
+def verify_fourth_records(evidence):
+    """Authenticate all three finite reference records and every child occurrence.
+
+    Bootstrap the shared verifier from its exact frozen child source bytes. No
+    mutable import lookup occurs. Return complete repeated byte/source charges;
+    any missing, changed, aliased or extra reference raises before physical reads.
+    """
+    contract = fourth_record_contract()
+    code_path = str(RESIDUAL_RUN/'fourth-source/code-and-gates-freeze.json')
+    by_path = {row['path']: row for row in evidence}
+    pin_file(code_path, by_path[code_path], FREEZE_CAP)
+    code = read_json(code_path, FREEZE_CAP)
+    pending = code['record_tool_pins']
+    definition = contract['pending_validation_rows']
+    if not isinstance(pending, list) or len(pending) != 8:
+        raise ValueError('fixed record tooling roster')
+    for row, role, path, cap in zip(pending, definition['roles'], definition['paths'], definition['caps']):
+        if set(row) != {'role', 'path', 'bytes', 'sha256'} or row['role'] != role or row['path'] != path or type(row['bytes']) is not int or not 0 <= row['bytes'] <= cap:
+            raise ValueError('fixed record tooling row')
+    for frozen in contract.get('frozen_validation_rows', []):
+        required = {key: frozen[key] for key in ('role', 'path', 'bytes', 'sha256')}
+        if required not in pending:
+            raise ValueError('immutable first gate failure pin')
+    source_pin = {key: pending[0][key] for key in ('path', 'bytes', 'sha256')}
+    if source_pin['path'] != str(Path(__file__).resolve().with_name('evidence_records.py')):
+        raise ValueError('fixed shared verifier source')
+    pin_file(source_pin['path'], source_pin, 65536)
+    source_path = regular_path(source_pin['path'])
+    before = source_path.lstat()
+    fd = os.open(source_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        initial = os.fstat(fd)
+        raw = os.read(fd, 65537)
+        after = source_path.lstat()
+        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        if any(getattr(before, key) != getattr(initial, key) or getattr(initial, key) != getattr(after, key) for key in fields):
+            raise ValueError('shared verifier source identity drift')
+    finally:
+        os.close(fd)
+    if len(raw) != source_pin['bytes'] or hashlib.sha256(raw).hexdigest() != source_pin['sha256']:
+        raise ValueError('shared verifier loaded bytes drift')
+    module = types.ModuleType('frozen_evidence_records')
+    module.__file__ = source_pin['path']
+    exec(compile(raw, source_pin['path'], 'exec'), module.__dict__)
+    identities = {}
+    total = count = streamed = 0
+    for placement in contract['reference_placements']:
+        destination = placement['destination']
+        pin_file(destination, by_path[destination], FREEZE_CAP)
+        value = read_json(destination, FREEZE_CAP)
+        if destination == code_path:
+            value = value['evidence_record']
+        expected = list(placement['members'])
+        if destination == code_path:
+            expected += pending + contract['instruction_reference_rows']
+        result = module.verify(value, destination, FOURTH_RECORD_CONTRACT, expected, identities)
+        count += result['reference_count']
+        total += result['referenced_bytes']
+        streamed += result['streamed_bytes']
+        if count > 64 or total > 1048576:
+            raise ValueError('all record child count/byte cap')
+    if count != 49:
+        raise ValueError('exact finite record child coverage')
+    source_bytes = pending[0]['bytes'] + pending[1]['bytes']
+    return dict(reference_count=count, referenced_bytes=total,
+                streamed_bytes=streamed, source_bytes=source_bytes)
 
 
 def unique_object(pairs):
@@ -238,10 +334,12 @@ def expected_source_paths(profile=None):
         'bin/replay_vrf_seventh_voter_window.rs']]+[str(SRC / f'bin/{kind}_vrf_{ordinal}_voter_window.rs') for ordinal in ['eighth','ninth','tenth'] for kind in ['live','replay']]
     if profile in RESIDUAL_PROFILES:
         result += [str(SRC / f'bin/{kind}_vrf_residual_first.rs') for kind in ['live','replay']]
-    if profile in {SECOND_PROFILE, THIRD_PROFILE}:
+    if profile in {SECOND_PROFILE, THIRD_PROFILE, FOURTH_PROFILE}:
         result += [str(SRC / f'bin/{kind}_vrf_residual_b92a.rs') for kind in ['live','replay']]
-    if profile == THIRD_PROFILE:
+    if profile in {THIRD_PROFILE, FOURTH_PROFILE}:
         result += [str(SRC / f'bin/{kind}_vrf_residual_e50b.rs') for kind in ['live','replay']]
+    if profile == FOURTH_PROFILE:
+        result += [str(SRC / f'bin/{kind}_vrf_residual_49f8.rs') for kind in ['live','replay']]
     return result
 
 
@@ -250,7 +348,7 @@ def validate_preflight(report, preparation=None):
     common_prepared = read_json(PREPARATION)
     fixed = sealed_profile(report['profile'])
     residual = report['profile'] in RESIDUAL_PROFILES
-    count = 46 if residual else 47
+    count = 45 if report['profile'] == FOURTH_PROFILE else 46 if residual else 47
     voter, key = fixed['voter'], fixed['key']
     prepared = common_prepared if preparation is None else read_json(preparation)
     baseline = read_json(R3 / 'sixth-voter/vrf-sixth-voter-window-preflight.json', FREEZE_CAP)
@@ -267,7 +365,9 @@ def validate_preflight(report, preparation=None):
                           logical_key_hex=key, key_preimage_hex=f'0004{voter}'):
             raise ValueError('authenticated tuple binding')
         omitted = 12 if report['profile'] == THIRD_PROFILE else 36 if report['profile'] == SECOND_PROFILE else 5
-        delayed_index = (i + 1 if i < omitted - 1 else i + 2) if residual else i + 1
+        delayed_index = ([x for x in range(1, 48) if x not in (12, 45)][i]
+                         if report['profile'] == FOURTH_PROFILE else
+                         (i + 1 if i < omitted - 1 else i + 2) if residual else i + 1)
         if tuple_['identity']['period'] != 25706894 + delayed_index:
             raise ValueError('tuple order')
     authority = report['authority']
@@ -294,7 +394,8 @@ def validate_preflight(report, preparation=None):
             raise ValueError('sealed successor row indices')
         if expected['selection_index'] != fixed['prior_index'] or expected['parent_manifest_index'] != fixed['prior_index']*3+2:
             raise ValueError('sealed successor prior indices')
-    residual_value = ('d25384032e092d1e74d81fc2819cdade58bae55c144d4a4f47ebf4449fc89a7a'
+    residual_value = ('2c9895a89f0d58e2210f21f2129dc74de825a1b7ca03a15c600cda5f4c4a6dc3'
+                      if report['profile'] == FOURTH_PROFILE else 'd25384032e092d1e74d81fc2819cdade58bae55c144d4a4f47ebf4449fc89a7a'
                       if report['profile'] == THIRD_PROFILE else '04d5cbb4aed88f984596c757d953bd962bf9e1353046b3e28af0aac6366cab93'
                       if report['profile'] == SECOND_PROFILE else
                       '6fabaf3eaa629b97b1dfaf77b9025072a1197299dd90cb19e46038794e91447b')
@@ -335,7 +436,7 @@ def validate_residual_history(evidence, profile=RESIDUAL_PROFILE):
         successor = {k:item[k] for k in ['path','bytes','sha256']}
         archive = PREVIOUS_RUN/'frozen-instructions'/archives[item['path']]
         archive_pin = dict(predecessor,path=str(archive))
-        if archive_pin not in evidence and profile not in {SECOND_PROFILE, THIRD_PROFILE}:
+        if archive_pin not in evidence and profile not in {SECOND_PROFILE, THIRD_PROFILE, FOURTH_PROFILE}:
             raise ValueError('missing archived instruction predecessor')
         pin_file(archive,archive_pin)
         replacements[item['path']] = (predecessor,successor)
@@ -348,8 +449,24 @@ def validate_residual_history(evidence, profile=RESIDUAL_PROFILE):
             expected.append(successor)
         else:
             expected.append(pin)
+    if profile == FOURTH_PROFILE:
+        # Only this profile has the separately accepted seven-row successor.
+        # Keep historical logical pins in their immutable records and verify
+        # their fixed archive bodies before using the authorized current rows.
+        for item in fourth_record_contract()['instruction_mapping']:
+            index = item['inherited_index']
+            historical = item['historical_archive']
+            pin_file(historical['path'], historical)
+            before = dict(historical, path=item['logical_path'])
+            if expected[index] != before:
+                raise ValueError('fixed historical instruction mapping')
+            current = item['authorized_current']
+            pin_file(current['path'], current)
+            expected[index] = current
     if len(expected) != 233 or evidence[:233] != expected:
         raise ValueError('full inherited evidence sequence')
+    if profile == FOURTH_PROFILE:
+        _validate_fourth_history(evidence)
     if profile == THIRD_PROFILE:
         _validate_third_history(evidence)
     if profile == SECOND_PROFILE:
@@ -377,6 +494,91 @@ def validate_residual_history(evidence, profile=RESIDUAL_PROFILE):
         if len(evidence) != 290 or [r['path'] for r in evidence[233:]] != SECOND_EVIDENCE_TAIL:
             raise ValueError('exact second evidence sequence')
 
+
+
+def _validate_fourth_envelope():
+    """Retain exactly the base envelope and two complete first source failures.
+
+    This one fixed four-member successor remains an ordinary 1 MiB source.
+    Validate all full original bodies, then the known seven-member base only.
+    No generic recursion, metadata-cap increase or extra occurrence is allowed.
+    Any shape, path, pin, duplicate-key or extraction mismatch raises before use.
+    """
+    pin_file(FOURTH_SUCCESSOR_ENVELOPE_PIN['path'], FOURTH_SUCCESSOR_ENVELOPE_PIN, 1048576)
+    with Path(FOURTH_SUCCESSOR_ENVELOPE_PIN['path']).open('rb') as stream:
+        body = stream.read(1048577)
+    if len(body) > 1048576 or len(body) != FOURTH_SUCCESSOR_ENVELOPE_PIN['bytes'] or hashlib.sha256(body).hexdigest() != FOURTH_SUCCESSOR_ENVELOPE_PIN['sha256']:
+        raise ValueError('fixed fourth successor admission')
+    value = json.loads(body, object_pairs_hook=unique_object)
+    if set(value) != {'schema_id', 'artifact_role', 'members'} or value['schema_id'] != 'n4-fixed-45-first-source-failure-successor-v1' or len(value['members']) != 4:
+        raise ValueError('fixed fourth successor shape')
+    for member, expected in zip(value['members'], FOURTH_SUCCESSOR_MEMBERS):
+        if set(member) != {'original_absolute_path', 'bytes', 'sha256', 'body_utf8'} or member['original_absolute_path'] != expected['path'] or member['bytes'] != expected['bytes'] or member['sha256'] != expected['sha256'] or not isinstance(member['body_utf8'], str):
+            raise ValueError('fixed fourth successor member')
+        decoded = member['body_utf8'].encode('utf-8')
+        if len(decoded) != expected['bytes'] or hashlib.sha256(decoded).hexdigest() != expected['sha256']:
+            raise ValueError('fixed fourth successor full-body extraction')
+        pin_file(expected['path'], expected)
+        # Exact full bytes are checked, not a JSON reserialization of originals.
+        with Path(expected['path']).open('rb') as stream:
+            original = stream.read(expected['bytes'] + 1)
+        if original != decoded:
+            raise ValueError('fixed fourth successor original bytes')
+    # Only this immutable named base is admitted at the one permitted level.
+    _validate_fourth_base_envelope()
+
+
+def _validate_fourth_base_envelope():
+    """Authenticate exactly seven full bodies at the named 1 MiB source role.
+
+    This decoder accepts only the fixed ordinary evidence file, never enlarged
+    metadata admission or recursively discovered members. Pin, size, duplicate
+    key, shape, path or decoded-body mismatch raises before command use.
+    """
+    pin_file(FOURTH_ENVELOPE_PIN['path'], FOURTH_ENVELOPE_PIN, 1048576)
+    with Path(FOURTH_ENVELOPE_PIN['path']).open('rb') as stream:
+        body = stream.read(1048577)
+    if len(body) > 1048576 or len(body) != FOURTH_ENVELOPE_PIN['bytes'] or hashlib.sha256(body).hexdigest() != FOURTH_ENVELOPE_PIN['sha256']:
+        raise ValueError('fixed fourth envelope admission')
+    value = json.loads(body, object_pairs_hook=unique_object)
+    if set(value) != {'schema_id', 'artifact_role', 'extraction_provenance', 'members'} or value['schema_id'] != 'n4-fixed-45-finite-projection-history-v1' or len(value['members']) != 7:
+        raise ValueError('fixed fourth envelope shape')
+    for member, expected in zip(value['members'], FOURTH_ENVELOPE_MEMBERS):
+        if set(member) != {'original_absolute_path', 'bytes', 'sha256', 'body_utf8'} or {k: member[k] for k in ('bytes', 'sha256')} != {k: expected[k] for k in ('bytes', 'sha256')} or member['original_absolute_path'] != expected['path'] or not isinstance(member['body_utf8'], str):
+            raise ValueError('fixed fourth envelope member')
+        decoded = member['body_utf8'].encode('utf-8')
+        if len(decoded) != expected['bytes'] or hashlib.sha256(decoded).hexdigest() != expected['sha256']:
+            raise ValueError('fixed fourth full-body extraction')
+        pin_file(expected['path'], expected)
+
+
+def _validate_fourth_history(evidence):
+    """Retain 233 ordered occurrences and only the two named map representations.
+
+    Authenticate the three accepted third records, their exact parent relation
+    and map/helper members 363/364. Keep the fixed 54-body tail, all caps and the
+    complete seven-member projection history; reject drift without recursion.
+    """
+    if len(evidence) != 287 or [r['path'] for r in evidence[233:]] != FOURTH_EVIDENCE_TAIL:
+        raise ValueError('exact fourth evidence sequence')
+    for row, cap in zip(evidence[233:], FOURTH_EVIDENCE_CAPS):
+        if row['bytes'] > cap:
+            raise ValueError('strict fourth evidence body cap')
+    for row in FOURTH_HISTORY_PINS + [FOURTH_SUCCESSOR_ENVELOPE_PIN, FOURTH_AUTHORITY_PIN, FOURTH_CORRECTION_PIN]:
+        pin_file(row['path'], row)
+        if row not in evidence[233:]:
+            raise ValueError('fourth fixed history membership')
+    command = read_json(FOURTH_HISTORY_PINS[1]['path'], FREEZE_CAP)
+    seal = read_json(FOURTH_HISTORY_PINS[2]['path'])
+    if command['pin_count'] != 375 or command['pinned_file_bytes'] != 419290696 or seal['command_freeze'] != FOURTH_HISTORY_PINS[1] or seal['total_occurrences_with_fixed_parent'] != 399 or seal['total_bytes_with_fixed_parent'] != 420538339 or seal['source_commit'] != command['source_commit'] or FOURTH_HISTORY_PINS[0] not in command['pins']:
+        raise ValueError('third accepted fixed history relation')
+    for index, expected in zip((363, 364), (
+        dict(path=str(RESIDUAL_RUN/'luna-map/build_residual_map_corrected_v1.py'), bytes=14706, sha256='7c35487e939e94156a1a0e7bd3f14dba846ccf1004e908cce89d0302ab255e07'),
+        dict(path=str(RESIDUAL_RUN/'luna-map/residual-424-corrected-v1.json'), bytes=437589, sha256='57d27bbd664c0188d96c0d3377a85432c2c2190f8763039c53f125a6ae520291'))):
+        if command['pins'][index] != expected or expected in evidence[233:]:
+            raise ValueError('exact fourth map/helper representation')
+        pin_file(expected['path'], expected)
+    _validate_fourth_envelope()
 
 
 def _validate_third_history(evidence):
@@ -483,7 +685,7 @@ def build(spec_path):
     if not residual and not isinstance(evidence, list):
         raise ValueError('complete profile evidence representation')
     sources = spec['sources']
-    source_count = 80 if report['profile'] == THIRD_PROFILE else 78 if report['profile'] == SECOND_PROFILE else 76 if residual else 74
+    source_count = 82 if report['profile'] == FOURTH_PROFILE else 80 if report['profile'] == THIRD_PROFILE else 78 if report['profile'] == SECOND_PROFILE else 76 if residual else 74
     if [row['path'] for row in sources] != expected_source_paths(report['profile']) or len(sources) != source_count:
         raise ValueError('exact successor source closure')
     expected_tools = [str(Path(__file__).resolve()), str(Path(__file__).resolve().with_name('test_bounded_vrf.py'))]
@@ -531,7 +733,7 @@ def build(spec_path):
     baseline_report = read_json(baseline_path, FREEZE_CAP)
     baseline_sources = baseline_report['vrf_sources']
     expected_report_paths = [r['path'] for r in baseline_sources[:19]] + ['vrf_shared_window.rs'] + [
-        f'bin/{kind}_vrf_residual_e50b.rs' if report['profile'] == THIRD_PROFILE else f'bin/{kind}_vrf_residual_b92a.rs' if report['profile'] == SECOND_PROFILE else f'bin/{kind}_vrf_residual_first.rs' if residual else f'bin/{kind}_vrf_{ordinal}_voter_window.rs' for kind in ['live', 'replay']]
+        f'bin/{kind}_vrf_residual_49f8.rs' if report['profile'] == FOURTH_PROFILE else f'bin/{kind}_vrf_residual_e50b.rs' if report['profile'] == THIRD_PROFILE else f'bin/{kind}_vrf_residual_b92a.rs' if report['profile'] == SECOND_PROFILE else f'bin/{kind}_vrf_residual_first.rs' if residual else f'bin/{kind}_vrf_{ordinal}_voter_window.rs' for kind in ['live', 'replay']]
     if [r['path'] for r in report['vrf_sources']] != expected_report_paths:
         raise ValueError('fixed embedded profile source closure')
     if [r['path'] for r in report['authority']['six_input_owner']['sources']] != [
@@ -550,7 +752,9 @@ def build(spec_path):
     pins = sources + spec['tool_sources'] + binaries + [spec['preflight']] + evidence + ([spec['preparation']] if preparation is not None else []) + [pin_file(spec_path, cap=METADATA_CAP)]
     if len(pins) > PIN_COUNT:
         raise ValueError('command pin count')
-    if report['profile'] == THIRD_PROFILE:
+    if report['profile'] == FOURTH_PROFILE:
+        _validate_third_fit(pins, binaries)
+    elif report['profile'] == THIRD_PROFILE:
         _validate_third_fit(pins, binaries)
     elif report['profile'] == SECOND_PROFILE:
         _validate_second_fit(pins, binaries)
@@ -560,6 +764,13 @@ def build(spec_path):
         total += row['bytes']
         if total > PIN_TOTAL:
             raise ValueError('command pin aggregate')
+    if report['profile'] == FOURTH_PROFILE:
+        children = verify_fourth_records(evidence)
+        total += children['referenced_bytes']
+        if total > PIN_TOTAL or total - sum(row['bytes'] for row in binaries) > 31457280:
+            raise ValueError('command plus repeated child byte cap')
+        if source_total + children['source_bytes'] > SOURCE_TOTAL:
+            raise ValueError('source plus shared verifier cap')
     evidence_paths = {row['path'] for row in evidence}
     required = [run.parent / name for name in [
         'common-authority-review.md', 'common-authority-amendment.md', 'code-acceptance-review.md', 'validation-summary.json',
@@ -596,7 +807,7 @@ def build(spec_path):
     if residual:
         validate_residual_history(evidence, report['profile'])
         required = [p for p in required if p != run.parent / 'storage-validation-reuse.json']
-        if report['profile'] in {SECOND_PROFILE, THIRD_PROFILE}:
+        if report['profile'] in {SECOND_PROFILE, THIRD_PROFILE, FOURTH_PROFILE}:
             required = [Path(row['path']) for row in evidence]
         else:
             required += [RESIDUAL_RUN/name for name in [
@@ -620,7 +831,7 @@ def build(spec_path):
     for row in spec['copy_metadata']:
         if set(row) != {'path', 'device', 'inode', 'mode', 'mtime_ns'}:
             raise ValueError('copy metadata shape')
-    extension = 'rcv3' if residual else 'rcv2'
+    extension = 'rcv4' if report['profile'] == FOURTH_PROFILE else 'rcv3' if residual else 'rcv2'
     command = [binaries[0]['path'], '--bundle-output', str(run/f'vrf-{ordinal}-voter-window.{extension}'),
                '--report-output', str(run/f'vrf-{ordinal}-voter-window-capture.json')]
     return encoded(dict(schema=1, profile=report['profile'], run=str(run), source_commit=spec['source_commit'],
@@ -640,6 +851,15 @@ def verify_files(freeze):
         total += row['bytes']
         if total > PIN_TOTAL:
             raise ValueError('frozen total cap')
+    if freeze.get('profile') == FOURTH_PROFILE:
+        # 82 sources +2 tools +2 binaries +preflight precede the287 evidence.
+        children = verify_fourth_records(freeze['pins'][87:374])
+        total += children['referenced_bytes']
+        binaries = freeze['pins'][84:86]
+        if total > PIN_TOTAL or total - sum(row['bytes'] for row in binaries) > 31457280:
+            raise ValueError('frozen repeated child cap')
+        if freeze['complete_source_bytes'] + children['source_bytes'] > SOURCE_TOTAL:
+            raise ValueError('frozen shared verifier source cap')
     if total != freeze['pinned_file_bytes']:
         raise ValueError('frozen total drift')
 
@@ -737,7 +957,7 @@ def capture(freeze_path, expected_sha):
     head = subprocess.check_output(['/usr/bin/git', 'rev-parse', 'HEAD'], cwd=REPO, env=ENV).decode().strip()
     if head != freeze['source_commit']:
         raise ValueError('source HEAD drift')
-    outputs = [f'vrf-{ordinal}-voter-window{suffix}' for suffix in ['.rcv3' if residual else '.rcv2', '-capture.json', '-live.log', '-live-result.json']]
+    outputs = [f'vrf-{ordinal}-voter-window{suffix}' for suffix in ['.rcv4' if freeze['profile'] == FOURTH_PROFILE else '.rcv3' if residual else '.rcv2', '-capture.json', '-live.log', '-live-result.json']]
     if any(os.path.lexists(run/name) for name in outputs):
         raise ValueError('single-use output collision')
     before = copy_metadata(freeze['copy_metadata'])

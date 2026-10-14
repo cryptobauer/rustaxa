@@ -9,6 +9,34 @@ import unittest
 from unittest.mock import patch
 
 import bounded_vrf as guard
+import evidence_records as records
+
+
+def historical_instruction_fixture(test):
+    """Authenticate exact old instruction bodies for offline legacy fixtures.
+
+    Live/current/forged pins keep the real guard path. Only seven independently
+    reviewed historical logical pins use their full fixed archived bytes. This
+    fixture port preserves the original command assertions and production code.
+    """
+    original = guard.pin_file
+    mapping = guard.fourth_record_contract()['instruction_mapping']
+    if len(mapping) != 7:
+        raise ValueError('exact fixture archive roster')
+
+    def authenticate(path, expected=None, cap=guard.FILE_CAP):
+        for item in mapping:
+            archive = item['historical_archive']
+            logical = dict(archive, path=item['logical_path'])
+            if str(path) == item['logical_path'] and expected == logical:
+                actual = original(archive['path'], archive, cap)
+                return dict(actual, path=item['logical_path'])
+        return original(path, expected, cap)
+
+    active = patch.object(guard, 'pin_file', side_effect=authenticate)
+    active.start()
+    test.addCleanup(active.stop)
+    return active
 
 
 class Fixture(unittest.TestCase):
@@ -18,6 +46,95 @@ class Fixture(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+
+class HistoricalInstructionFixture(Fixture):
+    def test_exact_archived_pin_forgery_caps_and_lifecycle(self):
+        original = guard.pin_file
+        mapping = guard.fourth_record_contract()['instruction_mapping']
+        active = historical_instruction_fixture(self)
+        item = mapping[0]
+        expected = dict(item['historical_archive'], path=item['logical_path'])
+        self.assertEqual(guard.pin_file(item['logical_path'], expected), expected)
+        self.assertNotEqual(guard.pin_file(item['logical_path']), expected)
+        with self.assertRaises(ValueError):
+            guard.pin_file(item['logical_path'], dict(expected, sha256='0'*64))
+        with self.assertRaises(ValueError):
+            guard.pin_file(item['logical_path'], expected, expected['bytes']-1)
+        with self.assertRaises((ValueError, FileNotFoundError)):
+            guard.pin_file('/unreviewed/path', expected)
+        active.stop()
+        self.assertIs(guard.pin_file, original)
+        with self.assertRaises(ValueError):
+            guard.pin_file(item['logical_path'], expected)
+
+
+class EvidenceSuccessor(Fixture):
+    """Exercise the actual frozen shared verifier without physical inputs."""
+
+    def fixture(self):
+        source = Path(records.__file__).resolve()
+        test = source.with_name('test_evidence_records.py')
+        folder = self.root/'fourth-source'
+        folder.mkdir()
+        body = self.root/'full-failure'
+        body.write_bytes(b'complete immutable body')
+        contract_file = self.root/'contract'
+        contract_file.write_bytes(b'fixed trusted contract')
+        contract_pin = guard.pin_file(contract_file)
+        paths = [source, test]
+        for i in range(6):
+            path = self.root/f'gate-{i}'
+            path.write_bytes(b'full output')
+            paths.append(path)
+        roles = ['record-builder-source', 'record-builder-tests', 'record-tool-test-result',
+                 'record-tool-test-log', 'current-python-gate-result', 'current-python-gate-log', 'current-python-final-result', 'current-python-final-log']
+        pending = [dict(role=role, **guard.pin_file(path)) for role, path in zip(roles, paths)]
+        instructions = [dict(role=f'instruction-{i}', **guard.pin_file(body)) for i in range(18)]
+        code_path = folder/'code-and-gates-freeze.json'
+        review = folder/'code-acceptance-review.md'
+        closure = folder/'fourth-command-closure-review.md'
+        placements = [dict(destination=str(review), members=[dict(role=f'failure-{i}', **guard.pin_file(body)) for i in range(12)]),
+                      dict(destination=str(code_path), members=[dict(role=f'code-failure-{i}', **guard.pin_file(body)) for i in range(2)]),
+                      dict(destination=str(closure), members=[dict(role=f'closure-failure-{i}', **guard.pin_file(body)) for i in range(6)])]
+        contract = dict(reference_placements=placements, instruction_reference_rows=instructions,
+                        pending_validation_rows=dict(roles=roles, paths=[str(p) for p in paths], caps=[65536]*8))
+        for placement in placements:
+            expected = placement['members'] + (pending + instructions if placement['destination'] == str(code_path) else [])
+            wrapper = records.decode(records.build(placement['destination'], contract_pin, '', expected))
+            if placement['destination'] == str(code_path):
+                wrapper = dict(record_tool_pins=pending, evidence_record=wrapper)
+            Path(placement['destination']).write_text(json.dumps(wrapper))
+        evidence = [guard.pin_file(Path(p['destination'])) for p in placements]
+        return contract, contract_pin, evidence, body, code_path
+
+    def run_verifier(self, contract, contract_pin, evidence):
+        with patch.object(guard, 'RESIDUAL_RUN', self.root), \
+             patch.object(guard, 'FOURTH_RECORD_CONTRACT', contract_pin), \
+             patch.object(guard, 'fourth_record_contract', return_value=contract):
+            return guard.verify_fourth_records(evidence)
+
+    def test_shared_frozen_verifier_full_occurrences_and_charges(self):
+        contract, pin, evidence, body, _ = self.fixture()
+        result = self.run_verifier(contract, pin, evidence)
+        self.assertEqual(result['reference_count'], 49)
+        self.assertEqual(result['streamed_bytes'], result['referenced_bytes'])
+        self.assertGreater(result['referenced_bytes'], result['source_bytes'] + 38*body.stat().st_size)
+
+    def test_same_size_child_drift_rejects_before_any_capture(self):
+        contract, pin, evidence, body, _ = self.fixture()
+        body.write_bytes(b'X'*body.stat().st_size)
+        with self.assertRaisesRegex(ValueError, 'body pin drift'):
+            self.run_verifier(contract, pin, evidence)
+
+    def test_pending_unknown_role_or_source_path_rejects(self):
+        contract, pin, evidence, _, code_path = self.fixture()
+        code = json.loads(code_path.read_bytes())
+        code['record_tool_pins'][0]['path'] = str(self.root/'unreviewed.py')
+        code_path.write_text(json.dumps(code))
+        evidence = [guard.pin_file(Path(row['path'])) for row in evidence]
+        with self.assertRaisesRegex(ValueError, 'fixed record tooling row'):
+            self.run_verifier(contract, pin, evidence)
 
 
 class Bounds(Fixture):
@@ -426,14 +543,20 @@ class ResidualBuilder(Fixture):
         self.addCleanup(self.patch_run.stop);self.addCleanup(self.patch_prefixes.stop)
 
     def fixture(self):
+        if not getattr(self, '_historical_instruction_patch', None):
+            self._historical_instruction_patch = historical_instruction_fixture(self)
         # The bounded fresh offline authority report is data for synthetic
         # command fixtures. Placeholder acceptance records grant no READY.
         draft=Path('/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-authority-draft.json')
         report=guard.read_json(draft,guard.FREEZE_CAP)
         # Only the declared source successors change this saved authority fixture.
         # All selection, proof, value and authority fields stay intact.
-        owned = {guard.SRC/'vrf_shared_window.rs',
-                 guard.REPO/'rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs'}
+        owned = {guard.SRC/'vrf_shared_window.rs'} | {
+            guard.REPO/'rust/crates/rustaxa-storage/src'/name for name in (
+                'lib.rs', 'concrete_state/mod.rs', 'concrete_state/witness.rs',
+                'concrete_state/witness_live.rs', 'concrete_state/witness_bundle.rs')}
+        # These five declared storage units gain the additive fixed45 API.
+        # Authenticate current bytes; preserve every original assertion/value.
         for row in report['vrf_sources'] + report['authority']['six_input_owner']['sources']:
             actual = (guard.SRC/row['path']).resolve()
             if actual in owned:
@@ -551,6 +674,8 @@ class SecondResidualBuilder(Fixture):
         self.addCleanup(self.run_patch.stop); self.addCleanup(self.tail_patch.stop)
 
     def fixture(self):
+        if not getattr(self, '_historical_instruction_patch', None):
+            self._historical_instruction_patch = historical_instruction_fixture(self)
         report = guard.read_json(self.original_run/'residual-authority-draft.json',guard.FREEZE_CAP)
         candidate_path = self.original_run/'luna-next/b92a46-spec-candidate.json'
         guard.pin_file(candidate_path, dict(path=str(candidate_path),bytes=74979,
@@ -696,6 +821,8 @@ class ThirdResidualBuilder(Fixture):
         self.addCleanup(self.run_patch.stop); self.addCleanup(self.tail_patch.stop)
 
     def fixture(self):
+        if not getattr(self, '_historical_instruction_patch', None):
+            self._historical_instruction_patch = historical_instruction_fixture(self)
         report = guard.read_json(self.original_run/'residual-authority-draft.json',guard.FREEZE_CAP)
         candidate_path = self.original_run/'luna-third/e50b46-candidate.json'
         guard.pin_file(candidate_path, dict(path=str(candidate_path),bytes=41913,
@@ -837,6 +964,184 @@ class ThirdResidualBuilder(Fixture):
             self.assertTrue((run/'vrf-residual-third-voter-window-attempt.json').is_file())
             with self.assertRaises(FileExistsError): guard.capture(freeze,sha)
             self.assertEqual(verify.call_count,1)
+
+
+class FourthResidualControls(Fixture):
+    """Bound the fixed fourth profile without opening a database or running proofs."""
+
+    def preflight_fixture(self):
+        root=guard.RESIDUAL_RUN
+        candidate=guard.read_json(root/'fourth-map/45-candidate.json',guard.FREEZE_CAP)
+        report=guard.read_json(root/'residual-authority-draft.json',guard.FREEZE_CAP)
+        report['profile']=guard.FOURTH_PROFILE
+        baseline=guard.read_json(guard.R3/'sixth-voter/vrf-sixth-voter-window-preflight.json',guard.FREEZE_CAP)
+        report['bounds']=dict(baseline['bounds'],payload_tuples_exact=45,proofs_exact=96)
+        report['selection']=[]
+        for row in candidate['requests']:
+            source=dict(delayed_period=row['delayed_period'],proof=None,qualified=False,
+                semantic_key=row['semantic_key'],source_references=row['source_references'],
+                value=None,voter_hex=row['voter_hex'])
+            report['selection'].append(dict(parent_manifest_index=row['parent_manifest_index'],
+                source_row=source,tuple=dict(identity=dict(period=row['delayed_period'],
+                state_root_hex=row['state_root_hex']),address_hex=row['account_hex'],
+                logical_key_hex=row['logical_key_hex'],key_preimage_hex=row['key_preimage_hex'])))
+        prior=candidate['prior_first_d']
+        report['authority']['prior_first_d']['selected']=dict(proof_index=prior['proof_index'],
+            identity=prior['tuple']['identity'],voter_hex=candidate['voter_hex'],
+            value_hex=prior['value_hex'],usable_vrf_key=True)
+        prepared=dict(rows=[dict(original_parent_manifest_index=r['parent_manifest_index'],
+            source_row=r['source_row'],identity=r['tuple']['identity'],account_hex=r['tuple']['address_hex'])
+            for r in report['selection']],prior_first_d=dict(identity=prior['tuple']['identity'],
+            selection_index=prior['selection_index'],parent_manifest_index=prior['parent_manifest_index'],
+            accepted_value=dict(value_hex=prior['value_hex'])))
+        path=self.root/'prepared.json';path.write_text(json.dumps(prepared))
+        return report,prepared,path,candidate
+
+    def test_fixed_45_selection_prior_and_complete_tuple_binding(self):
+        report,prepared,path,candidate=self.preflight_fixture()
+        guard.validate_preflight(report,path)
+        self.assertEqual(len(report['selection']),45)
+        self.assertEqual(candidate['payload_count'],45)
+        self.assertEqual(report['bounds']['proofs_exact'],96)
+        self.assertEqual(prepared['prior_first_d']['selection_index'],5)
+        self.assertEqual(prepared['prior_first_d']['parent_manifest_index'],17)
+        self.assertEqual(len(guard.expected_source_paths(guard.FOURTH_PROFILE)),82)
+        self.assertEqual(89+287,376)  # direct occurrences plus the fixed 233+54 evidence.
+        for mutate in [lambda r:r['selection'].reverse(),
+                       lambda r:r['selection'][0]['tuple']['identity'].update(state_root_hex='00'*32),
+                       lambda r:r['selection'][0]['tuple'].update(logical_key_hex='00'*32),
+                       lambda r:r['selection'][0]['source_row'].update(source_references=[]),
+                       lambda r:r['selection'][11]['tuple']['identity'].update(period=25706906),
+                       lambda r:r['authority']['six_input_owner']['sources'][0].update(path='unreviewed-owner-source.rs'),
+                       lambda r:r['authority']['prior_first_d']['selected'].update(proof_index=55),
+                       lambda r:r['authority']['prior_first_d']['selected'].update(value_hex='00'*32)]:
+            bad=copy.deepcopy(report);mutate(bad)
+            with self.subTest(mutation=mutate),self.assertRaises(ValueError):guard.validate_preflight(bad,path)
+
+    def test_fixed_omission_order_and_rcv4_are_sealed(self):
+        fixed=guard.sealed_profile(guard.FOURTH_PROFILE)
+        self.assertEqual(fixed['indices'],guard.FOURTH_INDICES)
+        self.assertEqual(fixed['prior_index'],5)
+        self.assertEqual(guard.FOURTH_EVIDENCE_TAIL.__len__(),54)
+        rows=[[12,'bounded.log',0,'0'*64]]*311
+        self.assertEqual(len(guard.expand_residual_evidence(
+            dict(prefixes=guard.RESIDUAL_PREFIXES,pins=rows),guard.FOURTH_PROFILE)),311)
+        with self.assertRaises(ValueError):guard.expand_residual_evidence(
+            dict(prefixes=guard.RESIDUAL_PREFIXES,pins=rows+rows[:1]),guard.FOURTH_PROFILE)
+        self.assertEqual(fixed['ordinal'],'residual-fourth')
+        self.assertEqual(guard.PIN_COUNT,400)
+
+    def test_exact_history_tail_caps_and_named_map_representations(self):
+        evidence=[dict(path=f'/synthetic/inherited-{i}',bytes=0,sha256='0'*64) for i in range(233)]
+        required={x['path']:x for x in guard.FOURTH_HISTORY_PINS+[guard.FOURTH_SUCCESSOR_ENVELOPE_PIN,
+            guard.FOURTH_AUTHORITY_PIN,guard.FOURTH_CORRECTION_PIN]}
+        for i,path in enumerate(guard.FOURTH_EVIDENCE_TAIL):
+            evidence.append(required.get(path,dict(path=path,bytes=0,sha256='0'*64)))
+        command=dict(pin_count=375,pinned_file_bytes=419290696,pins=[None]*375)
+        command['pins'][362]=guard.FOURTH_HISTORY_PINS[0]
+        command['pins'][363]=dict(path=str(guard.RESIDUAL_RUN/'luna-map/build_residual_map_corrected_v1.py'),
+            bytes=14706,sha256='7c35487e939e94156a1a0e7bd3f14dba846ccf1004e908cce89d0302ab255e07')
+        command['pins'][364]=dict(path=str(guard.RESIDUAL_RUN/'luna-map/residual-424-corrected-v1.json'),
+            bytes=437589,sha256='57d27bbd664c0188d96c0d3377a85432c2c2190f8763039c53f125a6ae520291')
+        seal=dict(command_freeze=guard.FOURTH_HISTORY_PINS[1],total_occurrences_with_fixed_parent=399,
+                  total_bytes_with_fixed_parent=420538339,source_commit=command['source_commit'] if 'source_commit' in command else '0'*40)
+        command['source_commit']=seal['source_commit']
+        def read(path,*args,**kwargs):
+            return command if str(path)==guard.FOURTH_HISTORY_PINS[1]['path'] else seal
+        with patch.object(guard,'pin_file',side_effect=lambda p,expected=None,cap=guard.FILE_CAP: expected or dict(path=str(p),bytes=0,sha256='0'*64)), \
+             patch.object(guard,'read_json',side_effect=read),patch.object(guard,'_validate_fourth_envelope'):
+            guard._validate_fourth_history(evidence)
+            bad=copy.deepcopy(evidence);bad[234],bad[235]=bad[235],bad[234]
+            with self.assertRaisesRegex(ValueError,'exact fourth evidence sequence'):guard._validate_fourth_history(bad)
+            bad=copy.deepcopy(evidence);bad[233]['bytes']=guard.FOURTH_EVIDENCE_CAPS[0]+1
+            with self.assertRaisesRegex(ValueError,'strict fourth evidence body cap'):guard._validate_fourth_history(bad)
+            bad=copy.deepcopy(evidence);bad[233]=dict(path='/synthetic/replacement',bytes=0,sha256='0'*64)
+            with self.assertRaisesRegex(ValueError,'exact fourth evidence sequence'):guard._validate_fourth_history(bad)
+
+    def test_fourth_body_limits_preserve_pair_and_other_budgets(self):
+        pair=[dict(bytes=220200960),dict(bytes=220200960)]
+        other=dict(bytes=15728640)
+        guard._validate_third_fit(pair+[other,other],pair)
+        with self.assertRaises(ValueError):guard._validate_third_fit(pair+[other,other,dict(bytes=1)],pair)
+        with self.assertRaisesRegex(ValueError,'strict third executable body cap'):
+            guard._validate_third_fit([dict(bytes=1)],[dict(bytes=220200961),dict(bytes=220200959)])
+
+    def test_fourth_attempt_marker_is_single_use_and_output_collision_preserves_bytes(self):
+        run=self.root/'residual-fourth';run.mkdir()
+        spec=run/'spec.json';spec.write_text('{}')
+        spec_pin=guard.pin_file(spec)
+        value=dict(schema=1,profile=guard.FOURTH_PROFILE,run=str(run),source_commit='0'*40,
+            cwd=str(guard.REPO),environment=guard.ENV,capture_command=['/bin/false'],pins=[spec_pin],
+            pin_count=1,pinned_file_bytes=spec_pin['bytes'],source_count=82,complete_source_bytes=0,
+            embedded_source_bytes=0,copy_metadata=[],accepted=False)
+        freeze=run/'command-freeze.json';freeze.write_bytes(guard.encoded(value,guard.FREEZE_CAP))
+        sha=guard.pin_file(freeze)['sha256']
+        output=run/'vrf-residual-fourth-voter-window.rcv4';output.write_bytes(b'preserve')
+        with patch.object(guard,'RESIDUAL_RUN',self.root),patch.object(guard,'verify_files'), \
+             patch.object(guard,'build',return_value=freeze.read_bytes()), \
+             patch.object(guard.subprocess,'check_output',return_value=b'0'*40), \
+             patch.object(Path,'cwd',return_value=guard.REPO):
+            with self.assertRaisesRegex(ValueError,'single-use output collision'):
+                guard.capture(freeze,sha)
+            marker=run/'vrf-residual-fourth-voter-window-attempt.json'
+            self.assertTrue(marker.is_file())
+            with self.assertRaises(FileExistsError):guard.capture(freeze,sha)
+            self.assertEqual(output.read_bytes(),b'preserve')
+
+    def test_fixed_successor_retains_full_failures_and_rejects_outer_substitution(self):
+        # This positive path authenticates all four bodies and the known seven.
+        guard._validate_fourth_envelope()
+        original=Path(guard.FOURTH_SUCCESSOR_ENVELOPE_PIN['path']).read_bytes()
+        value=json.loads(original)
+        self.assertEqual(len(value['members']),4)
+        self.assertEqual(value['members'][1]['bytes'],82937)
+        self.assertEqual(value['members'][2]['bytes'],159238)
+        path=self.root/'successor.json'
+        for mutate in [lambda v:v['members'].reverse(),
+                       lambda v:v['members'].append(copy.deepcopy(v['members'][3])),
+                       lambda v:v['members'][0].update(body_utf8=v['members'][0]['body_utf8']+'\n'),
+                       lambda v:v.update(schema_id='unreviewed-successor')]:
+            changed=copy.deepcopy(value);mutate(changed)
+            path.write_bytes(guard.encoded(changed,1048576))
+            with patch.object(guard,'FOURTH_SUCCESSOR_ENVELOPE_PIN',guard.pin_file(path)), \
+                 patch.object(guard,'_validate_fourth_base_envelope') as base:
+                with self.assertRaises(ValueError):guard._validate_fourth_envelope()
+                base.assert_not_called()
+        path.write_bytes(b' ' * 1048577)
+        with patch.object(guard,'FOURTH_SUCCESSOR_ENVELOPE_PIN',guard.pin_file(path)):
+            with self.assertRaises(ValueError):guard._validate_fourth_envelope()
+
+    def test_fourth_envelope_rejects_duplicate_keys_reorder_wrong_hash_and_symlink(self):
+        # Validate the authenticated parser against isolated synthetic members.
+        bodies=[f'member-{i}'.encode() for i in range(7)]
+        members=[]
+        for i,body in enumerate(bodies):
+            p=self.root/f'member-{i}.txt';p.write_bytes(body)
+            members.append(dict(original_absolute_path=str(p),bytes=len(body),
+                sha256=__import__('hashlib').sha256(body).hexdigest(),body_utf8=body.decode()))
+        envelope=self.root/'history.json'
+        def install(rows,expected=members,raw=None):
+            data=raw if raw is not None else json.dumps(dict(schema_id='n4-fixed-45-finite-projection-history-v1',
+                artifact_role='fixture',extraction_provenance='fixture',members=rows),separators=(',',':')).encode()
+            envelope.write_bytes(data)
+            pin=dict(path=str(envelope),bytes=len(data),sha256=__import__('hashlib').sha256(data).hexdigest())
+            expected_pins=[dict(path=r['original_absolute_path'],bytes=r['bytes'],sha256=r['sha256']) for r in expected]
+            return patch.object(guard,'FOURTH_ENVELOPE_PIN',pin),patch.object(guard,'FOURTH_ENVELOPE_MEMBERS',expected_pins)
+        p1,p2=install(members)
+        with p1,p2:guard._validate_fourth_base_envelope()
+        duplicate=b'{"schema_id":"n4-fixed-45-finite-projection-history-v1","schema_id":"x"}'
+        p1,p2=install(members,raw=duplicate)
+        with p1,p2,self.assertRaises(ValueError):guard._validate_fourth_base_envelope()
+        reordered=copy.deepcopy(members);reordered[0],reordered[1]=reordered[1],reordered[0]
+        p1,p2=install(reordered,expected=members)
+        with p1,p2,self.assertRaises(ValueError):guard._validate_fourth_base_envelope()
+        forged=copy.deepcopy(members);forged[0]['body_utf8']='forged'
+        p1,p2=install(forged,expected=members)
+        with p1,p2,self.assertRaises(ValueError):guard._validate_fourth_base_envelope()
+        alias=self.root/'alias';alias.symlink_to(self.root/'member-0.txt')
+        symlinked=copy.deepcopy(members);symlinked[0]['original_absolute_path']=str(alias)
+        p1,p2=install(symlinked,expected=symlinked)
+        with p1,p2,self.assertRaises(ValueError):guard._validate_fourth_base_envelope()
 
 if __name__ == '__main__':
     unittest.main()
