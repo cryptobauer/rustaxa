@@ -1198,5 +1198,202 @@ class FourthResidualControls(Fixture):
         p1,p2=install(symlinked,expected=symlinked)
         with p1,p2,self.assertRaises(ValueError):guard._validate_fourth_base_envelope()
 
+class FifthFiniteControls(Fixture):
+    def test_fifth_authority_admission_exact_byte_boundary(self):
+        value=json.loads(Path(guard.FIFTH_CONTRACT['path']).read_bytes())
+        path=self.root/'finite-authority.json'
+        authority=next(r for r in value['command_inventory'] if r['group']=='current_tail54' and r['index']==40)
+        authority['path']=str(path)
+        original=json.dumps(value,separators=(',',':')).encode()
+        for size in (131072,131073):
+            path.write_bytes(original+b' '*(size-len(original)))
+            pin=guard.pin_file(path)
+            with patch.object(guard,'FIFTH_CONTRACT',pin):
+                if size == 131072:
+                    self.assertEqual(guard.fifth_contract(),json.loads(original))
+                else:
+                    with self.assertRaises(ValueError):guard.fifth_contract()
+        authority['path']='/synthetic/stale-authority.json'
+        path.write_text(json.dumps(value,separators=(',',':')))
+        with patch.object(guard,'FIFTH_CONTRACT',guard.pin_file(path)):
+            with self.assertRaisesRegex(ValueError,'authority role binding'):guard.fifth_contract()
+
+    def test_finite_role_order_repeats_caps_and_immutable_binding(self):
+        path = self.root/'body'; path.write_bytes(b'complete')
+        pin = guard.pin_file(path)
+        required = dict(pin,group='immutable',index=0,cap_bytes=8)
+        guard.verify_finite_inventory([pin,pin],[required,required])
+        for pins, roster in [([pin],[required,required]),
+                             ([dict(pin,sha256='0'*64)],[required]),
+                             ([pin],[dict(required,cap_bytes=7)]),
+                             ([pin],[dict(required,path=str(self.root/'other'))])]:
+            with self.assertRaises((ValueError,FileNotFoundError)):
+                guard.verify_finite_inventory(pins,roster)
+        pending=dict(required,pending=True)
+        guard.verify_finite_inventory([pin],[pending])
+        path.write_bytes(b'changed!')
+        with self.assertRaises(ValueError):guard.verify_finite_inventory([pin],[pending])
+
+    def test_fixed_compact_expansion_preserves_order_and_charges(self):
+        contract=guard.fifth_contract()
+        rows=[[r.get('cap_bytes',r.get('bytes')),'0'*64] for r in contract['command_inventory'][89:374]]
+        expanded=guard.expand_fifth_evidence(rows,contract)
+        self.assertEqual(len(expanded),285)
+        self.assertEqual([r['path'] for r in expanded],[r['path'] for r in contract['command_inventory'][89:374]])
+        self.assertEqual(sum(r['bytes'] for r in expanded),sum(r[0] for r in rows))
+        for bad in [rows[:-1],rows+rows[:1],[[1,'wrong']]+rows[1:],[[True,'0'*64]]+rows[1:],[[rows[0][0]+1,'0'*64]]+rows[1:]]:
+            with self.assertRaises(ValueError):guard.expand_fifth_evidence(bad,contract)
+
+    def test_fifth_charges_extra_semantic_read_and_exact_cap(self):
+        pins=[dict(bytes=0) for _ in range(376)]
+        children=dict(referenced_bytes=965416,semantic_read_bytes=45182,source_bytes=0)
+        self.assertEqual(guard.fifth_read_charges(pins,children,0),1010598)
+        with patch.object(guard,'PIN_TOTAL',1010598):
+            self.assertEqual(guard.fifth_read_charges(pins,children,0),1010598)
+        with patch.object(guard,'PIN_TOTAL',1010597),self.assertRaises(ValueError):
+            guard.fifth_read_charges(pins,children,0)
+
+    def test_fifth_complete_reference_replay_and_full_failure_drift(self):
+        contract=copy.deepcopy(guard.fifth_contract())
+        evidence=[]
+        for i,placement in enumerate(contract['reference_placements']):
+            destination=str(self.root/f'record-{i}.json');placement['destination']=destination
+            raw=records.build(destination,placement['common_contract'],'offline regression fixture',placement['references'])
+            Path(destination).write_bytes(raw);evidence.append(guard.pin_file(destination))
+        definition=contract['correction_record48'];failures=[]
+        for required in definition['failures']:
+            guard.pin_file(required['path'],{k:required[k] for k in ('path','bytes','sha256')})
+            failures.append(dict(required,body_utf8=Path(required['path']).read_text()))
+        correction=dict(schema=definition['schema'],failures=failures,findings='offline regression fixture',accepted=False)
+        path=self.root/'corrections.json';path.write_text(json.dumps(correction))
+        for row in contract['command_inventory']:
+            if row['group']=='current_tail54' and row['index']==48:row['path']=str(path)
+        with patch.object(guard,'fifth_contract',return_value=contract),patch.object(guard,'verify_fifth_equivalence') as current:
+            result=guard.verify_fifth_records(evidence)
+            self.assertEqual(result['reference_count'],64)
+            self.assertEqual(result['referenced_bytes'],987974)
+            self.assertEqual(result['semantic_read_bytes'],45182)
+            self.assertEqual(current.call_count,1)
+            self.assertEqual(current.call_args.args[:2],(evidence,contract))
+            correction['failures'][0]['body_utf8']='X'+correction['failures'][0]['body_utf8'][1:]
+            path.write_text(json.dumps(correction))
+            with self.assertRaises(ValueError):guard.verify_fifth_records(evidence)
+
+    def test_current_comparator_full_reports_and_exact_commands(self):
+        path=Path('/home/fry/artifacts/vrf-residual-20261014-current/source/native-first-full-v3.log')
+        payload=json.loads(path.read_text())
+        sources=[guard.pin_file(p,cap=guard.SOURCE_CAP) for p in guard.expected_source_paths(guard.FIFTH_PROFILE)]
+        self.assertTrue(guard.verify_fifth_comparison(payload,sources,payload['tool_source']))
+        mutations=[]
+        bad=copy.deepcopy(payload);bad['schema']=True;mutations.append(bad)
+        bad=copy.deepcopy(payload);bad['pairs'][0]['after_body_utf8']='X'+bad['pairs'][0]['after_body_utf8'][1:];mutations.append(bad)
+        bad=copy.deepcopy(payload);bad['pairs'][1]['mappings'][0]['field']='/unapproved';mutations.append(bad)
+        bad=copy.deepcopy(payload);bad['pairs'].reverse();mutations.append(bad)
+        bad=copy.deepcopy(payload);bad['pairs'][0]['mappings'][0]['successor']['sha256']='0'*64;mutations.append(bad)
+        for bad in mutations:
+            with self.assertRaises(ValueError):guard.verify_fifth_comparison(bad,sources,payload['tool_source'])
+        command=['rtk','proxy',*guard.FIFTH_COMPARISON_ARGV]
+        log=dict(path='fixed',bytes=1,sha256='f'*64)
+        result=dict(command=command,log=log,exit_code=0)
+        guard.verify_fifth_gate_result(result,log,command)
+        for bad in [dict(result,command=['true']),dict(result,log=dict(log,sha256='0'*64)),dict(result,exit_code=1),dict(result,exit_code=False)]:
+            with self.assertRaises(ValueError):guard.verify_fifth_gate_result(bad,log,command)
+
+    def test_current_comparator_parser_limits(self):
+        path=self.root/'grown';path.write_bytes(b'x'*9)
+        self.assertEqual(guard.read_fifth_body(path,9),b'x'*9)
+        with self.assertRaises(ValueError):guard.read_fifth_body(path,8)
+        with self.assertRaises(ValueError):records.decode(b'['*20+b'0'+b']'*20,guard.FREEZE_CAP)
+        with self.assertRaises(ValueError):records.decode(b'['+b'0,'*9000+b'0]',guard.FREEZE_CAP)
+        with self.assertRaises(ValueError):records.bounded_shape({'pairs':['x'*2097152]})
+
+    def test_complete_fifth_builder_with_virtual_pending_records(self):
+        # Only pending validation files use a test filesystem port. Immutable
+        # history, full prior/preflight, actual sources/binaries and the shared
+        # body verifier are real. This fixture grants no READY or fact authority.
+        contract=guard.fifth_contract();virtual={}; counter=0;original_pin=guard.pin_file;original_path=guard.regular_path
+        inventory=contract['command_inventory'];tail={r['index']:r['path'] for r in inventory if r['group']=='current_tail54'}
+        def put(path,raw):
+            nonlocal counter
+            target=self.root/f'pending-{counter}';counter+=1
+            target.write_bytes(raw);virtual[path]=target
+        def put_json(path,value):put(path,(json.dumps(value,indent=2,sort_keys=True)+'\n').encode())
+        def pin(path,expected=None,cap=guard.FILE_CAP):
+            logical=str(path);physical=virtual.get(logical,Path(path))
+            # The real hash/size/cap checks still run on every physical file.
+            physical_expected=None if expected is None else dict(expected,path=str(physical))
+            if physical.stat().st_size>cap:raise ValueError(f'fixture role cap {logical}: {physical.stat().st_size}>{cap}')
+            result=original_pin(physical,physical_expected,cap);return dict(result,path=logical)
+        sources=[original_pin(p) for p in guard.expected_source_paths(guard.FIFTH_PROFILE)]
+        tools=[original_pin(Path(guard.__file__).resolve()),original_pin(Path(__file__).resolve())]
+        for row in inventory:
+            if row.get('pending') and not Path(row['path']).exists():put_json(row['path'],{})
+        real=Path('/home/fry/artifacts/vrf-residual-20261014-current/source')
+        put(tail[1],(real/'qualifier-all-package.log').read_bytes())
+        package=json.loads((real/'qualifier-all-package.json').read_text());package['log']=pin(tail[1]);put_json(tail[0],package)
+        put_json(tail[38],sources);put_json(tail[39],tools)
+        for placement in contract['reference_placements']:
+            put(placement['destination'],records.build(placement['destination'],placement['common_contract'],'unaccepted offline fixture',placement['references']))
+        definition=contract['correction_record48']
+        put_json(tail[48],dict(schema=definition['schema'],failures=[dict(r,body_utf8=Path(r['path']).read_text()) for r in definition['failures']],findings='unaccepted offline fixture',accepted=False))
+        payload=json.loads(Path('/home/fry/artifacts/vrf-residual-20261014-current/source/native-first-full-v3.log').read_text());payload['tool_source']=tools[0]
+        put_json(tail[21],payload)
+        put_json(tail[20],dict(command=['rtk','proxy',*guard.FIFTH_COMPARISON_ARGV],exit_code=0,log=pin(tail[21])))
+        put(tail[47],virtual[tail[1]].read_bytes())
+        put_json(tail[46],dict(schema=1,source_freeze=pin(tail[38]),gate_results=[pin(tail[x]) for x in (0,20)],gate_logs=[pin(tail[x]) for x in (1,21,47)],required_exact_tests=guard.FIFTH_EQUIVALENCE_TESTS,matched_tests=7,all14_unchanged_profiles_equal=True,native_and_first_d_complete_equal=True,accepted=False))
+        report=guard.read_json(guard.FIFTH_RUN/'preflight.json',guard.FREEZE_CAP)
+        preparation=dict(rows=[dict(original_parent_manifest_index=r['parent_manifest_index'],source_row=r['source_row'],identity=r['tuple']['identity'],account_hex=r['tuple']['address_hex']) for r in report['selection']],prior_first_d=dict(identity=report['authority']['prior_first_d']['selected']['identity'],selection_index=11,parent_manifest_index=35,accepted_value=dict(value_hex=report['authority']['prior_first_d']['selected']['value_hex'])))
+        put_json(str(guard.FIFTH_RUN/'preparation.json'),preparation)
+        metadata=guard.read_json(guard.RESIDUAL_RUN/'residual-fourth/instance-spec.json')['copy_metadata']
+        with patch.object(guard,'pin_file',side_effect=pin),patch.object(guard,'regular_path',side_effect=lambda path:original_path(virtual.get(str(path),Path(path)))):
+            spec=guard.fifth_spec_from_roster('1'*40,metadata)
+            spec_path=guard.FIFTH_RUN/'instance-spec.json';put_json(str(spec_path),spec)
+            raw=guard.build(spec_path);freeze=json.loads(raw)
+            self.assertEqual(freeze['pin_count'],376)
+            self.assertEqual(freeze['source_count'],84)
+            self.assertLessEqual(len(json.dumps(spec,indent=2,sort_keys=True).encode()),65536)
+            self.assertEqual(freeze['pinned_file_bytes'],sum(r['bytes'] for r in freeze['pins'])+987974+45182)
+            guard.verify_files(freeze)
+            for scalar in (True,1.0):
+                invalid=copy.deepcopy(spec);invalid['schema']=scalar
+                with self.subTest(schema=scalar),self.assertRaises(ValueError):
+                    guard.build_fifth(spec_path,invalid,report)
+            summary=json.loads(virtual[tail[46]].read_text())
+            summary['matched_tests']=7.0;put_json(tail[46],summary)
+            with self.assertRaises(ValueError):
+                guard.verify_fifth_equivalence(freeze['pins'][89:374],contract,records)
+            summary['matched_tests']=7;put_json(tail[46],summary)
+            bad=copy.deepcopy(freeze);bad['pinned_file_bytes']-=45182
+            with self.assertRaises(ValueError):guard.verify_files(bad)
+
+    def test_fifth_preflight_seals_45_rows_and_prior(self):
+        report,prepared,path,_=FourthResidualControls.preflight_fixture(self)
+        contract=guard.fifth_contract(); candidate=guard.read_json(contract['candidate']['path'])
+        report['profile']=guard.FIFTH_PROFILE
+        report['selection']=[]
+        for row in candidate['tuples']:
+            source=dict(delayed_period=row['delayed_period'],proof=None,qualified=False,semantic_key='fe_vrf_00_04_address',source_references=row['source_references'],value=None,voter_hex=row['voter_hex'])
+            report['selection'].append(dict(parent_manifest_index=row['parent_manifest_index'],source_row=source,tuple=dict(identity=dict(period=row['delayed_period'],state_root_hex=row['state_root_hex']),address_hex=row['account_hex'],logical_key_hex=row['logical_key_hex'],key_preimage_hex=row['key_preimage_hex'])))
+        prior=contract['selected_prior']
+        identity=prior['selection']['tuple']['identity']; value=prior['value']['value_hex']
+        report['authority']['prior_first_d']['selected']=dict(proof_index=62,identity=identity,voter_hex=prior['voter'],value_hex=value,usable_vrf_key=True)
+        prepared=dict(rows=[dict(original_parent_manifest_index=r['parent_manifest_index'],source_row=r['source_row'],identity=r['tuple']['identity'],account_hex=r['tuple']['address_hex']) for r in report['selection']],prior_first_d=dict(identity=identity,selection_index=11,parent_manifest_index=35,accepted_value=dict(value_hex=value)))
+        path.write_text(json.dumps(prepared));guard.validate_preflight(report,path)
+        for field,value in [('state_root_hex','00'*32),('source_references',[{'period':25706902,'vote_hash_hex':'00'*32}])]:
+            bad=copy.deepcopy(report); prep=copy.deepcopy(prepared)
+            if field == 'state_root_hex':
+                bad['selection'][0]['tuple']['identity'][field]=value
+                prep['rows'][0]['identity'][field]=value
+            else:
+                bad['selection'][0]['source_row'][field]=value
+                prep['rows'][0]['source_row'][field]=value
+            path.write_text(json.dumps(prep))
+            with self.assertRaises(ValueError):guard.validate_preflight(bad,path)
+        path.write_text(json.dumps(prepared))
+        bad=copy.deepcopy(report);bad['selection'].reverse()
+        with self.assertRaises(ValueError):guard.validate_preflight(bad,path)
+        bad=copy.deepcopy(report);bad['authority']['prior_first_d']['selected']['proof_index']=56
+        with self.assertRaises(ValueError):guard.validate_preflight(bad,path)
+
 if __name__ == '__main__':
     unittest.main()
