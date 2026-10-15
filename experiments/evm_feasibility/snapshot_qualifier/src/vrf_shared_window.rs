@@ -44,7 +44,20 @@ pub(crate) enum Profile {
     ResidualE50b,
     Residual49f8,
     ResidualA8a2,
+    ResidualFbb3,
 }
+// Sealed fbb45: exact raw order, roots and vote references.
+const FBB_VOTER: &str = "fbb3ee068e491e218d2cda595c23c6e3cc2f00f2";
+const FBB_PROFILE: &str = "n4_residual_vrf_fbb3ee068e491e218d2cda595c23c6e3cc2f00f2_v1";
+const FBB_KEY: &str = "ec5c494ab92b4655da656eae4a546ee7efab77ffe269fb82adc3bf19c5d1ac73";
+const FBB_PRIOR: &str = "8baa75fd5cb33fb6a75c42caa6e17158cf58023103a8dc9e14eaad618d3220fd";
+const FBB_PRIOR_SHA: &str = "9eb20ad61282a2a692edbea18d2d31d6c7ea429165b889620654de4e90266c3d";
+const FBB_INDICES: [usize; 45] = [
+    116, 176, 233, 290, 341, 398, 458, 518, 575, 635, 692, 746, 803, 863, 917, 974, 1031, 1088,
+    1148, 1208, 1268, 1325, 1379, 1427, 1484, 1544, 1601, 1658, 1712, 1829, 1886, 1940, 1994, 2054,
+    2111, 2168, 2228, 2282, 2342, 2456, 2513, 2573, 2621, 2681, 2741,
+];
+const FBB_BINDINGS: &str = r#"[{"root":"d2318bfb745c9198ca3e995119569c3ef85e95659dc45ade939398b8f3a23383","refs":[{"period":25706902,"vote_hash_hex":"2930478f20ea6f0337607f7796d48281f4e414101e85b179ef077f5bb69fd961"}]},{"root":"d2318bfb745c9198ca3e995119569c3ef85e95659dc45ade939398b8f3a23383","refs":[{"period":25706903,"vote_hash_hex":"01fe7e3f94c27da2a4695571ff0faf774c475b8fe4bd8589c3583ac51dbe2a8e"}]},{"root":"b07e806de23f0a4b16b6cef287118ab09699f32a0a4d8ffea3d436c9d53782ce","refs":[{"period":25706904,"vote_hash_hex":"85a81b244c0fb6a5685f40aab6aed9d13dc0c3716a786b08ccddaa2767714a68"}]},{"root":"8c7fdbb2b39c01255ead8379e312bc79508558e1d1bd0a4dbe2a570a48fbf08b","refs":[{"period":25706905,"vote_hash_hex":"da45a099a31a87e69b758c410ddb5266803a569aa16d2405a4d8317a99fd8fb0"}]},{"root":"a5fe6be45511742ec6a5b7c508a447507cb34dcfa321beedc81d5ad5e4aa0f8b","refs":[{"period":25706906,"vote_hash_hex":"c1866bab9ddf35b10fa1de618d27345b36ca31565795e3ca96031ac9aa7feec9"}]},{"root":"1b8815f01250eeeec908fd7d9093322f21909ae6ee234c9151109f063de9fc38","refs":[{"period":25706907,"vote_hash_hex":"d10462ae145f2da614066ba2afb36ed87b61d0b2dea90cb4fe1a6f4294b5fef3"}]},{"root":"4d39f544cd1555e667884f1cc078410e7a1baf143a487db8174ddc862a525ebc","refs":[{"period":25706908,"vote_hash_hex":"d8cc6d7b93fbc46deae84d2102901040ba0dda6ebc5ac7f1eaeda916cf45a526"}]},{"root":"4d39f544cd1555e667884f1cc078410e7a1baf143a487db8174ddc862a525ebc","refs":[{"period":25706909,"vote_hash_hex":"e7116a5a10eb10b0e4e52805c0a557e28073a091d3f7b57e5f8bd0a8585cab06"}]},{"root":"5315842400d2c61336a33774e4ddd92eb90cfa19da449dab6c2e7202adbd2821","refs":[{"period":25706910,"vote_hash_hex":"af2f7b9b040aa7da13847c0e0f25f6ccfa77f5efab906a08cac8306a7026ff8c"}]},{"root":"48240ffcddb5897ff34093c83b3ec9a9460d47290ba211fefae036fd83a107c2","refs":[{"period":25706911,"vote_hash_hex":"bf93f7c3233dff432e8340d14b5ec045fbd4c36e5266aa5ed1fe950a83d0eca4"}]},{"root":"e70dd5ea2193dc4f38ab3d1ae8e8faad7988a0579716d15f79058649973d7964","refs":[{"period":25706912,"vote_hash_hex":"27db7bd702a3a8275a209f51f247fd5798eb57d513951416da8f439a8f78552f"}]},{"root":"e8f84241116c5f485fa97046d7ed79f8776f3705bf586b3bb17b81b008a1e9a4","refs":[{"period":25706913,"vote_hash_hex":"657527ee5fb5b3484520987809b498b416630c443bbf7e02592349a608b2ec81"}]},{"root":"8f0c15bca3c202dad12c44f060e074748572ade6a1dba6dfea967b4d47b2a808","refs":[{"period":25706914,"vote_hash_hex":"1f6c5d763c54dfa5ebc9e15d607ac46563d307848fd2c2837012aadac0a44e79"}]},{"root":"5986c863eaab74a42da8642f740f7296d6f326443f4bb883a59c65675c31c56a","refs":[{"period":25706915,"vote_hash_hex":"d5a69c0a851f2eb9a3310e5271121e24985c5950066f5d7d2ab26a13aa683a7d"}]},{"root":"750e6dfcd464b29c1430473ea8338056169734f66c5e213da1cd9eba7566961e","refs":[{"period":25706916,"vote_hash_hex":"e205218cae6f90001ffe2384e727730c7a5d6ca7018882526e3395665758a018"}]},{"root":"6389f33e77403f0f92fd654c208b18355f2da19895e08498f9f0aebc61da2075","refs":[{"period":25706917,"vote_hash_hex":"7db22e4a0d366b4eec18d47c0cbc317a64c7968ef6ca1f97a7636095472f228b"}]},{"root":"3ce52115126f3ff130560bbf477f389159ad89eb7cc543abe1eda1ba38e74366","refs":[{"period":25706918,"vote_hash_hex":"78f02ac9ec784f357ae5a38a7f16ad442e71c0b67d4f9dd02ce80e45d4dcb924"}]},{"root":"97f12663ea38b8ab1e88572ec16cb992a969529c83b0c5d7e7f19dbec317844c","refs":[{"period":25706919,"vote_hash_hex":"d4f790937fd64238f59089931c32ad036f3eb2d44debef1d3c04b8e864dd7ebc"}]},{"root":"76f9d6edc45e54c2f705c93b57a9ddc8025240c2678258767a4618477446c59d","refs":[{"period":25706920,"vote_hash_hex":"6b7cd1281d3920b686fb2c2e6083ee74c548ef9af41bdbc2dc87606b638a29ab"}]},{"root":"0e07b0ab3b770ce3b679796efded272782c82750280a0bd4bcf5697e13233dcc","refs":[{"period":25706921,"vote_hash_hex":"bf23d2b0a0e9b49e7fa870f893ed4aa625d50645d6a1f7f894da0219e1b5f35b"}]},{"root":"0e07b0ab3b770ce3b679796efded272782c82750280a0bd4bcf5697e13233dcc","refs":[{"period":25706922,"vote_hash_hex":"941c19834c81fd175e8615d6b6da5972b4e36d48e649029c92a8388dadc78aae"}]},{"root":"8fc69b3a7343817f4c55e8ab7e90680896c45c5bf03d4fd0aa0075c749a6a223","refs":[{"period":25706923,"vote_hash_hex":"5b06ecbd3b0c9f45baaa80a691ef847d01535df85eb321d08220602248a7f960"}]},{"root":"131bcb5151b5e52bbace2653d3a44edf700db6b6337e82a04d70c6a1695ce803","refs":[{"period":25706924,"vote_hash_hex":"1a501e7baf0e2031ed6e46f458e87b1b870210f83e4626ab929d4e666db57fef"}]},{"root":"4a54404b443f071ae60a07b74dcc601ab375da61f81531e1f7b143fa3c8df222","refs":[{"period":25706925,"vote_hash_hex":"27cc6615de2f5b0ea12e32eb7524024120df0171590f731821a52408fc174c6f"}]},{"root":"715127dfc215df7d43d63b58cd58a4446edb425bf2e23502932e293ef021d4fa","refs":[{"period":25706926,"vote_hash_hex":"524e4ca6d358b87c4ac9f07e19086811b78531736f29b259da9a5ade00f536d8"}]},{"root":"04c3266846de8285c05f021bc6fa8730c4ddecd4db10b82c4f9007c8e821d282","refs":[{"period":25706927,"vote_hash_hex":"dc25c2def18c6a08e61186dc91084e6892740f0c9e892084a886173434303517"}]},{"root":"827e4d2929e8871824a36220b4a59bd75f33f0d2da55294a9ff128c4697671d2","refs":[{"period":25706928,"vote_hash_hex":"0c4b7421a4f5a61f82bba83cfe64f56bc2dcbe6545996de741ca2526f3d4ebc2"}]},{"root":"112aed825cb2f31d530671bc75a28d90d89c7e3021f6cd11617c6c5924697c34","refs":[{"period":25706929,"vote_hash_hex":"0a8d6b07d009f6c50780c8ca60a192b61442c6b0a589de339f7b022954104a79"}]},{"root":"112aed825cb2f31d530671bc75a28d90d89c7e3021f6cd11617c6c5924697c34","refs":[{"period":25706930,"vote_hash_hex":"33bf8cd7a4fd0dd464b1868ef7cc5f3b9713bd74113c6ec569b892bb19c2c3b0"}]},{"root":"f4c00f1fe89e446c63aa25d8fd80d138fb0eedfba6bb1ce51b63cd2ef2d0dd56","refs":[{"period":25706932,"vote_hash_hex":"35b534501015d8118e3dded159a4c540fc1809bf017b7984b2fc465742d68b2e"}]},{"root":"9109390dc21e981e3ef34a44fb06359ccff8d9f5da9785ad769d4c451c629853","refs":[{"period":25706933,"vote_hash_hex":"82cad0318ae278c997a9ec8fa3dd3aecbff4236d97ee18db4d97f138c1e46d16"}]},{"root":"1d9242c2aa421de9d4e5ef8126ab5ecf1ba49f53a72ef19f3243463bb21bc486","refs":[{"period":25706934,"vote_hash_hex":"b752a7fa018b5c047f537a0697db787f5dd733b89244e9ef49951ade4928cedb"}]},{"root":"ece3968a30c0b8dedd5792e99d88c426bcff348385f281035eafb80b5f000315","refs":[{"period":25706935,"vote_hash_hex":"6a99744c55bb7ea2373f6c9be276ec69e9317c25e6225f2fa94cb2fff8aa1c0c"}]},{"root":"64a4a559c1911b6d98e270d7c17805db3deaf3f4961f9773c3f98ccd136dd139","refs":[{"period":25706936,"vote_hash_hex":"9b20510ddd7b27d440fdedd918e210355bae0f9d4d495185430d69b2fb51974a"}]},{"root":"b918017816a1b0ebc4dd3e43bbbb6e0490b9e5c94d33aed4d0cd84359b840145","refs":[{"period":25706937,"vote_hash_hex":"710152418bd1b67752a823e289b5afe1012224426e31c442518c0d8b755d7c77"}]},{"root":"b918017816a1b0ebc4dd3e43bbbb6e0490b9e5c94d33aed4d0cd84359b840145","refs":[{"period":25706938,"vote_hash_hex":"6715f0e2564aa8c7605b9dcd6bf0a3b66e0f5293eb4938ef3d98eb784f079016"}]},{"root":"54a7068396b9d331e9bf9d3815ae26a96517e2af3596f7d4cf6a004ed5652252","refs":[{"period":25706939,"vote_hash_hex":"212a66821de87f5c31f3287388689db07d7ceaf8b42d1486198157c21a0f4ff4"}]},{"root":"3fedb74070694d46637ea9fb65e70060f9ce8ae264a033dc1404872e0ab339ac","refs":[{"period":25706940,"vote_hash_hex":"dc0c7a9b199bcce1a36388a40fa5e13bf6fce5867114deba198e450d8b99d3ca"}]},{"root":"51fdb8fa9573a32977862bddf804d4d211ef4a46c242a284d697033c85e1d0c7","refs":[{"period":25706941,"vote_hash_hex":"e7a07606d9d481735dfecbde394b17beb7b9d5d3d7845f3ab1a045548bbd75f3"}]},{"root":"bd6bbc5b4725ee321e43c2ba367adc95deda48f05780a9ec859635ec9d39e8b5","refs":[{"period":25706943,"vote_hash_hex":"d5d9278431d8c97d937b4a2df1ef29d879f1510be7325501cd2bbf37242ba818"}]},{"root":"b5cee51b7dc57bc68bd2cd5144daefcfca83686170bf226cf2297795371a2f83","refs":[{"period":25706944,"vote_hash_hex":"47410bd38de35a1584f1872b4ce03048da07d0b98b4007e4b6995076cdbdcb27"}]},{"root":"10561ec6a95842ceea4b5bbca7879ab192850eca7e62b91fa586e734876cd4d9","refs":[{"period":25706945,"vote_hash_hex":"234bd7c7724aa452c177745fb0de62fa7723ceb745f38636e2ad35b24b0b99f9"}]},{"root":"10561ec6a95842ceea4b5bbca7879ab192850eca7e62b91fa586e734876cd4d9","refs":[{"period":25706946,"vote_hash_hex":"b97237a18863e1dea2d88723325363f7835f6dc0d63babd867cd32bd4cd1127f"}]},{"root":"10561ec6a95842ceea4b5bbca7879ab192850eca7e62b91fa586e734876cd4d9","refs":[{"period":25706947,"vote_hash_hex":"02e89a27d89958f995df75fc7dcffaf864892ca3f5fc8dd8899e69cd1e5c6c2a"}]},{"root":"4a31ec5fbb426cd88c29ed42b7428aae41951bb9ca4a617073df5a9e3312a624","refs":[{"period":25706948,"vote_hash_hex":"93e0234795919c06cb1a3baf64f5f0a1f720ffcaa8313b8bd8d431d9b4ea17ba"}]}]"#;
 // Sealed a8a45 descriptor: exact raw request order, roots and vote references.
 const A8A_VOTER: &str = "a8a23a6c96a09c7783b70373d2302fefd943730e";
 const A8A_PROFILE: &str = "n4_residual_vrf_a8a23a6c96a09c7783b70373d2302fefd943730e_v1";
@@ -182,6 +195,7 @@ impl Profile {
                 | Self::ResidualE50b
                 | Self::Residual49f8
                 | Self::ResidualA8a2
+                | Self::ResidualFbb3
         )
     }
 
@@ -194,6 +208,8 @@ impl Profile {
             E50B_VOTER
         } else if self == Self::Residual49f8 {
             F49_VOTER
+        } else if self == Self::ResidualFbb3 {
+            FBB_VOTER
         } else if self == Self::ResidualA8a2 {
             A8A_VOTER
         } else {
@@ -209,6 +225,8 @@ impl Profile {
             E50B_PROFILE
         } else if self == Self::Residual49f8 {
             F49_PROFILE
+        } else if self == Self::ResidualFbb3 {
+            FBB_PROFILE
         } else if self == Self::ResidualA8a2 {
             A8A_PROFILE
         } else {
@@ -224,6 +242,8 @@ impl Profile {
             16
         } else if self == Self::Residual49f8 {
             5
+        } else if self == Self::ResidualFbb3 {
+            19
         } else if self == Self::ResidualA8a2 {
             11
         } else {
@@ -232,9 +252,18 @@ impl Profile {
     }
     fn payloads(self) -> usize {
         match self {
-            Self::Residual49f8 | Self::ResidualA8a2 => 45,
+            Self::Residual49f8 | Self::ResidualA8a2 | Self::ResidualFbb3 => 45,
             Self::ResidualFirst | Self::ResidualB92a | Self::ResidualE50b => 46,
             _ => 47,
+        }
+    }
+    /// Describe only a completed full replay using this sealed payload count.
+    fn replay_status(self) -> &'static str {
+        match self.payloads() {
+            45 => "all_forty_five_residual_vrf_inputs_authenticated",
+            46 => "all_forty_six_residual_vrf_inputs_authenticated",
+            47 => "all_forty_seven_vrf_inputs_authenticated",
+            _ => unreachable!("sealed payload count"),
         }
     }
 }
@@ -316,19 +345,28 @@ fn select_residual(profile: Profile, rows: &Value) -> Result<Value> {
         Profile::ResidualE50b => (&E50B_INDICES, 12),
         Profile::Residual49f8 => (&F49_INDICES, 12),
         Profile::ResidualA8a2 => (&A8A_INDICES, 24),
+        Profile::ResidualFbb3 => (&FBB_INDICES, 30),
         _ => anyhow::bail!("residual profile required"),
     };
     let bindings: Value = serde_json::from_str(match profile {
         Profile::ResidualE50b => E50B_BINDINGS,
         Profile::Residual49f8 => F49_BINDINGS,
         Profile::ResidualA8a2 => A8A_BINDINGS,
+        Profile::ResidualFbb3 => FBB_BINDINGS,
         _ => B92A_BINDINGS,
     })?;
     let mut out = Vec::with_capacity(profile.payloads());
     for (i, (index, row)) in selected.into_iter().enumerate() {
         let delayed_index = if i + 1 < omitted { i + 1 } else { i + 2 };
-        let delayed_index = if matches!(profile, Profile::Residual49f8 | Profile::ResidualA8a2)
-            && delayed_index >= 45
+        let second_omission = if profile == Profile::ResidualFbb3 {
+            41
+        } else {
+            45
+        };
+        let delayed_index = if matches!(
+            profile,
+            Profile::Residual49f8 | Profile::ResidualA8a2 | Profile::ResidualFbb3
+        ) && delayed_index >= second_omission
         {
             delayed_index + 1
         } else {
@@ -356,6 +394,7 @@ fn select_residual(profile: Profile, rows: &Value) -> Result<Value> {
                 | Profile::ResidualE50b
                 | Profile::Residual49f8
                 | Profile::ResidualA8a2
+                | Profile::ResidualFbb3
         ) {
             ensure!(
                 row["source_references"] == bindings[i]["refs"],
@@ -404,6 +443,12 @@ pub(crate) fn prior(profile: Profile, bytes: &[u8], plan: &ConcreteVrfPlan) -> R
     }
     if profile == Profile::Residual49f8 {
         f49_prior_binding(value)?;
+    }
+    if profile == Profile::ResidualFbb3 {
+        ensure!(
+            hex::encode(value) == FBB_PRIOR && admission::sha(value) == FBB_PRIOR_SHA,
+            "fixed fbb3 prior binding"
+        );
     }
     if profile == Profile::ResidualA8a2 {
         ensure!(
@@ -466,6 +511,7 @@ fn fixed_45_tuple_binding(
     let (binding, key) = match profile {
         Profile::Residual49f8 => (F49_BINDINGS, F49_KEY),
         Profile::ResidualA8a2 => (A8A_BINDINGS, A8A_KEY),
+        Profile::ResidualFbb3 => (FBB_BINDINGS, FBB_KEY),
         _ => anyhow::bail!("fixed45 profile required"),
     };
     let bindings: Value = serde_json::from_str(binding)?;
@@ -560,9 +606,14 @@ impl PlanView for WindowPlan {
     }
 }
 fn window_authority(profile: Profile) -> Result<(WindowPlan, Value, Value)> {
-    if matches!(profile, Profile::Residual49f8 | Profile::ResidualA8a2) {
+    if matches!(
+        profile,
+        Profile::Residual49f8 | Profile::ResidualA8a2 | Profile::ResidualFbb3
+    ) {
         let (p, s, a) = authority_with(profile, |first, _| {
-            Ok(if profile == Profile::ResidualA8a2 {
+            Ok(if profile == Profile::ResidualFbb3 {
+                ConcreteVrfResidual49f8Plan::new_fbb3(first)?
+            } else if profile == Profile::ResidualA8a2 {
                 ConcreteVrfResidual49f8Plan::new_a8a2(first)?
             } else {
                 ConcreteVrfResidual49f8Plan::new(first)?
@@ -645,6 +696,7 @@ fn authority_with<T: PlanView>(
                     Profile::ResidualE50b => Some(E50B_KEY),
                     Profile::Residual49f8 => Some(F49_KEY),
                     Profile::ResidualA8a2 => Some(A8A_KEY),
+                    Profile::ResidualFbb3 => Some(FBB_KEY),
                     _ => None,
                 };
                 if let Some(key) = fixed_key {
@@ -674,7 +726,7 @@ fn authority_with<T: PlanView>(
                 if profile == Profile::Residual49f8 {
                     f49_tuple_binding(i, tuple)?;
                 }
-                if profile == Profile::ResidualA8a2 {
+                if matches!(profile, Profile::ResidualA8a2 | Profile::ResidualFbb3) {
                     fixed_45_tuple_binding(profile, i, tuple)?;
                 }
                 row["tuple"] = json!({"identity":native::identity_json(tuple.identity),"address_hex":hex::encode(tuple.address),
@@ -765,6 +817,10 @@ pub(crate) fn base(profile: Profile, selected: Value, authority: Value) -> Resul
         Profile::Residual49f8 => [
             pin!("bin/live_vrf_residual_49f8.rs"),
             pin!("bin/replay_vrf_residual_49f8.rs"),
+        ],
+        Profile::ResidualFbb3 => [
+            pin!("bin/live_vrf_residual_fbb3.rs"),
+            pin!("bin/replay_vrf_residual_fbb3.rs"),
         ],
         Profile::ResidualA8a2 => [
             pin!("bin/live_vrf_residual_a8a2.rs"),
@@ -911,13 +967,7 @@ pub(crate) fn replay(profile: Profile, bundle_input: &Path, report_output: &Path
             anyhow::bail!("window replay stopped; no prefix")
         }
     };
-    report["status"] = json!(match profile {
-        Profile::Residual49f8 | Profile::ResidualA8a2 =>
-            "all_forty_five_residual_vrf_inputs_authenticated",
-        Profile::ResidualFirst | Profile::ResidualB92a | Profile::ResidualE50b =>
-            "all_forty_six_residual_vrf_inputs_authenticated",
-        _ => "all_forty_seven_vrf_inputs_authenticated",
-    });
+    report["status"] = json!(profile.replay_status());
     report["actual"] = native::usage(usage);
     report["bundle"] = json!({"path":input,"bytes":bytes.len(),"sha256":admission::sha(&bytes)});
     report["values"] = values;
@@ -1107,6 +1157,25 @@ pub fn residual_a8a2_capture(bundle: &Path, report: &Path) -> Result<()> {
 /// acceptance; any failure rejects the full family.
 pub fn residual_a8a2_replay(bundle: &Path, report: &Path) -> Result<()> {
     replay(Profile::ResidualA8a2, bundle, report)
+}
+
+/// Fixed fbb3 preflight, capture and replay APIs. Authenticate all raw inputs and
+/// all71 prior proofs before the fixed45 plan. Exclusive bounded outputs; errors
+/// reject the entire family. Capture requires separate exact-command READY.
+pub fn residual_fbb3_preflight(output: &Path) -> Result<()> {
+    preflight(Profile::ResidualFbb3, output)
+}
+/// Capture fbb45 through the shared RCV4 engine after independent one-use
+/// admission. Require all 51 context and 45 payload proofs, including retention
+/// for both omitted identities. Failure qualifies no prefix or absence fact.
+pub fn residual_fbb3_capture(bundle: &Path, report: &Path) -> Result<()> {
+    capture(Profile::ResidualFbb3, bundle, report)
+}
+/// Replay all 96 fbb45 proofs and the fresh 71-proof prior offline. Require exact
+/// order, strict history and EOF. Exclusive report publication grants no final
+/// acceptance; any failure rejects the full family.
+pub fn residual_fbb3_replay(bundle: &Path, report: &Path) -> Result<()> {
+    replay(Profile::ResidualFbb3, bundle, report)
 }
 
 #[cfg(test)]
@@ -1732,6 +1801,85 @@ mod tests {
         );
     }
     #[test]
+    fn fbb3_fixed_selection_prior_and_full_barrier() {
+        assert_eq!(
+            Profile::ResidualFbb3.replay_status(),
+            "all_forty_five_residual_vrf_inputs_authenticated"
+        );
+        let (context, rows, _) =
+            parent_input_handoff::load_authenticated_voter_authority().unwrap();
+        let selected = select(Profile::ResidualFbb3, &rows).unwrap();
+        assert_eq!(selected.as_array().unwrap().len(), 45);
+        for (i, index) in FBB_INDICES.iter().enumerate() {
+            assert_eq!(selected[i]["parent_manifest_index"], *index);
+            assert_ne!(selected[i]["source_row"]["delayed_period"], FIRST + 30);
+            assert_ne!(selected[i]["source_row"]["delayed_period"], FIRST + 41);
+        }
+        for (field, value) in [
+            ("voter_hex", json!(F49_VOTER)),
+            ("semantic_key", json!("other")),
+            ("delayed_period", json!(FIRST + 30)),
+            ("qualified", json!(true)),
+            ("proof", json!({})),
+            ("value", json!("00")),
+            ("source_references", json!([])),
+            (
+                "source_references",
+                json!([{"period":FIRST+8,"vote_hash_hex":"00"}]),
+            ),
+        ] {
+            let mut bad = rows.clone();
+            bad[FBB_INDICES[0]][field] = value;
+            assert!(select(Profile::ResidualFbb3, &bad).is_err(), "{field}");
+        }
+        let mut swapped = rows.clone();
+        swapped
+            .as_array_mut()
+            .unwrap()
+            .swap(FBB_INDICES[0], FBB_INDICES[1]);
+        assert!(select(Profile::ResidualFbb3, &swapped).is_err());
+        let mut duplicate = rows.clone();
+        duplicate[FBB_INDICES[1]] = duplicate[FBB_INDICES[0]].clone();
+        assert!(select(Profile::ResidualFbb3, &duplicate).is_err());
+        assert!(authority(Profile::ResidualFbb3).is_err());
+        let first_plan = first::selection(context, &rows).unwrap().0;
+        let canonical = canonical_prior().unwrap();
+        let mut bad = canonical.clone();
+        bad[canonical.len() / 2] ^= 1;
+        assert!(
+            after_prior(
+                Profile::ResidualFbb3,
+                first_plan,
+                &bad,
+                |_, _| -> Result<()> { panic!("bad prior reached fbb3 constructor") }
+            )
+            .is_err()
+        );
+        let (plan, selected, summary) = window_authority(Profile::ResidualFbb3).unwrap();
+        assert_eq!(summary["prior_first_d"]["selected"]["proof_index"], 70);
+        assert_eq!(summary["prior_first_d"]["selected"]["value_hex"], FBB_PRIOR);
+        for (i, tuple) in plan.tuples().iter().enumerate() {
+            fixed_45_tuple_binding(Profile::ResidualFbb3, i, *tuple).unwrap();
+        }
+        let mut wrong = plan.tuples()[0];
+        wrong.key.0[0] ^= 1;
+        assert!(fixed_45_tuple_binding(Profile::ResidualFbb3, 0, wrong).is_err());
+        let mut wrong = plan.tuples()[0];
+        wrong.identity.state_root[0] ^= 1;
+        assert!(fixed_45_tuple_binding(Profile::ResidualFbb3, 0, wrong).is_err());
+        assert!(fixed_45_tuple_binding(Profile::ResidualFbb3, 45, plan.tuples()[0]).is_err());
+        let report = base(Profile::ResidualFbb3, selected, summary).unwrap();
+        assert_eq!(report["bounds"]["proofs_exact"], 96);
+        assert_eq!(report["bounds"]["payload_tuples_exact"], 45);
+        assert!(
+            report["qualification"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|v| v == false)
+        );
+    }
+    #[test]
     fn f49_fixed_selection_prior_and_full_barrier() {
         let (context, rows, _) =
             parent_input_handoff::load_authenticated_voter_authority().unwrap();
@@ -2066,6 +2214,16 @@ mod tests {
             "/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/vrf-residual-fourth-voter-window-replay.json",
             "60fc9d1488e099aa9b01e245ca1c4a4052f0583ea1cdb116d0ec5913b6d9b914",
             57633,
+            45,
+        );
+    }
+    #[test]
+    fn fifth_residual_saved_bundle_report_is_completely_equal() {
+        assert_saved_residual_equal(
+            Profile::ResidualA8a2,
+            "/home/fry/artifacts/vrf-residual-20261014-current/a8a45/independent-replay-report.json",
+            "e3b766f19941f296632c7e8f860e3fc8f92f10741ed2abef8c0ce0445a63ada8",
+            57499,
             45,
         );
     }

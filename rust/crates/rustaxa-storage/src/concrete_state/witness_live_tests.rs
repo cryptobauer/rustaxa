@@ -2932,3 +2932,77 @@ fn residual_a8a2_sealed_shape_roundtrip_and_cross_voter_rejection() {
         replay_vrf_residual_49f8_bundle(&trailing, &p, ConcreteWitnessLimits::default()).is_err()
     );
 }
+
+#[test]
+fn residual_fbb3_sealed_shape_roundtrip_and_cross_voter_rejection() {
+    let make = || {
+        let mut first = residual_49f8_first(plan(codec::empty_trie_root()));
+        // Derive keys from the sealed voter through the public first plan.
+        let mut voters = *first.voters();
+        voters[19] = ConcreteVrfResidual49f8Plan::FBB3;
+        voters.sort();
+        first = ConcreteVrfPlan::new(first.context, voters).unwrap();
+        first
+    };
+    let p = ConcreteVrfResidual49f8Plan::new_fbb3(make()).unwrap();
+    assert_eq!(
+        hex::encode(p.voter()),
+        "fbb3ee068e491e218d2cda595c23c6e3cc2f00f2"
+    );
+    assert_eq!(p.context().delayed.len(), 48);
+    let indices: Vec<_> = (1..48).filter(|i| ![30, 41].contains(i)).collect();
+    assert_eq!(indices.len(), 45);
+    for (tuple, i) in p.tuples().iter().zip(indices) {
+        assert_eq!(tuple.identity, p.context().delayed[i]);
+        assert_eq!(
+            hex::encode(tuple.key.0),
+            "ec5c494ab92b4655da656eae4a546ee7efab77ffe269fb82adc3bf19c5d1ac73"
+        );
+        let mut account = [0; 20];
+        account[19] = 0xfe;
+        assert_eq!(tuple.address, account);
+    }
+    assert!(
+        ConcreteVrfResidual49f8Plan::new_fbb3(residual_49f8_first(plan(codec::empty_trie_root())))
+            .is_err()
+    );
+    let mut malformed = make();
+    malformed.context.delayed[30].period = malformed.context.delayed[29].period;
+    assert!(ConcreteVrfResidual49f8Plan::new_fbb3(malformed).is_err());
+    let f = Fixture::empty();
+    let captured = capture_vrf_residual_49f8_run(
+        &f.application,
+        &f.state,
+        &p,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let replay =
+        replay_vrf_residual_49f8_bundle(&captured.bundle, &p, ConcreteWitnessLimits::default())
+            .unwrap();
+    assert_eq!(replay.usage.used(R::PayloadTuples), 45);
+    assert_eq!(replay.usage.used(R::Registrations), 51);
+    let old = ConcreteVrfResidual49f8Plan::new(make()).unwrap();
+    let failure =
+        replay_vrf_residual_49f8_bundle(&captured.bundle, &old, ConcreteWitnessLimits::default())
+            .err()
+            .unwrap();
+    assert_eq!(failure.usage.used(R::PayloadTuples), 0);
+    let old_capture = capture_vrf_residual_49f8_run(
+        &f.application,
+        &f.state,
+        &old,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let failure =
+        replay_vrf_residual_49f8_bundle(&old_capture.bundle, &p, ConcreteWitnessLimits::default())
+            .err()
+            .unwrap();
+    assert_eq!(failure.usage.used(R::PayloadTuples), 0);
+    let mut trailing = captured.bundle;
+    trailing.push(0);
+    assert!(
+        replay_vrf_residual_49f8_bundle(&trailing, &p, ConcreteWitnessLimits::default()).is_err()
+    );
+}

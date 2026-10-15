@@ -250,7 +250,7 @@ pub struct ConcreteVrfResidualReplay {
     pub usage: ConcreteWitnessUsage,
 }
 /// The sealed 45-payload residual families: 49f8 omits delayed indices 12 and
-/// 45; a8a2 omits 24 and 45. All 48 identities remain mandatory constructor context. Omission
+/// 45; a8a2 omits 24 and 45; fbb3 omits 30 and 41. All 48 identities remain mandatory constructor context. Omission
 /// establishes no state or history fact. Raw/root and positive prior authority
 /// must be authenticated by the caller before construction or database access.
 pub struct ConcreteVrfResidual49f8Plan {
@@ -266,7 +266,7 @@ impl ConcreteVrfResidual49f8Plan {
     /// Missing voter returns Request; malformed context returns its validation
     /// error before database access. Shape validation supplies no raw authority.
     pub fn new(first: ConcreteVrfPlan) -> Result<Self, ConcreteWitnessError> {
-        Self::fixed(first, Self::VOTER, 12)
+        Self::fixed(first, Self::VOTER, [12, 45])
     }
     /// Consume the first-period plan containing the sealed a8a23a6c voter.
     /// Derive exactly 45 tuples at delayed indices 1..=47 except 24 and 45.
@@ -276,12 +276,22 @@ impl ConcreteVrfResidual49f8Plan {
     /// database access. The caller must authenticate raw/root authority and the
     /// complete positive first-period prior before construction or any open.
     pub fn new_a8a2(first: ConcreteVrfPlan) -> Result<Self, ConcreteWitnessError> {
-        Self::fixed(first, Self::A8A2, 24)
+        Self::fixed(first, Self::A8A2, [24, 45])
+    }
+    /// Consume the first-period plan containing the sealed fbb3ee06 voter.
+    /// Derive exactly 45 tuples at delayed indices 1..=47 except 30 and 41.
+    /// Preserve all 48 identities, including both omissions. Accept no caller
+    /// voter, root, key, index or count override. Missing voter returns Request;
+    /// malformed context returns its validation error before database access.
+    /// The caller must first authenticate raw authority and all71 prior proofs,
+    /// including this voter's positive first-period member and physical value.
+    pub fn new_fbb3(first: ConcreteVrfPlan) -> Result<Self, ConcreteWitnessError> {
+        Self::fixed(first, Self::FBB3, [30, 41])
     }
     fn fixed(
         first: ConcreteVrfPlan,
         voter: [u8; 20],
-        omitted: usize,
+        omitted: [usize; 2],
     ) -> Result<Self, ConcreteWitnessError> {
         validate_plan(&first.context)?;
         let index = first
@@ -292,10 +302,10 @@ impl ConcreteVrfResidual49f8Plan {
         let tuple = first.tuples[index];
         let tuples = std::array::from_fn(|i| {
             let mut delayed = i + 1;
-            if delayed >= omitted {
+            if delayed >= omitted[0] {
                 delayed += 1;
             }
-            if delayed >= 45 {
+            if delayed >= omitted[1] {
                 delayed += 1;
             }
             ConcreteDiagnosticTuple {
@@ -316,6 +326,10 @@ impl ConcreteVrfResidual49f8Plan {
     const A8A2: [u8; 20] = [
         0xa8, 0xa2, 0x3a, 0x6c, 0x96, 0xa0, 0x9c, 0x77, 0x83, 0xb7, 0x03, 0x73, 0xd2, 0x30, 0x2f,
         0xef, 0xd9, 0x43, 0x73, 0x0e,
+    ];
+    const FBB3: [u8; 20] = [
+        0xfb, 0xb3, 0xee, 0x06, 0x8e, 0x49, 0x1e, 0x21, 0x8d, 0x2c, 0xda, 0x59, 0x5c, 0x23, 0xc6,
+        0xe3, 0xcc, 0x2f, 0x00, 0xf2,
     ];
     /// Borrow the complete pair and all 48 immutable delayed identities.
     pub fn context(&self) -> &ConcreteDiagnosticPlan {
