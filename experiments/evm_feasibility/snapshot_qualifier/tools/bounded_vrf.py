@@ -95,7 +95,20 @@ FIFTH_INDICES = [92, 152, 212, 266, 317, 374, 434, 494, 554, 611, 668, 725, 779,
 # Filled only from the final independently accepted finite successor.
 FIFTH_CONTRACT = dict(path='/home/fry/artifacts/a8a45-run-01a13f63-20261015/astra/a8a45-successor-contract-v16-split.json', bytes=129858, sha256='737985c907c8b4c38142dfeafba9002983ec740d8694e7b3ab75a911b55ca621')
 
+SIXTH_RUN = Path('/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45')
+SIXTH_PROFILE = 'n4_residual_vrf_fbb3ee068e491e218d2cda595c23c6e3cc2f00f2_v1'
+SIXTH_KEY = 'ec5c494ab92b4655da656eae4a546ee7efab77ffe269fb82adc3bf19c5d1ac73'
+SIXTH_INDICES = [116, 176, 233, 290, 341, 398, 458, 518, 575, 635, 692, 746, 803, 863, 917, 974, 1031, 1088, 1148, 1208, 1268, 1325, 1379, 1427, 1484, 1544, 1601, 1658, 1712, 1829, 1886, 1940, 1994, 2054, 2111, 2168, 2228, 2282, 2342, 2456, 2513, 2573, 2621, 2681, 2741]
+SIXTH_CONTRACT = dict(path='/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/fbb45-successor-contract-v12-final.json', bytes=131048, sha256='7b4c6401d55bf72f05e0de6c73a183ab0dc0d058ac55b03ac63b0a4c7d03bcde')
+SIXTH_PREDECESSOR_SOURCES = json.loads('[{"bytes":29289,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_input_handoff.rs","sha256":"7845e2a972ec0c550c9c16c2039bde1ea453c4da6625ccb7a142daf6aa29f7f8"},{"bytes":371,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/parent_input_handoff.rs","sha256":"9b28884952fccdb3252cdca30465875e65e04d2c313098fb5d8ca2579c729d38"},{"bytes":699,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/lib.rs","sha256":"6139fd14946594ee82a46759aba6587ecdc9ee285aacbbe3c6bea59ccd1429d0"},{"bytes":22289,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/native_witness.rs","sha256":"c24c75d79d5c793fab6a4c349e20bce7aebbcf3867d6b15af56b6a011b689a4d"},{"bytes":27968,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/delayed_headers.rs","sha256":"5c7ff91e502733d4ca63357dc6a97bda10bc7d8e8438a4f208e0373afc8eb63d"},{"bytes":11245,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/interval_history.rs","sha256":"44e1430d4a0206325de12a7c804f964760b6d261b83f1954185761ca2f3be6e4"},{"bytes":19542,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/head_history.rs","sha256":"cc0ea9b27712d67e75ec46b6a858dbfcdeb65affce048339e3ad6cfcb624379b"},{"bytes":23298,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_history.rs","sha256":"46786d43ff10d076d425c23f901b149e462b139e138ee253852bbe7a3554319b"},{"bytes":44873,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_reward_fields.rs","sha256":"a5c2beb6543affb2b8ddf2ef7aed5505b338f477050179ee71df46c6758f38f7"},{"bytes":2443,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/reward_votes.rs","sha256":"9854994cf3cd49677b132c26095d7a01b2add8e5370a64f90ed75337879a577c"},{"bytes":5070,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/paths.rs","sha256":"a2db7e497bc4a21f11344a3365a72b3cd2dce43887cedb9df862228392595b7a"},{"bytes":4863,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/parent_cache_fields/admission.rs","sha256":"d247a52dd9f848db7454e5c1f4159692e1e5fc275332c071196fafe573f9d091"},{"bytes":16255,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/aspen_policy.rs","sha256":"7df98bad2b42ddef270c5eacbe20d8ce6a549cfa0201e232ce82a3b8747692ff"},{"bytes":4723,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/aspen_policy_sources.rs","sha256":"dc8771a33d1102221bcc8b2ec6be151a2aeb9a3b8a3624dcf0662590ebef7e9a"},{"bytes":901,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/Cargo.toml","sha256":"63b643eca00b29108eef0b70fdcdfddb278dc6a22a08ab295f84c6e4a49304cd"},{"bytes":86577,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/Cargo.lock","sha256":"d70f0f669944ad25f5fe779a5b23d1916ae1a98c8882b5ca0447214d1ab9bd54"},{"bytes":22269,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness.rs","sha256":"ec47bb56f197d9c02ff2a4c4ef1f1f4f58a781ce1a14586a8e1a417fe90b93e4"},{"bytes":56841,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs","sha256":"450f97ef56d0341ee5570e4560aef03a6a3eda4aea20b66aca66d775d3f57e40"},{"bytes":11855,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_bundle.rs","sha256":"4d927a1c7aeb5dfdb9b81c917f0e5196f987dfae51b36543389813cf83fad726"},{"bytes":12599,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_binary.rs","sha256":"1d5db25980cae3ef4b85e7220144f8388ecab67a82069a4b02b0822cca3dbd84"},{"bytes":33298,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/physical_node.rs","sha256":"55d3096128c68e1949f3d96870f65d99b6206c1ca8092c5302c6a1bb0d39f75b"},{"bytes":8359,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/codec.rs","sha256":"9a74a1fa46f7a9efb6ffd0d7002e888e681b867cc83080da593b477b06dd3def"},{"bytes":9000,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-consensus/src/final_chain/native_session/vote_inputs.rs","sha256":"bcd0e0a20e5176ee9480b6422e94a03c9d35a6bb7f8404579c791bc52678dcff"},{"bytes":65589,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-consensus/src/pbft_vote_validation.rs","sha256":"cd5670f1ea93167b1ef4075be6b52e81d9a35d9ad2823da98f3c6d1a6531a38d"},{"bytes":17348,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-types/src/codec/rlp/final_chain.rs","sha256":"c3c3ba662b2052cc6bbaabe7ea782a599f6291ac0fcad5936e35946744713451"},{"bytes":14719,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_witness.rs","sha256":"6b27f9c4650fb89e2132f1f17b905a34b6b21aa2418762bc0ee54a3efd5fdfc8"},{"bytes":668,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_witness.rs","sha256":"ec9f048a77243b27ac64af4839621a277b586860d6aed4966ba58f7b5db277b8"},{"bytes":495,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_witness.rs","sha256":"01ebc98eaf56db60f54755f768ab79fd02b0673bb8f1e8c6697b4bb539d0c332"},{"bytes":3456,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/lib.rs","sha256":"07d607a2482ab94824f96adb6b0c858c18eb806db5ab9b20aa2447a7bc34acbc"},{"bytes":2634,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/mod.rs","sha256":"85876f79f9848f3c6976e138cedab20d1993dd0304a728f19110693276ee183c"},{"bytes":43628,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/db.rs","sha256":"7adabcea4874a81b656b85876feb3a2ab32d695740d7a76fc44b1479d21b409b"},{"bytes":14648,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/config.rs","sha256":"ab02fb7f695cc19be49e25f46ac78f99a00c76e7a0eb7292c962d80a6d9f6c5b"},{"bytes":55304,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/final_chain.rs","sha256":"c996c560415b9d8fc34e50f2bcfe3473186f3766a4169fd6a9a6f91869cab52f"},{"bytes":25673,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/metadata.rs","sha256":"e43e17b855a5e7d018b088c085006ad002e127eb68c79b54bddaafab1cf54ab6"},{"bytes":2891,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_rlp.rs","sha256":"264022b34bd07033037ccead6fe020b336ff3340f15bb40ec1ce0b3e0293787f"},{"bytes":93524,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db.rs","sha256":"d6093ac53cde9751045d1e69bad5e88a94c97124ec7b931e1ecf2a69f50ce6a5"},{"bytes":10001,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_bounded.rs","sha256":"542952d508b01b14f99fd0e47f7cb71d76c7d5545788b5b1d5e66916df45189f"},{"bytes":4343,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/bounded_read.rs","sha256":"72926fe19ad6398d1b9bc78d3c6b9422cb81e856bbf11d8658bc8406cc245008"},{"bytes":21648,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_iterator.rs","sha256":"833ab9ed87042f10408ed168d5043b6466e51b98447d7d3bf9a85bc66590d879"},{"bytes":174740,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_options.rs","sha256":"524ad9b6477a5bdc6ae5f111fe916a6749fe5f091d8cf7d1eaabb3e03a60e484"},{"bytes":2148,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_pinnable_slice.rs","sha256":"3714970b72c44f72fc07db463f0dcf8a339a6eb4c6c93496d9fd6571e641c63c"},{"bytes":6725,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/column_family.rs","sha256":"8566584605a812c6f092951a4a50ff24ef69d7c73c9236983aabab2787dccee0"},{"bytes":8737,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/ffi_util.rs","sha256":"541f1e0698392c83f283cea634d637d9b38dcaaee2cfccfcf85f4558228df561"},{"bytes":6397,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_voter_window.rs","sha256":"19e3b21ab0c4d14599494d719c572bbc2c1ace05eb98c89b8614bc58f614135c"},{"bytes":659,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_voter_window.rs","sha256":"2b9c9eb8a5b8f437e1959dfd0339392aa8b97e1837a49bc8aaad143c84aae6aa"},{"bytes":493,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_voter_window.rs","sha256":"7045b9c061255214dbf01a2dcb0020e5ebd6fc3d802ee6ba76ad0a5fb7539263"},{"bytes":105007,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live_tests.rs","sha256":"25cc80a704e0cef8bb2e5859451e1d181bda7f4dbaa8701754152b7f3fccb77f"},{"bytes":298,"path":"/workspaces/rustaxa-evm/rust/Cargo.toml","sha256":"83999ded4fb16bbc16c6fbefd9e2806238a6d2ef06ec47b70528c62d0b4b5e05"},{"bytes":98358,"path":"/workspaces/rustaxa-evm/rust/Cargo.lock","sha256":"43b97efd6509c6373de57f89f832b31de70795fcad303316d56cbdc684a81741"},{"bytes":149,"path":"/workspaces/rustaxa-evm/.githooks/pre-commit","sha256":"07fe760100863ed1f069f69fc8afa7a026b81515bd37964d9e2eb60091bf3967"},{"bytes":7587,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_next_voter_window.rs","sha256":"79fe8336bb56b25e48c60fc1e97800f0a5c3153f30199e4d3148f77d88ce3f00"},{"bytes":674,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_next_voter_window.rs","sha256":"1884ac77ca8ea5c68b4db57f28e26548113ba7a293f8efe29264aeb3730e7edc"},{"bytes":503,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_next_voter_window.rs","sha256":"3e5398958169a691f13bdb389e777aa18ac1af5b109c363d93ffb9ded5fdedd8"},{"bytes":9789,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_third_voter_window.rs","sha256":"4a9ff909c2d45c516407e837f48b3bde8a5a0005c6faa87bd7a294c1c8187c2c"},{"bytes":677,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_third_voter_window.rs","sha256":"177adb0fc5c18f4500e4e1d6bb88e336cc1932a035c683dee49ed1b293a55cf1"},{"bytes":505,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_third_voter_window.rs","sha256":"677e9254e1dd64d64b217affebf310484ed1118b5070e2885f17eb54e8608bad"},{"bytes":10757,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_fourth_voter_window.rs","sha256":"c5c8eb81f668a4a7c10fc90852f3471636f9388f9f632082798fbb4f0dd70139"},{"bytes":680,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_fourth_voter_window.rs","sha256":"64bb93f43b8fbe90820b041dc4caaf15020e19fa1f184126c004189645b9c601"},{"bytes":507,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_fourth_voter_window.rs","sha256":"a23150bceacd3b6327697082f891cbf597b852afdc8ad2bd032294725ad24c03"},{"bytes":11710,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_fifth_voter_window.rs","sha256":"6fd1195c5de10cd7c273006f5abfb303386d01941488ba22e9dc1f095d0db4a3"},{"bytes":677,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_fifth_voter_window.rs","sha256":"58a8ad971a420049ec0dd002668428f537a6ec95345a744188b91c49e0a359b5"},{"bytes":505,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_fifth_voter_window.rs","sha256":"67d27b53247fd938d697f1205617f9e76702f70e67dd98ed1b191f27f95bc49c"},{"bytes":12668,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_sixth_voter_window.rs","sha256":"f3288ca42262699084bc3be21912f75fd8f40535de2a3372c7ebbcd3a32bbba7"},{"bytes":677,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_sixth_voter_window.rs","sha256":"f4047ae71635a880484981469f7d38465e07dc648c4eefba145ff7401c3ac5bf"},{"bytes":505,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_sixth_voter_window.rs","sha256":"fb227bf3cc8da1a5fa0693877965bf51e63bfa492c60405b160cd642498acedc"},{"bytes":133727,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_shared_window.rs","sha256":"d188dbf5bb52823f8fcc9feb0e3b1f43491bac44d1077240b893d6ace6bd8165"},{"bytes":708,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_seventh_voter_window.rs","sha256":"b40015f8402f104d8c9faaf38b6fe6f988c28e5227ea50dc201ceaa634342642"},{"bytes":533,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_seventh_voter_window.rs","sha256":"b5d740091ba8a9abcdd6aef9caaa5a02b6ab8c226029494b384f4d7961ca6888"},{"bytes":705,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_eighth_voter_window.rs","sha256":"85e1c5041d1ef41aa61d54600436aae0b5ae7ff0884e2ae6c0f897770d04969f"},{"bytes":508,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_eighth_voter_window.rs","sha256":"c05e8a30dac7baa5cf887f15d1bfcfd6f4eb9a9fad406e6a344bb75635c68818"},{"bytes":679,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_ninth_voter_window.rs","sha256":"45b0bb6f4ea21831cc29b816bd65e028e0ee7791665bd01d570dc856efab8b46"},{"bytes":506,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_ninth_voter_window.rs","sha256":"838acbc22eab208afe5dbcbdf8f53c21b4b3ef88db2e822697eda153a8ccc5e8"},{"bytes":679,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_tenth_voter_window.rs","sha256":"0936202430bdc381a8afa2f369d21c6d9ec878f96c489877bacc5b15c7078c3e"},{"bytes":506,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_tenth_voter_window.rs","sha256":"5cc82b4de8aa31c929de970d14def7f41e130c4a34e0d25034b6b96c888b1815"},{"bytes":736,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_first.rs","sha256":"7b1b728763a5398eeba76233852b62483d49f6bed2c76aefa6266355d65e6de1"},{"bytes":524,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_first.rs","sha256":"01b9eb0841083e5d2dab4960fc9cc46a4337f4a0204be4990fbd9dbc2da5756b"},{"bytes":733,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_b92a.rs","sha256":"fcf690f75e33a91e3f2a28b16a4bc82a2ce7f9bf2f92c84738b836a8c9c7fa26"},{"bytes":522,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_b92a.rs","sha256":"4c00a9202869bea49a0b24b4cfbd592118e5a5e5e41070cc3f794adf090cf9b1"},{"bytes":733,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_e50b.rs","sha256":"ae6cabd86f07fa0540cc5787cbade8ddce8a6a8c4bcf85fad65644049573b42d"},{"bytes":522,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_e50b.rs","sha256":"09bd08c4a7987d8bc45679179e2c5d71042f08fd88823e62580ad867e104aafa"},{"bytes":733,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_49f8.rs","sha256":"516ee437c70509545b35d5213b25c097a977d7ba4e62e53db992f1ac4592cb71"},{"bytes":522,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_49f8.rs","sha256":"c78838bc270a895f0f43c327bddff46819c97f5c98ca66611511c3041e480b62"},{"bytes":733,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_a8a2.rs","sha256":"9f854f7a5fd89202cf587fdfede8566e9abc26cfb949e8f27fc7909470a31fba"},{"bytes":522,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_a8a2.rs","sha256":"ff14e82d71955b89b9f1383259fa073d59a12772933d530ee9c0e216bf2a2a87"}]')
+SIXTH_COMPARISON_PROFILES = [{'profile': 'native-current', 'before': {'path': '/home/fry/artifacts/n4-binding-resume-20261011/native-live-replay-frame-cost.json', 'bytes': 10911, 'sha256': '2ccf155e2a851cd52161f090bcd3cc76b09f212a44647ba8f76b7db0b7511fbb'}, 'after': {'path': '/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/compatibility/native-current.json', 'bytes': 10945, 'sha256': '4c4c045bb090749c8c83acab2fd851999473dfa1b2820ab496cc1fbc0730ae06'}, 'fields': ['/source_profile/compiled/0', '/source_profile/compiled/10', '/source_profile/compiled/11', '/source_profile/compiled/12', '/source_profile/executable'], 'executable': {'path': '/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_native_witness', 'bytes': 192510384, 'sha256': 'abfe04a0550b421c14fa80d585feee30a53727eca09c944c9e986a964f9d432e'}}, {'profile': 'first-d-current', 'before': {'path': '/home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011/vrf-first-d-independent-replay.json', 'bytes': 32805, 'sha256': '8bd32c28356e85944a37a900c95e8ae3cb7cbc7f942f27cc2769257b6be36854'}, 'after': {'path': '/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/compatibility/first-d-current.json', 'bytes': 32813, 'sha256': 'b1c09f0c1bacfad76764f40df66b71b8a9f5e8c97eac79c4151f6b87dc68b765'}, 'fields': ['/authority/executable', '/authority/sources/2', '/authority/sources/16', '/authority/sources/17', '/authority/sources/18', '/vrf_sources/0', '/vrf_sources/3', '/vrf_sources/4', '/vrf_sources/5'], 'executable': {'path': '/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_vrf_witness', 'bytes': 194465976, 'sha256': 'b55496742d36ed6b6e5c6fce1af14fe151a44a9bef59d438d36469810c272094'}}]
+SIXTH_FAILURE_UTF8 = [22406,'38fcbe33ac05dde604893d3bd8e4822c5de5f831d3541187bccfa444d43d3a43']
+SIXTH_COMPARISON_ARGV = ['/usr/bin/python3','-c',"import sys;sys.path.insert(0,'/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools');import bounded_vrf;bounded_vrf.emit_fifth_comparison(bounded_vrf.SIXTH_PROFILE)"]
+
 def sealed_profile(profile):
+    if profile == SIXTH_PROFILE:
+        return dict(ordinal="fbb45", voter="fbb3ee068e491e218d2cda595c23c6e3cc2f00f2", key=SIXTH_KEY, prior_index=19, indices=SIXTH_INDICES)
+
     """Select only a fixed reviewed identity; unknown profiles supply no authority."""
     if profile == FIFTH_PROFILE:
         return dict(ordinal='a8a45', voter='a8a23a6c96a09c7783b70373d2302fefd943730e', key=FIFTH_KEY, prior_index=11, indices=FIFTH_INDICES)
@@ -339,7 +352,9 @@ def regular_path(path):
     return path
 
 
-def pin_file(path, expected=None, cap=FILE_CAP):
+def pin_file(path, expected=None, cap=FILE_CAP, _body=None):
+    if _body is not None and (type(_body) is not bytearray or _body or cap > 65536):
+        raise ValueError('bounded retained pin buffer')
     path = regular_path(path)
     size = path.stat().st_size
     if size > cap:
@@ -352,6 +367,8 @@ def pin_file(path, expected=None, cap=FILE_CAP):
             if count > size:
                 raise ValueError('file grew while hashing')
             digest.update(block)
+            if _body is not None:
+                _body.extend(block)
     result = dict(path=str(path), bytes=count, sha256=digest.hexdigest())
     if count != size or (expected is not None and result != expected):
         raise ValueError(f'pin drift: {path}')
@@ -408,6 +425,8 @@ def expected_source_paths(profile=None):
         result += [str(SRC / f'bin/{kind}_vrf_residual_e50b.rs') for kind in ['live','replay']]
     if profile == FOURTH_PROFILE:
         result += [str(SRC / f'bin/{kind}_vrf_residual_49f8.rs') for kind in ['live','replay']]
+    if profile == SIXTH_PROFILE:
+        return expected_source_paths(FIFTH_PROFILE) + [str(SRC / f"bin/{kind}_vrf_residual_fbb3.rs") for kind in ["live","replay"]]
     if profile == FIFTH_PROFILE:
         return expected_source_paths(FOURTH_PROFILE) + [str(SRC / f'bin/{kind}_vrf_residual_a8a2.rs') for kind in ['live','replay']]
     return result
@@ -417,16 +436,16 @@ def validate_preflight(report, preparation=None):
     pin_file(PREPARATION, dict(path=str(PREPARATION), bytes=60570, sha256=PREPARATION_SHA))
     common_prepared = read_json(PREPARATION)
     fixed = sealed_profile(report['profile'])
-    residual = report['profile'] in RESIDUAL_PROFILES or report['profile'] == FIFTH_PROFILE
-    count = 45 if report['profile'] in {FOURTH_PROFILE, FIFTH_PROFILE} else 46 if residual else 47
+    residual = report['profile'] in RESIDUAL_PROFILES or report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE}
+    count = 45 if report['profile'] in {FOURTH_PROFILE, FIFTH_PROFILE, SIXTH_PROFILE} else 46 if residual else 47
     voter, key = fixed['voter'], fixed['key']
     prepared = common_prepared if preparation is None else read_json(preparation)
     baseline = read_json(R3 / 'sixth-voter/vrf-sixth-voter-window-preflight.json', FREEZE_CAP)
     if report['status'] != 'authority_inputs_authenticated_no_database_open':
         raise ValueError('fixed profile preflight')
     selected = report['selection']
-    if report['profile'] == FIFTH_PROFILE:
-        validate_fifth_selection(selected, prepared, fifth_contract())
+    if report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE}:
+        validate_fifth_selection(selected, prepared, fifth_contract(report['profile']))
     if len(selected) != count or len(prepared['rows']) != count:
         raise ValueError('complete fixed selection')
     for i, (actual, expected) in enumerate(zip(selected, prepared['rows'])):
@@ -437,7 +456,9 @@ def validate_preflight(report, preparation=None):
                           logical_key_hex=key, key_preimage_hex=f'0004{voter}'):
             raise ValueError('authenticated tuple binding')
         omitted = 12 if report['profile'] == THIRD_PROFILE else 36 if report['profile'] == SECOND_PROFILE else 5
-        delayed_index = ([x for x in range(1, 48) if x not in (24, 45)][i]
+        delayed_index = ([x for x in range(1, 48) if x not in (30, 41)][i]
+                         if report['profile'] == SIXTH_PROFILE else
+                         [x for x in range(1, 48) if x not in (24, 45)][i]
                          if report['profile'] == FIFTH_PROFILE else
                          [x for x in range(1, 48) if x not in (12, 45)][i]
                          if report['profile'] == FOURTH_PROFILE else
@@ -468,8 +489,8 @@ def validate_preflight(report, preparation=None):
             raise ValueError('sealed successor row indices')
         if expected['selection_index'] != fixed['prior_index'] or expected['parent_manifest_index'] != fixed['prior_index']*3+2:
             raise ValueError('sealed successor prior indices')
-    residual_value = ('c3fe453a6ee0a2230034b3f908ba24c4733b3a9c9d059d11df0e8fdaaaf7b48a'
-                      if report['profile'] == FIFTH_PROFILE else '2c9895a89f0d58e2210f21f2129dc74de825a1b7ca03a15c600cda5f4c4a6dc3'
+    residual_value = ('8baa75fd5cb33fb6a75c42caa6e17158cf58023103a8dc9e14eaad618d3220fd' if report['profile'] == SIXTH_PROFILE else 'c3fe453a6ee0a2230034b3f908ba24c4733b3a9c9d059d11df0e8fdaaaf7b48a'
+                      if report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE} else '2c9895a89f0d58e2210f21f2129dc74de825a1b7ca03a15c600cda5f4c4a6dc3'
                       if report['profile'] == FOURTH_PROFILE else 'd25384032e092d1e74d81fc2819cdade58bae55c144d4a4f47ebf4449fc89a7a'
                       if report['profile'] == THIRD_PROFILE else '04d5cbb4aed88f984596c757d953bd962bf9e1353046b3e28af0aac6366cab93'
                       if report['profile'] == SECOND_PROFILE else
@@ -744,29 +765,58 @@ def read_fifth_body(path, cap):
     return raw
 
 
-def fifth_contract():
+
+def finite_profile(profile):
+    """Return one of two sealed descriptors; reject all other input.
+
+    Specs cannot supply these fields. Each fixed descriptor binds complete
+    source, evidence order, full parity bodies and exclusive outputs.
+    """
+    if profile == FIFTH_PROFILE:
+        return dict(run=FIFTH_RUN, contract=FIFTH_CONTRACT,
+                    predecessor=FIFTH_PREDECESSOR_SOURCES,
+                    comparison=FIFTH_COMPARISON_PROFILES, argv=FIFTH_COMPARISON_ARGV,
+                    source_count=84, evidence_start=89, evidence_count=285,
+                    stem='a8a45', cli='a8a2', tests=FIFTH_EQUIVALENCE_TESTS,
+                    equality_field='all14_unchanged_profiles_equal')
+    if profile == SIXTH_PROFILE:
+        if any(v is None for v in (SIXTH_CONTRACT,SIXTH_PREDECESSOR_SOURCES,SIXTH_COMPARISON_PROFILES)):
+            raise ValueError('fixed sixth descriptor not settled')
+        return dict(run=SIXTH_RUN, contract=SIXTH_CONTRACT,
+                    predecessor=SIXTH_PREDECESSOR_SOURCES,
+                    comparison=SIXTH_COMPARISON_PROFILES, argv=SIXTH_COMPARISON_ARGV,
+                    source_count=86, evidence_start=91, evidence_count=283,
+                    stem='fbb45', cli='fbb3',
+                    tests=FIFTH_EQUIVALENCE_TESTS+['fifth_residual_saved_bundle_report_is_completely_equal'],
+                    equality_field='all15_unchanged_profiles_equal')
+    raise ValueError('unknown finite profile')
+
+def fifth_contract(profile=FIFTH_PROFILE):
     """Authenticate the finite authority within 131072 bytes and its own role.
 
     Return the parsed pinned contract. Reject byte, path, descriptor or role
     drift with ValueError; do not walk historical contracts or open a database.
     """
-    pin_file(FIFTH_CONTRACT['path'], FIFTH_CONTRACT, 131072)
-    contract = read_json(FIFTH_CONTRACT['path'], 131072)
+    fixed = finite_profile(profile)
+    pin_file(fixed['contract']['path'], fixed['contract'], 131072)
+    contract = read_json(fixed['contract']['path'], 131072)
     authority_roles = [r for r in contract['command_inventory']
                        if r['group'] == 'current_tail54' and r['index'] == 40]
-    if len(authority_roles) != 1 or authority_roles[0]['path'] != FIFTH_CONTRACT['path'] or authority_roles[0]['cap_bytes'] != 131072:
+    if len(authority_roles) != 1 or authority_roles[0]['path'] != fixed['contract']['path'] or authority_roles[0]['cap_bytes'] != 131072:
         raise ValueError('current finite authority role binding')
-    descriptor = json.dumps(FIFTH_PREDECESSOR_SOURCES,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')
+    descriptor = json.dumps(fixed['predecessor'],sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')
     expected = contract['sealed_source_predecessor']
-    if len(FIFTH_PREDECESSOR_SOURCES) != expected['count'] or len(descriptor) != expected['canonical_bytes'] or hashlib.sha256(descriptor).hexdigest() != expected['canonical_sha256']:
+    if len(fixed['predecessor']) != expected['count'] or len(descriptor) != expected['canonical_bytes'] or hashlib.sha256(descriptor).hexdigest() != expected['canonical_sha256']:
         raise ValueError('sealed source predecessor descriptor')
-    comparison=json.dumps(dict(FIFTH_COMPARISON_PROFILES=FIFTH_COMPARISON_PROFILES,FIFTH_COMPARISON_ARGV=FIFTH_COMPARISON_ARGV),sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')
+    comparison=json.dumps({('FIFTH_COMPARISON_PROFILES' if profile == FIFTH_PROFILE else 'SIXTH_COMPARISON_PROFILES'):fixed['comparison'],('FIFTH_COMPARISON_ARGV' if profile == FIFTH_PROFILE else 'SIXTH_COMPARISON_ARGV'):fixed['argv']},sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')
     if hashlib.sha256(comparison).hexdigest() != contract['comparison_descriptor_sha256']:
         raise ValueError('sealed current comparison descriptor')
+    if profile == SIXTH_PROFILE and contract.get('s7_failure_utf8') != SIXTH_FAILURE_UTF8:
+        raise ValueError('sealed sixth full failure descriptor')
     return contract
 
 
-def verify_finite_inventory(pins, expected):
+def verify_finite_inventory(pins, expected, profile=FIFTH_PROFILE, retained_summary=None):
     """Check every ordered role, including repeats; pending means fixed path/cap.
 
     Immutable rows additionally bind exact bytes and digest. This helper grants
@@ -774,6 +824,7 @@ def verify_finite_inventory(pins, expected):
     """
     if not isinstance(pins, list) or len(pins) != len(expected):
         raise ValueError('finite inventory count')
+    summary = None
     for actual, required in zip(pins, expected):
         if set(actual) != {'path', 'bytes', 'sha256'} or actual['path'] != required['path']:
             raise ValueError('finite inventory order/path')
@@ -781,7 +832,21 @@ def verify_finite_inventory(pins, expected):
             raise ValueError('finite inventory byte cap')
         if not required.get('pending', False) and actual != {k: required[k] for k in ('path','bytes','sha256')}:
             raise ValueError('immutable finite role drift')
-        pin_file(actual['path'], actual, required.get('cap_bytes',required.get('bytes')))
+        cap=required.get('cap_bytes',required.get('bytes'))
+        if profile == SIXTH_PROFILE and actual['path'] == str(SIXTH_RUN.parent/'source/validation-summary.json'):
+            if summary is not None or cap != 65536:
+                raise ValueError('one fixed sixth summary role')
+            if retained_summary is None:
+                buffer=bytearray()
+                pin_file(actual['path'],actual,cap,_body=buffer)
+                summary=bytes(buffer)
+            else:
+                if not isinstance(retained_summary,bytes) or len(retained_summary)>cap or len(retained_summary)!=actual['bytes'] or hashlib.sha256(retained_summary).hexdigest()!=actual['sha256']:
+                    raise ValueError('retained sixth inventory byte pin')
+                summary=retained_summary
+        else:
+            pin_file(actual['path'], actual, cap)
+    return summary
 
 
 def validate_fifth_selection(selected, prepared, contract):
@@ -802,10 +867,11 @@ def validate_fifth_selection(selected, prepared, contract):
         raise ValueError('immutable fifth candidate selection')
 
 
-def fifth_read_charges(pins, children, source_total):
+def fifth_read_charges(pins, children, source_total, profile=FIFTH_PROFILE):
     """Charge every direct, repeated-child and extra semantic parse read."""
+    fixed = finite_profile(profile)
     total = sum(r['bytes'] for r in pins)+children['referenced_bytes']+children['semantic_read_bytes']
-    binaries = sum(r['bytes'] for r in pins[86:88])
+    binaries = sum(r['bytes'] for r in pins[fixed['source_count']+2:fixed['source_count']+4])
     if total > PIN_TOTAL or total-binaries > 31457280 or source_total+children['source_bytes'] > SOURCE_TOTAL:
         raise ValueError('sealed fifth aggregate caps')
     return total
@@ -825,20 +891,21 @@ FIFTH_EQUIVALENCE_TESTS = [
 FIFTH_COMPARISON_PROFILES = [{'profile': 'native-current', 'before': {'path': '/home/fry/artifacts/n4-binding-resume-20261011/native-live-replay-frame-cost.json', 'bytes': 10911, 'sha256': '2ccf155e2a851cd52161f090bcd3cc76b09f212a44647ba8f76b7db0b7511fbb'}, 'after': {'path': '/home/fry/artifacts/vrf-residual-20261014-current/source/compatibility/native-current.json', 'bytes': 10945, 'sha256': '6cc2a18103fb1ed1e1e1826fdee07edb70c6e4d8e2c9c61ffa1e556363e80377'}, 'fields': ['/source_profile/compiled/0', '/source_profile/compiled/10', '/source_profile/compiled/11', '/source_profile/compiled/12', '/source_profile/executable'], 'executable': {'bytes': 192505688, 'path': '/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_native_witness', 'sha256': 'a588690a16ad0d988b7cfdb4760bb4d091e20922bd0e7816436161a34c818def'}}, {'profile': 'first-d-current', 'before': {'path': '/home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011/vrf-first-d-independent-replay.json', 'bytes': 32805, 'sha256': '8bd32c28356e85944a37a900c95e8ae3cb7cbc7f942f27cc2769257b6be36854'}, 'after': {'path': '/home/fry/artifacts/vrf-residual-20261014-current/source/compatibility/first-d-current.json', 'bytes': 32813, 'sha256': 'c0f8597049363d641a20df01e60c73c9eda2c710d9b975d6468a45146277def7'}, 'fields': ['/authority/executable', '/authority/sources/2', '/authority/sources/16', '/authority/sources/17', '/authority/sources/18', '/vrf_sources/0', '/vrf_sources/3', '/vrf_sources/4', '/vrf_sources/5'], 'executable': {'bytes': 194461280, 'path': '/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_vrf_witness', 'sha256': '05ed77937c3bb64f43fad3f360b4e83fa9dfb73b0ffb3d8808fc534c7baab77b'}}]
 FIFTH_COMPARISON_ARGV = ['/usr/bin/python3','-c',"import sys;sys.path.insert(0,'/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools');import bounded_vrf;bounded_vrf.emit_fifth_comparison()"]
 
-def verify_fifth_comparison(payload, source_pins, tool_pin, module=None):
+def verify_fifth_comparison(payload, source_pins, tool_pin, module=None, profile=FIFTH_PROFILE):
     """Authenticate both whole reports and apply only the finite pin substitutions.
 
     No report path is followed. Exact UTF8 body pins and fixed mapping positions
     are required before complete JSON equality; no boolean supplies proof.
     """
+    fixed = finite_profile(profile)
     if module is None:
-        source = next(r for p in fifth_contract()['reference_placements'] for r in p['references'] if r['role'] == 'record-builder-source')
+        source = next(r for p in fifth_contract(profile)['reference_placements'] for r in p['references'] if r['role'] == 'record-builder-source')
         module = record_verifier({k:source[k] for k in ('path','bytes','sha256')})
     module.bounded_shape(payload)
     if set(payload) != {'schema','tool_source','pairs'} or type(payload['schema']) is not int or payload['schema'] != 1 or payload['tool_source'] != tool_pin or not isinstance(payload['pairs'],list) or len(payload['pairs']) != 2:
         raise ValueError('finite current comparator schema')
     source_map = {r['path']:r for r in source_pins}
-    for pair, fixed in zip(payload['pairs'],FIFTH_COMPARISON_PROFILES):
+    for pair, fixed in zip(payload['pairs'],fixed['comparison']):
         if set(pair) != {'profile','before','after','before_body_utf8','after_body_utf8','mappings'} or pair['profile'] != fixed['profile'] or pair['before'] != fixed['before'] or pair['after'] != fixed['after'] or [r.get('field') for r in pair['mappings']] != fixed['fields']:
             raise ValueError('finite current comparator identities')
         values = []
@@ -873,12 +940,13 @@ def verify_fifth_comparison(payload, source_pins, tool_pin, module=None):
     return True
 
 
-def emit_fifth_comparison():
+def emit_fifth_comparison(profile=FIFTH_PROFILE):
     """Emit the two bounded complete offline pairs under the fixed inline argv."""
-    source_pins=[pin_file(path,cap=SOURCE_CAP) for path in expected_source_paths(FIFTH_PROFILE)]
+    fixed = finite_profile(profile)
+    source_pins=[pin_file(path,cap=SOURCE_CAP) for path in expected_source_paths(profile)]
     tool=pin_file(Path(__file__).resolve(),cap=SOURCE_CAP)
     pairs=[]
-    for fixed in FIFTH_COMPARISON_PROFILES:
+    for fixed in fixed['comparison']:
         bodies={}
         for side in ('before','after'):
             pin=fixed[side];pin_file(pin['path'],pin,METADATA_CAP)
@@ -893,7 +961,7 @@ def emit_fifth_comparison():
             mappings.append(dict(field=field,predecessor=at(before),successor=at(after)))
         pairs.append(dict(profile=fixed['profile'],before=fixed['before'],after=fixed['after'],before_body_utf8=bodies['before'],after_body_utf8=bodies['after'],mappings=mappings))
     payload=dict(schema=1,tool_source=tool,pairs=pairs)
-    verify_fifth_comparison(payload,source_pins,tool)
+    verify_fifth_comparison(payload,source_pins,tool,profile=profile)
     raw=(json.dumps(payload,sort_keys=True,separators=(',',':'))+'\n').encode('utf-8')
     if len(raw)>327680:raise ValueError('full current comparator output cap')
     sys.stdout.buffer.write(raw)
@@ -905,17 +973,18 @@ def verify_fifth_gate_result(result, log_pin, command):
         raise ValueError('current complete equivalence gate binding')
 
 
-def verify_fifth_equivalence(evidence, contract, module):
+def verify_fifth_equivalence(evidence, contract, module, profile=FIFTH_PROFILE):
     """Bind current full-report parity to exact source and complete gate outputs."""
+    fixed = finite_profile(profile)
     tail = {r['index']:r['path'] for r in contract['command_inventory'] if r['group'] == 'current_tail54'}
     by_path = {r['path']:r for r in evidence}
     summary = read_json(tail[46],16384)
-    fields = {'schema','source_freeze','gate_results','gate_logs','required_exact_tests','matched_tests','all14_unchanged_profiles_equal','native_and_first_d_complete_equal','accepted'}
+    fields = {'schema','source_freeze','gate_results','gate_logs','required_exact_tests','matched_tests',fixed['equality_field'],'native_and_first_d_complete_equal','accepted'}
     expected_results = [by_path[tail[i]] for i in (0,20)]
     expected_logs = [by_path[tail[i]] for i in (1,21,47)]
-    if set(summary) != fields or type(summary['schema']) is not int or summary['schema'] != 1 or summary['accepted'] is not False or summary['source_freeze'] != by_path[tail[38]] or summary['gate_results'] != expected_results or summary['gate_logs'] != expected_logs or summary['required_exact_tests'] != FIFTH_EQUIVALENCE_TESTS or type(summary['matched_tests']) is not int or summary['matched_tests'] != len(FIFTH_EQUIVALENCE_TESTS) or summary['all14_unchanged_profiles_equal'] is not True or summary['native_and_first_d_complete_equal'] is not True:
+    if set(summary) != fields or type(summary['schema']) is not int or summary['schema'] != 1 or summary['accepted'] is not False or summary['source_freeze'] != by_path[tail[38]] or summary['gate_results'] != expected_results or summary['gate_logs'] != expected_logs or summary['required_exact_tests'] != fixed['tests'] or type(summary['matched_tests']) is not int or summary['matched_tests'] != len(fixed['tests']) or summary[fixed['equality_field']] is not True or summary['native_and_first_d_complete_equal'] is not True:
         raise ValueError('current complete equivalence summary')
-    commands=[['rtk','proxy','cargo','test','--manifest-path','experiments/evm_feasibility/snapshot_qualifier/Cargo.toml','--lib','--bins'],['rtk','proxy',*FIFTH_COMPARISON_ARGV]]
+    commands=[['rtk','proxy','cargo','test','--manifest-path','experiments/evm_feasibility/snapshot_qualifier/Cargo.toml','--lib','--bins'],['rtk','proxy',*fixed['argv']]]
     for result_pin,log_pin,command in zip(expected_results,expected_logs[:2],commands):
         result = read_json(result_pin['path'],16384)
         verify_fifth_gate_result(result,log_pin,command)
@@ -923,25 +992,55 @@ def verify_fifth_equivalence(evidence, contract, module):
     tools=read_json(tail[39],METADATA_CAP)
     raw=read_fifth_body(tail[21],FREEZE_CAP)
     payload=module.decode(raw,FREEZE_CAP)
-    verify_fifth_comparison(payload,source_pins,tools[0],module)
+    verify_fifth_comparison(payload,source_pins,tools[0],module,profile)
     # All original assertions compare entire reports, including logical/physical
     # results. These exact selectors cover ten complete and four residual profiles.
     output = read_fifth_body(tail[1],327680)
-    for name in FIFTH_EQUIVALENCE_TESTS:
+    for name in fixed['tests']:
         if ('test vrf_shared_window::tests::'+name+' ... ok').encode('ascii') not in output:
             raise ValueError('nonzero complete equivalence selector')
     if by_path[tail[1]]['bytes'] != by_path[tail[47]]['bytes'] or by_path[tail[1]]['sha256'] != by_path[tail[47]]['sha256']:
         raise ValueError('current full equivalence output copy')
 
 
-def verify_fifth_records(evidence):
+def verify_sixth_summary(value):
+    """Authenticate the complete fixed failure envelope already in role29.
+
+    Check exact UTF8 length and digest without nested parsing or path reads.
+    Missing, truncated or substituted evidence rejects the entire instance.
+    """
+    body=value.get('s7_failure_utf8') if isinstance(value,dict) else None
+    if not isinstance(body,str):
+        raise ValueError('sixth complete failure body')
+    raw=body.encode('utf-8')
+    if len(raw) != SIXTH_FAILURE_UTF8[0] or hashlib.sha256(raw).hexdigest() != SIXTH_FAILURE_UTF8[1]:
+        raise ValueError('sixth complete failure byte pin')
+
+
+def verify_sixth_summary_buffer(raw, pin, module):
+    """Decode only the bytes retained by direct role29 authentication.
+
+    This function has no filesystem operation and cannot supply a fallback read.
+    Require exact byte identity before parsing and full fixed-body verification.
+    """
+    if not isinstance(raw,bytes) or len(raw)>65536 or len(raw)!=pin['bytes'] or hashlib.sha256(raw).hexdigest()!=pin['sha256']:
+        raise ValueError('sixth summary byte pin')
+    verify_sixth_summary(module.decode(raw,65536))
+
+
+def verify_fifth_records(evidence, profile=FIFTH_PROFILE, summary_bytes=None):
     """Verify the three finite successor placements and each repeated charge."""
-    contract = fifth_contract()
+    fixed = finite_profile(profile)
+    contract = fifth_contract(profile)
     placements = contract['reference_placements']
     sources = [r for p in placements for r in p['references'] if r['role'] == 'record-builder-source']
     if len(sources) != 1:
         raise ValueError('one fixed shared verifier source')
     module = record_verifier({k: sources[0][k] for k in ('path','bytes','sha256')})
+    if profile == SIXTH_PROFILE:
+        summary=next(r for r in contract['command_inventory'] if r['group']=='current_tail54' and r['index']==29)
+        summary_pin=next(r for r in evidence if r['path']==summary['path'])
+        verify_sixth_summary_buffer(summary_bytes,summary_pin,module)
     identities = {}
     total = count = streamed = 0
     by_path = {r['path']:r for r in evidence}
@@ -988,7 +1087,7 @@ def verify_fifth_records(evidence):
         body = actual['body_utf8'].encode('utf-8')
         if len(body) != required['bytes'] or hashlib.sha256(body).hexdigest() != required['sha256']:
             raise ValueError('finite current full failure body')
-    verify_fifth_equivalence(evidence,contract,module)
+    verify_fifth_equivalence(evidence,contract,module,profile)
     source_bytes = sum(r['bytes'] for p in placements for r in p['references']
                        if r['role'] in {'record-builder-source','record-builder-tests'})
     return dict(reference_count=count,referenced_bytes=total,streamed_bytes=streamed,
@@ -998,8 +1097,9 @@ def verify_fifth_records(evidence):
 
 def expand_fifth_evidence(value, contract):
     """Expand exactly 285 ordered byte/digest pairs with authority-owned paths."""
-    expected = contract['command_inventory'][89:374]
-    if not isinstance(value, list) or len(value) != 285 or len(expected) != 285:
+    start = 91 if contract['shape']['voter'] == sealed_profile(SIXTH_PROFILE)['voter'] else 89
+    expected = contract['command_inventory'][start:374]
+    if not isinstance(value, list) or len(value) != 374-start or len(expected) != 374-start:
         raise ValueError('fixed fifth compact count')
     result = []
     for pair, required in zip(value, expected):
@@ -1009,13 +1109,16 @@ def expand_fifth_evidence(value, contract):
     return result
 
 
-def publish_fifth_records(findings):
+def publish_fifth_records(findings, profile=FIFTH_PROFILE):
     """Publish only the three reviewed reference records and finite correction.
 
     Each body is authenticated by the shared deterministic builder. Outputs are
     exclusive at authority-owned paths. Findings supply no source acceptance.
     """
-    contract = fifth_contract()
+    fixed = finite_profile(profile)
+    contract = fifth_contract(profile)
+    if not isinstance(findings,str) or len(findings.encode('utf-8')) > contract['correction_record48']['findings_utf8_cap']:
+        raise ValueError('fixed current findings cap')
     sources = [r for p in contract['reference_placements'] for r in p['references'] if r['role'] == 'record-builder-source']
     module = record_verifier({k:sources[0][k] for k in ('path','bytes','sha256')})
     for placement in contract['reference_placements']:
@@ -1033,48 +1136,59 @@ def publish_fifth_records(findings):
     exclusive(Path(destination),encoded(correction,FREEZE_CAP))
 
 
-def fifth_spec_from_roster(source_commit, metadata):
+def fifth_spec_from_roster(source_commit, metadata, profile=FIFTH_PROFILE):
     """Assemble exact current pins after all fixed evidence exists.
 
     This publishes nothing. Every row is authenticated against the one sealed
     roster; full build validation must still precede READY and capture.
     """
-    contract = fifth_contract()
-    pins = [pin_file(row['path'],cap=row.get('cap_bytes',row.get('bytes'))) for row in contract['command_inventory'][:-1]]
-    verify_finite_inventory(pins,contract['command_inventory'][:-1])
-    return dict(schema=1,run=str(FIFTH_RUN),source_commit=source_commit,
-                sources=pins[:84],tool_sources=pins[84:86],binaries=pins[86:88],
-                preflight=pins[88],evidence=[[r['bytes'],r['sha256']] for r in pins[89:374]],
+    fixed = finite_profile(profile)
+    contract = fifth_contract(profile)
+    pins=[]
+    summary_bytes=None
+    for row in contract['command_inventory'][:-1]:
+        if profile == SIXTH_PROFILE and row['path'] == str(SIXTH_RUN.parent/'source/validation-summary.json'):
+            buffer=bytearray()
+            pins.append(pin_file(row['path'],cap=row.get('cap_bytes',row.get('bytes')),_body=buffer))
+            summary_bytes=bytes(buffer)
+        else:
+            pins.append(pin_file(row['path'],cap=row.get('cap_bytes',row.get('bytes'))))
+    verify_finite_inventory(pins,contract['command_inventory'][:-1],profile,summary_bytes)
+    return dict(schema=1,run=str(fixed['run']),source_commit=source_commit,
+                sources=pins[:fixed['source_count']],tool_sources=pins[fixed['source_count']:fixed['source_count']+2],binaries=pins[fixed['source_count']+2:fixed['source_count']+4],
+                preflight=pins[fixed['source_count']+4],evidence=[[r['bytes'],r['sha256']] for r in pins[fixed['evidence_start']:374]],
                 preparation=pins[374],copy_metadata=metadata)
 
 
 def build_fifth(spec_path, spec, report):
-    """Build only the sealed a8a45 instance through the shared finite verifier.
+    """Build one of the two sealed fixed45 instances through the shared verifier.
 
     All command roles, source closure, embedded pins, full preflight, repeated
     evidence charges and fixed outputs must pass before complete bytes return.
     No database path is opened or inspected here. Missing evidence rejects all.
     """
-    contract = fifth_contract()
+    profile = report['profile']
+    fixed = finite_profile(profile)
+    contract = fifth_contract(profile)
     fields = {'schema','run','source_commit','sources','tool_sources','binaries','preflight','evidence','copy_metadata','preparation'}
-    if set(spec) != fields or type(spec['schema']) is not int or spec['schema'] != 1 or spec['run'] != str(FIFTH_RUN):
+    if set(spec) != fields or type(spec['schema']) is not int or spec['schema'] != 1 or spec['run'] != str(fixed['run']):
         raise ValueError('sealed fifth spec schema/run')
     run = outside_database(spec['run'])
-    if run.resolve(strict=True) != FIFTH_RUN:
+    if run.resolve(strict=True) != fixed['run']:
         raise ValueError('sealed fifth canonical run')
-    if [r['path'] for r in spec['sources']] != expected_source_paths(FIFTH_PROFILE):
+    if [r['path'] for r in spec['sources']] != expected_source_paths(profile):
         raise ValueError('sealed fifth source closure')
     if [r['path'] for r in spec['tool_sources']] != [str(Path(__file__).resolve()),str(Path(__file__).resolve().with_name('test_bounded_vrf.py'))]:
         raise ValueError('sealed fifth tool closure')
     evidence = expand_fifth_evidence(spec['evidence'], contract)
     pins = spec['sources']+spec['tool_sources']+spec['binaries']+[spec['preflight']]+evidence+[spec['preparation'],pin_file(spec_path,cap=METADATA_CAP)]
-    verify_finite_inventory(pins, contract['command_inventory'])
+    summary_bytes=verify_finite_inventory(pins, contract['command_inventory'],profile)
     if len(pins) != 376:
         raise ValueError('sealed fifth command count')
     # Earlier source pins stay immutable except this explicitly reviewed delta.
-    old = FIFTH_PREDECESSOR_SOURCES
+    old = fixed['predecessor']
     changed = {str(SRC/'vrf_shared_window.rs'),str(REPO/'rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs'),str(REPO/'rust/crates/rustaxa-storage/src/concrete_state/witness_live_tests.rs')}
-    if len(old) != 82 or len({r['path'] for r in old}) != 82 or [r['path'] for r in old] != [r['path'] for r in spec['sources'][:82]]:
+    if len(old) != fixed['source_count']-2 or len({r['path'] for r in old}) != len(old) or [r['path'] for r in old] != [r['path'] for r in spec['sources'][:len(old)]]:
         raise ValueError('complete fifth predecessor coverage')
     for before, after in zip(old,spec['sources']):
         if before['path'] not in changed and before != after:
@@ -1086,7 +1200,7 @@ def build_fifth(spec_path, spec, report):
     if len(report['vrf_sources']) != 22 or len(report['authority']['six_input_owner']['sources']) != 25:
         raise ValueError('sealed fifth embedded counts')
     baseline = read_json(SHARED_RUN/'seventh-voter/vrf-seventh-voter-window-preflight.json',FREEZE_CAP)
-    expected_paths = [r['path'] for r in baseline['vrf_sources'][:19]]+['vrf_shared_window.rs','bin/live_vrf_residual_a8a2.rs','bin/replay_vrf_residual_a8a2.rs']
+    expected_paths = [r['path'] for r in baseline['vrf_sources'][:19]]+['vrf_shared_window.rs',f'bin/live_vrf_residual_{fixed["cli"]}.rs' ,f'bin/replay_vrf_residual_{fixed["cli"]}.rs' ]
     if [r['path'] for r in report['vrf_sources']] != expected_paths:
         raise ValueError('sealed fifth embedded source order')
     source_map = {r['path']:r for r in spec['sources']}
@@ -1097,14 +1211,14 @@ def build_fifth(spec_path, spec, report):
     if report['authority']['six_input_owner']['executable'] != spec['binaries'][0]:
         raise ValueError('sealed fifth executable binding')
     source_total = sum(r['bytes'] for r in spec['sources']+spec['tool_sources'])
-    children = verify_fifth_records(evidence)
-    total = fifth_read_charges(pins,children,source_total)
+    children = verify_fifth_records(evidence,profile,summary_bytes)
+    total = fifth_read_charges(pins,children,source_total,profile)
     if len(spec['source_commit']) != 40 or any(c not in '0123456789abcdef' for c in spec['source_commit']):
         raise ValueError('sealed fifth source HEAD')
     if [r['path'] for r in spec['copy_metadata']] != [str(COPY),str(COPY/'db/db'),str(COPY/'db/state_db')] or any(set(r) != {'path','device','inode','mode','mtime_ns'} for r in spec['copy_metadata']):
         raise ValueError('sealed fifth metadata')
-    command = [spec['binaries'][0]['path'],'--bundle-output',str(run/'a8a45.rcv4'),'--report-output',str(run/'a8a45-capture.json')]
-    return encoded(dict(schema=1,profile=FIFTH_PROFILE,run=str(run),source_commit=spec['source_commit'],cwd=str(REPO),environment=ENV,capture_command=command,pins=pins,pin_count=len(pins),pinned_file_bytes=total,source_count=84,complete_source_bytes=source_total,embedded_source_bytes=sum(r['bytes'] for r in embedded),copy_metadata=spec['copy_metadata'],accepted=False),FREEZE_CAP)
+    command = [spec['binaries'][0]['path'],'--bundle-output',str(run/(fixed['stem']+'.rcv4')),'--report-output',str(run/(fixed['stem']+'-capture.json'))]
+    return encoded(dict(schema=1,profile=profile,run=str(run),source_commit=spec['source_commit'],cwd=str(REPO),environment=ENV,capture_command=command,pins=pins,pin_count=len(pins),pinned_file_bytes=total,source_count=fixed['source_count'],complete_source_bytes=source_total,embedded_source_bytes=sum(r['bytes'] for r in embedded),copy_metadata=spec['copy_metadata'],accepted=False),FREEZE_CAP)
 
 
 def build(spec_path):
@@ -1117,7 +1231,7 @@ def build(spec_path):
     pin_file(spec['preflight']['path'], spec['preflight'], FREEZE_CAP)
     report = read_json(spec['preflight']['path'], FREEZE_CAP)
     fixed = sealed_profile(report['profile'])
-    if report['profile'] == FIFTH_PROFILE:
+    if report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE}:
         return build_fifth(spec_path, spec, report)
     residual = report['profile'] in RESIDUAL_PROFILES
     ordinal = fixed['ordinal']
@@ -1297,7 +1411,8 @@ def verify_files(freeze):
         raise ValueError('frozen pin count')
     total = 0
     for row in freeze['pins']:
-        pin_file(row['path'], row)
+        if freeze.get('profile') != SIXTH_PROFILE or row['path'] != str(SIXTH_RUN.parent/'source/validation-summary.json'):
+            pin_file(row['path'], row)
         total += row['bytes']
         if total > PIN_TOTAL:
             raise ValueError('frozen total cap')
@@ -1310,10 +1425,12 @@ def verify_files(freeze):
             raise ValueError('frozen repeated child cap')
         if freeze['complete_source_bytes'] + children['source_bytes'] > SOURCE_TOTAL:
             raise ValueError('frozen shared verifier source cap')
-    if freeze.get('profile') == FIFTH_PROFILE:
-        verify_finite_inventory(freeze['pins'], fifth_contract()['command_inventory'])
-        children = verify_fifth_records(freeze['pins'][89:374])
-        total = fifth_read_charges(freeze['pins'],children,freeze['complete_source_bytes'])
+    if freeze.get('profile') in {FIFTH_PROFILE, SIXTH_PROFILE}:
+        profile = freeze['profile']
+        fixed = finite_profile(profile)
+        summary_bytes=verify_finite_inventory(freeze['pins'], fifth_contract(profile)['command_inventory'],profile)
+        children = verify_fifth_records(freeze['pins'][fixed['evidence_start']:374],profile,summary_bytes)
+        total = fifth_read_charges(freeze['pins'],children,freeze['complete_source_bytes'],profile)
     if total != freeze['pinned_file_bytes']:
         raise ValueError('frozen total drift')
 
@@ -1389,17 +1506,17 @@ def capture(freeze_path, expected_sha):
     if not isinstance(freeze, dict) or set(freeze) != expected_fields or freeze['accepted'] is not False:
         raise ValueError('trusted freeze schema')
     run = outside_database(freeze['run'])
-    if freeze.get('schema') != 1 or freeze.get('profile') not in {PROFILE, FIFTH_PROFILE, *SUCCESSORS, *RESIDUAL_PROFILES} or run != freeze_path.parent \
+    if freeze.get('schema') != 1 or freeze.get('profile') not in {PROFILE, FIFTH_PROFILE, SIXTH_PROFILE, *SUCCESSORS, *RESIDUAL_PROFILES} or run != freeze_path.parent \
             or not run.is_relative_to(Path('/home/fry/artifacts')) or run.resolve(strict=True) != run:
         raise ValueError('trusted freeze/run binding')
     fixed = sealed_profile(freeze['profile'])
     ordinal = fixed['ordinal']
     residual = freeze['profile'] in RESIDUAL_PROFILES
-    if (residual and run != RESIDUAL_RUN/ordinal) or (freeze['profile'] == FIFTH_PROFILE and run != FIFTH_RUN):
+    if (residual and run != RESIDUAL_RUN/ordinal) or (freeze['profile'] in {FIFTH_PROFILE,SIXTH_PROFILE} and run != finite_profile(freeze['profile'])['run']):
         raise ValueError('fixed residual guard run')
     # Trusted admission ends here. All later failures permanently consume this
     # attempt, including offline pin, HEAD, output and metadata failures.
-    stem = 'a8a45' if freeze['profile'] == FIFTH_PROFILE else f'vrf-{ordinal}-voter-window'
+    stem = finite_profile(freeze['profile'])['stem'] if freeze['profile'] in {FIFTH_PROFILE,SIXTH_PROFILE} else f'vrf-{ordinal}-voter-window'
     exclusive(run/f'{stem}-attempt.json', encoded(
         dict(command=freeze['capture_command'], source_commit=freeze['source_commit'],
              freeze_sha256=expected_sha), RESULT_CAP))
@@ -1407,12 +1524,12 @@ def capture(freeze_path, expected_sha):
     spec_pin = freeze['pins'][-1]
     if build(Path(spec_pin['path'])) != frozen_bytes:
         raise ValueError('freeze not deterministic builder output')
-    if freeze['profile'] not in {PROFILE, FIFTH_PROFILE, *SUCCESSORS, *RESIDUAL_PROFILES} or freeze['cwd'] != str(REPO) or freeze['environment'] != ENV or Path.cwd() != REPO:
+    if freeze['profile'] not in {PROFILE, FIFTH_PROFILE, SIXTH_PROFILE, *SUCCESSORS, *RESIDUAL_PROFILES} or freeze['cwd'] != str(REPO) or freeze['environment'] != ENV or Path.cwd() != REPO:
         raise ValueError('exact invocation binding')
     head = subprocess.check_output(['/usr/bin/git', 'rev-parse', 'HEAD'], cwd=REPO, env=ENV).decode().strip()
     if head != freeze['source_commit']:
         raise ValueError('source HEAD drift')
-    outputs = [f'{stem}{suffix}' for suffix in ['.rcv4' if freeze['profile'] in {FOURTH_PROFILE, FIFTH_PROFILE} else '.rcv3' if residual else '.rcv2', '-capture.json', '-live.log', '-live-result.json']]
+    outputs = [f'{stem}{suffix}' for suffix in ['.rcv4' if freeze['profile'] in {FOURTH_PROFILE, FIFTH_PROFILE, SIXTH_PROFILE} else '.rcv3' if residual else '.rcv2', '-capture.json', '-live.log', '-live-result.json']]
     if any(os.path.lexists(run/name) for name in outputs):
         raise ValueError('single-use output collision')
     before = copy_metadata(freeze['copy_metadata'])

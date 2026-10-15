@@ -12,6 +12,69 @@ import bounded_vrf as guard
 import evidence_records as records
 
 
+def historical_fifth_sources():
+    """Authenticate all84 immutable A8a source bodies for legacy fixtures.
+
+    New live source belongs to the sixth instance. This exact archived port
+    keeps historical full-report and builder assertions on their accepted bytes.
+    """
+    manifest_pin = dict(path='/home/fry/artifacts/vrf-run-01a141ba-20261015/luna/historical-a8a-sources/manifest.json',
+                        bytes=35002, sha256='b8f6b2d43a8ac5d40052c79f8c3a6c7e000a083b30ccbe2e75981d5e60cc41f1')
+    guard.pin_file(manifest_pin['path'],manifest_pin,guard.METADATA_CAP)
+    manifest = guard.read_json(manifest_pin['path'])
+    source_pin = manifest['source_freeze']
+    guard.pin_file(source_pin['path'],source_pin,guard.FREEZE_CAP)
+    sources = guard.read_json(source_pin['path'],guard.FREEZE_CAP)
+    if len(sources) != 84 or [r['path'] for r in sources] != guard.expected_source_paths(guard.FIFTH_PROFILE):
+        raise ValueError('historical fifth exact source roster')
+    if len(manifest['source_map']) != len(sources):
+        raise ValueError('historical fifth body count')
+    mapping = {}
+    for source, body in zip(sources,manifest['source_map']):
+        if dict(path=body['logical_path'],bytes=body['bytes'],sha256=body['sha256']) != source:
+            raise ValueError('historical fifth body identity')
+        guard.pin_file(body['physical_path'],dict(source,path=body['physical_path']),guard.SOURCE_CAP)
+        mapping[source['path']] = Path(body['physical_path'])
+    return sources,mapping
+
+
+def historical_fifth_reference_fixture(test,contract,virtual):
+    """Read exactly five accepted predecessor instruction bodies in old fixtures.
+
+    Preserve logical roles and all hash, descriptor and byte checks. Both record
+    builders and freshly authenticated verifier modules use this test-only port.
+    """
+    manifest=guard.read_json('/home/fry/artifacts/vrf-196-preparation-20261015/manifest.json')
+    refs=[r for p in contract['reference_placements'] for r in p['references']]
+    mapping={}
+    for item in manifest['authorized_instruction_paths']:
+        matches=[r for r in refs if r['path']==item['path']]
+        if len(matches)!=1:
+            raise ValueError('historical fifth instruction occurrence')
+        required=matches[0];previous=item['preparation_predecessor']
+        if (required['bytes'],required['sha256'])!=(previous['bytes'],previous['sha256']):
+            raise ValueError('historical fifth predecessor identity')
+        guard.pin_file(previous['path'],previous,guard.METADATA_CAP)
+        mapping[item['path']]=Path(previous['path'])
+    if len(mapping)!=5:
+        raise ValueError('historical fifth exact instruction count')
+    virtual.update(mapping)
+    def install(module):
+        original=module.canonical_path
+        def canonical(path):
+            checked=original(path)
+            return original(str(mapping[str(checked)])) if str(checked) in mapping else checked
+        active=patch.object(module,'canonical_path',side_effect=canonical)
+        active.start();test.addCleanup(active.stop)
+        return module
+    install(records)
+    loader=guard.record_verifier
+    def load(pin):
+        return install(loader(pin))
+    active=patch.object(guard,'record_verifier',side_effect=load)
+    active.start();test.addCleanup(active.stop)
+
+
 def historical_instruction_fixture(test):
     """Authenticate exact old instruction bodies for offline legacy fixtures.
 
@@ -1255,6 +1318,7 @@ class FifthFiniteControls(Fixture):
 
     def test_fifth_complete_reference_replay_and_full_failure_drift(self):
         contract=copy.deepcopy(guard.fifth_contract())
+        historical_fifth_reference_fixture(self,contract,{})
         evidence=[]
         for i,placement in enumerate(contract['reference_placements']):
             destination=str(self.root/f'record-{i}.json');placement['destination']=destination
@@ -1282,7 +1346,7 @@ class FifthFiniteControls(Fixture):
     def test_current_comparator_full_reports_and_exact_commands(self):
         path=Path('/home/fry/artifacts/vrf-residual-20261014-current/source/native-first-full-v3.log')
         payload=json.loads(path.read_text())
-        sources=[guard.pin_file(p,cap=guard.SOURCE_CAP) for p in guard.expected_source_paths(guard.FIFTH_PROFILE)]
+        sources,_=historical_fifth_sources()
         self.assertTrue(guard.verify_fifth_comparison(payload,sources,payload['tool_source']))
         mutations=[]
         bad=copy.deepcopy(payload);bad['schema']=True;mutations.append(bad)
@@ -1324,7 +1388,10 @@ class FifthFiniteControls(Fixture):
             physical_expected=None if expected is None else dict(expected,path=str(physical))
             if physical.stat().st_size>cap:raise ValueError(f'fixture role cap {logical}: {physical.stat().st_size}>{cap}')
             result=original_pin(physical,physical_expected,cap);return dict(result,path=logical)
-        sources=[original_pin(p) for p in guard.expected_source_paths(guard.FIFTH_PROFILE)]
+        _,historical=historical_fifth_sources()
+        virtual.update(historical)
+        historical_fifth_reference_fixture(self,contract,virtual)
+        sources=[pin(p) for p in guard.expected_source_paths(guard.FIFTH_PROFILE)]
         tools=[original_pin(Path(guard.__file__).resolve()),original_pin(Path(__file__).resolve())]
         for row in inventory:
             if row.get('pending') and not Path(row['path']).exists():put_json(row['path'],{})
@@ -1394,6 +1461,77 @@ class FifthFiniteControls(Fixture):
         with self.assertRaises(ValueError):guard.validate_preflight(bad,path)
         bad=copy.deepcopy(report);bad['authority']['prior_first_d']['selected']['proof_index']=56
         with self.assertRaises(ValueError):guard.validate_preflight(bad,path)
+
+class SixthFixedControls(Fixture):
+    def test_inventory_and_record_decoder_share_one_authenticated_read(self):
+        body=Path('/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/staging-and-prior-first-failures.json').read_text()
+        path=self.root/'source/validation-summary.json'
+        path.parent.mkdir()
+        path.write_text(json.dumps(dict(s7_failure_utf8=body)))
+        pin=guard.pin_file(path)
+        expected=[dict(group='current_tail54',index=29,path=str(path),cap_bytes=65536,pending=True)]
+        original=Path.open;reads=[]
+        def observe(target,*args,**kwargs):
+            if target==path:reads.append(args)
+            return original(target,*args,**kwargs)
+        with patch.object(guard,'SIXTH_RUN',self.root/'fbb45'),patch.object(Path,'open',observe),patch.object(guard,'read_fifth_body',side_effect=AssertionError('unexpected reread')),patch.object(guard,'read_json',side_effect=AssertionError('unexpected nested read')):
+            raw=guard.verify_finite_inventory([pin],expected,guard.SIXTH_PROFILE)
+            guard.verify_sixth_summary_buffer(raw,pin,records)
+            self.assertEqual(len(reads),1)
+            # A retained buffer can be revalidated without reopening its path.
+            guard.verify_finite_inventory([pin],expected,guard.SIXTH_PROFILE,raw)
+            self.assertEqual(len(reads),1)
+            for bad in [None,raw[:-1],b'X'+raw[1:]]:
+                with self.assertRaises(ValueError):guard.verify_sixth_summary_buffer(bad,pin,records)
+            self.assertEqual(len(reads),1)
+
+    def test_complete_inline_failure_pin_and_all_mutations(self):
+        body=Path('/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/staging-and-prior-first-failures.json').read_text()
+        guard.verify_sixth_summary(dict(s7_failure_utf8=body))
+        for bad in [None,{},dict(s7_failure_utf8=None),dict(s7_failure_utf8=body[:-1]),dict(s7_failure_utf8='X'+body[1:]),dict(s7_failure_utf8=body+'x')]:
+            with self.assertRaises(ValueError):guard.verify_sixth_summary(bad)
+
+    def test_sixth_findings_reject_before_any_publication(self):
+        contract=dict(correction_record48=dict(findings_utf8_cap=12288))
+        with patch.object(guard,'finite_profile',return_value={}),patch.object(guard,'fifth_contract',return_value=contract),patch.object(guard,'exclusive') as output,patch.object(guard,'record_verifier') as verifier:
+            for findings in ['x'*12289,'€'*4097,None]:
+                with self.assertRaisesRegex(ValueError,'findings cap'):
+                    guard.publish_fifth_records(findings,guard.SIXTH_PROFILE)
+            output.assert_not_called()
+            verifier.assert_not_called()
+
+    def test_exact_fbb_identity_and_complete_source_closure(self):
+        contract=guard.fifth_contract(guard.SIXTH_PROFILE)
+        self.assertEqual(contract['s7_failure_utf8'],guard.SIXTH_FAILURE_UTF8)
+        fixed=guard.sealed_profile(guard.SIXTH_PROFILE)
+        self.assertEqual(fixed['voter'],'fbb3ee068e491e218d2cda595c23c6e3cc2f00f2')
+        self.assertEqual(fixed['key'],'ec5c494ab92b4655da656eae4a546ee7efab77ffe269fb82adc3bf19c5d1ac73')
+        self.assertEqual(fixed['prior_index'],19)
+        self.assertEqual(len(fixed['indices']),45)
+        self.assertEqual(len(set(fixed['indices'])),45)
+        old=guard.expected_source_paths(guard.FIFTH_PROFILE)
+        current=guard.expected_source_paths(guard.SIXTH_PROFILE)
+        self.assertEqual(len(current),86)
+        self.assertEqual(current[:84],old)
+        self.assertEqual(current[84:],[str(guard.SRC/f'bin/{kind}_vrf_residual_fbb3.rs') for kind in ['live','replay']])
+
+    def test_unknown_finite_config_and_unsettled_descriptor_reject(self):
+        for profile in ['',guard.FOURTH_PROFILE,guard.SIXTH_PROFILE+'x']:
+            with self.assertRaises(ValueError):guard.finite_profile(profile)
+        for field in ['SIXTH_CONTRACT','SIXTH_PREDECESSOR_SOURCES','SIXTH_COMPARISON_PROFILES']:
+            with patch.object(guard,field,None):
+                with self.assertRaisesRegex(ValueError,'not settled'):guard.finite_profile(guard.SIXTH_PROFILE)
+
+    def test_exact_sixth_compact_count_and_order(self):
+        contract=json.loads(Path('/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/fbb45-successor-contract-v4-candidate.json').read_bytes())
+        expected=contract['command_inventory'][91:374]
+        self.assertEqual(len(expected),283)
+        pairs=[[r.get('bytes',0),r.get('sha256','0'*64)] for r in expected]
+        rows=guard.expand_fifth_evidence(pairs,contract)
+        self.assertEqual([r['path'] for r in rows],[r['path'] for r in expected])
+        for bad in [pairs[:-1],pairs+[pairs[0]],[[True,'0'*64]]+pairs[1:],[[0,'invalid']]+pairs[1:]]:
+            with self.assertRaises(ValueError):guard.expand_fifth_evidence(bad,contract)
+
 
 if __name__ == '__main__':
     unittest.main()
