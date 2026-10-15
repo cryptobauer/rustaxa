@@ -43,7 +43,20 @@ pub(crate) enum Profile {
     ResidualB92a,
     ResidualE50b,
     Residual49f8,
+    ResidualA8a2,
 }
+// Sealed a8a45 descriptor: exact raw request order, roots and vote references.
+const A8A_VOTER: &str = "a8a23a6c96a09c7783b70373d2302fefd943730e";
+const A8A_PROFILE: &str = "n4_residual_vrf_a8a23a6c96a09c7783b70373d2302fefd943730e_v1";
+const A8A_KEY: &str = "21058ac713cda18837a0c75283e1852e0f0d0e2696643d04d9bcae7df088673a";
+const A8A_INDICES: [usize; 45] = [
+    92, 152, 212, 266, 317, 374, 434, 494, 554, 611, 668, 725, 779, 839, 896, 950, 1007, 1064,
+    1124, 1184, 1244, 1304, 1355, 1460, 1520, 1577, 1634, 1691, 1748, 1805, 1862, 1916, 1970, 2030,
+    2090, 2144, 2204, 2258, 2318, 2375, 2432, 2489, 2549, 2657, 2717,
+];
+const A8A_BINDINGS: &str = r#"[{"root":"d2318bfb745c9198ca3e995119569c3ef85e95659dc45ade939398b8f3a23383","refs":[{"period":25706902,"vote_hash_hex":"ab93dbfd8f38ce46293b2cefba1f8983575a2c3310f6cec37f9a812439d6d83b"}]},{"root":"d2318bfb745c9198ca3e995119569c3ef85e95659dc45ade939398b8f3a23383","refs":[{"period":25706903,"vote_hash_hex":"da325c9642e97e45e40e00dbb49327f5cad9ff1d61b91ef73fb55520e18e6b37"}]},{"root":"b07e806de23f0a4b16b6cef287118ab09699f32a0a4d8ffea3d436c9d53782ce","refs":[{"period":25706904,"vote_hash_hex":"b580e369d43146e421d16883c851f71f84e56bd45dd0536fb5d2f146683c3a9b"}]},{"root":"8c7fdbb2b39c01255ead8379e312bc79508558e1d1bd0a4dbe2a570a48fbf08b","refs":[{"period":25706905,"vote_hash_hex":"9311a4ec3a79b1f785e82a03c66ba0de7771a43800d476ee716f2e1ea5e17b7f"}]},{"root":"a5fe6be45511742ec6a5b7c508a447507cb34dcfa321beedc81d5ad5e4aa0f8b","refs":[{"period":25706906,"vote_hash_hex":"4f2e379f5c9e96cb41271866dec57b519617fca72d9b7c4fd2a482b98b6ac003"}]},{"root":"1b8815f01250eeeec908fd7d9093322f21909ae6ee234c9151109f063de9fc38","refs":[{"period":25706907,"vote_hash_hex":"3caaa86e6e8340e4734f48c5d2f19f8238f167fd487f66eb83c795af4a3cedc4"}]},{"root":"4d39f544cd1555e667884f1cc078410e7a1baf143a487db8174ddc862a525ebc","refs":[{"period":25706908,"vote_hash_hex":"fc96427dc0d9a7c2c41c1e4cb77db7ee6f01ffc2f90e9a3d1f3cedadb0b515f1"}]},{"root":"4d39f544cd1555e667884f1cc078410e7a1baf143a487db8174ddc862a525ebc","refs":[{"period":25706909,"vote_hash_hex":"690f9f278a3ca78eca621e6689e53c6096a7492ac0d7400331b806576640c603"}]},{"root":"5315842400d2c61336a33774e4ddd92eb90cfa19da449dab6c2e7202adbd2821","refs":[{"period":25706910,"vote_hash_hex":"0ca531cad293661e624f90d8d98cf87da7e280261cdb982e67641532a4537dbb"}]},{"root":"48240ffcddb5897ff34093c83b3ec9a9460d47290ba211fefae036fd83a107c2","refs":[{"period":25706911,"vote_hash_hex":"1b5fe4998271944c8a3981ea2aa21d998be3892a2d93ed6b97bff7934dead3aa"}]},{"root":"e70dd5ea2193dc4f38ab3d1ae8e8faad7988a0579716d15f79058649973d7964","refs":[{"period":25706912,"vote_hash_hex":"13aedc6e8d1f67774baf0761798e551cc7f9c316ca131cea275463e927c16813"}]},{"root":"e8f84241116c5f485fa97046d7ed79f8776f3705bf586b3bb17b81b008a1e9a4","refs":[{"period":25706913,"vote_hash_hex":"612bd8902b6c3e411a63974d66e94114c44266ba477c2eef8e9afb6036cc06ec"}]},{"root":"8f0c15bca3c202dad12c44f060e074748572ade6a1dba6dfea967b4d47b2a808","refs":[{"period":25706914,"vote_hash_hex":"41662d2551c1437c789ba089d87108479208aa29b1968c0b6a081b175818d43f"}]},{"root":"5986c863eaab74a42da8642f740f7296d6f326443f4bb883a59c65675c31c56a","refs":[{"period":25706915,"vote_hash_hex":"1f3f414392516ea7d1eecf7a1f6ba70e82a481a281d8efd22537435a4c0e9c3d"}]},{"root":"750e6dfcd464b29c1430473ea8338056169734f66c5e213da1cd9eba7566961e","refs":[{"period":25706916,"vote_hash_hex":"2f32c5a12c819a9b65e93726b10e63d3b907bd48cca943d012a7ce9a78b95f56"}]},{"root":"6389f33e77403f0f92fd654c208b18355f2da19895e08498f9f0aebc61da2075","refs":[{"period":25706917,"vote_hash_hex":"17d5e25d4a6146d69a54e45bf402cef45c763cb63b4fba7e4cbe3aa632accf61"}]},{"root":"3ce52115126f3ff130560bbf477f389159ad89eb7cc543abe1eda1ba38e74366","refs":[{"period":25706918,"vote_hash_hex":"49bbaf8a9e09a1e1db3f7effdbeb6263a6c9a2fb539c2632c447ff4c55c1e2db"}]},{"root":"97f12663ea38b8ab1e88572ec16cb992a969529c83b0c5d7e7f19dbec317844c","refs":[{"period":25706919,"vote_hash_hex":"47343eea4ed360a747153fd830e279d51581b6ea92e7cbaf3e2507aa71b4edf3"}]},{"root":"76f9d6edc45e54c2f705c93b57a9ddc8025240c2678258767a4618477446c59d","refs":[{"period":25706920,"vote_hash_hex":"cebb9d6b2bc0ae58fa894253d3e373e8d15342d2a07f34946443619a8e9c700e"}]},{"root":"0e07b0ab3b770ce3b679796efded272782c82750280a0bd4bcf5697e13233dcc","refs":[{"period":25706921,"vote_hash_hex":"0fdfed10440d99e5ca3625a6db2dac6e92885f0ea7872c6219e311aa97c95a37"}]},{"root":"0e07b0ab3b770ce3b679796efded272782c82750280a0bd4bcf5697e13233dcc","refs":[{"period":25706922,"vote_hash_hex":"8c0c773cd53df59f3ada4124d16e04caa4b09740cc034a6fc517b092343bebc7"}]},{"root":"8fc69b3a7343817f4c55e8ab7e90680896c45c5bf03d4fd0aa0075c749a6a223","refs":[{"period":25706923,"vote_hash_hex":"df405f9a16cf91fd227dadfeaece1e6f6906425f1b00d978294212e148cd8668"}]},{"root":"131bcb5151b5e52bbace2653d3a44edf700db6b6337e82a04d70c6a1695ce803","refs":[{"period":25706924,"vote_hash_hex":"832d6ab148da7650313a186a2bc9dde6427f1e04c4ceb2303b76f402504d5971"}]},{"root":"715127dfc215df7d43d63b58cd58a4446edb425bf2e23502932e293ef021d4fa","refs":[{"period":25706926,"vote_hash_hex":"82cb89ca5460dad5cca287bd376dfede4fa62de526dc7e5fe9b220963f1ad792"}]},{"root":"04c3266846de8285c05f021bc6fa8730c4ddecd4db10b82c4f9007c8e821d282","refs":[{"period":25706927,"vote_hash_hex":"f9c9b60ead55efaf3077df94ccd731ca4261da52a4a8e152fce9016740e7d270"}]},{"root":"827e4d2929e8871824a36220b4a59bd75f33f0d2da55294a9ff128c4697671d2","refs":[{"period":25706928,"vote_hash_hex":"d46bed0c3bbb33e765a65378d1c36e33d1607787a7b0c896b684b904e6239ba9"}]},{"root":"112aed825cb2f31d530671bc75a28d90d89c7e3021f6cd11617c6c5924697c34","refs":[{"period":25706929,"vote_hash_hex":"10957903768a0086fb4c583c648c0e76f14635ed4c18d97ef95b26c47a03fef3"}]},{"root":"112aed825cb2f31d530671bc75a28d90d89c7e3021f6cd11617c6c5924697c34","refs":[{"period":25706930,"vote_hash_hex":"e9d612566a1f880fe08b61924d06943dceccbdf2a7f5aaaa9d0140620e8cef7c"}]},{"root":"60b89dcf9e9ecbb1c038b381d144fabda53064e6b46a002d9deeece69dad3697","refs":[{"period":25706931,"vote_hash_hex":"880be2f483be78213942fd4322053b9bf9c1ce937fcaf6c4c75f33dba80d3757"}]},{"root":"f4c00f1fe89e446c63aa25d8fd80d138fb0eedfba6bb1ce51b63cd2ef2d0dd56","refs":[{"period":25706932,"vote_hash_hex":"59714c5fe832ecfcc4ed01ffc1948cc80d3beedc3845df2985c00af21a300b17"}]},{"root":"9109390dc21e981e3ef34a44fb06359ccff8d9f5da9785ad769d4c451c629853","refs":[{"period":25706933,"vote_hash_hex":"1c234bce1cdd46f8b21bee29346635f89881c0eb4e1cb8f32df39a31ff0b31ba"}]},{"root":"1d9242c2aa421de9d4e5ef8126ab5ecf1ba49f53a72ef19f3243463bb21bc486","refs":[{"period":25706934,"vote_hash_hex":"af7b2fe042361b49040a1893cd35ed6b9ead34f0cb9d737fec7a1772222c79b6"}]},{"root":"ece3968a30c0b8dedd5792e99d88c426bcff348385f281035eafb80b5f000315","refs":[{"period":25706935,"vote_hash_hex":"34550810e51dab124ce7b7fdb7aa736ffaaca0b5511cf66c4aed8bc73a7f3cef"}]},{"root":"64a4a559c1911b6d98e270d7c17805db3deaf3f4961f9773c3f98ccd136dd139","refs":[{"period":25706936,"vote_hash_hex":"3201d8533640106383a71c91e2e2f5d68957bdde37d17bf9cb75f9714eafe0d5"}]},{"root":"b918017816a1b0ebc4dd3e43bbbb6e0490b9e5c94d33aed4d0cd84359b840145","refs":[{"period":25706937,"vote_hash_hex":"d65e91f24426c6694cd67ce86d6aee00e04ca3a39d2407a6ed1451dff6fed276"}]},{"root":"b918017816a1b0ebc4dd3e43bbbb6e0490b9e5c94d33aed4d0cd84359b840145","refs":[{"period":25706938,"vote_hash_hex":"e48dfadccb6c653621eb4fe6ad13d1d760a33c35693938bbc5bed44a0d285ab0"}]},{"root":"54a7068396b9d331e9bf9d3815ae26a96517e2af3596f7d4cf6a004ed5652252","refs":[{"period":25706939,"vote_hash_hex":"600b4c8f9346f1ea3d6b0cfb266a593f1cec17d0df56db9884bb4365b97177b0"}]},{"root":"3fedb74070694d46637ea9fb65e70060f9ce8ae264a033dc1404872e0ab339ac","refs":[{"period":25706940,"vote_hash_hex":"9effbb2f83c2f958e5c1ab7a78149ef3e75983e9593fa247fc9e0aad5f30e0d9"}]},{"root":"51fdb8fa9573a32977862bddf804d4d211ef4a46c242a284d697033c85e1d0c7","refs":[{"period":25706941,"vote_hash_hex":"32d09560ab1811f6f4e297954276753169da8b04136bbeb6998977ae918903b2"}]},{"root":"bd6bbc5b4725ee321e43c2ba367adc95deda48f05780a9ec859635ec9d39e8b5","refs":[{"period":25706942,"vote_hash_hex":"243bdaa5f2d34920b8a76d8360321a1fb7522526d8a0f3e36a2d326bf7bbe47c"}]},{"root":"bd6bbc5b4725ee321e43c2ba367adc95deda48f05780a9ec859635ec9d39e8b5","refs":[{"period":25706943,"vote_hash_hex":"dc70f8f3082face9ce8f6bb73f75daf6002afbc8c9c8d8f5f4f78395e5cc5308"}]},{"root":"b5cee51b7dc57bc68bd2cd5144daefcfca83686170bf226cf2297795371a2f83","refs":[{"period":25706944,"vote_hash_hex":"84a1147e1f3a508f5bdb264a50006e076df2eab72c92eeaf56aa438edf007a06"}]},{"root":"10561ec6a95842ceea4b5bbca7879ab192850eca7e62b91fa586e734876cd4d9","refs":[{"period":25706945,"vote_hash_hex":"4d2700c888c6c673e04f179a9feef64166df58e61ad890f981cd2ff73b3cb560"}]},{"root":"10561ec6a95842ceea4b5bbca7879ab192850eca7e62b91fa586e734876cd4d9","refs":[{"period":25706947,"vote_hash_hex":"c29a13409a9786b893e1ea211469734aef9c6a0c546b9d1c487aa944ea7d56f4"}]},{"root":"4a31ec5fbb426cd88c29ed42b7428aae41951bb9ca4a617073df5a9e3312a624","refs":[{"period":25706948,"vote_hash_hex":"f80aad580881f744c9d8c2a606b7557f3fa789bac20593514a1b05cc9bc0820c"}]}]"#;
+const A8A_PRIOR: &str = "c3fe453a6ee0a2230034b3f908ba24c4733b3a9c9d059d11df0e8fdaaaf7b48a";
+const A8A_PRIOR_SHA: &str = "96de0e43ecaf2d375af7b946b6989f64a32d7dc52c918e973593d0244d29e8ff";
 const RESIDUAL_VOTER: &str = "03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b";
 const RESIDUAL_PROFILE: &str = "n4_residual_vrf_03bcf4079a8aaf266aaa8e07ca2a4c5a63f6881b_v1";
 const RESIDUAL_KEY: &str = "89ef37281f8220316458526a5c28a4518ec2cd3eaf487baa7055e8831cb89c5b";
@@ -164,7 +177,11 @@ impl Profile {
     fn residual(self) -> bool {
         matches!(
             self,
-            Self::ResidualFirst | Self::ResidualB92a | Self::ResidualE50b | Self::Residual49f8
+            Self::ResidualFirst
+                | Self::ResidualB92a
+                | Self::ResidualE50b
+                | Self::Residual49f8
+                | Self::ResidualA8a2
         )
     }
 
@@ -177,6 +194,8 @@ impl Profile {
             E50B_VOTER
         } else if self == Self::Residual49f8 {
             F49_VOTER
+        } else if self == Self::ResidualA8a2 {
+            A8A_VOTER
         } else {
             VOTERS[self as usize]
         }
@@ -190,6 +209,8 @@ impl Profile {
             E50B_PROFILE
         } else if self == Self::Residual49f8 {
             F49_PROFILE
+        } else if self == Self::ResidualA8a2 {
+            A8A_PROFILE
         } else {
             PROFILES[self as usize]
         }
@@ -203,13 +224,15 @@ impl Profile {
             16
         } else if self == Self::Residual49f8 {
             5
+        } else if self == Self::ResidualA8a2 {
+            11
         } else {
             PRIOR_INDICES[self as usize]
         }
     }
     fn payloads(self) -> usize {
         match self {
-            Self::Residual49f8 => 45,
+            Self::Residual49f8 | Self::ResidualA8a2 => 45,
             Self::ResidualFirst | Self::ResidualB92a | Self::ResidualE50b => 46,
             _ => 47,
         }
@@ -292,17 +315,21 @@ fn select_residual(profile: Profile, rows: &Value) -> Result<Value> {
         Profile::ResidualB92a => (&B92A_INDICES, 36),
         Profile::ResidualE50b => (&E50B_INDICES, 12),
         Profile::Residual49f8 => (&F49_INDICES, 12),
+        Profile::ResidualA8a2 => (&A8A_INDICES, 24),
         _ => anyhow::bail!("residual profile required"),
     };
     let bindings: Value = serde_json::from_str(match profile {
         Profile::ResidualE50b => E50B_BINDINGS,
         Profile::Residual49f8 => F49_BINDINGS,
+        Profile::ResidualA8a2 => A8A_BINDINGS,
         _ => B92A_BINDINGS,
     })?;
     let mut out = Vec::with_capacity(profile.payloads());
     for (i, (index, row)) in selected.into_iter().enumerate() {
         let delayed_index = if i + 1 < omitted { i + 1 } else { i + 2 };
-        let delayed_index = if profile == Profile::Residual49f8 && delayed_index >= 45 {
+        let delayed_index = if matches!(profile, Profile::Residual49f8 | Profile::ResidualA8a2)
+            && delayed_index >= 45
+        {
             delayed_index + 1
         } else {
             delayed_index
@@ -325,7 +352,10 @@ fn select_residual(profile: Profile, rows: &Value) -> Result<Value> {
         );
         if matches!(
             profile,
-            Profile::ResidualB92a | Profile::ResidualE50b | Profile::Residual49f8
+            Profile::ResidualB92a
+                | Profile::ResidualE50b
+                | Profile::Residual49f8
+                | Profile::ResidualA8a2
         ) {
             ensure!(
                 row["source_references"] == bindings[i]["refs"],
@@ -375,6 +405,12 @@ pub(crate) fn prior(profile: Profile, bytes: &[u8], plan: &ConcreteVrfPlan) -> R
     if profile == Profile::Residual49f8 {
         f49_prior_binding(value)?;
     }
+    if profile == Profile::ResidualA8a2 {
+        ensure!(
+            hex::encode(value) == A8A_PRIOR && admission::sha(value) == A8A_PRIOR_SHA,
+            "fixed a8a2 prior binding"
+        );
+    }
     Ok(
         json!({"input":{"path":PRIOR_PATH,"bytes":PRIOR_BYTES,"sha256":PRIOR_SHA},
         "actual":native::usage(verified.usage),"semantic_sha256":fields::normalized_digest(&values)?,
@@ -420,12 +456,24 @@ fn f49_prior_binding(value: &[u8]) -> Result<()> {
     Ok(())
 }
 fn f49_tuple_binding(index: usize, tuple: ConcreteDiagnosticTuple) -> Result<()> {
-    let bindings: Value = serde_json::from_str(F49_BINDINGS)?;
+    fixed_45_tuple_binding(Profile::Residual49f8, index, tuple)
+}
+fn fixed_45_tuple_binding(
+    profile: Profile,
+    index: usize,
+    tuple: ConcreteDiagnosticTuple,
+) -> Result<()> {
+    let (binding, key) = match profile {
+        Profile::Residual49f8 => (F49_BINDINGS, F49_KEY),
+        Profile::ResidualA8a2 => (A8A_BINDINGS, A8A_KEY),
+        _ => anyhow::bail!("fixed45 profile required"),
+    };
+    let bindings: Value = serde_json::from_str(binding)?;
     ensure!(
         index < 45 && hex::encode(tuple.identity.state_root) == bindings[index]["root"],
         "fixed49f8 root"
     );
-    ensure!(hex::encode(tuple.key.0) == F49_KEY, "fixed49f8 key");
+    ensure!(hex::encode(tuple.key.0) == key, "fixed45 key");
     ensure!(
         hex::encode(tuple.address) == "00000000000000000000000000000000000000fe",
         "fixed49f8 address"
@@ -512,9 +560,13 @@ impl PlanView for WindowPlan {
     }
 }
 fn window_authority(profile: Profile) -> Result<(WindowPlan, Value, Value)> {
-    if profile == Profile::Residual49f8 {
+    if matches!(profile, Profile::Residual49f8 | Profile::ResidualA8a2) {
         let (p, s, a) = authority_with(profile, |first, _| {
-            Ok(ConcreteVrfResidual49f8Plan::new(first)?)
+            Ok(if profile == Profile::ResidualA8a2 {
+                ConcreteVrfResidual49f8Plan::new_a8a2(first)?
+            } else {
+                ConcreteVrfResidual49f8Plan::new(first)?
+            })
         })?;
         return Ok((WindowPlan::Residual49f8(p), s, a));
     }
@@ -592,6 +644,7 @@ fn authority_with<T: PlanView>(
                     Profile::ResidualB92a => Some(B92A_KEY),
                     Profile::ResidualE50b => Some(E50B_KEY),
                     Profile::Residual49f8 => Some(F49_KEY),
+                    Profile::ResidualA8a2 => Some(A8A_KEY),
                     _ => None,
                 };
                 if let Some(key) = fixed_key {
@@ -620,6 +673,9 @@ fn authority_with<T: PlanView>(
                 }
                 if profile == Profile::Residual49f8 {
                     f49_tuple_binding(i, tuple)?;
+                }
+                if profile == Profile::ResidualA8a2 {
+                    fixed_45_tuple_binding(profile, i, tuple)?;
                 }
                 row["tuple"] = json!({"identity":native::identity_json(tuple.identity),"address_hex":hex::encode(tuple.address),
             "logical_key_hex":hex::encode(tuple.key.0),"key_preimage_hex":format!("0004{}", profile.voter())});
@@ -709,6 +765,10 @@ pub(crate) fn base(profile: Profile, selected: Value, authority: Value) -> Resul
         Profile::Residual49f8 => [
             pin!("bin/live_vrf_residual_49f8.rs"),
             pin!("bin/replay_vrf_residual_49f8.rs"),
+        ],
+        Profile::ResidualA8a2 => [
+            pin!("bin/live_vrf_residual_a8a2.rs"),
+            pin!("bin/replay_vrf_residual_a8a2.rs"),
         ],
     });
     ensure!(sources.len() == 22, "window source count");
@@ -852,7 +912,8 @@ pub(crate) fn replay(profile: Profile, bundle_input: &Path, report_output: &Path
         }
     };
     report["status"] = json!(match profile {
-        Profile::Residual49f8 => "all_forty_five_residual_vrf_inputs_authenticated",
+        Profile::Residual49f8 | Profile::ResidualA8a2 =>
+            "all_forty_five_residual_vrf_inputs_authenticated",
         Profile::ResidualFirst | Profile::ResidualB92a | Profile::ResidualE50b =>
             "all_forty_six_residual_vrf_inputs_authenticated",
         _ => "all_forty_seven_vrf_inputs_authenticated",
@@ -1027,6 +1088,25 @@ pub fn residual_49f8_capture(bundle: &Path, report: &Path) -> Result<()> {
 /// report; positive-member fact acceptance remains a separate decision.
 pub fn residual_49f8_replay(bundle: &Path, report: &Path) -> Result<()> {
     replay(Profile::Residual49f8, bundle, report)
+}
+
+/// Authenticate the sealed a8a45 raw requests and all 71 prior proofs before
+/// constructing the 45-payload plan. Publish the full 48-context/96-proof
+/// preflight exclusively outside databases. Invalid authority supplies no fact.
+pub fn residual_a8a2_preflight(output: &Path) -> Result<()> {
+    preflight(Profile::ResidualA8a2, output)
+}
+/// Capture a8a45 through the shared RCV4 engine after independent one-use
+/// admission. Require all 51 context and 45 payload proofs, including retention
+/// for both omitted identities. Failure qualifies no prefix or absence fact.
+pub fn residual_a8a2_capture(bundle: &Path, report: &Path) -> Result<()> {
+    capture(Profile::ResidualA8a2, bundle, report)
+}
+/// Replay all 96 a8a45 proofs and the fresh 71-proof prior offline. Require exact
+/// order, strict history and EOF. Exclusive report publication grants no final
+/// acceptance; any failure rejects the full family.
+pub fn residual_a8a2_replay(bundle: &Path, report: &Path) -> Result<()> {
+    replay(Profile::ResidualA8a2, bundle, report)
 }
 
 #[cfg(test)]
@@ -1577,6 +1657,81 @@ mod tests {
         );
     }
     #[test]
+    fn a8a2_fixed_selection_prior_and_full_barrier() {
+        let (context, rows, _) =
+            parent_input_handoff::load_authenticated_voter_authority().unwrap();
+        let selected = select(Profile::ResidualA8a2, &rows).unwrap();
+        assert_eq!(selected.as_array().unwrap().len(), 45);
+        for (i, index) in A8A_INDICES.iter().enumerate() {
+            assert_eq!(selected[i]["parent_manifest_index"], *index);
+            assert_ne!(selected[i]["source_row"]["delayed_period"], FIRST + 24);
+            assert_ne!(selected[i]["source_row"]["delayed_period"], FIRST + 45);
+        }
+        for (field, value) in [
+            ("voter_hex", json!(F49_VOTER)),
+            ("semantic_key", json!("other")),
+            ("delayed_period", json!(FIRST + 24)),
+            ("qualified", json!(true)),
+            ("proof", json!({})),
+            ("value", json!("00")),
+            ("source_references", json!([])),
+            (
+                "source_references",
+                json!([{"period":FIRST+8,"vote_hash_hex":"00"}]),
+            ),
+        ] {
+            let mut bad = rows.clone();
+            bad[A8A_INDICES[0]][field] = value;
+            assert!(select(Profile::ResidualA8a2, &bad).is_err(), "{field}");
+        }
+        let mut swapped = rows.clone();
+        swapped
+            .as_array_mut()
+            .unwrap()
+            .swap(A8A_INDICES[0], A8A_INDICES[1]);
+        assert!(select(Profile::ResidualA8a2, &swapped).is_err());
+        let mut duplicate = rows.clone();
+        duplicate[A8A_INDICES[1]] = duplicate[A8A_INDICES[0]].clone();
+        assert!(select(Profile::ResidualA8a2, &duplicate).is_err());
+        assert!(authority(Profile::ResidualA8a2).is_err());
+        let first_plan = first::selection(context, &rows).unwrap().0;
+        let canonical = canonical_prior().unwrap();
+        let mut bad = canonical.clone();
+        bad[canonical.len() / 2] ^= 1;
+        assert!(
+            after_prior(
+                Profile::ResidualA8a2,
+                first_plan,
+                &bad,
+                |_, _| -> Result<()> { panic!("bad prior reached a8a2 constructor") }
+            )
+            .is_err()
+        );
+        let (plan, selected, summary) = window_authority(Profile::ResidualA8a2).unwrap();
+        assert_eq!(summary["prior_first_d"]["selected"]["proof_index"], 62);
+        assert_eq!(summary["prior_first_d"]["selected"]["value_hex"], A8A_PRIOR);
+        for (i, tuple) in plan.tuples().iter().enumerate() {
+            fixed_45_tuple_binding(Profile::ResidualA8a2, i, *tuple).unwrap();
+        }
+        let mut wrong = plan.tuples()[0];
+        wrong.key.0[0] ^= 1;
+        assert!(fixed_45_tuple_binding(Profile::ResidualA8a2, 0, wrong).is_err());
+        let mut wrong = plan.tuples()[0];
+        wrong.identity.state_root[0] ^= 1;
+        assert!(fixed_45_tuple_binding(Profile::ResidualA8a2, 0, wrong).is_err());
+        assert!(fixed_45_tuple_binding(Profile::ResidualA8a2, 45, plan.tuples()[0]).is_err());
+        let report = base(Profile::ResidualA8a2, selected, summary).unwrap();
+        assert_eq!(report["bounds"]["proofs_exact"], 96);
+        assert_eq!(report["bounds"]["payload_tuples_exact"], 45);
+        assert!(
+            report["qualification"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|v| v == false)
+        );
+    }
+    #[test]
     fn f49_fixed_selection_prior_and_full_barrier() {
         let (context, rows, _) =
             parent_input_handoff::load_authenticated_voter_authority().unwrap();
@@ -1896,18 +2051,34 @@ mod tests {
     }
     #[test]
     fn third_residual_saved_bundle_report_is_completely_equal() {
-        let path = Path::new(
+        assert_saved_residual_equal(
+            Profile::ResidualE50b,
             "/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/vrf-residual-third-voter-window-replay.json",
+            "609bae5bfce834365e89423c10913fa921876192b905b978c0f757976c72ca44",
+            58552,
+            46,
         );
+    }
+    #[test]
+    fn fourth_residual_saved_bundle_report_is_completely_equal() {
+        assert_saved_residual_equal(
+            Profile::Residual49f8,
+            "/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-fourth/vrf-residual-fourth-voter-window-replay.json",
+            "60fc9d1488e099aa9b01e245ca1c4a4052f0583ea1cdb116d0ec5913b6d9b914",
+            57633,
+            45,
+        );
+    }
+    fn assert_saved_residual_equal(
+        profile: Profile,
+        path: &str,
+        sha: &str,
+        size: usize,
+        payloads: usize,
+    ) {
+        let path = Path::new(path);
         let mut old = admission::parse_unique(
-            &admission::evidence(
-                path,
-                path,
-                "609bae5bfce834365e89423c10913fa921876192b905b978c0f757976c72ca44",
-                58552,
-                REPORT_CAP,
-            )
-            .unwrap(),
+            &admission::evidence(path, path, sha, size, REPORT_CAP).unwrap(),
         )
         .unwrap();
         verify_pin(&old["bundle"]);
@@ -1921,7 +2092,7 @@ mod tests {
                 .as_nanos()
         ));
         replay(
-            Profile::ResidualE50b,
+            profile,
             Path::new(old["bundle"]["path"].as_str().unwrap()),
             &scratch,
         )
@@ -1954,7 +2125,7 @@ mod tests {
             }
         }
         assert_eq!(old, new);
-        assert_eq!(new["values"].as_array().unwrap().len(), 46);
+        assert_eq!(new["values"].as_array().unwrap().len(), payloads);
         fs::remove_file(scratch).unwrap();
     }
     #[test]
