@@ -740,3 +740,29 @@ All ready fixed successors are complete, below the ten-point limit. Remaining 42
 VRF + 1828 stake/jail and lambda/raw-cache/producer/weights/owner/finality/real-replay
 gaps remain. Preserve all consumed markers. Documentation closes accepted facts
 separately from source code; no push or production route.
+
+
+## A8a45 authority, guard and facts — 2026-10-15
+
+Guard commit `99fb36e70`; Rust core `3276d5887` reused by exact source/input/scope.
+Independent fact and seal acceptance closes45 requests:718 accepted/196 residual,
+10 complete voters. Compact evidence: `/home/fry/artifacts/a8a45-run-01a13f63-20261015/checkpoint-current.json`.
+V16 is129858/131072 bytes; the finite six-body split preserves400 roles,
+64 references/987974 bytes,45182 extra semantic bytes and13 physical ceilings.
+
+Python82 passed5.151s; full native/first-D comparator passed0.049s; actual source
+hook2147 passed233.717s. Capture27.8s; corrected bounded lead replay26.031s and
+independent replay26.033s have identical complete reports. Five fixed reverse
+controls pass. Unchanged Rust package/parity/ONbridge/quality/fast evidence was
+reused through exact mappings; no source gate or assertion was weakened.
+
+Corrections: per-record common-contract charge, current authority self path,
+preparation successors, strict scalar/admission checks, test cwd, fixed outcome
+filename, active lead deadline and final checker field assumptions. Full first
+failures and old controller/checker bodies remain; final family review74379 fits
+131072. Gate durations are measured; active review/correction time and billing
+are unknown. Root Sol6.1-medium is telemetry-confirmed. Requested Luna-medium,
+Astra-medium author/reviewer and Sol6.1-medium reviewer all ran; child runtime
+identity was not exposed. No routing failure. Fresh quota100%, stop90%; the
+saved run budget owns the final observation. No further fixed residual profile
+has this command authority. Broader qualification, production and push remain open.
