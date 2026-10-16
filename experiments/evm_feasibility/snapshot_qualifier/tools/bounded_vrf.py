@@ -192,6 +192,38 @@ def verify_seventh_history():
         raise ValueError('fixed history incomplete roster')
     return dict(containers=5, members=190, charged_bytes=charged, body_bytes=body_total)
 
+# Command-time current evidence only: exact V7 tail54/precommand3/outcome24.
+# Caller must first bind every slot to the authenticated inventory/path/schema.
+SEVENTH_CURRENT_POOL_CAPS = (16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 16384, 327680, 131072, 65536, 65536, 327680, 16384, 131072, 16384, 131072, 65536, 131072, 131072, 16384, 131072, 131072, 41550, 4670, 1341, 2606, 16384, 327680, 131072, 131072, 36042, 92897, 131072, 1048576, 65536, 65536, 65536, 131072, 65536, 16384, 131072, 16384, 16384, 16384, 16384, 65536, 16384, 65536, 1048576, 65536, 16384, 65536, 131072, 16384, 65536, 131072, 131072, 16384, 131072, 131072, 16384)
+
+def reserve_seventh_current_evidence(sizes):
+    """Reserve the fixed 81-role current pool before reads or publication.
+
+    The first 57 sizes must be resolved nonnegative integers within their
+    unchanged role ceilings. Reserve every future outcome's full ceiling,
+    including when an actual size is supplied; no declared size discounts a
+    pending outcome. Reject bool, missing current sizes, role/count drift and
+    a total above 5242880 bytes. Return only the complete reservation; perform
+    no I/O, allocation of body buffers or path/source/command authentication.
+    Caller binding of exact fixed slot order and pins remains mandatory. This
+    primitive does not enable the next42 profile or grant physical authority.
+    Its fixed caps/input vector and bounded locals add at most 22528 bytes to
+    the reviewed semantic allocation model (2077257 total, below 2097152).
+    """
+    if type(sizes) is not list or len(sizes) != 81:
+        raise ValueError('seventh current evidence exact count')
+    total = 0
+    for index, (size, cap) in enumerate(zip(sizes, SEVENTH_CURRENT_POOL_CAPS)):
+        if size is None:
+            if index < 57:
+                raise ValueError('seventh current evidence unresolved size')
+        elif type(size) is not int or not 0 <= size <= cap:
+            raise ValueError('seventh current evidence role size')
+        total += cap if index >= 57 else size
+        if total > 5242880:
+            raise ValueError('seventh current evidence aggregate cap')
+    return total
+
 def sealed_profile(profile):
     if profile == SIXTH_PROFILE:
         return dict(ordinal="fbb45", voter="fbb3ee068e491e218d2cda595c23c6e3cc2f00f2", key=SIXTH_KEY, prior_index=19, indices=SIXTH_INDICES)

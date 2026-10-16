@@ -1696,5 +1696,46 @@ class SeventhHistoryControls(Fixture):
         with self.assertRaises(ValueError): guard.finite_profile(profile)
         with self.assertRaises(ValueError): guard.sealed_profile(profile)
 
+
+class SeventhReservationControls(Fixture):
+    def test_exact_v7_role_caps_and_complete_future_reservation(self):
+        authority = guard.read_json('/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-successor-contract-v7.json',131072)
+        rows = [r for r in authority['command_inventory'] if r[0]=='current_tail54']+[r for r in authority['command_inventory'] if r[0]=='precommand_paths']+authority['outcome_inventory']
+        self.assertEqual(tuple(r[5] for r in rows), guard.SEVENTH_CURRENT_POOL_CAPS)
+        future = sum(guard.SEVENTH_CURRENT_POOL_CAPS[57:])
+        self.assertEqual(future,2523136)
+        with patch.object(Path,'open',side_effect=AssertionError('unexpected I/O')):
+            self.assertEqual(guard.reserve_seventh_current_evidence([0]*57+[None]*24),future)
+            self.assertEqual(guard.reserve_seventh_current_evidence([0]*81),future)
+
+    def test_exact_5mib_and_one_over_fail_before_io(self):
+        sizes = [0]*57+[None]*24
+        remaining = 5242880-sum(guard.SEVENTH_CURRENT_POOL_CAPS[57:])
+        for index, cap in enumerate(guard.SEVENTH_CURRENT_POOL_CAPS[:57]):
+            sizes[index] = min(cap,remaining)
+            remaining -= sizes[index]
+        self.assertEqual(remaining,0)
+        with patch.object(Path,'open',side_effect=AssertionError('unexpected I/O')):
+            self.assertEqual(guard.reserve_seventh_current_evidence(sizes),5242880)
+            index = next(i for i,c in enumerate(guard.SEVENTH_CURRENT_POOL_CAPS[:57]) if sizes[i]<c)
+            sizes[index] += 1
+            with self.assertRaisesRegex(ValueError,'aggregate cap'):
+                guard.reserve_seventh_current_evidence(sizes)
+
+    def test_current_and_future_types_role_caps_and_missing_current(self):
+        for index in [0,56,57,80]:
+            for bad in [True,False,-1,1.0,'1',guard.SEVENTH_CURRENT_POOL_CAPS[index]+1]:
+                sizes = [0]*57+[None]*24;sizes[index] = bad
+                with self.subTest(index=index,bad=bad),patch.object(Path,'open',side_effect=AssertionError('unexpected I/O')),self.assertRaises(ValueError):
+                    guard.reserve_seventh_current_evidence(sizes)
+        sizes = [0]*57+[None]*24;sizes[56] = None
+        with self.assertRaisesRegex(ValueError,'unresolved'):
+            guard.reserve_seventh_current_evidence(sizes)
+
+    def test_wrong_count_or_container_type_cannot_supply_prefix(self):
+        for sizes in [[0]*80,[0]*82,tuple([0]*81),{},None]:
+            with patch.object(Path,'open',side_effect=AssertionError('unexpected I/O')),self.assertRaises(ValueError):
+                guard.reserve_seventh_current_evidence(sizes)
+
 if __name__ == '__main__':
     unittest.main()
