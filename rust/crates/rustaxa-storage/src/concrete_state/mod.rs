@@ -20,14 +20,15 @@ pub use witness::{
     ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
     ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,
     ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, ConcreteStorageWitness, ConcreteVrfPlan,
-    ConcreteVrfReplay, ConcreteVrfResidual49f8Plan, ConcreteVrfResidual49f8Replay,
-    ConcreteVrfResidualPlan, ConcreteVrfResidualReplay, ConcreteVrfVoterPlan,
-    ConcreteVrfVoterReplay, ConcreteWitnessBudget, ConcreteWitnessError, ConcreteWitnessLimits,
-    ConcreteWitnessLogical, ConcreteWitnessPhysical, ConcreteWitnessReplay,
-    ConcreteWitnessResource, ConcreteWitnessUsage, capture_diagnostic_run,
-    capture_vrf_residual_49f8_run, capture_vrf_residual_run, capture_vrf_run,
-    capture_vrf_voter_run, replay_diagnostic_bundle, replay_storage_witness, replay_vrf_bundle,
-    replay_vrf_residual_49f8_bundle, replay_vrf_residual_bundle, replay_vrf_voter_bundle,
+    ConcreteVrfReplay, ConcreteVrfResidual7f82Plan, ConcreteVrfResidual7f82Replay,
+    ConcreteVrfResidual49f8Plan, ConcreteVrfResidual49f8Replay, ConcreteVrfResidualPlan,
+    ConcreteVrfResidualReplay, ConcreteVrfVoterPlan, ConcreteVrfVoterReplay, ConcreteWitnessBudget,
+    ConcreteWitnessError, ConcreteWitnessLimits, ConcreteWitnessLogical, ConcreteWitnessPhysical,
+    ConcreteWitnessReplay, ConcreteWitnessResource, ConcreteWitnessUsage, capture_diagnostic_run,
+    capture_vrf_residual_7f82_run, capture_vrf_residual_49f8_run, capture_vrf_residual_run,
+    capture_vrf_run, capture_vrf_voter_run, replay_diagnostic_bundle, replay_storage_witness,
+    replay_vrf_bundle, replay_vrf_residual_7f82_bundle, replay_vrf_residual_49f8_bundle,
+    replay_vrf_residual_bundle, replay_vrf_voter_bundle,
 };
 mod writer;
 

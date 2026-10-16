@@ -30,11 +30,13 @@ pub use concrete_state::{
     ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
     ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,
     ConcreteDiagnosticReplay, ConcreteDiagnosticTuple, ConcreteVrfPlan, ConcreteVrfReplay,
-    ConcreteVrfResidual49f8Plan, ConcreteVrfResidual49f8Replay, ConcreteVrfResidualPlan,
-    ConcreteVrfResidualReplay, ConcreteVrfVoterPlan, ConcreteVrfVoterReplay,
-    capture_diagnostic_run, capture_vrf_residual_49f8_run, capture_vrf_residual_run,
+    ConcreteVrfResidual7f82Plan, ConcreteVrfResidual7f82Replay, ConcreteVrfResidual49f8Plan,
+    ConcreteVrfResidual49f8Replay, ConcreteVrfResidualPlan, ConcreteVrfResidualReplay,
+    ConcreteVrfVoterPlan, ConcreteVrfVoterReplay, capture_diagnostic_run,
+    capture_vrf_residual_7f82_run, capture_vrf_residual_49f8_run, capture_vrf_residual_run,
     capture_vrf_run, capture_vrf_voter_run, replay_diagnostic_bundle, replay_vrf_bundle,
-    replay_vrf_residual_49f8_bundle, replay_vrf_residual_bundle, replay_vrf_voter_bundle,
+    replay_vrf_residual_7f82_bundle, replay_vrf_residual_49f8_bundle, replay_vrf_residual_bundle,
+    replay_vrf_voter_bundle,
 };
 pub use config::Column;
 pub use config::Config;

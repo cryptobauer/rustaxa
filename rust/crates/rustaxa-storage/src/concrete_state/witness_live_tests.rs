@@ -3006,3 +3006,223 @@ fn residual_fbb3_sealed_shape_roundtrip_and_cross_voter_rejection() {
         replay_vrf_residual_49f8_bundle(&trailing, &p, ConcreteWitnessLimits::default()).is_err()
     );
 }
+
+#[test]
+fn residual_7f82_fixed_five_omissions_rcv5_and_cross_wire_rejection() {
+    let make = || {
+        let mut first = residual_49f8_first(plan(codec::empty_trie_root()));
+        // Derive keys from the sealed voter through the public first plan.
+        let mut voters = *first.voters();
+        voters[19] = ConcreteVrfResidual7f82Plan::VOTER;
+        voters.sort();
+        first = ConcreteVrfPlan::new(first.context, voters).unwrap();
+        first
+    };
+    let p = ConcreteVrfResidual7f82Plan::new(make()).unwrap();
+    assert_eq!(
+        hex::encode(p.voter()),
+        "7f821a7f63c0e7251e332b9b7c08da0b757124b5"
+    );
+    assert_eq!(p.context().delayed.len(), 48);
+    let indices: Vec<_> = (1..48)
+        .filter(|i| ![5, 11, 23, 24, 34].contains(i))
+        .collect();
+    assert_eq!(indices.len(), 42);
+    for (tuple, i) in p.tuples().iter().zip(indices) {
+        assert_eq!(tuple.identity, p.context().delayed[i]);
+        assert_eq!(
+            hex::encode(tuple.key.0),
+            "b22e60d6ae7056992a9098e4762746d181b1be568ce0ecd7fa919760448e4452"
+        );
+        let mut account = [0; 20];
+        account[19] = 0xfe;
+        assert_eq!(tuple.address, account);
+    }
+    assert!(
+        ConcreteVrfResidual7f82Plan::new(residual_49f8_first(plan(codec::empty_trie_root())))
+            .is_err()
+    );
+    for omitted in [5, 11, 23, 24, 34] {
+        let mut malformed = make();
+        malformed.context.delayed[omitted].period = malformed.context.delayed[omitted - 1].period;
+        assert!(ConcreteVrfResidual7f82Plan::new(malformed).is_err());
+    }
+    let f = Fixture::empty();
+    let captured = capture_vrf_residual_7f82_run(
+        &f.application,
+        &f.state,
+        &p,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        &captured.bundle[..16],
+        &[82, 67, 86, 53, 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 42, 0]
+    );
+    let replay =
+        replay_vrf_residual_7f82_bundle(&captured.bundle, &p, ConcreteWitnessLimits::default())
+            .unwrap();
+    assert_eq!(replay.usage.used(R::PayloadTuples), 42);
+    assert_eq!(replay.usage.used(R::Registrations), 51);
+    let old = ConcreteVrfResidual49f8Plan::new(make()).unwrap();
+    let failure =
+        replay_vrf_residual_49f8_bundle(&captured.bundle, &old, ConcreteWitnessLimits::default())
+            .err()
+            .unwrap();
+    assert_eq!(failure.error, ConcreteWitnessError::Schema);
+    assert_eq!(failure.phase, ConcreteDiagnosticPhase::Admission);
+    assert_eq!(failure.usage.used(R::PayloadTuples), 0);
+    assert_eq!(failure.usage.used(R::Registrations), 0);
+    for resource in [
+        R::KeyBytes,
+        R::RowBytes,
+        R::RawCopyBytes,
+        R::CanonicalBytes,
+        R::EncodedBytes,
+        R::Operations,
+        R::Visits,
+        R::Records,
+        R::FrameInspections,
+        R::ConstructorIdentities,
+        R::Registrations,
+        R::DistinctIdentities,
+        R::PayloadTuples,
+    ] {
+        assert_eq!(failure.usage.used(resource), 0, "{resource:?}");
+    }
+    let old_capture = capture_vrf_residual_49f8_run(
+        &f.application,
+        &f.state,
+        &old,
+        ConcreteWitnessLimits::default(),
+    )
+    .unwrap();
+    let failure =
+        replay_vrf_residual_7f82_bundle(&old_capture.bundle, &p, ConcreteWitnessLimits::default())
+            .err()
+            .unwrap();
+    assert_eq!(failure.error, ConcreteWitnessError::Schema);
+    assert_eq!(failure.phase, ConcreteDiagnosticPhase::Admission);
+    assert_eq!(failure.usage.used(R::PayloadTuples), 0);
+    assert_eq!(failure.usage.used(R::Registrations), 0);
+    for resource in [
+        R::KeyBytes,
+        R::RowBytes,
+        R::RawCopyBytes,
+        R::CanonicalBytes,
+        R::EncodedBytes,
+        R::Operations,
+        R::Visits,
+        R::Records,
+        R::FrameInspections,
+        R::ConstructorIdentities,
+        R::Registrations,
+        R::DistinctIdentities,
+        R::PayloadTuples,
+    ] {
+        assert_eq!(failure.usage.used(resource), 0, "{resource:?}");
+    }
+    let mut truncated = captured.bundle.clone();
+    truncated.pop();
+    assert!(
+        replay_vrf_residual_7f82_bundle(&truncated, &p, ConcreteWitnessLimits::default()).is_err()
+    );
+    let mut trailing = captured.bundle;
+    trailing.push(0);
+    assert!(
+        replay_vrf_residual_7f82_bundle(&trailing, &p, ConcreteWitnessLimits::default()).is_err()
+    );
+}
+
+fn residual_7f82_first(context: ConcreteDiagnosticPlan) -> ConcreteVrfPlan {
+    let first = residual_49f8_first(context);
+    let mut voters = *first.voters();
+    voters[19] = ConcreteVrfResidual7f82Plan::VOTER;
+    voters.sort();
+    ConcreteVrfPlan::new(first.context, voters).unwrap()
+}
+#[test]
+fn residual_7f82_all_five_omissions_history_and_missing_node_stop_before_payload() {
+    for omitted_index in [5, 11, 23, 24, 34] {
+        let fixture = Fixture::with_residual_member(vec![9; 32]);
+        let plan = ConcreteVrfResidual7f82Plan::new(residual_7f82_first(self::plan(
+            fixture.plan.head.state_root,
+        )))
+        .unwrap();
+        let omitted = plan.context().delayed[omitted_index];
+        assert!(plan.tuples().iter().all(|tuple| tuple.identity != omitted));
+        let captured = capture_vrf_residual_7f82_run(
+            &fixture.application,
+            &fixture.state,
+            &plan,
+            ConcreteWitnessLimits::default(),
+        )
+        .unwrap();
+        let admission = ConcreteWitnessBudget::new(ConcreteWitnessLimits::default());
+        admission.admit_input(captured.bundle.len()).unwrap();
+        let envelope = bundle::admit_profile::<93>(
+            &captured.bundle,
+            &admission,
+            bundle::Profile::VrfResidual7f82,
+        )
+        .unwrap();
+        // The two first-constructor proofs precede all 48 delayed identities.
+        let target = 2 + omitted_index;
+        for history_error in [true, false] {
+            let mut proofs: Vec<_> = envelope.proofs.iter().map(|proof| proof.to_vec()).collect();
+            let decode = ConcreteWitnessBudget::new(ConcreteWitnessLimits::default());
+            let header = binary::admit_transcript(
+                &proofs[target],
+                &decode,
+                Some((omitted, [0; 20], ConcreteStorageKey([0; 32]))),
+                true,
+            )
+            .unwrap();
+            let mut frames = Vec::new();
+            let mut offset = binary::HEADER_BYTES;
+            while offset < proofs[target].len() {
+                let (frame, next) = binary::frame_at(&proofs[target], offset, &decode).unwrap();
+                frames.push(frame);
+                offset = next;
+            }
+            let node = frames
+                .iter_mut()
+                .find(|frame| frame.operation == 0 && frame.column == 2)
+                .unwrap();
+            assert!(matches!(node.outcome, binary::Outcome::Node(_)));
+            node.outcome = if history_error {
+                binary::Outcome::Error(3)
+            } else {
+                binary::Outcome::End
+            };
+            let encode = ConcreteWitnessBudget::new(ConcreteWitnessLimits::default());
+            encode.charge(R::Records, frames.len() as u64).unwrap();
+            let altered = binary::encode_transcript(header, &frames, &encode, 0, true).unwrap();
+            proofs[target] = altered;
+            let bytes = bundle::encode_profile(
+                &envelope.pair.map(|row| row.to_vec()),
+                &envelope.descriptors.map(|row| row.to_vec()),
+                &proofs,
+                &ConcreteWitnessBudget::new(ConcreteWitnessLimits::default()),
+                bundle::Profile::VrfResidual7f82,
+            )
+            .unwrap();
+            let failure =
+                replay_vrf_residual_7f82_bundle(&bytes, &plan, ConcreteWitnessLimits::default())
+                    .err()
+                    .unwrap();
+            assert_eq!(failure.phase, ConcreteDiagnosticPhase::SecondConstructor);
+            assert_eq!(failure.index, omitted_index as u16);
+            assert_eq!(failure.error, ConcreteWitnessError::Proof);
+            assert_eq!(failure.usage.used(R::PayloadTuples), 0);
+            assert_eq!(
+                failure.last_read.unwrap().outcome,
+                if history_error {
+                    ConcreteDiagnosticOutcome::Error(3)
+                } else {
+                    ConcreteDiagnosticOutcome::End
+                }
+            );
+        }
+    }
+}
