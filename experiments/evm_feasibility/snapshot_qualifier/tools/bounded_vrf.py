@@ -95,14 +95,14 @@ FIFTH_INDICES = [92, 152, 212, 266, 317, 374, 434, 494, 554, 611, 668, 725, 779,
 # Filled only from the final independently accepted finite successor.
 FIFTH_CONTRACT = dict(path='/home/fry/artifacts/a8a45-run-01a13f63-20261015/astra/a8a45-successor-contract-v16-split.json', bytes=129858, sha256='737985c907c8b4c38142dfeafba9002983ec740d8694e7b3ab75a911b55ca621')
 
-SIXTH_RUN = Path('/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45')
+SIXTH_RUN = Path('/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45')
 SIXTH_PROFILE = 'n4_residual_vrf_fbb3ee068e491e218d2cda595c23c6e3cc2f00f2_v1'
 SIXTH_KEY = 'ec5c494ab92b4655da656eae4a546ee7efab77ffe269fb82adc3bf19c5d1ac73'
 SIXTH_INDICES = [116, 176, 233, 290, 341, 398, 458, 518, 575, 635, 692, 746, 803, 863, 917, 974, 1031, 1088, 1148, 1208, 1268, 1325, 1379, 1427, 1484, 1544, 1601, 1658, 1712, 1829, 1886, 1940, 1994, 2054, 2111, 2168, 2228, 2282, 2342, 2456, 2513, 2573, 2621, 2681, 2741]
-SIXTH_CONTRACT = dict(path='/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/fbb45-successor-contract-v12-final.json', bytes=131048, sha256='7b4c6401d55bf72f05e0de6c73a183ab0dc0d058ac55b03ac63b0a4c7d03bcde')
+SIXTH_CONTRACT = dict(path='/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/fbb45-successor-contract-v14-tuples.json', bytes=118933, sha256='f831786029d53c7cf86600198ed15ae8cddc643d6063083f844ee95a320d86be')
 SIXTH_PREDECESSOR_SOURCES = json.loads('[{"bytes":29289,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_input_handoff.rs","sha256":"7845e2a972ec0c550c9c16c2039bde1ea453c4da6625ccb7a142daf6aa29f7f8"},{"bytes":371,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/parent_input_handoff.rs","sha256":"9b28884952fccdb3252cdca30465875e65e04d2c313098fb5d8ca2579c729d38"},{"bytes":699,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/lib.rs","sha256":"6139fd14946594ee82a46759aba6587ecdc9ee285aacbbe3c6bea59ccd1429d0"},{"bytes":22289,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/native_witness.rs","sha256":"c24c75d79d5c793fab6a4c349e20bce7aebbcf3867d6b15af56b6a011b689a4d"},{"bytes":27968,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/delayed_headers.rs","sha256":"5c7ff91e502733d4ca63357dc6a97bda10bc7d8e8438a4f208e0373afc8eb63d"},{"bytes":11245,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/interval_history.rs","sha256":"44e1430d4a0206325de12a7c804f964760b6d261b83f1954185761ca2f3be6e4"},{"bytes":19542,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/head_history.rs","sha256":"cc0ea9b27712d67e75ec46b6a858dbfcdeb65affce048339e3ad6cfcb624379b"},{"bytes":23298,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_history.rs","sha256":"46786d43ff10d076d425c23f901b149e462b139e138ee253852bbe7a3554319b"},{"bytes":44873,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_reward_fields.rs","sha256":"a5c2beb6543affb2b8ddf2ef7aed5505b338f477050179ee71df46c6758f38f7"},{"bytes":2443,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/reward_votes.rs","sha256":"9854994cf3cd49677b132c26095d7a01b2add8e5370a64f90ed75337879a577c"},{"bytes":5070,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/paths.rs","sha256":"a2db7e497bc4a21f11344a3365a72b3cd2dce43887cedb9df862228392595b7a"},{"bytes":4863,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/parent_cache_fields/admission.rs","sha256":"d247a52dd9f848db7454e5c1f4159692e1e5fc275332c071196fafe573f9d091"},{"bytes":16255,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/aspen_policy.rs","sha256":"7df98bad2b42ddef270c5eacbe20d8ce6a549cfa0201e232ce82a3b8747692ff"},{"bytes":4723,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/aspen_policy_sources.rs","sha256":"dc8771a33d1102221bcc8b2ec6be151a2aeb9a3b8a3624dcf0662590ebef7e9a"},{"bytes":901,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/Cargo.toml","sha256":"63b643eca00b29108eef0b70fdcdfddb278dc6a22a08ab295f84c6e4a49304cd"},{"bytes":86577,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/Cargo.lock","sha256":"d70f0f669944ad25f5fe779a5b23d1916ae1a98c8882b5ca0447214d1ab9bd54"},{"bytes":22269,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness.rs","sha256":"ec47bb56f197d9c02ff2a4c4ef1f1f4f58a781ce1a14586a8e1a417fe90b93e4"},{"bytes":56841,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs","sha256":"450f97ef56d0341ee5570e4560aef03a6a3eda4aea20b66aca66d775d3f57e40"},{"bytes":11855,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_bundle.rs","sha256":"4d927a1c7aeb5dfdb9b81c917f0e5196f987dfae51b36543389813cf83fad726"},{"bytes":12599,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_binary.rs","sha256":"1d5db25980cae3ef4b85e7220144f8388ecab67a82069a4b02b0822cca3dbd84"},{"bytes":33298,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/physical_node.rs","sha256":"55d3096128c68e1949f3d96870f65d99b6206c1ca8092c5302c6a1bb0d39f75b"},{"bytes":8359,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/codec.rs","sha256":"9a74a1fa46f7a9efb6ffd0d7002e888e681b867cc83080da593b477b06dd3def"},{"bytes":9000,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-consensus/src/final_chain/native_session/vote_inputs.rs","sha256":"bcd0e0a20e5176ee9480b6422e94a03c9d35a6bb7f8404579c791bc52678dcff"},{"bytes":65589,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-consensus/src/pbft_vote_validation.rs","sha256":"cd5670f1ea93167b1ef4075be6b52e81d9a35d9ad2823da98f3c6d1a6531a38d"},{"bytes":17348,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-types/src/codec/rlp/final_chain.rs","sha256":"c3c3ba662b2052cc6bbaabe7ea782a599f6291ac0fcad5936e35946744713451"},{"bytes":14719,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_witness.rs","sha256":"6b27f9c4650fb89e2132f1f17b905a34b6b21aa2418762bc0ee54a3efd5fdfc8"},{"bytes":668,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_witness.rs","sha256":"ec9f048a77243b27ac64af4839621a277b586860d6aed4966ba58f7b5db277b8"},{"bytes":495,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_witness.rs","sha256":"01ebc98eaf56db60f54755f768ab79fd02b0673bb8f1e8c6697b4bb539d0c332"},{"bytes":3456,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/lib.rs","sha256":"07d607a2482ab94824f96adb6b0c858c18eb806db5ab9b20aa2447a7bc34acbc"},{"bytes":2634,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/mod.rs","sha256":"85876f79f9848f3c6976e138cedab20d1993dd0304a728f19110693276ee183c"},{"bytes":43628,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/db.rs","sha256":"7adabcea4874a81b656b85876feb3a2ab32d695740d7a76fc44b1479d21b409b"},{"bytes":14648,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/config.rs","sha256":"ab02fb7f695cc19be49e25f46ac78f99a00c76e7a0eb7292c962d80a6d9f6c5b"},{"bytes":55304,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/final_chain.rs","sha256":"c996c560415b9d8fc34e50f2bcfe3473186f3766a4169fd6a9a6f91869cab52f"},{"bytes":25673,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/metadata.rs","sha256":"e43e17b855a5e7d018b088c085006ad002e127eb68c79b54bddaafab1cf54ab6"},{"bytes":2891,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_rlp.rs","sha256":"264022b34bd07033037ccead6fe020b336ff3340f15bb40ec1ce0b3e0293787f"},{"bytes":93524,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db.rs","sha256":"d6093ac53cde9751045d1e69bad5e88a94c97124ec7b931e1ecf2a69f50ce6a5"},{"bytes":10001,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_bounded.rs","sha256":"542952d508b01b14f99fd0e47f7cb71d76c7d5545788b5b1d5e66916df45189f"},{"bytes":4343,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/bounded_read.rs","sha256":"72926fe19ad6398d1b9bc78d3c6b9422cb81e856bbf11d8658bc8406cc245008"},{"bytes":21648,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_iterator.rs","sha256":"833ab9ed87042f10408ed168d5043b6466e51b98447d7d3bf9a85bc66590d879"},{"bytes":174740,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_options.rs","sha256":"524ad9b6477a5bdc6ae5f111fe916a6749fe5f091d8cf7d1eaabb3e03a60e484"},{"bytes":2148,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_pinnable_slice.rs","sha256":"3714970b72c44f72fc07db463f0dcf8a339a6eb4c6c93496d9fd6571e641c63c"},{"bytes":6725,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/column_family.rs","sha256":"8566584605a812c6f092951a4a50ff24ef69d7c73c9236983aabab2787dccee0"},{"bytes":8737,"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/ffi_util.rs","sha256":"541f1e0698392c83f283cea634d637d9b38dcaaee2cfccfcf85f4558228df561"},{"bytes":6397,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_voter_window.rs","sha256":"19e3b21ab0c4d14599494d719c572bbc2c1ace05eb98c89b8614bc58f614135c"},{"bytes":659,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_voter_window.rs","sha256":"2b9c9eb8a5b8f437e1959dfd0339392aa8b97e1837a49bc8aaad143c84aae6aa"},{"bytes":493,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_voter_window.rs","sha256":"7045b9c061255214dbf01a2dcb0020e5ebd6fc3d802ee6ba76ad0a5fb7539263"},{"bytes":105007,"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live_tests.rs","sha256":"25cc80a704e0cef8bb2e5859451e1d181bda7f4dbaa8701754152b7f3fccb77f"},{"bytes":298,"path":"/workspaces/rustaxa-evm/rust/Cargo.toml","sha256":"83999ded4fb16bbc16c6fbefd9e2806238a6d2ef06ec47b70528c62d0b4b5e05"},{"bytes":98358,"path":"/workspaces/rustaxa-evm/rust/Cargo.lock","sha256":"43b97efd6509c6373de57f89f832b31de70795fcad303316d56cbdc684a81741"},{"bytes":149,"path":"/workspaces/rustaxa-evm/.githooks/pre-commit","sha256":"07fe760100863ed1f069f69fc8afa7a026b81515bd37964d9e2eb60091bf3967"},{"bytes":7587,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_next_voter_window.rs","sha256":"79fe8336bb56b25e48c60fc1e97800f0a5c3153f30199e4d3148f77d88ce3f00"},{"bytes":674,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_next_voter_window.rs","sha256":"1884ac77ca8ea5c68b4db57f28e26548113ba7a293f8efe29264aeb3730e7edc"},{"bytes":503,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_next_voter_window.rs","sha256":"3e5398958169a691f13bdb389e777aa18ac1af5b109c363d93ffb9ded5fdedd8"},{"bytes":9789,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_third_voter_window.rs","sha256":"4a9ff909c2d45c516407e837f48b3bde8a5a0005c6faa87bd7a294c1c8187c2c"},{"bytes":677,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_third_voter_window.rs","sha256":"177adb0fc5c18f4500e4e1d6bb88e336cc1932a035c683dee49ed1b293a55cf1"},{"bytes":505,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_third_voter_window.rs","sha256":"677e9254e1dd64d64b217affebf310484ed1118b5070e2885f17eb54e8608bad"},{"bytes":10757,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_fourth_voter_window.rs","sha256":"c5c8eb81f668a4a7c10fc90852f3471636f9388f9f632082798fbb4f0dd70139"},{"bytes":680,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_fourth_voter_window.rs","sha256":"64bb93f43b8fbe90820b041dc4caaf15020e19fa1f184126c004189645b9c601"},{"bytes":507,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_fourth_voter_window.rs","sha256":"a23150bceacd3b6327697082f891cbf597b852afdc8ad2bd032294725ad24c03"},{"bytes":11710,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_fifth_voter_window.rs","sha256":"6fd1195c5de10cd7c273006f5abfb303386d01941488ba22e9dc1f095d0db4a3"},{"bytes":677,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_fifth_voter_window.rs","sha256":"58a8ad971a420049ec0dd002668428f537a6ec95345a744188b91c49e0a359b5"},{"bytes":505,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_fifth_voter_window.rs","sha256":"67d27b53247fd938d697f1205617f9e76702f70e67dd98ed1b191f27f95bc49c"},{"bytes":12668,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_sixth_voter_window.rs","sha256":"f3288ca42262699084bc3be21912f75fd8f40535de2a3372c7ebbcd3a32bbba7"},{"bytes":677,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_sixth_voter_window.rs","sha256":"f4047ae71635a880484981469f7d38465e07dc648c4eefba145ff7401c3ac5bf"},{"bytes":505,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_sixth_voter_window.rs","sha256":"fb227bf3cc8da1a5fa0693877965bf51e63bfa492c60405b160cd642498acedc"},{"bytes":133727,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_shared_window.rs","sha256":"d188dbf5bb52823f8fcc9feb0e3b1f43491bac44d1077240b893d6ace6bd8165"},{"bytes":708,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_seventh_voter_window.rs","sha256":"b40015f8402f104d8c9faaf38b6fe6f988c28e5227ea50dc201ceaa634342642"},{"bytes":533,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_seventh_voter_window.rs","sha256":"b5d740091ba8a9abcdd6aef9caaa5a02b6ab8c226029494b384f4d7961ca6888"},{"bytes":705,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_eighth_voter_window.rs","sha256":"85e1c5041d1ef41aa61d54600436aae0b5ae7ff0884e2ae6c0f897770d04969f"},{"bytes":508,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_eighth_voter_window.rs","sha256":"c05e8a30dac7baa5cf887f15d1bfcfd6f4eb9a9fad406e6a344bb75635c68818"},{"bytes":679,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_ninth_voter_window.rs","sha256":"45b0bb6f4ea21831cc29b816bd65e028e0ee7791665bd01d570dc856efab8b46"},{"bytes":506,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_ninth_voter_window.rs","sha256":"838acbc22eab208afe5dbcbdf8f53c21b4b3ef88db2e822697eda153a8ccc5e8"},{"bytes":679,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_tenth_voter_window.rs","sha256":"0936202430bdc381a8afa2f369d21c6d9ec878f96c489877bacc5b15c7078c3e"},{"bytes":506,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_tenth_voter_window.rs","sha256":"5cc82b4de8aa31c929de970d14def7f41e130c4a34e0d25034b6b96c888b1815"},{"bytes":736,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_first.rs","sha256":"7b1b728763a5398eeba76233852b62483d49f6bed2c76aefa6266355d65e6de1"},{"bytes":524,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_first.rs","sha256":"01b9eb0841083e5d2dab4960fc9cc46a4337f4a0204be4990fbd9dbc2da5756b"},{"bytes":733,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_b92a.rs","sha256":"fcf690f75e33a91e3f2a28b16a4bc82a2ce7f9bf2f92c84738b836a8c9c7fa26"},{"bytes":522,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_b92a.rs","sha256":"4c00a9202869bea49a0b24b4cfbd592118e5a5e5e41070cc3f794adf090cf9b1"},{"bytes":733,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_e50b.rs","sha256":"ae6cabd86f07fa0540cc5787cbade8ddce8a6a8c4bcf85fad65644049573b42d"},{"bytes":522,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_e50b.rs","sha256":"09bd08c4a7987d8bc45679179e2c5d71042f08fd88823e62580ad867e104aafa"},{"bytes":733,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_49f8.rs","sha256":"516ee437c70509545b35d5213b25c097a977d7ba4e62e53db992f1ac4592cb71"},{"bytes":522,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_49f8.rs","sha256":"c78838bc270a895f0f43c327bddff46819c97f5c98ca66611511c3041e480b62"},{"bytes":733,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_a8a2.rs","sha256":"9f854f7a5fd89202cf587fdfede8566e9abc26cfb949e8f27fc7909470a31fba"},{"bytes":522,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_a8a2.rs","sha256":"ff14e82d71955b89b9f1383259fa073d59a12772933d530ee9c0e216bf2a2a87"}]')
 SIXTH_COMPARISON_PROFILES = [{'profile': 'native-current', 'before': {'path': '/home/fry/artifacts/n4-binding-resume-20261011/native-live-replay-frame-cost.json', 'bytes': 10911, 'sha256': '2ccf155e2a851cd52161f090bcd3cc76b09f212a44647ba8f76b7db0b7511fbb'}, 'after': {'path': '/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/compatibility/native-current.json', 'bytes': 10945, 'sha256': '4c4c045bb090749c8c83acab2fd851999473dfa1b2820ab496cc1fbc0730ae06'}, 'fields': ['/source_profile/compiled/0', '/source_profile/compiled/10', '/source_profile/compiled/11', '/source_profile/compiled/12', '/source_profile/executable'], 'executable': {'path': '/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_native_witness', 'bytes': 192510384, 'sha256': 'abfe04a0550b421c14fa80d585feee30a53727eca09c944c9e986a964f9d432e'}}, {'profile': 'first-d-current', 'before': {'path': '/home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011/vrf-first-d-independent-replay.json', 'bytes': 32805, 'sha256': '8bd32c28356e85944a37a900c95e8ae3cb7cbc7f942f27cc2769257b6be36854'}, 'after': {'path': '/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/compatibility/first-d-current.json', 'bytes': 32813, 'sha256': 'b1c09f0c1bacfad76764f40df66b71b8a9f5e8c97eac79c4151f6b87dc68b765'}, 'fields': ['/authority/executable', '/authority/sources/2', '/authority/sources/16', '/authority/sources/17', '/authority/sources/18', '/vrf_sources/0', '/vrf_sources/3', '/vrf_sources/4', '/vrf_sources/5'], 'executable': {'path': '/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_vrf_witness', 'bytes': 194465976, 'sha256': 'b55496742d36ed6b6e5c6fce1af14fe151a44a9bef59d438d36469810c272094'}}]
-SIXTH_FAILURE_UTF8 = [22406,'38fcbe33ac05dde604893d3bd8e4822c5de5f831d3541187bccfa444d43d3a43']
+SIXTH_FAILURE_UTF8 = [31427,'a55c5aff1010f733eb68ea8248fba6e33c6085ca366dcc7f099c218051eb43fa']
 SIXTH_COMPARISON_ARGV = ['/usr/bin/python3','-c',"import sys;sys.path.insert(0,'/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools');import bounded_vrf;bounded_vrf.emit_fifth_comparison(bounded_vrf.SIXTH_PROFILE)"]
 
 def sealed_profile(profile):
@@ -791,6 +791,96 @@ def finite_profile(profile):
                     equality_field='all15_unchanged_profiles_equal')
     raise ValueError('unknown finite profile')
 
+
+SIXTH_INVENTORY_FIELDS = ('group', 'index', 'path', 'bytes', 'sha256',
+                          'cap_bytes', 'pending', 'schema_id')
+
+
+def sixth_inventory_shape(value):
+    """Bound the authenticated authority graph before and after row expansion.
+
+    Use the existing 8192-node, depth8 and 2MiB allocation model. Reserve the
+    original manifest and stream buffers; reject excess or non-JSON scalars.
+    This local check performs no I/O and follows no paths.
+    """
+    nodes = retained = 0
+    def visit(item, depth):
+        nonlocal nodes, retained
+        nodes += 1
+        retained += 128
+        if nodes > 8192 or depth > 8:
+            raise ValueError('sixth inventory node/depth cap')
+        if isinstance(item, str):
+            retained += len(item.encode('utf-8'))
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                visit(key, depth + 1)
+                visit(child, depth + 1)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child, depth + 1)
+        elif item is not None and type(item) not in (bool, int):
+            raise ValueError('sixth inventory scalar type')
+        if retained > 2097152 - 262144 - 65536:
+            raise ValueError('sixth inventory retained cap')
+    visit(value, 0)
+
+
+def expand_sixth_inventory(contract):
+    """Expand only the sealed sixth authority's two fixed eight-cell lists.
+
+    The caller authenticates the complete 131072-byte-bounded authority first.
+    Require the compiled header, counts, scalar types and canonical lexical
+    paths. Null alone omits a field; zero and false retain their JSON identity.
+    Replace rows in-place, preserving order, multiplicity and all byte charges.
+    No filesystem operation or authority selection occurs here. Any malformed
+    cell or excess decoded graph raises ValueError before command construction.
+    """
+    header = dict(schema='n4-fbb45-fixed-inventory-tuples-v1',
+                  fields=list(SIXTH_INVENTORY_FIELDS), command_count=376,
+                  outcome_count=24, null_means_absent=True)
+    if not isinstance(contract, dict) or contract.get('inventory_encoding') != header \
+            or contract['inventory_encoding'].get('null_means_absent') is not True \
+            or type(contract['inventory_encoding'].get('command_count')) is not int \
+            or type(contract['inventory_encoding'].get('outcome_count')) is not int \
+            or contract.get('schema') != 'n4-fbb45-finite-successor-v2':
+        raise ValueError('sixth inventory encoding header')
+    sixth_inventory_shape(contract)
+    for name, count in [('command_inventory', 376), ('outcome_inventory', 24)]:
+        rows = contract.get(name)
+        if not isinstance(rows, list) or len(rows) != count:
+            raise ValueError('sixth inventory exact count')
+        for index, row in enumerate(rows):
+            if not isinstance(row, list) or len(row) != 8:
+                raise ValueError('sixth inventory eight cells')
+            group, ordinal, path, size, digest, cap, pending, schema = row
+            if not isinstance(group, str) or not group or type(ordinal) is not int or not 0 <= ordinal < 376:
+                raise ValueError('sixth inventory role/index')
+            if not isinstance(path, str) or len(path.encode('utf-8')) > 4096 \
+                    or not path.startswith('/') or '\\' in path \
+                    or any(ord(c) < 32 or ord(c) == 127 for c in path) \
+                    or any(p in ('', '.', '..', 'AI.md') for p in path.split('/')[1:]):
+                raise ValueError('sixth inventory canonical path')
+            outside_database(path)
+            if pending is not None and type(pending) is not bool:
+                raise ValueError('sixth inventory pending type')
+            if cap is not None and (type(cap) is not int or not 0 <= cap <= PIN_TOTAL):
+                raise ValueError('sixth inventory cap type')
+            if pending is True:
+                if size is not None or digest is not None or cap is None \
+                        or not isinstance(schema, str) or schema not in {f's{i}' for i in range(27)}:
+                    raise ValueError('sixth inventory pending fields')
+            elif type(size) is not int or not 0 <= size <= PIN_TOTAL \
+                    or (cap is not None and size > cap) or schema is not None \
+                    or not isinstance(digest, str) or len(digest) != 64 \
+                    or any(c not in '0123456789abcdef' for c in digest):
+                raise ValueError('sixth inventory immutable fields')
+            rows[index] = {key: value for key, value in zip(SIXTH_INVENTORY_FIELDS, row)
+                           if value is not None}
+    sixth_inventory_shape(contract)
+    return contract
+
+
 def fifth_contract(profile=FIFTH_PROFILE):
     """Authenticate the finite authority within 131072 bytes and its own role.
 
@@ -800,6 +890,8 @@ def fifth_contract(profile=FIFTH_PROFILE):
     fixed = finite_profile(profile)
     pin_file(fixed['contract']['path'], fixed['contract'], 131072)
     contract = read_json(fixed['contract']['path'], 131072)
+    if profile == SIXTH_PROFILE:
+        contract = expand_sixth_inventory(contract)
     authority_roles = [r for r in contract['command_inventory']
                        if r['group'] == 'current_tail54' and r['index'] == 40]
     if len(authority_roles) != 1 or authority_roles[0]['path'] != fixed['contract']['path'] or authority_roles[0]['cap_bytes'] != 131072:
@@ -1133,7 +1225,15 @@ def publish_fifth_records(findings, profile=FIFTH_PROFILE):
         failures.append(dict(required,body_utf8=body.decode('utf-8')))
     correction = dict(schema=definition['schema'],failures=failures,findings=findings,accepted=False)
     destination = next(r['path'] for r in contract['command_inventory'] if r['group'] == 'current_tail54' and r['index'] == 48)
-    exclusive(Path(destination),encoded(correction,FREEZE_CAP))
+    if profile == SIXTH_PROFILE:
+        # The reviewed sixth representation changes only outer whitespace.
+        # Every embedded failure string and findings byte remains complete.
+        body=(json.dumps(correction,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n').encode('utf-8')
+        if len(body)>FREEZE_CAP:
+            raise ValueError('sixth complete correction byte cap')
+    else:
+        body=encoded(correction,FREEZE_CAP)
+    exclusive(Path(destination),body)
 
 
 def fifth_spec_from_roster(source_commit, metadata, profile=FIFTH_PROFILE):

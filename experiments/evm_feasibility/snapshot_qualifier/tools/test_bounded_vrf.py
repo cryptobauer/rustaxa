@@ -1464,6 +1464,8 @@ class FifthFiniteControls(Fixture):
 
 class SixthFixedControls(Fixture):
     def test_inventory_and_record_decoder_share_one_authenticated_read(self):
+        # Preserve the exact accepted V12 fixture and every original assertion.
+        self.enterContext(patch.object(guard,'SIXTH_FAILURE_UTF8',[22406,'38fcbe33ac05dde604893d3bd8e4822c5de5f831d3541187bccfa444d43d3a43']))
         body=Path('/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/staging-and-prior-first-failures.json').read_text()
         path=self.root/'source/validation-summary.json'
         path.parent.mkdir()
@@ -1486,6 +1488,8 @@ class SixthFixedControls(Fixture):
             self.assertEqual(len(reads),1)
 
     def test_complete_inline_failure_pin_and_all_mutations(self):
+        # Preserve the exact accepted V12 fixture and every original assertion.
+        self.enterContext(patch.object(guard,'SIXTH_FAILURE_UTF8',[22406,'38fcbe33ac05dde604893d3bd8e4822c5de5f831d3541187bccfa444d43d3a43']))
         body=Path('/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/staging-and-prior-first-failures.json').read_text()
         guard.verify_sixth_summary(dict(s7_failure_utf8=body))
         for bad in [None,{},dict(s7_failure_utf8=None),dict(s7_failure_utf8=body[:-1]),dict(s7_failure_utf8='X'+body[1:]),dict(s7_failure_utf8=body+'x')]:
@@ -1531,6 +1535,88 @@ class SixthFixedControls(Fixture):
         self.assertEqual([r['path'] for r in rows],[r['path'] for r in expected])
         for bad in [pairs[:-1],pairs+[pairs[0]],[[True,'0'*64]]+pairs[1:],[[0,'invalid']]+pairs[1:]]:
             with self.assertRaises(ValueError):guard.expand_fifth_evidence(bad,contract)
+
+
+class SixthInventoryControls(Fixture):
+    def authority(self):
+        return json.loads(Path(guard.SIXTH_CONTRACT['path']).read_bytes())
+
+    def test_exact_expansion_preserves_all_roles_and_null_identity_without_io(self):
+        original=self.authority(); value=copy.deepcopy(original)
+        expected={name:[{k:v for k,v in zip(guard.SIXTH_INVENTORY_FIELDS,row) if v is not None}
+                        for row in original[name]] for name in ['command_inventory','outcome_inventory']}
+        command=value['command_inventory'];outcome=value['outcome_inventory']
+        with patch.object(Path,'open',side_effect=AssertionError('decoder I/O')),patch.object(guard,'regular_path',side_effect=AssertionError('decoder resolve')):
+            self.assertIs(guard.expand_sixth_inventory(value),value)
+        self.assertIs(value['command_inventory'],command)
+        self.assertIs(value['outcome_inventory'],outcome)
+        for name in expected:self.assertEqual(value[name],expected[name])
+        self.assertEqual(len(command)+len(outcome),400)
+        self.assertEqual(command[0]['index'],0)
+        self.assertNotIn('bytes',command[0])
+        # The finite encoding preserves scalar identity; the sealed body still
+        # owns actual role fields and cannot be supplied by a command caller.
+        value=self.authority(); row=value['command_inventory'][91]
+        self.assertIsNone(row[6]);row[6]=False;row[3]=0
+        expanded=guard.expand_sixth_inventory(value)['command_inventory'][91]
+        self.assertIs(expanded['pending'],False)
+        self.assertIs(type(expanded['bytes']),int)
+        self.assertEqual(expanded['bytes'],0)
+        self.assertNotIn('cap_bytes',expanded)
+
+    def test_header_counts_and_every_scalar_boundary_reject(self):
+        def reject(change):
+            value=self.authority();change(value)
+            with self.assertRaises(ValueError):guard.expand_sixth_inventory(value)
+        for key,bad in [('schema','other'),('fields',list(reversed(guard.SIXTH_INVENTORY_FIELDS))),('command_count',376.0),('outcome_count',23),('null_means_absent',1),('extra',0)]:
+            with self.subTest(header=key):reject(lambda v:v['inventory_encoding'].__setitem__(key,bad))
+        reject(lambda v:v.__setitem__('schema','n4-fbb45-finite-successor-v1'))
+        for name in ['command_inventory','outcome_inventory']:
+            reject(lambda v:v[name].pop())
+            reject(lambda v:v[name].append(v[name][0]))
+        for cell,bad in [(0,None),(1,True),(1,0.0),(1,-1),(2,'relative'),(2,'/a//b'),(2,'/a/../b'),(2,'/a/AI.md/b'),(2,'/a\\b'),(2,'/a'+chr(0)),(2,'/a/'+'b'*4096),(3,0),(4,'0'*64),(5,True),(5,-1),(6,1),(7,[]),(7,'unknown')]:
+            with self.subTest(pending_cell=cell,bad=bad):reject(lambda v:v['command_inventory'][0].__setitem__(cell,bad))
+        for cell,bad in [(3,None),(3,True),(3,-1),(4,None),(4,'G'*64),(4,'0'*63),(5,False),(5,0),(6,0),(6,True),(7,'s0')]:
+            with self.subTest(immutable_cell=cell,bad=bad):reject(lambda v:v['command_inventory'][91].__setitem__(cell,bad))
+        reject(lambda v:v['command_inventory'][0].append(None))
+        reject(lambda v:v['command_inventory'].__setitem__(0,{}))
+
+    def test_existing_node_depth_and_retained_caps_reject(self):
+        for extra in [['x']*8192,[[[[[[[[[0]]]]]]]]],'x'*1769473,1.5]:
+            value=self.authority();value['excess']=extra
+            with self.assertRaises(ValueError):guard.expand_sixth_inventory(value)
+
+    def test_sixth_maximum_correction_preserves_every_full_failure(self):
+        contract=guard.fifth_contract(guard.SIXTH_PROFILE)
+        prefix=Path('/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/v13-source-acceptance-retained-prefix.txt').read_text()
+        findings=prefix+'x'*(12288-len(prefix.encode('utf-8')))
+        published=[]
+        with patch.object(guard,'record_verifier') as verifier,patch.object(guard,'exclusive',side_effect=lambda path,body:published.append((path,body))):
+            guard.publish_fifth_records(findings,guard.SIXTH_PROFILE)
+        self.assertEqual(len(published),1)
+        path,body=published[0]
+        self.assertEqual(str(path),next(r['path'] for r in contract['command_inventory'] if r['group']=='current_tail54' and r['index']==48))
+        self.assertLessEqual(len(body),131072)
+        value=json.loads(body)
+        self.assertEqual(value['findings'],findings)
+        self.assertIs(value['accepted'],False)
+        self.assertEqual(len(value['failures']),31)
+        for actual,required in zip(value['failures'],contract['correction_record48']['failures']):
+            self.assertEqual({k:v for k,v in actual.items() if k!='body_utf8'},required)
+            original=Path(required['path']).read_bytes()
+            self.assertEqual(actual['body_utf8'].encode('utf-8'),original)
+            self.assertEqual(len(original),required['bytes'])
+            self.assertEqual(guard.hashlib.sha256(original).hexdigest(),required['sha256'])
+        self.assertEqual(verifier.return_value.build.call_count,3)
+        self.assertEqual(verifier.return_value.publish.call_count,3)
+
+    def test_current_envelope_retains_complete_builder_failure_and_rejects_drift(self):
+        path=Path('/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/actual-builder-and-prior-failures.json')
+        body=path.read_text()
+        guard.verify_sixth_summary(dict(s7_failure_utf8=body))
+        self.assertEqual(guard.fifth_contract(guard.SIXTH_PROFILE)['s7_failure_utf8'],guard.SIXTH_FAILURE_UTF8)
+        for bad in [None,body[:-1],'X'+body[1:],body+'x']:
+            with self.assertRaises(ValueError):guard.verify_sixth_summary(dict(s7_failure_utf8=bad))
 
 
 if __name__ == '__main__':
