@@ -1619,5 +1619,82 @@ class SixthInventoryControls(Fixture):
             with self.assertRaises(ValueError):guard.verify_sixth_summary(dict(s7_failure_utf8=bad))
 
 
+
+class SeventhHistoryControls(Fixture):
+    def test_exact190_fixed_bytes_and_single_pass_bounded_reads(self):
+        opened = []
+        widths = []
+        original = Path.open
+        allowed = [p['path'] for p in guard.SEVENTH_HISTORY_PARTS]
+        class Stream:
+            def __init__(self, inner): self.inner = inner
+            def __enter__(self): return self
+            def __exit__(self, *args): self.inner.close()
+            def read(self, width):
+                if not 0 <= width <= 65536: raise AssertionError('unbounded read')
+                widths.append(width)
+                return self.inner.read(width)
+        def observe(path, *args, **kwargs):
+            self.assertIn(str(path), allowed)
+            opened.append(str(path))
+            return Stream(original(path, *args, **kwargs))
+        with patch.object(Path, 'open', observe), patch.object(guard, 'pin_file', side_effect=AssertionError('second hash pass')), patch.object(guard, 'read_json', side_effect=AssertionError('recursive parse')):
+            result = guard.verify_seventh_history()
+        self.assertEqual(opened, allowed)
+        self.assertEqual(result, dict(containers=5, members=190,
+            charged_bytes=sum(p['bytes'] for p in guard.SEVENTH_HISTORY_PARTS),
+            body_bytes=sum(r[3] for r in guard.SEVENTH_HISTORY_MEMBERS)))
+        self.assertIn(65536, widths)
+
+    def altered_part(self, raw):
+        path = self.root/'altered-history.bin'
+        path.write_bytes(raw)
+        parts = copy.deepcopy(guard.SEVENTH_HISTORY_PARTS)
+        parts[0].update(path=str(path), bytes=len(raw), sha256=guard.hashlib.sha256(raw).hexdigest())
+        return patch.object(guard, 'SEVENTH_HISTORY_PARTS', parts)
+
+    def test_corrupt_fixed_metadata_and_body_even_with_new_outer_hash(self):
+        original = Path(guard.SEVENTH_HISTORY_PARTS[0]['path']).read_bytes()
+        row = guard.SEVENTH_HISTORY_MEMBERS[0]
+        body = 60 + len((row[0]+':'+str(row[1])).encode()) + len(row[2].encode())
+        for offset in [0,8,10,12,16,18,20,28,60,body]:
+            with self.subTest(offset=offset):
+                bad = bytearray(original);bad[offset] ^= 1
+                with self.altered_part(bad), self.assertRaises(ValueError):
+                    guard.verify_seventh_history()
+
+        parts = copy.deepcopy(guard.SEVENTH_HISTORY_PARTS)
+        parts[0]['sha256'] = '0'*64
+        with patch.object(guard,'SEVENTH_HISTORY_PARTS',parts),self.assertRaisesRegex(ValueError,'file hash'):
+            guard.verify_seventh_history()
+
+    def test_truncated_extra_and_invalid_utf8_are_rejected(self):
+        original = Path(guard.SEVENTH_HISTORY_PARTS[0]['path']).read_bytes()
+        invalid = bytearray(original);invalid[60] = 255
+        for raw in [original[:-1],original+b'x',invalid]:
+            with self.altered_part(raw), self.assertRaises(ValueError):
+                guard.verify_seventh_history()
+
+    def test_count_missing_duplicate_and_reorder_reject_without_prefix(self):
+        for field in ['SEVENTH_HISTORY_PARTS','SEVENTH_HISTORY_MEMBERS']:
+            original = copy.deepcopy(getattr(guard, field))
+            variants = [original[:-1],original+[original[-1]]]
+            changed = copy.deepcopy(original);changed[0],changed[1] = changed[1],changed[0];variants.append(changed)
+            for value in variants:
+                with patch.object(guard,field,value),self.assertRaises(ValueError):
+                    guard.verify_seventh_history()
+
+    def test_oversize_and_size_drift_reject_before_open(self):
+        parts = copy.deepcopy(guard.SEVENTH_HISTORY_PARTS)
+        for size in [guard.FILE_CAP+1,parts[0]['bytes']-1,True]:
+            parts[0]['bytes'] = size
+            with patch.object(guard,'SEVENTH_HISTORY_PARTS',parts),patch.object(Path,'open',side_effect=AssertionError('read before admission')),self.assertRaises(ValueError):
+                guard.verify_seventh_history()
+
+    def test_next42_remains_unsupported_by_command_builder(self):
+        profile = 'n4_residual_vrf_7f821a7f63c0e7251e332b9b7c08da0b757124b5_v1'
+        with self.assertRaises(ValueError): guard.finite_profile(profile)
+        with self.assertRaises(ValueError): guard.sealed_profile(profile)
+
 if __name__ == '__main__':
     unittest.main()
