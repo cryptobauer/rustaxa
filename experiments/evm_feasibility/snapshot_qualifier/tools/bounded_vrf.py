@@ -7,6 +7,7 @@ All evidence and source pins are explicit; no discovery or recursive expansion.
 """
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import selectors
@@ -112,6 +113,26 @@ SEVENTH_HISTORY_AUTHORITY = dict(path='/home/fry/artifacts/vrf-round3-01a141ba-2
 SEVENTH_HISTORY_PARTS = json.loads('[{"part":0,"first":0,"last":28,"count":29,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-0.bin","bytes":1008358,"sha256":"6c91c1118c649515ae5cbf1392c0dff4289419a2862b4747fcbc22ebeab44781"},{"part":1,"first":29,"last":52,"count":24,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-1.bin","bytes":912176,"sha256":"b4b41491f95a970c7fee80e045487afb8329fae8e9905286f8e79c4bcf6a3300"},{"part":2,"first":53,"last":65,"count":13,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-2.bin","bytes":1031636,"sha256":"61b679b8ffacc1b4092074897a19240067b443bdea72388427f8370cea33df4f"},{"part":3,"first":66,"last":173,"count":108,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-3.bin","bytes":1036927,"sha256":"5b275901cc1b43feac9e1fc365b9746ab1a6c1d92fb14ccfb2b4dd9864f5724c"},{"part":4,"first":174,"last":189,"count":16,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-4-v6.bin","bytes":678859,"sha256":"cd20532fd2966e0a6bae11331aecb6e88fb8c2f03e3a77d8d981f978147d791b"}]')
 SEVENTH_HISTORY_MEMBERS = json.loads('[["fbb-source-tail54",0,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-all-package.json",526,"624247a6c86087990c046cccb257c842d9e04d7c23ed4708f16868570fb15c9b"],["fbb-source-tail54",1,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-all-package.log",69908,"3663cf4824f463d2e3ffa07a86e352b2b2c1c88f000155a4d13c6351a6126767"],["fbb-source-tail54",2,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-focused-corrected.json",558,"73e4e6ee541258c34f50507a2b0aa564cb6266e7a9df8d14cdcb0881c7653ac1"],["fbb-source-tail54",3,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-focused-corrected.log",32971,"3ed4e240977f85bf6c47c1f44ea39f53cf0109d4b9378fd7064e8cedc91cfc35"],["fbb-source-tail54",4,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-quality-corrected.json",791,"be51aa8316efa797d0018de09fc1aa94f27c9893f560ba666bbf186ce7ae9fcf"],["fbb-source-tail54",5,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-quality-corrected.log",65121,"eee21ec74cb8fe08e2050d91a4953fdcd160991b0303f749fe5fc073a281a996"],["fbb-source-tail54",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/tool-fifth-source-final-v4.json",545,"c88719fed436657fb24d4031a7879c97e52c2118bdcfbb969b8dfb7ae884595b"],["fbb-source-tail54",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/tool-fifth-source-final-v4.log",192,"b2566fcc4d9a90b80c836741f3ae5a6a0adbc1e0df5a219a1dc7e7e6bd7175ea"],["fbb-source-tail54",8,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-package.json",524,"56b9eabd388f2be37589e8282e4598a12115360e600a45072de0036186c9beb2"],["fbb-source-tail54",9,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-package.log",47357,"2288de1c76b8c44b1e2e46c88d79f75a7902ed1f9f3f87453d84d63e000b6e8c"],["fbb-source-tail54",10,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-bridge-build.json",496,"d75d12889b4a7b104cb8ddda34725b9dc126e4b0bebd532ce8af719ab6441d0a"],["fbb-source-tail54",11,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-bridge-build.log",40662,"29dd945674d67facf38bfeb4e9a5a6636ae36f49390005ec2c549ab202acc34a"],["fbb-source-tail54",12,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-bridge-tests.json",418,"8bd4980c57db5eebf7942e76fe87ab3b2f88f80d4a216973d858b674cba038ff"],["fbb-source-tail54",13,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-bridge-tests.log",962,"d743fe7fbe586969653d27d131065e4a3133c0c6123215c987911242ab982129"],["fbb-source-tail54",14,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/canonical-parity.json",555,"d8a9b75494ebfb04ccccdefe1581faac5e04b851ea0a86b7ec010d05cad93b0d"],["fbb-source-tail54",15,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/canonical-parity.log",30919,"29f415ece66f9fa45e03daaa90ddaa03b59e1a1b814930aeb4267f3c94656e06"],["fbb-source-tail54",16,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/native-compatibility-corrected.json",661,"417226ed7e35848d1dbb0c7152bafc3a51e005d45f13551fcd71be80b0c94848"],["fbb-source-tail54",17,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/native-compatibility-corrected.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-source-tail54",18,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/first-d-compatibility-replay.json",710,"ab9d5f613af8340c35242cd4524e59db3d34d2ee1dc459035d73c223d87ba1e9"],["fbb-source-tail54",19,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/first-d-compatibility-replay.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-source-tail54",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/native-first-full-final-v4.json",624,"515fa80f5fe98518164701d6264b62a602e4f4294ae3133e7e9381509887dd8d"],["fbb-source-tail54",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/native-first-full-final-v4.log",100977,"2505c6c922c24ec784afd2dae99a9b0dc29eed5160590da9217da12ecf57ff8d"],["fbb-source-tail54",22,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/argument-rejection.json",1114,"b69a6037a9a57c5bf10daeab5caa63d5375e52a6a4b80298bf86134a4b83ce40"],["fbb-source-tail54",23,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/argument-rejection.log",3315,"53cc26a23fec26ad0e44816d7265e7e60ea14a6d6410470c0e5e5e90b50edd74"],["fbb-source-tail54",24,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fast-gate.json",419,"0aa2d0fa48cad32de9b20de298d723d91ddc772fc529fb0afe7d21a9e78fd518"],["fbb-source-tail54",25,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fast-gate.log",291795,"cd5761560d2acef798ee362cc3f2a7a6c94d85fe98782620b3ada1f468327e49"],["fbb-source-tail54",26,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/actual-hook-gate.json",471,"37f25c344a059b1e93f47e645aa7db16fea0a6e4739069f1f5b945e53b2d4e49"],["fbb-source-tail54",27,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/actual-hook-gate.log",291941,"fb6862f27e1a325f55e5bfaef2a2036fae3a9599a85bebd2b4085077c65fa3a5"],["fbb-source-tail54",28,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/code-acceptance.json",19568,"0898197293c2f6f44d7baa4ea8a4dc534aeb269d778b093e8ac7584343565595"],["fbb-source-tail54",29,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/validation-summary.json",64074,"ab24e532087a486326fac32d210837fb11ad87e2bd9f2be93f94f962e561b7d1"],["fbb-source-tail54",30,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-commit.json",968,"1e6ba18d38ba7418fc1b67254a46fc434078c24f4c92b20cb55656ca43183057"],["fbb-source-tail54",31,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-commit.log",291941,"fb6862f27e1a325f55e5bfaef2a2036fae3a9599a85bebd2b4085077c65fa3a5"],["fbb-source-tail54",32,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-hook-summary.json",352,"f4a31d8b38445b927531a7c73a055c29c7f07834bc8c9bb0ddd1c7546fa83ca9"],["fbb-source-tail54",33,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-successor-mapping.json",3535,"5f1682d09c619d5ba6d434648e4cffd0611a6f6e93954c257f8a308d680dd2c4"],["fbb-source-tail54",34,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/binary-successor-mapping.json",1158,"db9a2f3841dd4130ddfe49f329dac876794ef92e41f6b81f35bf72db87f0f4d8"],["fbb-source-tail54",35,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/preparation-comparison.json",988,"c577ed3c5f130e5990c55697a1e1853f7c631bf70b7baf6785fc956775512964"],["fbb-source-tail54",36,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/storage-validation-current.json",996,"4c56dabef0f9f05d444539946afc5b58c68496d1c1555d904741d48cda34dd3d"],["fbb-source-tail54",37,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/code-and-gates-freeze.json",21338,"66e709d3d5932eec6e5b7ccef92184b4f6fd3ce6cf3bfc1d3912e74f24368dd5"],["fbb-source-tail54",38,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-freeze.json",18613,"f23817f793a8b3dc3ff5f430461db705fad277407c88e23181e4c4fcb08f961d"],["fbb-source-tail54",39,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/tool-source-freeze-v4.json",444,"f275431c77296c90b2343a889303371e3b0a891257ddd13aa552d9a72a528aae"],["fbb-source-tail54",40,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/fbb45-successor-contract-v14-tuples.json",118933,"f831786029d53c7cf86600198ed15ae8cddc643d6063083f844ee95a320d86be"],["fbb-source-tail54",41,"/home/fry/artifacts/vrf-run-01a141ba-20261015/sol/map-acceptance.json",2104,"33c1e6e686532ec7e38e2dc3383cfe9bbf31f77f1d3254dc3b221b9d9b6c0145"],["fbb-source-tail54",42,"/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/fbb45-candidate.json",24991,"56fa5ba1ccbd13322db9e42d8463c69e6c1c5fb1de4e3d7a9b1c52a18688a6f9"],["fbb-source-tail54",43,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/candidate-pins.json",1365,"7e0ecb1db06e3a4d6b314c019fdccadd12a6f95938c68771da86fd382c889f44"],["fbb-source-tail54",44,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/candidate-comparison.json",653,"56054ff4a62ec41b009dd51e1459aa2869933bd85da8009d2c43f3d0d7ffff10"],["fbb-source-tail54",45,"/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-failure-history.json",2606,"758b2206d21711cdd15c0d37b1d504dd9311ec0522dbe6d750bc08ebbf1d0a31"],["fbb-source-tail54",46,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/result-equivalence-summary.json",2012,"942932f9360d052cbc75cfff8193d9bbfd04cbae287ad64a756186e6c33efecc"],["fbb-source-tail54",47,"/home/fry/artifacts/vrf-run-01a141ba-20261015/source/result-equivalence.log",69908,"3663cf4824f463d2e3ffa07a86e352b2b2c1c88f000155a4d13c6351a6126767"],["fbb-source-tail54",48,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/current-correction-record.json",130225,"197a6260f8514d6c6ace8a315fdbd31081d950eeeca353e86783e226eb40eadc"],["fbb-source-tail54",49,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/command-closure-review.json",14936,"dad5f82cd1fe7dd484166db28b504c365a50cc65c33f79831cbce52f5ba271d2"],["fbb-source-tail54",50,"/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/code-and-gates-freeze.json",36042,"b42c90053574348079ae5038098231a329d85638d84247139c8ba3cbed138271"],["fbb-source-tail54",51,"/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/vrf-residual-third-voter-window-command-freeze.json",92897,"16e2656fcbc9155fa114755357928926d5a7b50e5b514724c0d9af12eca6a715"],["fbb-source-tail54",52,"/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/fact-outcome-freeze.json",7342,"c5ff42f1428d74ac208ee647b6e10568d80944e7b9b1a6016280de8e7bddcbc0"],["fbb-source-tail54",53,"/home/fry/artifacts/vrf-run-01a141ba-20261015/luna/offline-full-tuple-map.json",202728,"43ffbffd48d1d287b2c8c46e25a07456b43a2bcbc099312a6c64cf57b16b56c8"],["fbb-outcome24",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-command-freeze.json",90628,"68492bd181db3181bdfbeaf1f3b314db8c6597dd6e76b2e45df93e58a12557d9"],["fbb-outcome24",1,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/instance-spec.json",49417,"be4e5c18fc15bcd80c4bb5f7d762fa1c6b0d3a17c8bc591857ac30c06d720843"],["fbb-outcome24",2,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/exact-commands.json",1508,"8e7ce497f9b97cbef26ee667bf0c72498a7afd28d6d2279a5272531bce3e061d"],["fbb-outcome24",3,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/command-ready-review.md",8515,"20d1351c6e4125aa7ee0f54167836d24744e0924aebd272c0fc545bb755fc02f"],["fbb-outcome24",4,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/command-verification.json",2830,"d01e5dc97fc732545091674d24dd1b982a1e06bbd35aa48dac8a069082273e98"],["fbb-outcome24",5,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/capture-execution-decision.json",1797,"6cf4234c628039abc9781b326c5047d4f4b6baf2c64eccb47986eb98c5b25b9f"],["fbb-outcome24",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-attempt.json",449,"089e053b924ce8fb4dbd27166e55b86984349a63b3309b4f122f4c793eea1cf5"],["fbb-outcome24",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/guarded-capture.json",679,"e19ac7f4610171bd254a27d35ed292575625c476cf1d5944c6593b3c1bb7c429"],["fbb-outcome24",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/guarded-capture.log",1432,"2f5a85ca446286f3155d17022e97463e3c052a631487f70925b15210ff905b13"],["fbb-outcome24",9,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-live-result.json",1726,"946da65ba319ea96e43ad939d708c47bc4502e12dae3880956a4f7dc80e58ae7"],["fbb-outcome24",10,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-live.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-outcome24",11,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45.rcv4",668107,"335886b06ce1066173b6d1924ad6d9c467b64c4e40c96a2e5328613281106dbf"],["fbb-outcome24",12,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-capture.json",45949,"15efefe3bd23b8f32508e38c371687a9f8ea4f3c6650e842ccb6986e1f4135e3"],["fbb-outcome24",13,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/lead-offline-replay.json",1412,"59d3c0d5ccbcecbbb6db03fe4a2d630f4d685c7f85ea0bc20b672a0ccaa2e845"],["fbb-outcome24",14,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/lead-offline-replay.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-outcome24",15,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-replay.json",57495,"b906f78a4b45abfc2d269c5197f2ac710d63ec29c6a0f4cdbcb3dc14d520b69b"],["fbb-outcome24",16,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/independent-replay.json",1240,"024be224266575a01ad2ea39a8c2cddcca3cafea604c86196771ba1028e893dc"],["fbb-outcome24",17,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/independent-replay.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-outcome24",18,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/independent-replay-report.json",57495,"b906f78a4b45abfc2d269c5197f2ac710d63ec29c6a0f4cdbcb3dc14d520b69b"],["fbb-outcome24",19,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/independent-verification-v2.json",66700,"c21c323016dbe18216be636a788f1c8d7f9cdbf94fdb54d4c62a5bcd04c07027"],["fbb-outcome24",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/lead-verification.json",1984,"2381b4a1fad26e2d182ea845be4b823b202a0731432754a2dd9c29102a2da59e"],["fbb-outcome24",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-outcome-record.json",23644,"84d777257cf3d77c90c2e7bdbcc7bc02cc43ea9c4c8b1561f45491adc0fc2478"],["fbb-outcome24",22,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/family-final-review-v2.md",6359,"75e596d5cb9b3b11d9eb4a801c17850249b243f0c246a2a388f83a36267969e2"],["fbb-outcome24",23,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/final-quota-snapshot.json",5140,"d40c187b378c24a52642f0a6979356b5d64ef46603fd418f0223ed9572acba8a"],["fbb-final-seal",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fact-outcome-freeze.json",6534,"17611fa891a2386c9fcfe009e8966b75b4dce4c0653d9e02fe1cba953ff60568"],["fbb-final-seal-acceptance",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-seal-acceptance.md",2962,"77ff586624efe46df33244f0bc20902ab1b9277269ccc6f47963861c0ae83b27"],["fbb-reverse-auxiliary24",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-command-freeze.json",20815,"3ae63f510aa696de1b505e58ac4135a326d3fefd9d1941fb4b745aa1ae2edf6d"],["fbb-reverse-auxiliary24",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-ready-review.md",5721,"397a4c2037295f7a9ce3db3a0b20598e97eb84064ef3bb0d3f75f5cf70ce0930"],["fbb-reverse-auxiliary24",9,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-a8a45-into-fbb45-result.json",1483,"cc3c2de32fe6b905e996c0272d14c33fde2104914fb81995a27c6ac0fb9d7728"],["fbb-reverse-auxiliary24",10,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-a8a45-into-fbb45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",11,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-a8a45-into-fbb45-report.json",46213,"e0e1af44a01c98097474f60f7b7cb87d6d7310d02a119a8222cc239dd76af868"],["fbb-reverse-auxiliary24",12,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-fbb45-into-a8a45-result.json",1486,"49f05e28b0b5311e9af305240e8987143fa14081f14683e966469b3dbbe228d1"],["fbb-reverse-auxiliary24",13,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-fbb45-into-a8a45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",14,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-fbb45-into-a8a45-report.json",46216,"c6fae3ad81ea085cc41c9b14958fceb05bc8823918055a58505803c655f39c29"],["fbb-reverse-auxiliary24",15,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-complete47-into-fbb45-result.json",1522,"ed5c177e1812a4cd57ae411014533ffee6ab5eb67e60205e23784b6e3403bf60"],["fbb-reverse-auxiliary24",16,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-complete47-into-fbb45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",17,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-complete47-into-fbb45-report.json",45834,"e584e7d1992589f57a7701c8d1cd703a22a71b4c4e56b75bf47273a5a27e124c"],["fbb-reverse-auxiliary24",18,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-first46-into-fbb45-result.json",1556,"8b5ba60b06ce756f8cc84a4d6f0225cee1a48ec69b80232f15a076cfd60a8973"],["fbb-reverse-auxiliary24",19,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-first46-into-fbb45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-first46-into-fbb45-report.json",45834,"940ca937ad12399f3e68c317347582f0cc4855dc996042a9152d0c8351d86e6e"],["fbb-reverse-auxiliary24",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-third46-into-fbb45-result.json",1556,"b2bb4752dcfe9ef015ce8d9dead6f5c25ebaadda005246e83aac570937e3791a"],["fbb-reverse-auxiliary24",22,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-third46-into-fbb45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",23,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-third46-into-fbb45-report.json",45834,"40ce8d5135abf72d7f7e2b3e6da889f720ba5e778503a56c39c87386e22c0cfa"],["fbb-round2-external",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/CHECKPOINT.md",1503,"d8592c50ca8e91971784912684299599926009831700dd660ad7e6a0ba620999"],["fbb-round2-external",1,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/actual-final-builder-full-sha.json",527,"70796290900b34644b4ab7120ecd74aa3d3f9c144250b9f87ce602efcd6563f8"],["fbb-round2-external",2,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/actual-final-builder-full-sha.log",405,"9ab27183593b1e2384a4ff7c85fec1107cad0b3496da1e1fb61e9c222449fa48"],["fbb-round2-external",3,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/actual-final-builder.json",487,"6bff2c51079f666cec4dc3e4aeed0f0f75ed22f5ff978a8d5fa058ca2a9fc771"],["fbb-round2-external",4,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/actual-final-builder.log",537,"38465be7cb951a55d1769506ededd7ccfefd45553702b307f476e94b6dadf085"],["fbb-round2-external",5,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/checkpoint-current.json",8255,"c4a8b2233b8f1a94db10ea4e9e73a07fa3ad09e4eb0eb412476189397ca23ece"],["fbb-round2-external",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/correction-focused-fixed.json",566,"b894b3d47ddbd8f6ea0e13267e7bb0005eb6c645974438d5d9ba0b62986f0e8e"],["fbb-round2-external",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/correction-focused-fixed.log",110,"d3dbc606baadd942a9789fa4ea11b857a1e4864567840aaab1ccb605da5dfa30"],["fbb-round2-external",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/correction-focused.json",559,"59e58cceaee8bf77961209a067d873c19176663c95170f65a0ec79c06e0d8511"],["fbb-round2-external",9,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/correction-focused.log",835,"585a258e070fcfa0d02a97c3658c0b759ec078f3db54d6c352cd50da4bb65d04"],["fbb-round2-external",10,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/final-quota.json",1065,"38c5663ecf09b8b6596a3d03a1b6b70980aa5ec891c186dd9fa31c4bce4f0ee4"],["fbb-round2-external",11,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/final-seal.json",528,"b81667c908820ba97a9415a5d39f47223ada317ebc24b3507c6fa30d3a44b0b6"],["fbb-round2-external",12,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/final-seal.log",247,"fccf677015a15a34c242840b1dc04511079dc69bc67473ce6058393cd40bc137"],["fbb-round2-external",13,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/guard-commit-closeout.json",1023,"cf754291dd956a945101d8017f1464707a2310b8cff8af7d8236099570fa4fa9"],["fbb-round2-external",14,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/guard-commit.json",461,"b4cd382d0918a232cc68309865bf283fe92d0ca568d3e8bab1900010ea649e8f"],["fbb-round2-external",15,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/guard-commit.log",291941,"fb6862f27e1a325f55e5bfaef2a2036fae3a9599a85bebd2b4085077c65fa3a5"],["fbb-round2-external",16,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/metadata-staging.json",508,"18c88104020c5fa5c728f1355992258b573c443eb719d20f13345b6ee9195324"],["fbb-round2-external",17,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/python-full.json",523,"6c135aca7061107a76de0751b08f09f9e30095be13d5bcc0248978d4f30c1ac2"],["fbb-round2-external",18,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/python-full.log",191,"47da076880b116f1c0843d9f12db0bf45735c800988fbaaf961e7a16d3615c8f"],["fbb-round2-external",19,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/quota-budget.json",278,"ebe0e3906ef19e1c6c5e38e0e60de791897d898018ae4beb45d545cb7ecf460c"],["fbb-round2-external",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/round-start.json",712,"d397ed020a90614ce17193526476752fa80497e345bd9acbc8f4dcf152f0d0dc"],["fbb-round2-external",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/scorecard.json",2895,"009ec762550db6d6fe4b5d721495567abf73b3fa506e60caec3457da197d7c93"],["fbb-round2-external",22,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source-final-freeze-v2.json",25259,"373752490102a9c3308ba0656965cbc1b1a7f974525f6aba34640e1727e40d6c"],["fbb-round2-external",23,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source-final-freeze.json",23560,"be638281284607a3a371384c92aa7bc08e58a4818aac9df425b7df46a64db461"],["fbb-round2-external",24,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/tuple-focused-correct-cwd.json",567,"fc38a27c5ee0b8806561c0ef3192c90bcf7ad3ec1dd0aa87299b9eb71714d950"],["fbb-round2-external",25,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/tuple-focused-correct-cwd.log",109,"5f2c314d789f8216fbd757608b8a64f081b6bd5b74454e44f50bc5727f016cc5"],["fbb-round2-external",26,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/tuple-focused.json",503,"4e3acdd83e2483d3c8c0ef5320c94e8294bbf1793209fc0e76bfffb70f15b819"],["fbb-round2-external",27,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/tuple-focused.log",1081,"3b2ec6f3b8733eb8a9b16baf49b9f3968be92424772110864683ee7a46d278dd"],["fbb-round2-external",28,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whitespace.json",569,"3a73942f0b3d5b954150585b039e097eb8a82f79a5ec5593fc30b17c53d8a4af"],["fbb-round2-external",29,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whitespace.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-round2-external",30,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v2.json",537,"4158a979c241ac7530c68db6e9988b4b760e3c82ed3ac555968471c9dc97b2dd"],["fbb-round2-external",31,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v2.log",907,"7b1122d2889085f99c200e32b1726cd7b83cb488fa522e1e84c5ebd59e9cd1f2"],["fbb-round2-external",32,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v3.json",538,"2076df7fa02b9b4572a36cd5c09bfb87c9243310840be0d1bbbfd0447141945d"],["fbb-round2-external",33,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v3.log",1582,"8221685001dca6733f7f9b4b3a3c6b4323aaf61310dc1752acbcd7086e68be75"],["fbb-round2-external",34,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v4.json",538,"83f534f91f896d23caeb1c7b9b78634ab5c3c771a29482b681ac126c01d025eb"],["fbb-round2-external",35,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v4.log",1169,"82da4b9268fbf0a92ebce9ac7f7be3b2a5a7cde73f4cdb517e34d92e75450d33"],["fbb-round2-external",36,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v5.json",537,"ad9bbab44d96e87ca14274bb2de9b92c34aab0c473e6112d7fbc9ab5fca87655"],["fbb-round2-external",37,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v5.log",501,"f83f60446e2d0219e91bf63e802854566dc6e00f2418a899075cdafc61c0ae9c"],["fbb-round2-external",38,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run.json",531,"16898434eaefef4f77f2750d59a55a1b54e7262bc0cbf52feeba37f0d1819a1a"],["fbb-round2-external",39,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run.log",813,"3abe9dc08ad2bb577a1db19ba1569f2db9d84ec72ef6458df2805eaa611f0504"],["fbb-round2-external",40,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-preflight-v5.json",7880,"6b206229c03cf2ef25de4e2640154ae0b0a17b6055c15bbace017f9ff194af70"],["fbb-independent-external",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/body-inspection-non-json-log-first-failure.log",618,"2991413d27ccc67fa2591191f7767d4b7757b3048d17a138d3c5a594db7defc6"],["fbb-independent-external",1,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/body-inspection-record-decoder-first-failure.log",817,"ea5991bbad704934af94ff5753f3f8ba13db1eb6cfe151eb871118f872576931"],["fbb-independent-external",2,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/check-v13-semantic-first-failure.log",203,"7eb827ccb864ff7d85ea1042896e160de6974bfc52380e840151ba4df9a4e305"],["fbb-independent-external",3,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/exact-command-ready-check.json",4151,"7502b852544fc89b769a05ae6df7a9f6e3ad012c57a1869a0b25e92ba48845c2"],["fbb-independent-external",4,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/existing-builder-precheck.json",5793,"c79792b69bfa492360cab203abee64202320fa76648a5788aeeec186acd64d5d"],["fbb-independent-external",5,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-fact-check-v2.log",327,"d64ee1133f823ea563ad2599d8268f55a8e9df00d43f3a184b6035994e590c4e"],["fbb-independent-external",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-fact-check-v3.log",513,"b3fa66fcfa8f2bdcd49b38d375d05c106ae9ec78fb802c1caa11d8552deacf74"],["fbb-independent-external",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-fact-check.log",147,"3f3a1a9640283faa6c3fb616995a684e4964b137241628f9c0d7eec60941075d"],["fbb-independent-external",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-fact-script-generation-first-failure.log",738,"7eaa72fb328def116b8c201ccba4a92e491387a51f7851a392107f23e4ba54bb"],["fbb-independent-external",9,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-preseal-v4-acceptance.json",687,"315e54559be5573c497b2985ac48a4fb2ce7f6f3b35a9f34950ee41b2a13396a"],["fbb-independent-external",10,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-seal-acceptance.md",2962,"77ff586624efe46df33244f0bc20902ab1b9277269ccc6f47963861c0ae83b27"],["fbb-independent-external",11,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-seal-verification.json",971,"f867676792b24fbd18334445580efaaa75c84bb1dcfe4b6b451af35d5485147e"],["fbb-independent-external",12,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-two-path-amendment-acceptance.json",749,"e085db0e5ee8bee50ee71cf0b5a069a7177ac15e399667cdcec95d2acfba638c"],["fbb-independent-external",13,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/independent-replay-and-reverse-input-verification.json",1710,"32c7b573db819b6f2f58d58b022e0420a703f74fd24eea83eea1e91f911e204b"],["fbb-independent-external",14,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/replay-reverse-check-first.log",326,"46fb5b12d0bfbff61de99ccae656877eaf0c22230e96fcc7a74b0f3b2ca15b16"],["fbb-independent-external",15,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/replay-reverse-check-v2.log",1710,"85754dd8c74545ab6f2711dbf0d4934a3d596078177833f0262c3a6b70e1b4f1"],["fbb-independent-external",16,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/source-acceptance-actual-fit.json",643,"545df5eb49c2b750b16f891e435efaac5a2981bea218ce461b2bc035ffa790fb"],["fbb-independent-external",17,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/source-final-acceptance.md",12200,"b6d2728fb921ba62e5c034de7f5274c482c022148d37a5ffe739c295a549c397"],["fbb-independent-external",18,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/source-final-analysis.json",11444,"1a36540df6da55d24ccace8d925d8a50678ffe34e4ad6c8e325f258c803ea6b1"],["fbb-independent-external",19,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v13-layout-acceptance.json",3345,"44a7599dc25bf41004c18ec31ca20e88f857e8ab839e6964c4c73fcde1351c45"],["fbb-independent-external",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v13-representation-rule-v2-acceptance.json",2022,"e6eabfe840bba0d52cfe9eb3b35b084f2d2e5b4c79e3844d671c9d58723b0c32"],["fbb-independent-external",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v13-semantic-review.json",1635,"c6d43196775afb73d5920e4db6d5503be398785fb8cda064197c6dfb3e330265"],["fbb-independent-external",22,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v14-exact-delta-acceptance.json",1396,"9967c394d1284ff36003b214e9be60db152d52f58cc03f2f8052113fc6a9a840"],["fbb-independent-external",23,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v14-independent-summary-read-counts.json",467,"8424ae68d564a7f3830996b3788d31a94ba4ddf99cfb1134df97b699869817f6"],["fbb-independent-external",24,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v14-source-fixture-retention-rule-acceptance.json",1566,"ee57b2743a6f7317b5b22981efaeab28f561e972c1c52b940189f92008466a6c"],["fbb-independent-external",25,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/whole-stage-independent-phase-v5.json",8156,"f2cd7b8b339cf0f1174149553c0bd94bba014da3cbfc132bb9eef204d4b0105d"],["fbb-independent-external",26,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/whole-stage-independent-v5.json",8018,"77ca09eeb26c54c80c023a902f486c54238f269bcd2c8d03d0093d5136c2d6a3"],["fbb-fixed-authority-external",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-draft-first-helper-failure.log",837,"fdfe39162eef82d0d3c397181d4da064193514a181fd7c5f12017566f24b84b4"],["fbb-fixed-authority-external",1,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-draft-first-helper-failure.json",734,"264ffd7be1bdebf59638ad78c5121c3bcb5d9fff2baabff4921ea6cea6ffa017"],["fbb-fixed-authority-external",2,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-binding-first-helper-failure.log",125,"2a69bca4e1c9e5e0124719876785be18d608193a4be1d05d85cc3ed9e58d88bb"],["fbb-fixed-authority-external",3,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-binding-first-helper-failure.json",539,"183254dfbe05b6a985534420442d86748021a9527604c5b0df88f13981a61bc9"],["fbb-fixed-authority-external",4,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-captured-input-binding.json",8674,"a2d98edf7c3a6e5117e9373abd99bc15ba72d3de6e03322d611e45691c1aa2bb"],["fbb-fixed-authority-external",5,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-offline-derivation-and-authority.json",4716,"af6bc0ddedd9acbfbfedee6e2da59522dd9b8383e458131d7bd64aab5d021650"],["fbb-fixed-authority-external",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/v13-fixed-summary-correction-representation-decision-v2.json",3796,"d4a192eb369768a7c8a08725fe28dde999ff71fe272bdf00a23bc81892ab898e"],["fbb-fixed-authority-external",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/v14-source-fixture-retention-decision.json",1522,"130d72309993bfd9c9c98ecf4acfa3c1a153fa5c64591d17b5d52c86891e19ba"],["fbb-fixed-authority-external",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/final-seal-two-path-amendment.json",3652,"7474eca5d21619717693847b85968466025311e56bbae65ad9f2bac57eff93e9"],["fbb-changed-source-predecessor86",17,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs",57756,"50585547ddccab17c8956aba49d4bd082629399d85cc90bfb7fa96bcd1616cba"],["fbb-changed-source-predecessor86",18,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_bundle.rs",11855,"4d927a1c7aeb5dfdb9b81c917f0e5196f987dfae51b36543389813cf83fad726"],["fbb-changed-source-predecessor86",28,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/lib.rs",3456,"07d607a2482ab94824f96adb6b0c858c18eb806db5ab9b20aa2447a7bc34acbc"],["fbb-changed-source-predecessor86",29,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/mod.rs",2634,"85876f79f9848f3c6976e138cedab20d1993dd0304a728f19110693276ee183c"],["fbb-changed-source-predecessor86",46,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live_tests.rs",107805,"192fd0d1daeb47b52ded2c3527962bd4e3bfcf25ab859d0b6be3ad03e545bf3d"],["fbb-changed-source-predecessor86",65,"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_shared_window.rs",149384,"0c5d41be85625285c5fe33428fece4112a3f6bcba32d19eebdd43efad6c7913a"],["fbb-tool-predecessor2",0,"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/bounded_vrf.py",165303,"b0b99a840c26ad213252b59278b811a14677a511be087b095c385accab5ce243"],["fbb-tool-predecessor2",1,"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/test_bounded_vrf.py",111682,"9bc339f7510177a8a18c5894aead30fb6d1f725e104b5b3232c13460698d6fbf"],["fbb-changed-source-predecessor86",16,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness.rs",22269,"ec47bb56f197d9c02ff2a4c4ef1f1f4f58a781ce1a14586a8e1a417fe90b93e4"],["moved-inherited233",46,"/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013/argument-rejection-10.log",91,"aff8d9b31e497304d5e5be2d079b10e58ba42099513eb9449dbbd10283997121"],["moved-inherited233",47,"/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013/argument-rejection-11.log",91,"aff8d9b31e497304d5e5be2d079b10e58ba42099513eb9449dbbd10283997121"],["moved-inherited233",48,"/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013/argument-rejection-12.log",91,"aff8d9b31e497304d5e5be2d079b10e58ba42099513eb9449dbbd10283997121"],["next42-fixed-first-failures",0,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/qualifier-42-focused.log",41899,"e9d9b1b655d41063d18be229fd278dc77875c79244d79d85589ea5bcdd3f682f"],["next42-fixed-first-failures",1,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/qualifier-42-focused.json",550,"ad57874afda295da7008efcdfe183be9066ea58350fe02b4999bc1368a543747"],["next42-fixed-first-failures",2,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/formatter-invocation-first-output.txt",785,"e847574298062c55bc588b557a5a447df5ff0e816ead43fbb4336db56153aeb6"],["next42-fixed-first-failures",3,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/formatter-invocation-first-result.json",555,"c4ec22402fa0e70413495200e5b5ffd708fd1e81e31a2ea862215a8bac201993"]]')
 
+
+# Fixed42 integration uses the exact V7 history; V6 helper authority stays intact.
+NEXT42_PROFILE = 'n4_residual_vrf_7f821a7f63c0e7251e332b9b7c08da0b757124b5_v1'
+NEXT42_CONTRACT = None  # Full fit/source/descriptor acceptance remains required.
+NEXT42_RUN = Path('/home/fry/artifacts/vrf-round3-01a141ba-20261016/next42')
+NEXT42_FAILURE_AMENDMENT = {'schema': 'fixed42-five-failure-amendment-v2', 'manifest': {'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/failure-amendment-v2.json', 'bytes': 1651, 'sha256': 'eff1d99476639e54804b7c9e1c632dfb3c9d22b9bce70bacbc5eaa3b931ba06e'}, 'required_failures': [{'role': 'resume-python-closeout', 'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/failure-python-closeout.log', 'bytes': 1043, 'sha256': '3918b579f7f6accbc561939c786d7e2ee4d7898e0e4aa394a7e80d64c00bf433'}, {'role': 'prepare-cheap-keyerror', 'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/failure-prepare-cheap.log', 'bytes': 559, 'sha256': 'f671af7b46dceafee7cdaf948f55b53722b0ad427858d7a59a38ff6dcbbfeddb'}, {'role': 'authenticate-immutable-keyerror', 'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/failure-authenticate-immutable.txt', 'bytes': 292, 'sha256': '997266e7de10b99f128b9cdd0125af8b0a8b0ab426798e21f4c1b527dd09df05'}, {'role': 'authenticate-replays-source-closure', 'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/failure-authenticate-replays.txt', 'bytes': 634, 'sha256': '638b77d5ed3155975e317652a0796fc7fa32a71bf4c9462ddbcf729bc1e66bfe'}, {'role': 'amendment-cap-field-alias', 'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/python-amendment-first.log', 'bytes': 17017, 'sha256': '973d47c6c1c9b2e36fee55938b8013169435893909e0b91f8456b87413662249'}], 'source28_findings_prefix': {'role': 'fixed42-source28-prefix-v2', 'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/required-source28-prefix-v2.txt', 'bytes': 3040, 'sha256': '4ab91e8f8d8bec29da4e7a1ba5d69ff7a2d6a7d271b161725db3c1165659affc', 'body_utf8': 'Traceback (most recent call last):\n  File "<stdin>", line 13, in <module>\n  File "/usr/lib/python3.13/pathlib/_abc.py", line 625, in read_bytes\n    with self.open(mode=\'rb\') as f:\n         ~~~~~~~~~^^^^^^^^^^^\n  File "/usr/lib/python3.13/pathlib/_local.py", line 539, in open\n    return io.open(self, mode, buffering, encoding, errors, newline)\n           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: \'/home/fry/artifacts/vrf-round3-01a141ba-20261016/next42/fast-gate.json\'\n\n--- fixed42 full-fit-v4 first failure ---\nTraceback (most recent call last):\n  File "/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/full-fit-v4.py", line 11, in <module>\n    body=g._build_next42_phased(ledger[\'spec\'][\'path\'],port)\n  File "/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/bounded_vrf.py", line 1715, in _build_next42_phased\n    return _run_next42_phased(spec_path, port)\n  File "/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/bounded_vrf.py", line 1756, in _run_next42_phased\n    port.verify_records(context, spec_raw, spec_pin, live=(header, charges))\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/bounded_vrf.py", line 2185, in verify_records\n    result = module.verify(value,placement[\'destination\'],placement[\'common_contract\'],\n                           placement[\'references\'],identities)\n  File "/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/evidence_records.py", line 209, in verify\n    streamed = sum(authenticate(row, identities) for row in rows)\n  File "/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/evidence_records.py", line 209, in <genexpr>\n    streamed = sum(authenticate(row, identities) for row in rows)\n                   ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File "/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/bounded_vrf.py", line 2180, in authenticate\n    result = original(row,identities)\n  File "/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/evidence_records.py", line 152, in authenticate\n    raise ValueError(\'body identity/size drift\')\nValueError: body identity/size drift\n{"accepted": false, "actual_reads": {"actual_binary_bytes": 400058000, "actual_bytes": 425131398, "actual_nonbinary_bytes": 25073398, "actual_source_bytes": 1995068, "charged_nonbinary_bytes": 29153014, "charged_total_bytes": 429211014, "open_occurrences": 421, "pending_and_outcome_reserved_bytes": 4079616}, "child_count": 0, "error": "body identity/size drift", "new_facts": 0, "phase_peaks": {"admission": 1775637, "authority": 1727326, "authority_validation": 1727072, "children_verify": 1206092, "preflight": 1667807, "projection": 1773222, "wrapper_specimen": 1119687}, "ready": false, "status": "COMPLETE_FIT_ATTEMPT_FAILED"}\n', 'occurrences': [{'role': 'sol-ledger-inspection-first-error', 'pin': {'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/sol-ledger-inspection-first-error.log', 'bytes': 543, 'sha256': '29db835a2df14a2db667de933af3eb6a9b358c12b807598a57776ee23229dfbd'}}, {'role': 'full-fit-v4-instruction-body-drift', 'pin': {'path': '/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/ledger-20261017/full-fit-v4.log', 'bytes': 2454, 'sha256': 'f8f7ba69586532dc6a86f208abcaab637f23e55f32f652b0d4a0b88d238b0de3'}}]}, 'instruction_read_aliases': {'manifest': {'path': '/home/fry/artifacts/vrf42-completion-preparation-20261016/manifest.json', 'bytes': 2830, 'sha256': 'd7ee77d1f67b249e8006559b5670b840e0543eee3e2c1fd2a4effba536e45514'}, 'mappings': [{'logical': {'role': 'authorized-instruction-2', 'path': '/workspaces/rustaxa-evm/doc/evm_research/n4_next_10point_plan.md', 'bytes': 5462, 'sha256': '7eb3441ef44d9011c23c36a1065d8bcc0ad16cdb9b51905e8226507d7d0682f1'}, 'physical': {'path': '/home/fry/artifacts/vrf42-completion-preparation-20261016/predecessors/doc/evm_research/n4_next_10point_plan.md', 'bytes': 5462, 'sha256': '7eb3441ef44d9011c23c36a1065d8bcc0ad16cdb9b51905e8226507d7d0682f1'}, 'current': {'path': '/workspaces/rustaxa-evm/doc/evm_research/n4_next_10point_plan.md', 'bytes': 5221, 'sha256': '3c1caf9049e38f3a9e13066fc9314de02c1851fc24b6a735a76d726798d1a1bd'}}, {'logical': {'role': 'authorized-instruction-6', 'path': '/workspaces/rustaxa-evm/next_executable_slice_prompt.md', 'bytes': 4849, 'sha256': 'a94df9dbfeef73286faea4c28a08e29508bc4334681d219b768c714a459f495b'}, 'physical': {'path': '/home/fry/artifacts/vrf42-completion-preparation-20261016/predecessors/next_executable_slice_prompt.md', 'bytes': 4849, 'sha256': 'a94df9dbfeef73286faea4c28a08e29508bc4334681d219b768c714a459f495b'}, 'current': {'path': '/workspaces/rustaxa-evm/next_executable_slice_prompt.md', 'bytes': 4870, 'sha256': 'c41ce6ecd60bd849672b0d12bd3e814de8307715725f572bdf80e0c4bc967d19'}}, {'logical': {'role': 'authorized-instruction-3', 'path': '/workspaces/rustaxa-evm/doc/evm_research/n4_next_run_checkpoint.md', 'bytes': 1160, 'sha256': '1e4e8d3cac7eba3ef7dc7953b0035cb91cfdc02d566f6ec30a8ca4400fe6efc8'}, 'physical': {'path': '/home/fry/artifacts/vrf42-completion-preparation-20261016/predecessors/doc/evm_research/n4_next_run_checkpoint.md', 'bytes': 1160, 'sha256': '1e4e8d3cac7eba3ef7dc7953b0035cb91cfdc02d566f6ec30a8ca4400fe6efc8'}, 'current': {'path': '/workspaces/rustaxa-evm/doc/evm_research/n4_next_run_checkpoint.md', 'bytes': 1260, 'sha256': '0717d5caac4eaf85ea1a23641b661dd835a41e2f5ed64fd84184a2722fed1cd0'}}, {'logical': {'role': 'authorized-instruction-4', 'path': '/workspaces/rustaxa-evm/doc/evm_research/n6_restart_checkpoint.md', 'bytes': 629, 'sha256': '6fa0422ba8127e0a34a9b8deaee681b143bfde25002c9de1ea42c41f82683a2d'}, 'physical': {'path': '/home/fry/artifacts/vrf42-completion-preparation-20261016/predecessors/doc/evm_research/n6_restart_checkpoint.md', 'bytes': 629, 'sha256': '6fa0422ba8127e0a34a9b8deaee681b143bfde25002c9de1ea42c41f82683a2d'}, 'current': {'path': '/workspaces/rustaxa-evm/doc/evm_research/n6_restart_checkpoint.md', 'bytes': 636, 'sha256': 'd0bd98a10e58e99736554b78ef0c3d8060fec4c175df8e68038c15590315b55c'}}, {'logical': {'role': 'authorized-instruction-5', 'path': '/workspaces/rustaxa-evm/doc/evm_research/n6_remaining_branch_queue.md', 'bytes': 3863, 'sha256': '7aa1f439689254c97d4f19bda073bf2bd0495cea4141ac2d9f06e02c0b090fd1'}, 'physical': {'path': '/home/fry/artifacts/vrf42-completion-preparation-20261016/predecessors/doc/evm_research/n6_remaining_branch_queue.md', 'bytes': 3863, 'sha256': '7aa1f439689254c97d4f19bda073bf2bd0495cea4141ac2d9f06e02c0b090fd1'}, 'current': {'path': '/workspaces/rustaxa-evm/doc/evm_research/n6_remaining_branch_queue.md', 'bytes': 3880, 'sha256': 'be5f2b6fe54fec30f71c890be3ef77112e64b446b898384b29c698e9e325ee65'}}]}}
+NEXT42_AUTHORITY_CORE_SHA = 'cd1b38ef05bdf7c4cb0010612bf48c05618c06498629603b5a2b7b4463552783'
+NEXT42_PREFLIGHT_PIN = {'path': '/home/fry/artifacts/vrf-round3-01a141ba-20261016/next42/preflight.json', 'bytes': 48622, 'sha256': '740d1905e337b6982891cd9eebbec2d3ce23f76a26f59b42726984f5c3accf69'}
+NEXT42_PREFLIGHT_CANONICAL_SHA = 'c2ccc7634277f5fcfd8377c32add942326f78591c5086fbc1f9700b3bda3a098'
+NEXT42_SOURCE_CANONICAL_SHA = '1b9a66da31e7c1bebd0f85dd2dea20531445d1b320a7b42624faf339677a1754'
+NEXT42_BINARY_PINS = [{'bytes': 204551256, 'path': '/home/fry/artifacts/vrf-round3-01a141ba-20261016/next42/live-vrf-next42-v1', 'sha256': '780ab91c3e7a68c3eabc7469bae1f3d92199fe799f283ac46ea1951f5d55198f'}, {'bytes': 195506744, 'path': '/home/fry/artifacts/vrf-round3-01a141ba-20261016/next42/replay-vrf-next42-v1', 'sha256': '3148914be82d8ad7c92d7610e5ef61123b89f0c230e3a4ddcd898716ddb33cf1'}]
+NEXT42_EMBEDDED_PATHS = ['vrf_witness.rs', 'bin/live_vrf_witness.rs', 'bin/replay_vrf_witness.rs', 'lib.rs', '../../../../rust/crates/rustaxa-storage/src/lib.rs', '../../../../rust/crates/rustaxa-storage/src/concrete_state/mod.rs', '../../../../rust/crates/rustaxa-storage/src/db.rs', '../../../../rust/crates/rustaxa-storage/src/config.rs', '../../../../rust/crates/rustaxa-storage/src/final_chain.rs', '../../../../rust/crates/rustaxa-storage/src/metadata.rs', '../../../../rust/crates/rustaxa-storage/src/concrete_state/witness_rlp.rs', '../../../../rust/vendor/rocksdb/src/db.rs', '../../../../rust/vendor/rocksdb/src/db_bounded.rs', '../../../../rust/vendor/rocksdb/src/bounded_read.rs', '../../../../rust/vendor/rocksdb/src/db_iterator.rs', '../../../../rust/vendor/rocksdb/src/db_options.rs', '../../../../rust/vendor/rocksdb/src/db_pinnable_slice.rs', '../../../../rust/vendor/rocksdb/src/column_family.rs', '../../../../rust/vendor/rocksdb/src/ffi_util.rs', 'vrf_shared_window.rs', 'bin/live_vrf_residual_7f82.rs', 'bin/replay_vrf_residual_7f82.rs']
+NEXT42_KEY = 'b22e60d6ae7056992a9098e4762746d181b1be568ce0ecd7fa919760448e4452'
+NEXT42_INDICES = [86, 146, 206, 260, 368, 428, 488, 548, 605, 719, 773, 833, 890, 944, 1001, 1058, 1118, 1178, 1238, 1298, 1454, 1514, 1571, 1628, 1685, 1742, 1799, 1856, 1910, 2024, 2084, 2138, 2198, 2252, 2312, 2369, 2426, 2483, 2543, 2597, 2651, 2711]
+NEXT42_HISTORY_PARTS = json.loads('[{"part":0,"first":0,"last":28,"count":29,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-0.bin","bytes":1008358,"sha256":"6c91c1118c649515ae5cbf1392c0dff4289419a2862b4747fcbc22ebeab44781"},{"part":1,"first":29,"last":52,"count":24,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-1.bin","bytes":912176,"sha256":"b4b41491f95a970c7fee80e045487afb8329fae8e9905286f8e79c4bcf6a3300"},{"part":2,"first":53,"last":65,"count":13,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-2.bin","bytes":1031636,"sha256":"61b679b8ffacc1b4092074897a19240067b443bdea72388427f8370cea33df4f"},{"part":3,"first":66,"last":173,"count":108,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-3.bin","bytes":1036927,"sha256":"5b275901cc1b43feac9e1fc365b9746ab1a6c1d92fb14ccfb2b4dd9864f5724c"},{"part":4,"first":174,"last":191,"count":18,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/astra/next42-history-4-v7.bin","bytes":697177,"sha256":"b8821e9a1110bec4a3e5b78f92aa6879bcfacf64e7abbf212bf119a4aca134a8"}]')
+NEXT42_HISTORY_MEMBERS = json.loads('[["fbb-source-tail54",0,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-all-package.json",526,"624247a6c86087990c046cccb257c842d9e04d7c23ed4708f16868570fb15c9b"],["fbb-source-tail54",1,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-all-package.log",69908,"3663cf4824f463d2e3ffa07a86e352b2b2c1c88f000155a4d13c6351a6126767"],["fbb-source-tail54",2,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-focused-corrected.json",558,"73e4e6ee541258c34f50507a2b0aa564cb6266e7a9df8d14cdcb0881c7653ac1"],["fbb-source-tail54",3,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-focused-corrected.log",32971,"3ed4e240977f85bf6c47c1f44ea39f53cf0109d4b9378fd7064e8cedc91cfc35"],["fbb-source-tail54",4,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-quality-corrected.json",791,"be51aa8316efa797d0018de09fc1aa94f27c9893f560ba666bbf186ce7ae9fcf"],["fbb-source-tail54",5,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/qualifier-quality-corrected.log",65121,"eee21ec74cb8fe08e2050d91a4953fdcd160991b0303f749fe5fc073a281a996"],["fbb-source-tail54",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/tool-fifth-source-final-v4.json",545,"c88719fed436657fb24d4031a7879c97e52c2118bdcfbb969b8dfb7ae884595b"],["fbb-source-tail54",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/tool-fifth-source-final-v4.log",192,"b2566fcc4d9a90b80c836741f3ae5a6a0adbc1e0df5a219a1dc7e7e6bd7175ea"],["fbb-source-tail54",8,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-package.json",524,"56b9eabd388f2be37589e8282e4598a12115360e600a45072de0036186c9beb2"],["fbb-source-tail54",9,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-package.log",47357,"2288de1c76b8c44b1e2e46c88d79f75a7902ed1f9f3f87453d84d63e000b6e8c"],["fbb-source-tail54",10,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-bridge-build.json",496,"d75d12889b4a7b104cb8ddda34725b9dc126e4b0bebd532ce8af719ab6441d0a"],["fbb-source-tail54",11,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-bridge-build.log",40662,"29dd945674d67facf38bfeb4e9a5a6636ae36f49390005ec2c549ab202acc34a"],["fbb-source-tail54",12,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-bridge-tests.json",418,"8bd4980c57db5eebf7942e76fe87ab3b2f88f80d4a216973d858b674cba038ff"],["fbb-source-tail54",13,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/storage-bridge-tests.log",962,"d743fe7fbe586969653d27d131065e4a3133c0c6123215c987911242ab982129"],["fbb-source-tail54",14,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/canonical-parity.json",555,"d8a9b75494ebfb04ccccdefe1581faac5e04b851ea0a86b7ec010d05cad93b0d"],["fbb-source-tail54",15,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/canonical-parity.log",30919,"29f415ece66f9fa45e03daaa90ddaa03b59e1a1b814930aeb4267f3c94656e06"],["fbb-source-tail54",16,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/native-compatibility-corrected.json",661,"417226ed7e35848d1dbb0c7152bafc3a51e005d45f13551fcd71be80b0c94848"],["fbb-source-tail54",17,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/native-compatibility-corrected.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-source-tail54",18,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/first-d-compatibility-replay.json",710,"ab9d5f613af8340c35242cd4524e59db3d34d2ee1dc459035d73c223d87ba1e9"],["fbb-source-tail54",19,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/first-d-compatibility-replay.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-source-tail54",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/native-first-full-final-v4.json",624,"515fa80f5fe98518164701d6264b62a602e4f4294ae3133e7e9381509887dd8d"],["fbb-source-tail54",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/native-first-full-final-v4.log",100977,"2505c6c922c24ec784afd2dae99a9b0dc29eed5160590da9217da12ecf57ff8d"],["fbb-source-tail54",22,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/argument-rejection.json",1114,"b69a6037a9a57c5bf10daeab5caa63d5375e52a6a4b80298bf86134a4b83ce40"],["fbb-source-tail54",23,"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/argument-rejection.log",3315,"53cc26a23fec26ad0e44816d7265e7e60ea14a6d6410470c0e5e5e90b50edd74"],["fbb-source-tail54",24,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fast-gate.json",419,"0aa2d0fa48cad32de9b20de298d723d91ddc772fc529fb0afe7d21a9e78fd518"],["fbb-source-tail54",25,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fast-gate.log",291795,"cd5761560d2acef798ee362cc3f2a7a6c94d85fe98782620b3ada1f468327e49"],["fbb-source-tail54",26,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/actual-hook-gate.json",471,"37f25c344a059b1e93f47e645aa7db16fea0a6e4739069f1f5b945e53b2d4e49"],["fbb-source-tail54",27,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/actual-hook-gate.log",291941,"fb6862f27e1a325f55e5bfaef2a2036fae3a9599a85bebd2b4085077c65fa3a5"],["fbb-source-tail54",28,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/code-acceptance.json",19568,"0898197293c2f6f44d7baa4ea8a4dc534aeb269d778b093e8ac7584343565595"],["fbb-source-tail54",29,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/validation-summary.json",64074,"ab24e532087a486326fac32d210837fb11ad87e2bd9f2be93f94f962e561b7d1"],["fbb-source-tail54",30,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-commit.json",968,"1e6ba18d38ba7418fc1b67254a46fc434078c24f4c92b20cb55656ca43183057"],["fbb-source-tail54",31,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-commit.log",291941,"fb6862f27e1a325f55e5bfaef2a2036fae3a9599a85bebd2b4085077c65fa3a5"],["fbb-source-tail54",32,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-hook-summary.json",352,"f4a31d8b38445b927531a7c73a055c29c7f07834bc8c9bb0ddd1c7546fa83ca9"],["fbb-source-tail54",33,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-successor-mapping.json",3535,"5f1682d09c619d5ba6d434648e4cffd0611a6f6e93954c257f8a308d680dd2c4"],["fbb-source-tail54",34,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/binary-successor-mapping.json",1158,"db9a2f3841dd4130ddfe49f329dac876794ef92e41f6b81f35bf72db87f0f4d8"],["fbb-source-tail54",35,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/preparation-comparison.json",988,"c577ed3c5f130e5990c55697a1e1853f7c631bf70b7baf6785fc956775512964"],["fbb-source-tail54",36,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/storage-validation-current.json",996,"4c56dabef0f9f05d444539946afc5b58c68496d1c1555d904741d48cda34dd3d"],["fbb-source-tail54",37,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/code-and-gates-freeze.json",21338,"66e709d3d5932eec6e5b7ccef92184b4f6fd3ce6cf3bfc1d3912e74f24368dd5"],["fbb-source-tail54",38,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/source-freeze.json",18613,"f23817f793a8b3dc3ff5f430461db705fad277407c88e23181e4c4fcb08f961d"],["fbb-source-tail54",39,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/tool-source-freeze-v4.json",444,"f275431c77296c90b2343a889303371e3b0a891257ddd13aa552d9a72a528aae"],["fbb-source-tail54",40,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/fbb45-successor-contract-v14-tuples.json",118933,"f831786029d53c7cf86600198ed15ae8cddc643d6063083f844ee95a320d86be"],["fbb-source-tail54",41,"/home/fry/artifacts/vrf-run-01a141ba-20261015/sol/map-acceptance.json",2104,"33c1e6e686532ec7e38e2dc3383cfe9bbf31f77f1d3254dc3b221b9d9b6c0145"],["fbb-source-tail54",42,"/home/fry/artifacts/vrf-run-01a141ba-20261015/astra/fbb45-candidate.json",24991,"56fa5ba1ccbd13322db9e42d8463c69e6c1c5fb1de4e3d7a9b1c52a18688a6f9"],["fbb-source-tail54",43,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/candidate-pins.json",1365,"7e0ecb1db06e3a4d6b314c019fdccadd12a6f95938c68771da86fd382c889f44"],["fbb-source-tail54",44,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/candidate-comparison.json",653,"56054ff4a62ec41b009dd51e1459aa2869933bd85da8009d2c43f3d0d7ffff10"],["fbb-source-tail54",45,"/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/fourth-map/45-failure-history.json",2606,"758b2206d21711cdd15c0d37b1d504dd9311ec0522dbe6d750bc08ebbf1d0a31"],["fbb-source-tail54",46,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/result-equivalence-summary.json",2012,"942932f9360d052cbc75cfff8193d9bbfd04cbae287ad64a756186e6c33efecc"],["fbb-source-tail54",47,"/home/fry/artifacts/vrf-run-01a141ba-20261015/source/result-equivalence.log",69908,"3663cf4824f463d2e3ffa07a86e352b2b2c1c88f000155a4d13c6351a6126767"],["fbb-source-tail54",48,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/current-correction-record.json",130225,"197a6260f8514d6c6ace8a315fdbd31081d950eeeca353e86783e226eb40eadc"],["fbb-source-tail54",49,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source/command-closure-review.json",14936,"dad5f82cd1fe7dd484166db28b504c365a50cc65c33f79831cbce52f5ba271d2"],["fbb-source-tail54",50,"/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/third-source/code-and-gates-freeze.json",36042,"b42c90053574348079ae5038098231a329d85638d84247139c8ba3cbed138271"],["fbb-source-tail54",51,"/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/vrf-residual-third-voter-window-command-freeze.json",92897,"16e2656fcbc9155fa114755357928926d5a7b50e5b514724c0d9af12eca6a715"],["fbb-source-tail54",52,"/home/fry/artifacts/n4-vrf-residual-01a13836-67af-7033-9af2-6a6bcd375ba8-20261014/residual-third/fact-outcome-freeze.json",7342,"c5ff42f1428d74ac208ee647b6e10568d80944e7b9b1a6016280de8e7bddcbc0"],["fbb-source-tail54",53,"/home/fry/artifacts/vrf-run-01a141ba-20261015/luna/offline-full-tuple-map.json",202728,"43ffbffd48d1d287b2c8c46e25a07456b43a2bcbc099312a6c64cf57b16b56c8"],["fbb-outcome24",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-command-freeze.json",90628,"68492bd181db3181bdfbeaf1f3b314db8c6597dd6e76b2e45df93e58a12557d9"],["fbb-outcome24",1,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/instance-spec.json",49417,"be4e5c18fc15bcd80c4bb5f7d762fa1c6b0d3a17c8bc591857ac30c06d720843"],["fbb-outcome24",2,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/exact-commands.json",1508,"8e7ce497f9b97cbef26ee667bf0c72498a7afd28d6d2279a5272531bce3e061d"],["fbb-outcome24",3,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/command-ready-review.md",8515,"20d1351c6e4125aa7ee0f54167836d24744e0924aebd272c0fc545bb755fc02f"],["fbb-outcome24",4,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/command-verification.json",2830,"d01e5dc97fc732545091674d24dd1b982a1e06bbd35aa48dac8a069082273e98"],["fbb-outcome24",5,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/capture-execution-decision.json",1797,"6cf4234c628039abc9781b326c5047d4f4b6baf2c64eccb47986eb98c5b25b9f"],["fbb-outcome24",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-attempt.json",449,"089e053b924ce8fb4dbd27166e55b86984349a63b3309b4f122f4c793eea1cf5"],["fbb-outcome24",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/guarded-capture.json",679,"e19ac7f4610171bd254a27d35ed292575625c476cf1d5944c6593b3c1bb7c429"],["fbb-outcome24",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/guarded-capture.log",1432,"2f5a85ca446286f3155d17022e97463e3c052a631487f70925b15210ff905b13"],["fbb-outcome24",9,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-live-result.json",1726,"946da65ba319ea96e43ad939d708c47bc4502e12dae3880956a4f7dc80e58ae7"],["fbb-outcome24",10,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-live.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-outcome24",11,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45.rcv4",668107,"335886b06ce1066173b6d1924ad6d9c467b64c4e40c96a2e5328613281106dbf"],["fbb-outcome24",12,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-capture.json",45949,"15efefe3bd23b8f32508e38c371687a9f8ea4f3c6650e842ccb6986e1f4135e3"],["fbb-outcome24",13,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/lead-offline-replay.json",1412,"59d3c0d5ccbcecbbb6db03fe4a2d630f4d685c7f85ea0bc20b672a0ccaa2e845"],["fbb-outcome24",14,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/lead-offline-replay.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-outcome24",15,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fbb45-replay.json",57495,"b906f78a4b45abfc2d269c5197f2ac710d63ec29c6a0f4cdbcb3dc14d520b69b"],["fbb-outcome24",16,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/independent-replay.json",1240,"024be224266575a01ad2ea39a8c2cddcca3cafea604c86196771ba1028e893dc"],["fbb-outcome24",17,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/independent-replay.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-outcome24",18,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/independent-replay-report.json",57495,"b906f78a4b45abfc2d269c5197f2ac710d63ec29c6a0f4cdbcb3dc14d520b69b"],["fbb-outcome24",19,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/independent-verification-v2.json",66700,"c21c323016dbe18216be636a788f1c8d7f9cdbf94fdb54d4c62a5bcd04c07027"],["fbb-outcome24",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/lead-verification.json",1984,"2381b4a1fad26e2d182ea845be4b823b202a0731432754a2dd9c29102a2da59e"],["fbb-outcome24",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-outcome-record.json",23644,"84d777257cf3d77c90c2e7bdbcc7bc02cc43ea9c4c8b1561f45491adc0fc2478"],["fbb-outcome24",22,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/family-final-review-v2.md",6359,"75e596d5cb9b3b11d9eb4a801c17850249b243f0c246a2a388f83a36267969e2"],["fbb-outcome24",23,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/final-quota-snapshot.json",5140,"d40c187b378c24a52642f0a6979356b5d64ef46603fd418f0223ed9572acba8a"],["fbb-final-seal",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/fact-outcome-freeze.json",6534,"17611fa891a2386c9fcfe009e8966b75b4dce4c0653d9e02fe1cba953ff60568"],["fbb-final-seal-acceptance",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-seal-acceptance.md",2962,"77ff586624efe46df33244f0bc20902ab1b9277269ccc6f47963861c0ae83b27"],["fbb-reverse-auxiliary24",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-command-freeze.json",20815,"3ae63f510aa696de1b505e58ac4135a326d3fefd9d1941fb4b745aa1ae2edf6d"],["fbb-reverse-auxiliary24",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-ready-review.md",5721,"397a4c2037295f7a9ce3db3a0b20598e97eb84064ef3bb0d3f75f5cf70ce0930"],["fbb-reverse-auxiliary24",9,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-a8a45-into-fbb45-result.json",1483,"cc3c2de32fe6b905e996c0272d14c33fde2104914fb81995a27c6ac0fb9d7728"],["fbb-reverse-auxiliary24",10,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-a8a45-into-fbb45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",11,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-a8a45-into-fbb45-report.json",46213,"e0e1af44a01c98097474f60f7b7cb87d6d7310d02a119a8222cc239dd76af868"],["fbb-reverse-auxiliary24",12,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-fbb45-into-a8a45-result.json",1486,"49f05e28b0b5311e9af305240e8987143fa14081f14683e966469b3dbbe228d1"],["fbb-reverse-auxiliary24",13,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-fbb45-into-a8a45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",14,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-fbb45-into-a8a45-report.json",46216,"c6fae3ad81ea085cc41c9b14958fceb05bc8823918055a58505803c655f39c29"],["fbb-reverse-auxiliary24",15,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-complete47-into-fbb45-result.json",1522,"ed5c177e1812a4cd57ae411014533ffee6ab5eb67e60205e23784b6e3403bf60"],["fbb-reverse-auxiliary24",16,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-complete47-into-fbb45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",17,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-complete47-into-fbb45-report.json",45834,"e584e7d1992589f57a7701c8d1cd703a22a71b4c4e56b75bf47273a5a27e124c"],["fbb-reverse-auxiliary24",18,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-first46-into-fbb45-result.json",1556,"8b5ba60b06ce756f8cc84a4d6f0225cee1a48ec69b80232f15a076cfd60a8973"],["fbb-reverse-auxiliary24",19,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-first46-into-fbb45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-first46-into-fbb45-report.json",45834,"940ca937ad12399f3e68c317347582f0cc4855dc996042a9152d0c8351d86e6e"],["fbb-reverse-auxiliary24",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-third46-into-fbb45-result.json",1556,"b2bb4752dcfe9ef015ce8d9dead6f5c25ebaadda005246e83aac570937e3791a"],["fbb-reverse-auxiliary24",22,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-third46-into-fbb45.log",40,"648b42bc88ae9bc8c20cfb2a4ae9f4d1a2d371100bbf168e83bfe04eb84d62cf"],["fbb-reverse-auxiliary24",23,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/fbb45/reverse-third46-into-fbb45-report.json",45834,"40ce8d5135abf72d7f7e2b3e6da889f720ba5e778503a56c39c87386e22c0cfa"],["fbb-round2-external",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/CHECKPOINT.md",1503,"d8592c50ca8e91971784912684299599926009831700dd660ad7e6a0ba620999"],["fbb-round2-external",1,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/actual-final-builder-full-sha.json",527,"70796290900b34644b4ab7120ecd74aa3d3f9c144250b9f87ce602efcd6563f8"],["fbb-round2-external",2,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/actual-final-builder-full-sha.log",405,"9ab27183593b1e2384a4ff7c85fec1107cad0b3496da1e1fb61e9c222449fa48"],["fbb-round2-external",3,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/actual-final-builder.json",487,"6bff2c51079f666cec4dc3e4aeed0f0f75ed22f5ff978a8d5fa058ca2a9fc771"],["fbb-round2-external",4,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/actual-final-builder.log",537,"38465be7cb951a55d1769506ededd7ccfefd45553702b307f476e94b6dadf085"],["fbb-round2-external",5,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/checkpoint-current.json",8255,"c4a8b2233b8f1a94db10ea4e9e73a07fa3ad09e4eb0eb412476189397ca23ece"],["fbb-round2-external",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/correction-focused-fixed.json",566,"b894b3d47ddbd8f6ea0e13267e7bb0005eb6c645974438d5d9ba0b62986f0e8e"],["fbb-round2-external",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/correction-focused-fixed.log",110,"d3dbc606baadd942a9789fa4ea11b857a1e4864567840aaab1ccb605da5dfa30"],["fbb-round2-external",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/correction-focused.json",559,"59e58cceaee8bf77961209a067d873c19176663c95170f65a0ec79c06e0d8511"],["fbb-round2-external",9,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/correction-focused.log",835,"585a258e070fcfa0d02a97c3658c0b759ec078f3db54d6c352cd50da4bb65d04"],["fbb-round2-external",10,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/final-quota.json",1065,"38c5663ecf09b8b6596a3d03a1b6b70980aa5ec891c186dd9fa31c4bce4f0ee4"],["fbb-round2-external",11,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/final-seal.json",528,"b81667c908820ba97a9415a5d39f47223ada317ebc24b3507c6fa30d3a44b0b6"],["fbb-round2-external",12,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/final-seal.log",247,"fccf677015a15a34c242840b1dc04511079dc69bc67473ce6058393cd40bc137"],["fbb-round2-external",13,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/guard-commit-closeout.json",1023,"cf754291dd956a945101d8017f1464707a2310b8cff8af7d8236099570fa4fa9"],["fbb-round2-external",14,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/guard-commit.json",461,"b4cd382d0918a232cc68309865bf283fe92d0ca568d3e8bab1900010ea649e8f"],["fbb-round2-external",15,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/guard-commit.log",291941,"fb6862f27e1a325f55e5bfaef2a2036fae3a9599a85bebd2b4085077c65fa3a5"],["fbb-round2-external",16,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/metadata-staging.json",508,"18c88104020c5fa5c728f1355992258b573c443eb719d20f13345b6ee9195324"],["fbb-round2-external",17,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/python-full.json",523,"6c135aca7061107a76de0751b08f09f9e30095be13d5bcc0248978d4f30c1ac2"],["fbb-round2-external",18,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/python-full.log",191,"47da076880b116f1c0843d9f12db0bf45735c800988fbaaf961e7a16d3615c8f"],["fbb-round2-external",19,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/quota-budget.json",278,"ebe0e3906ef19e1c6c5e38e0e60de791897d898018ae4beb45d545cb7ecf460c"],["fbb-round2-external",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/round-start.json",712,"d397ed020a90614ce17193526476752fa80497e345bd9acbc8f4dcf152f0d0dc"],["fbb-round2-external",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/scorecard.json",2895,"009ec762550db6d6fe4b5d721495567abf73b3fa506e60caec3457da197d7c93"],["fbb-round2-external",22,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source-final-freeze-v2.json",25259,"373752490102a9c3308ba0656965cbc1b1a7f974525f6aba34640e1727e40d6c"],["fbb-round2-external",23,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/source-final-freeze.json",23560,"be638281284607a3a371384c92aa7bc08e58a4818aac9df425b7df46a64db461"],["fbb-round2-external",24,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/tuple-focused-correct-cwd.json",567,"fc38a27c5ee0b8806561c0ef3192c90bcf7ad3ec1dd0aa87299b9eb71714d950"],["fbb-round2-external",25,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/tuple-focused-correct-cwd.log",109,"5f2c314d789f8216fbd757608b8a64f081b6bd5b74454e44f50bc5727f016cc5"],["fbb-round2-external",26,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/tuple-focused.json",503,"4e3acdd83e2483d3c8c0ef5320c94e8294bbf1793209fc0e76bfffb70f15b819"],["fbb-round2-external",27,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/tuple-focused.log",1081,"3b2ec6f3b8733eb8a9b16baf49b9f3968be92424772110864683ee7a46d278dd"],["fbb-round2-external",28,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whitespace.json",569,"3a73942f0b3d5b954150585b039e097eb8a82f79a5ec5593fc30b17c53d8a4af"],["fbb-round2-external",29,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whitespace.log",0,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],["fbb-round2-external",30,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v2.json",537,"4158a979c241ac7530c68db6e9988b4b760e3c82ed3ac555968471c9dc97b2dd"],["fbb-round2-external",31,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v2.log",907,"7b1122d2889085f99c200e32b1726cd7b83cb488fa522e1e84c5ebd59e9cd1f2"],["fbb-round2-external",32,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v3.json",538,"2076df7fa02b9b4572a36cd5c09bfb87c9243310840be0d1bbbfd0447141945d"],["fbb-round2-external",33,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v3.log",1582,"8221685001dca6733f7f9b4b3a3c6b4323aaf61310dc1752acbcd7086e68be75"],["fbb-round2-external",34,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v4.json",538,"83f534f91f896d23caeb1c7b9b78634ab5c3c771a29482b681ac126c01d025eb"],["fbb-round2-external",35,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v4.log",1169,"82da4b9268fbf0a92ebce9ac7f7be3b2a5a7cde73f4cdb517e34d92e75450d33"],["fbb-round2-external",36,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v5.json",537,"ad9bbab44d96e87ca14274bb2de9b92c34aab0c473e6112d7fbc9ab5fca87655"],["fbb-round2-external",37,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run-v5.log",501,"f83f60446e2d0219e91bf63e802854566dc6e00f2418a899075cdafc61c0ae9c"],["fbb-round2-external",38,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run.json",531,"16898434eaefef4f77f2750d59a55a1b54e7262bc0cbf52feeba37f0d1819a1a"],["fbb-round2-external",39,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-dry-run.log",813,"3abe9dc08ad2bb577a1db19ba1569f2db9d84ec72ef6458df2805eaa611f0504"],["fbb-round2-external",40,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/whole-stage-preflight-v5.json",7880,"6b206229c03cf2ef25de4e2640154ae0b0a17b6055c15bbace017f9ff194af70"],["fbb-independent-external",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/body-inspection-non-json-log-first-failure.log",618,"2991413d27ccc67fa2591191f7767d4b7757b3048d17a138d3c5a594db7defc6"],["fbb-independent-external",1,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/body-inspection-record-decoder-first-failure.log",817,"ea5991bbad704934af94ff5753f3f8ba13db1eb6cfe151eb871118f872576931"],["fbb-independent-external",2,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/check-v13-semantic-first-failure.log",203,"7eb827ccb864ff7d85ea1042896e160de6974bfc52380e840151ba4df9a4e305"],["fbb-independent-external",3,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/exact-command-ready-check.json",4151,"7502b852544fc89b769a05ae6df7a9f6e3ad012c57a1869a0b25e92ba48845c2"],["fbb-independent-external",4,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/existing-builder-precheck.json",5793,"c79792b69bfa492360cab203abee64202320fa76648a5788aeeec186acd64d5d"],["fbb-independent-external",5,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-fact-check-v2.log",327,"d64ee1133f823ea563ad2599d8268f55a8e9df00d43f3a184b6035994e590c4e"],["fbb-independent-external",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-fact-check-v3.log",513,"b3fa66fcfa8f2bdcd49b38d375d05c106ae9ec78fb802c1caa11d8552deacf74"],["fbb-independent-external",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-fact-check.log",147,"3f3a1a9640283faa6c3fb616995a684e4964b137241628f9c0d7eec60941075d"],["fbb-independent-external",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-fact-script-generation-first-failure.log",738,"7eaa72fb328def116b8c201ccba4a92e491387a51f7851a392107f23e4ba54bb"],["fbb-independent-external",9,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-preseal-v4-acceptance.json",687,"315e54559be5573c497b2985ac48a4fb2ce7f6f3b35a9f34950ee41b2a13396a"],["fbb-independent-external",10,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-seal-acceptance.md",2962,"77ff586624efe46df33244f0bc20902ab1b9277269ccc6f47963861c0ae83b27"],["fbb-independent-external",11,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-seal-verification.json",971,"f867676792b24fbd18334445580efaaa75c84bb1dcfe4b6b451af35d5485147e"],["fbb-independent-external",12,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/final-two-path-amendment-acceptance.json",749,"e085db0e5ee8bee50ee71cf0b5a069a7177ac15e399667cdcec95d2acfba638c"],["fbb-independent-external",13,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/independent-replay-and-reverse-input-verification.json",1710,"32c7b573db819b6f2f58d58b022e0420a703f74fd24eea83eea1e91f911e204b"],["fbb-independent-external",14,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/replay-reverse-check-first.log",326,"46fb5b12d0bfbff61de99ccae656877eaf0c22230e96fcc7a74b0f3b2ca15b16"],["fbb-independent-external",15,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/replay-reverse-check-v2.log",1710,"85754dd8c74545ab6f2711dbf0d4934a3d596078177833f0262c3a6b70e1b4f1"],["fbb-independent-external",16,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/source-acceptance-actual-fit.json",643,"545df5eb49c2b750b16f891e435efaac5a2981bea218ce461b2bc035ffa790fb"],["fbb-independent-external",17,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/source-final-acceptance.md",12200,"b6d2728fb921ba62e5c034de7f5274c482c022148d37a5ffe739c295a549c397"],["fbb-independent-external",18,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/source-final-analysis.json",11444,"1a36540df6da55d24ccace8d925d8a50678ffe34e4ad6c8e325f258c803ea6b1"],["fbb-independent-external",19,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v13-layout-acceptance.json",3345,"44a7599dc25bf41004c18ec31ca20e88f857e8ab839e6964c4c73fcde1351c45"],["fbb-independent-external",20,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v13-representation-rule-v2-acceptance.json",2022,"e6eabfe840bba0d52cfe9eb3b35b084f2d2e5b4c79e3844d671c9d58723b0c32"],["fbb-independent-external",21,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v13-semantic-review.json",1635,"c6d43196775afb73d5920e4db6d5503be398785fb8cda064197c6dfb3e330265"],["fbb-independent-external",22,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v14-exact-delta-acceptance.json",1396,"9967c394d1284ff36003b214e9be60db152d52f58cc03f2f8052113fc6a9a840"],["fbb-independent-external",23,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v14-independent-summary-read-counts.json",467,"8424ae68d564a7f3830996b3788d31a94ba4ddf99cfb1134df97b699869817f6"],["fbb-independent-external",24,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/v14-source-fixture-retention-rule-acceptance.json",1566,"ee57b2743a6f7317b5b22981efaeab28f561e972c1c52b940189f92008466a6c"],["fbb-independent-external",25,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/whole-stage-independent-phase-v5.json",8156,"f2cd7b8b339cf0f1174149553c0bd94bba014da3cbfc132bb9eef204d4b0105d"],["fbb-independent-external",26,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/sol/whole-stage-independent-v5.json",8018,"77ca09eeb26c54c80c023a902f486c54238f269bcd2c8d03d0093d5136c2d6a3"],["fbb-fixed-authority-external",0,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-draft-first-helper-failure.log",837,"fdfe39162eef82d0d3c397181d4da064193514a181fd7c5f12017566f24b84b4"],["fbb-fixed-authority-external",1,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-draft-first-helper-failure.json",734,"264ffd7be1bdebf59638ad78c5121c3bcb5d9fff2baabff4921ea6cea6ffa017"],["fbb-fixed-authority-external",2,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-binding-first-helper-failure.log",125,"2a69bca4e1c9e5e0124719876785be18d608193a4be1d05d85cc3ed9e58d88bb"],["fbb-fixed-authority-external",3,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-binding-first-helper-failure.json",539,"183254dfbe05b6a985534420442d86748021a9527604c5b0df88f13981a61bc9"],["fbb-fixed-authority-external",4,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-captured-input-binding.json",8674,"a2d98edf7c3a6e5117e9373abd99bc15ba72d3de6e03322d611e45691c1aa2bb"],["fbb-fixed-authority-external",5,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/reverse-offline-derivation-and-authority.json",4716,"af6bc0ddedd9acbfbfedee6e2da59522dd9b8383e458131d7bd64aab5d021650"],["fbb-fixed-authority-external",6,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/v13-fixed-summary-correction-representation-decision-v2.json",3796,"d4a192eb369768a7c8a08725fe28dde999ff71fe272bdf00a23bc81892ab898e"],["fbb-fixed-authority-external",7,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/v14-source-fixture-retention-decision.json",1522,"130d72309993bfd9c9c98ecf4acfa3c1a153fa5c64591d17b5d52c86891e19ba"],["fbb-fixed-authority-external",8,"/home/fry/artifacts/vrf-round2-01a141ba-20261016/astra/final-seal-two-path-amendment.json",3652,"7474eca5d21619717693847b85968466025311e56bbae65ad9f2bac57eff93e9"],["fbb-changed-source-predecessor86",17,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs",57756,"50585547ddccab17c8956aba49d4bd082629399d85cc90bfb7fa96bcd1616cba"],["fbb-changed-source-predecessor86",18,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_bundle.rs",11855,"4d927a1c7aeb5dfdb9b81c917f0e5196f987dfae51b36543389813cf83fad726"],["fbb-changed-source-predecessor86",28,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/lib.rs",3456,"07d607a2482ab94824f96adb6b0c858c18eb806db5ab9b20aa2447a7bc34acbc"],["fbb-changed-source-predecessor86",29,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/mod.rs",2634,"85876f79f9848f3c6976e138cedab20d1993dd0304a728f19110693276ee183c"],["fbb-changed-source-predecessor86",46,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live_tests.rs",107805,"192fd0d1daeb47b52ded2c3527962bd4e3bfcf25ab859d0b6be3ad03e545bf3d"],["fbb-changed-source-predecessor86",65,"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_shared_window.rs",149384,"0c5d41be85625285c5fe33428fece4112a3f6bcba32d19eebdd43efad6c7913a"],["fbb-tool-predecessor2",0,"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/bounded_vrf.py",165303,"b0b99a840c26ad213252b59278b811a14677a511be087b095c385accab5ce243"],["fbb-tool-predecessor2",1,"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools/test_bounded_vrf.py",111682,"9bc339f7510177a8a18c5894aead30fb6d1f725e104b5b3232c13460698d6fbf"],["fbb-changed-source-predecessor86",16,"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness.rs",22269,"ec47bb56f197d9c02ff2a4c4ef1f1f4f58a781ce1a14586a8e1a417fe90b93e4"],["moved-inherited233",46,"/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013/argument-rejection-10.log",91,"aff8d9b31e497304d5e5be2d079b10e58ba42099513eb9449dbbd10283997121"],["moved-inherited233",47,"/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013/argument-rejection-11.log",91,"aff8d9b31e497304d5e5be2d079b10e58ba42099513eb9449dbbd10283997121"],["moved-inherited233",48,"/home/fry/artifacts/n4-vrf-shared-01a1353c-b1a0-71e3-a562-1d29c68efb96-20261013/argument-rejection-12.log",91,"aff8d9b31e497304d5e5be2d079b10e58ba42099513eb9449dbbd10283997121"],["next42-fixed-first-failures",0,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/qualifier-42-focused.log",41899,"e9d9b1b655d41063d18be229fd278dc77875c79244d79d85589ea5bcdd3f682f"],["next42-fixed-first-failures",1,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/qualifier-42-focused.json",550,"ad57874afda295da7008efcdfe183be9066ea58350fe02b4999bc1368a543747"],["next42-fixed-first-failures",2,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/formatter-invocation-first-output.txt",785,"e847574298062c55bc588b557a5a447df5ff0e816ead43fbb4336db56153aeb6"],["next42-fixed-first-failures",3,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/formatter-invocation-first-result.json",555,"c4ec22402fa0e70413495200e5b5ffd708fd1e81e31a2ea862215a8bac201993"],["next42-fixed-source-reviews",0,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/sol/rust-source-final-acceptance.md",10122,"f753976b3cca726fe6601f4e6d0f351a7e2d4529c674a06ad23d39e8dde81c10"],["next42-fixed-source-reviews",1,"/home/fry/artifacts/vrf-round3-01a141ba-20261016/sol/history-helper-source-final-acceptance.md",7864,"e5ddf3421ef459d915c45773a33dc5a7b34b5765cc5c5e49460e61cb94ad3b6d"]]')
+NEXT42_PREDECESSOR_SOURCES = json.loads('[{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_input_handoff.rs","bytes":29289,"sha256":"7845e2a972ec0c550c9c16c2039bde1ea453c4da6625ccb7a142daf6aa29f7f8"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/parent_input_handoff.rs","bytes":371,"sha256":"9b28884952fccdb3252cdca30465875e65e04d2c313098fb5d8ca2579c729d38"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/lib.rs","bytes":699,"sha256":"6139fd14946594ee82a46759aba6587ecdc9ee285aacbbe3c6bea59ccd1429d0"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/native_witness.rs","bytes":22289,"sha256":"c24c75d79d5c793fab6a4c349e20bce7aebbcf3867d6b15af56b6a011b689a4d"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/delayed_headers.rs","bytes":27968,"sha256":"5c7ff91e502733d4ca63357dc6a97bda10bc7d8e8438a4f208e0373afc8eb63d"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/interval_history.rs","bytes":11245,"sha256":"44e1430d4a0206325de12a7c804f964760b6d261b83f1954185761ca2f3be6e4"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/head_history.rs","bytes":19542,"sha256":"cc0ea9b27712d67e75ec46b6a858dbfcdeb65affce048339e3ad6cfcb624379b"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_history.rs","bytes":23298,"sha256":"46786d43ff10d076d425c23f901b149e462b139e138ee253852bbe7a3554319b"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/parent_reward_fields.rs","bytes":44873,"sha256":"a5c2beb6543affb2b8ddf2ef7aed5505b338f477050179ee71df46c6758f38f7"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/reward_votes.rs","bytes":2443,"sha256":"9854994cf3cd49677b132c26095d7a01b2add8e5370a64f90ed75337879a577c"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/paths.rs","bytes":5070,"sha256":"a2db7e497bc4a21f11344a3365a72b3cd2dce43887cedb9df862228392595b7a"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/parent_cache_fields/admission.rs","bytes":4863,"sha256":"d247a52dd9f848db7454e5c1f4159692e1e5fc275332c071196fafe573f9d091"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/aspen_policy.rs","bytes":16255,"sha256":"7df98bad2b42ddef270c5eacbe20d8ce6a549cfa0201e232ce82a3b8747692ff"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/aspen_policy_sources.rs","bytes":4723,"sha256":"dc8771a33d1102221bcc8b2ec6be151a2aeb9a3b8a3624dcf0662590ebef7e9a"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/Cargo.toml","bytes":901,"sha256":"63b643eca00b29108eef0b70fdcdfddb278dc6a22a08ab295f84c6e4a49304cd"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/Cargo.lock","bytes":86577,"sha256":"d70f0f669944ad25f5fe779a5b23d1916ae1a98c8882b5ca0447214d1ab9bd54"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness.rs","bytes":22269,"sha256":"ec47bb56f197d9c02ff2a4c4ef1f1f4f58a781ce1a14586a8e1a417fe90b93e4"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs","bytes":57756,"sha256":"50585547ddccab17c8956aba49d4bd082629399d85cc90bfb7fa96bcd1616cba"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_bundle.rs","bytes":11855,"sha256":"4d927a1c7aeb5dfdb9b81c917f0e5196f987dfae51b36543389813cf83fad726"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_binary.rs","bytes":12599,"sha256":"1d5db25980cae3ef4b85e7220144f8388ecab67a82069a4b02b0822cca3dbd84"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/physical_node.rs","bytes":33298,"sha256":"55d3096128c68e1949f3d96870f65d99b6206c1ca8092c5302c6a1bb0d39f75b"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/codec.rs","bytes":8359,"sha256":"9a74a1fa46f7a9efb6ffd0d7002e888e681b867cc83080da593b477b06dd3def"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-consensus/src/final_chain/native_session/vote_inputs.rs","bytes":9000,"sha256":"bcd0e0a20e5176ee9480b6422e94a03c9d35a6bb7f8404579c791bc52678dcff"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-consensus/src/pbft_vote_validation.rs","bytes":65589,"sha256":"cd5670f1ea93167b1ef4075be6b52e81d9a35d9ad2823da98f3c6d1a6531a38d"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-types/src/codec/rlp/final_chain.rs","bytes":17348,"sha256":"c3c3ba662b2052cc6bbaabe7ea782a599f6291ac0fcad5936e35946744713451"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_witness.rs","bytes":14719,"sha256":"6b27f9c4650fb89e2132f1f17b905a34b6b21aa2418762bc0ee54a3efd5fdfc8"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_witness.rs","bytes":668,"sha256":"ec9f048a77243b27ac64af4839621a277b586860d6aed4966ba58f7b5db277b8"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_witness.rs","bytes":495,"sha256":"01ebc98eaf56db60f54755f768ab79fd02b0673bb8f1e8c6697b4bb539d0c332"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/lib.rs","bytes":3456,"sha256":"07d607a2482ab94824f96adb6b0c858c18eb806db5ab9b20aa2447a7bc34acbc"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/mod.rs","bytes":2634,"sha256":"85876f79f9848f3c6976e138cedab20d1993dd0304a728f19110693276ee183c"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/db.rs","bytes":43628,"sha256":"7adabcea4874a81b656b85876feb3a2ab32d695740d7a76fc44b1479d21b409b"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/config.rs","bytes":14648,"sha256":"ab02fb7f695cc19be49e25f46ac78f99a00c76e7a0eb7292c962d80a6d9f6c5b"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/final_chain.rs","bytes":55304,"sha256":"c996c560415b9d8fc34e50f2bcfe3473186f3766a4169fd6a9a6f91869cab52f"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/metadata.rs","bytes":25673,"sha256":"e43e17b855a5e7d018b088c085006ad002e127eb68c79b54bddaafab1cf54ab6"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_rlp.rs","bytes":2891,"sha256":"264022b34bd07033037ccead6fe020b336ff3340f15bb40ec1ce0b3e0293787f"},{"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db.rs","bytes":93524,"sha256":"d6093ac53cde9751045d1e69bad5e88a94c97124ec7b931e1ecf2a69f50ce6a5"},{"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_bounded.rs","bytes":10001,"sha256":"542952d508b01b14f99fd0e47f7cb71d76c7d5545788b5b1d5e66916df45189f"},{"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/bounded_read.rs","bytes":4343,"sha256":"72926fe19ad6398d1b9bc78d3c6b9422cb81e856bbf11d8658bc8406cc245008"},{"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_iterator.rs","bytes":21648,"sha256":"833ab9ed87042f10408ed168d5043b6466e51b98447d7d3bf9a85bc66590d879"},{"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_options.rs","bytes":174740,"sha256":"524ad9b6477a5bdc6ae5f111fe916a6749fe5f091d8cf7d1eaabb3e03a60e484"},{"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/db_pinnable_slice.rs","bytes":2148,"sha256":"3714970b72c44f72fc07db463f0dcf8a339a6eb4c6c93496d9fd6571e641c63c"},{"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/column_family.rs","bytes":6725,"sha256":"8566584605a812c6f092951a4a50ff24ef69d7c73c9236983aabab2787dccee0"},{"path":"/workspaces/rustaxa-evm/rust/vendor/rocksdb/src/ffi_util.rs","bytes":8737,"sha256":"541f1e0698392c83f283cea634d637d9b38dcaaee2cfccfcf85f4558228df561"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_voter_window.rs","bytes":6397,"sha256":"19e3b21ab0c4d14599494d719c572bbc2c1ace05eb98c89b8614bc58f614135c"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_voter_window.rs","bytes":659,"sha256":"2b9c9eb8a5b8f437e1959dfd0339392aa8b97e1837a49bc8aaad143c84aae6aa"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_voter_window.rs","bytes":493,"sha256":"7045b9c061255214dbf01a2dcb0020e5ebd6fc3d802ee6ba76ad0a5fb7539263"},{"path":"/workspaces/rustaxa-evm/rust/crates/rustaxa-storage/src/concrete_state/witness_live_tests.rs","bytes":107805,"sha256":"192fd0d1daeb47b52ded2c3527962bd4e3bfcf25ab859d0b6be3ad03e545bf3d"},{"path":"/workspaces/rustaxa-evm/rust/Cargo.toml","bytes":298,"sha256":"83999ded4fb16bbc16c6fbefd9e2806238a6d2ef06ec47b70528c62d0b4b5e05"},{"path":"/workspaces/rustaxa-evm/rust/Cargo.lock","bytes":98358,"sha256":"43b97efd6509c6373de57f89f832b31de70795fcad303316d56cbdc684a81741"},{"path":"/workspaces/rustaxa-evm/.githooks/pre-commit","bytes":149,"sha256":"07fe760100863ed1f069f69fc8afa7a026b81515bd37964d9e2eb60091bf3967"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_next_voter_window.rs","bytes":7587,"sha256":"79fe8336bb56b25e48c60fc1e97800f0a5c3153f30199e4d3148f77d88ce3f00"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_next_voter_window.rs","bytes":674,"sha256":"1884ac77ca8ea5c68b4db57f28e26548113ba7a293f8efe29264aeb3730e7edc"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_next_voter_window.rs","bytes":503,"sha256":"3e5398958169a691f13bdb389e777aa18ac1af5b109c363d93ffb9ded5fdedd8"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_third_voter_window.rs","bytes":9789,"sha256":"4a9ff909c2d45c516407e837f48b3bde8a5a0005c6faa87bd7a294c1c8187c2c"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_third_voter_window.rs","bytes":677,"sha256":"177adb0fc5c18f4500e4e1d6bb88e336cc1932a035c683dee49ed1b293a55cf1"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_third_voter_window.rs","bytes":505,"sha256":"677e9254e1dd64d64b217affebf310484ed1118b5070e2885f17eb54e8608bad"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_fourth_voter_window.rs","bytes":10757,"sha256":"c5c8eb81f668a4a7c10fc90852f3471636f9388f9f632082798fbb4f0dd70139"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_fourth_voter_window.rs","bytes":680,"sha256":"64bb93f43b8fbe90820b041dc4caaf15020e19fa1f184126c004189645b9c601"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_fourth_voter_window.rs","bytes":507,"sha256":"a23150bceacd3b6327697082f891cbf597b852afdc8ad2bd032294725ad24c03"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_fifth_voter_window.rs","bytes":11710,"sha256":"6fd1195c5de10cd7c273006f5abfb303386d01941488ba22e9dc1f095d0db4a3"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_fifth_voter_window.rs","bytes":677,"sha256":"58a8ad971a420049ec0dd002668428f537a6ec95345a744188b91c49e0a359b5"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_fifth_voter_window.rs","bytes":505,"sha256":"67d27b53247fd938d697f1205617f9e76702f70e67dd98ed1b191f27f95bc49c"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_sixth_voter_window.rs","bytes":12668,"sha256":"f3288ca42262699084bc3be21912f75fd8f40535de2a3372c7ebbcd3a32bbba7"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_sixth_voter_window.rs","bytes":677,"sha256":"f4047ae71635a880484981469f7d38465e07dc648c4eefba145ff7401c3ac5bf"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_sixth_voter_window.rs","bytes":505,"sha256":"fb227bf3cc8da1a5fa0693877965bf51e63bfa492c60405b160cd642498acedc"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/vrf_shared_window.rs","bytes":149384,"sha256":"0c5d41be85625285c5fe33428fece4112a3f6bcba32d19eebdd43efad6c7913a"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_seventh_voter_window.rs","bytes":708,"sha256":"b40015f8402f104d8c9faaf38b6fe6f988c28e5227ea50dc201ceaa634342642"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_seventh_voter_window.rs","bytes":533,"sha256":"b5d740091ba8a9abcdd6aef9caaa5a02b6ab8c226029494b384f4d7961ca6888"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_eighth_voter_window.rs","bytes":705,"sha256":"85e1c5041d1ef41aa61d54600436aae0b5ae7ff0884e2ae6c0f897770d04969f"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_eighth_voter_window.rs","bytes":508,"sha256":"c05e8a30dac7baa5cf887f15d1bfcfd6f4eb9a9fad406e6a344bb75635c68818"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_ninth_voter_window.rs","bytes":679,"sha256":"45b0bb6f4ea21831cc29b816bd65e028e0ee7791665bd01d570dc856efab8b46"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_ninth_voter_window.rs","bytes":506,"sha256":"838acbc22eab208afe5dbcbdf8f53c21b4b3ef88db2e822697eda153a8ccc5e8"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_tenth_voter_window.rs","bytes":679,"sha256":"0936202430bdc381a8afa2f369d21c6d9ec878f96c489877bacc5b15c7078c3e"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_tenth_voter_window.rs","bytes":506,"sha256":"5cc82b4de8aa31c929de970d14def7f41e130c4a34e0d25034b6b96c888b1815"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_first.rs","bytes":736,"sha256":"7b1b728763a5398eeba76233852b62483d49f6bed2c76aefa6266355d65e6de1"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_first.rs","bytes":524,"sha256":"01b9eb0841083e5d2dab4960fc9cc46a4337f4a0204be4990fbd9dbc2da5756b"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_b92a.rs","bytes":733,"sha256":"fcf690f75e33a91e3f2a28b16a4bc82a2ce7f9bf2f92c84738b836a8c9c7fa26"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_b92a.rs","bytes":522,"sha256":"4c00a9202869bea49a0b24b4cfbd592118e5a5e5e41070cc3f794adf090cf9b1"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_e50b.rs","bytes":733,"sha256":"ae6cabd86f07fa0540cc5787cbade8ddce8a6a8c4bcf85fad65644049573b42d"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_e50b.rs","bytes":522,"sha256":"09bd08c4a7987d8bc45679179e2c5d71042f08fd88823e62580ad867e104aafa"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_49f8.rs","bytes":733,"sha256":"516ee437c70509545b35d5213b25c097a977d7ba4e62e53db992f1ac4592cb71"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_49f8.rs","bytes":522,"sha256":"c78838bc270a895f0f43c327bddff46819c97f5c98ca66611511c3041e480b62"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_a8a2.rs","bytes":733,"sha256":"9f854f7a5fd89202cf587fdfede8566e9abc26cfb949e8f27fc7909470a31fba"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_a8a2.rs","bytes":522,"sha256":"ff14e82d71955b89b9f1383259fa073d59a12772933d530ee9c0e216bf2a2a87"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_fbb3.rs","bytes":733,"sha256":"75f68f826a4b8d62b563fbad219561bd86938a3c8f7e54a2d501fbf73d1e8251"},{"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_fbb3.rs","bytes":522,"sha256":"4865e74f41946b976b66b0ab2b3e1f90d7910013f187f62fcad2558cea22d927"}]')
+NEXT42_COMPARISON_PROFILES = json.loads('[{"profile":"native-current","before":{"bytes":10945,"path":"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/compatibility/native-current.json","sha256":"4c4c045bb090749c8c83acab2fd851999473dfa1b2820ab496cc1fbc0730ae06"},"after":{"bytes":10945,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/native-current-replay.json","sha256":"31311a6aa1deb8958a5f7eb8e3654233d9a62b789b3c913b6c92cc47b6725e6c"},"fields":["/source_profile/compiled/0","/source_profile/compiled/10","/source_profile/compiled/11","/source_profile/compiled/12","/source_profile/executable"],"executable":{"bytes":192620832,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_native_witness","sha256":"b0c3eaf2e2668f9fc8bb0259c2117b55c999ef5108f47bb883588da5a236e318"}},{"profile":"first-d-current","before":{"bytes":32813,"path":"/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/compatibility/first-d-current.json","sha256":"b1c09f0c1bacfad76764f40df66b71b8a9f5e8c97eac79c4151f6b87dc68b765"},"after":{"bytes":32813,"path":"/home/fry/artifacts/vrf-round3-01a141ba-20261016/first-d-current-replay.json","sha256":"fce54ee5cfe5a53edefc979e86b874547ba3f7ed0be4defb1641a2a9f346ac31"},"fields":["/authority/executable","/authority/sources/2","/authority/sources/16","/authority/sources/17","/authority/sources/18","/vrf_sources/0","/vrf_sources/3","/vrf_sources/4","/vrf_sources/5"],"executable":{"bytes":194576624,"path":"/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_vrf_witness","sha256":"70e78df2dab7630dcd390d87bc9520f07331e87fa3b0077ec50117812498ba21"}}]')
+NEXT42_COMPARISON_ARGV = json.loads('["/usr/bin/python3","-c","import sys;sys.path.insert(0,\'/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools\');import bounded_vrf;bounded_vrf.emit_fifth_comparison(bounded_vrf.NEXT42_PROFILE)"]')
+
 def verify_seventh_history():
     """Authenticate only the sealed five-container, 190-occurrence history.
 
@@ -122,16 +143,19 @@ def verify_seventh_history():
     malformed input raises ValueError and supplies no accepted prefix. This
     artifact verifier grants no source, command, READY, capture or fact authority.
     """
-    if len(SEVENTH_HISTORY_PARTS) != 5 or len(SEVENTH_HISTORY_MEMBERS) != 190:
+    return _verify_fixed_history(SEVENTH_HISTORY_PARTS, SEVENTH_HISTORY_MEMBERS, 190)
+
+def _verify_fixed_history(parts, members, member_count):
+    if len(parts) != 5 or len(members) != member_count:
         raise ValueError('fixed history descriptor count')
     ordinal = 0
     charged = 0
     body_total = 0
-    for part_index, part in enumerate(SEVENTH_HISTORY_PARTS):
+    for part_index, part in enumerate(parts):
         if (part['part'] != part_index or part['first'] != ordinal
                 or part['last'] != ordinal + part['count'] - 1
                 or type(part['count']) is not int or part['count'] <= 0
-                or ordinal + part['count'] > 190):
+                or ordinal + part['count'] > member_count):
             raise ValueError('fixed history part order')
         path = regular_path(part['path'])
         if type(part['bytes']) is not int or not 0 < part['bytes'] <= FILE_CAP:
@@ -157,7 +181,7 @@ def verify_seventh_history():
                     or int.from_bytes(header[10:12], 'little') != part['count']):
                 raise ValueError('fixed history header')
             for _ in range(part['count']):
-                scope, index, member_path, size, sha = SEVENTH_HISTORY_MEMBERS[ordinal]
+                scope, index, member_path, size, sha = members[ordinal]
                 role = (scope + ':' + str(index)).encode('utf-8')
                 location = member_path.encode('utf-8')
                 frame = take(48)
@@ -188,9 +212,9 @@ def verify_seventh_history():
         if digest.hexdigest() != part['sha256']:
             raise ValueError('fixed history file hash')
         charged += consumed
-    if ordinal != 190:
+    if ordinal != member_count:
         raise ValueError('fixed history incomplete roster')
-    return dict(containers=5, members=190, charged_bytes=charged, body_bytes=body_total)
+    return dict(containers=5, members=member_count, charged_bytes=charged, body_bytes=body_total)
 
 # Command-time current evidence only: exact V7 tail54/precommand3/outcome24.
 # Caller must first bind every slot to the authenticated inventory/path/schema.
@@ -224,7 +248,102 @@ def reserve_seventh_current_evidence(sizes):
             raise ValueError('seventh current evidence aggregate cap')
     return total
 
+
+def _next42_shape(value):
+    """Measure the reviewed JSON allocation model without following paths.
+
+    Return node, UTF8 and depth charges for the complete supplied graph. Each
+    semantic occurrence is charged. Reject unsupported scalars and the existing
+    8192-node/depth8 limits; this does not grant evidence or command authority.
+    """
+    nodes = retained = deepest = 0
+    def visit(item, depth):
+        nonlocal nodes, retained, deepest
+        nodes += 1
+        retained += 128
+        deepest = max(deepest, depth)
+        if nodes > 8192 or depth > 8:
+            raise ValueError('next42 metadata node/depth cap')
+        if isinstance(item, str):
+            retained += len(item.encode('utf-8'))
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                visit(key, depth + 1)
+                visit(child, depth + 1)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child, depth + 1)
+        elif type(item) is float:
+            if not math.isfinite(item):
+                raise ValueError('next42 finite control scalar')
+            retained += len(repr(item))
+        elif item is not None and type(item) not in (int, bool):
+            raise ValueError('next42 metadata scalar')
+    visit(value, 0)
+    return dict(nodes=nodes, retained_bytes=retained, depth=deepest)
+
+
+def next42_fit_reservations(authority, actual):
+    """Admit all 400 fixed roles before reading any current evidence body.
+
+    ``authority`` is the authenticated fixed V7 tuple manifest. ``actual`` maps
+    command ordinals to exact three-field pins at their fixed paths. Only its
+    pending current54/precommand3 slots may be unresolved in this fit-only port;
+    absent immutable/source/tool/binary/history inputs reject. Unresolved current
+    bodies reserve their full production ceilings, and all24 outcomes always
+    reserve maxima. Return exact reservations and explicit deferred observations.
+    No fit observation supplies a digest, successful gate or runtime authority.
+    """
+    if (type(authority) is not dict or authority.get('schema') != 'n4-next42-finite-successor-v1'
+            or type(actual) is not dict or len(authority.get('command_inventory', [])) != 376
+            or len(authority.get('outcome_inventory', [])) != 24):
+        raise ValueError('next42 fixed fit inventory')
+    if any(type(slot) is not int or not 0 <= slot < 376 for slot in actual):
+        raise ValueError('next42 actual slot')
+    command = authority['command_inventory']
+    current = []
+    deferred = []
+    for slot, row in enumerate(command):
+        if type(row) is not list or len(row) != 8:
+            raise ValueError('next42 fixed eight cells')
+        group, index, path, size, digest, cap, pending, schema = row
+        pin = actual.get(slot)
+        if pin is None:
+            if pending is not True or group not in {'current_tail54', 'precommand_paths'}:
+                raise ValueError('next42 missing actual input')
+            deferred.append(dict(slot=slot, group=group, index=index, path=path,
+                                 schema_id=schema, reserved_bytes=cap, status='FIT_PENDING'))
+        elif (type(pin) is not dict or set(pin) != {'path', 'bytes', 'sha256'}
+              or pin['path'] != path or type(pin['bytes']) is not int
+              or not 0 <= pin['bytes'] <= (cap if cap is not None else size)
+              or type(pin['sha256']) is not str or len(pin['sha256']) != 64
+              or any(c not in '0123456789abcdef' for c in pin['sha256'])):
+            raise ValueError('next42 actual pin binding')
+        elif pending is not True and pin != dict(path=path, bytes=size, sha256=digest):
+            raise ValueError('next42 immutable pin drift')
+        if group in {'current_tail54', 'precommand_paths'}:
+            current.append((group, index, cap, pin['bytes'] if pin is not None else cap))
+    ordered = [r for r in current if r[0] == 'current_tail54']
+    ordered += [r for r in current if r[0] == 'precommand_paths']
+    if ([(r[0], r[1]) for r in ordered] !=
+            [('current_tail54', i) for i in range(54)] + [('precommand_paths', i) for i in range(3)]):
+        raise ValueError('next42 current slot order')
+    outcomes = authority['outcome_inventory']
+    if ([(r[0], r[1]) for r in outcomes] != [('outcome24', i) for i in range(24)]
+            or tuple(r[2] for r in ordered) + tuple(r[5] for r in outcomes) != SEVENTH_CURRENT_POOL_CAPS):
+        raise ValueError('next42 current schema/cap binding')
+    sizes = [r[3] for r in ordered] + [None] * 24
+    reserved = reserve_seventh_current_evidence(sizes)
+    return dict(sizes=sizes, reserved_bytes=reserved, pending=deferred,
+                outcomes_reserved_bytes=sum(SEVENTH_CURRENT_POOL_CAPS[57:]),
+                accepted=False, ready=False, new_facts=0)
+
 def sealed_profile(profile):
+    if profile == NEXT42_PROFILE:
+        if NEXT42_CONTRACT is None:
+            raise ValueError('fixed next42 descriptor not settled')
+        return dict(ordinal='next42', voter='7f821a7f63c0e7251e332b9b7c08da0b757124b5',
+                    key=NEXT42_KEY, prior_index=9, indices=NEXT42_INDICES)
     if profile == SIXTH_PROFILE:
         return dict(ordinal="fbb45", voter="fbb3ee068e491e218d2cda595c23c6e3cc2f00f2", key=SIXTH_KEY, prior_index=19, indices=SIXTH_INDICES)
 
@@ -526,6 +645,9 @@ def exclusive(path, data):
 
 
 def expected_source_paths(profile=None):
+    if profile == NEXT42_PROFILE:
+        return [r['path'] for r in NEXT42_PREDECESSOR_SOURCES] + [
+            str(SRC / f'bin/{kind}_vrf_residual_7f82.rs') for kind in ('live', 'replay')]
     path = R3 / 'sixth-voter/source-freeze.json'
     pin_file(path, dict(path=str(path), bytes=13765,
                        sha256='669add9d030f189bc7a6b68023d1a63aa3ac39186bb12e45984805230cea1962'))
@@ -552,18 +674,23 @@ def expected_source_paths(profile=None):
 
 
 def validate_preflight(report, preparation=None):
+    if report.get('profile') == NEXT42_PROFILE:
+        raw = json.dumps(report, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('utf-8')
+        if hashlib.sha256(raw).hexdigest() != NEXT42_PREFLIGHT_CANONICAL_SHA:
+            raise ValueError('exact next42 complete preflight')
+        return
     pin_file(PREPARATION, dict(path=str(PREPARATION), bytes=60570, sha256=PREPARATION_SHA))
     common_prepared = read_json(PREPARATION)
     fixed = sealed_profile(report['profile'])
-    residual = report['profile'] in RESIDUAL_PROFILES or report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE}
-    count = 45 if report['profile'] in {FOURTH_PROFILE, FIFTH_PROFILE, SIXTH_PROFILE} else 46 if residual else 47
+    residual = report['profile'] in RESIDUAL_PROFILES or report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE, NEXT42_PROFILE}
+    count = 42 if report['profile'] == NEXT42_PROFILE else 45 if report['profile'] in {FOURTH_PROFILE, FIFTH_PROFILE, SIXTH_PROFILE} else 46 if residual else 47
     voter, key = fixed['voter'], fixed['key']
     prepared = common_prepared if preparation is None else read_json(preparation)
     baseline = read_json(R3 / 'sixth-voter/vrf-sixth-voter-window-preflight.json', FREEZE_CAP)
     if report['status'] != 'authority_inputs_authenticated_no_database_open':
         raise ValueError('fixed profile preflight')
     selected = report['selection']
-    if report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE}:
+    if report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE, NEXT42_PROFILE}:
         validate_fifth_selection(selected, prepared, fifth_contract(report['profile']))
     if len(selected) != count or len(prepared['rows']) != count:
         raise ValueError('complete fixed selection')
@@ -575,7 +702,9 @@ def validate_preflight(report, preparation=None):
                           logical_key_hex=key, key_preimage_hex=f'0004{voter}'):
             raise ValueError('authenticated tuple binding')
         omitted = 12 if report['profile'] == THIRD_PROFILE else 36 if report['profile'] == SECOND_PROFILE else 5
-        delayed_index = ([x for x in range(1, 48) if x not in (30, 41)][i]
+        delayed_index = ([x for x in range(1, 48) if x not in (5, 11, 23, 24, 34)][i]
+                         if report['profile'] == NEXT42_PROFILE else
+                         [x for x in range(1, 48) if x not in (30, 41)][i]
                          if report['profile'] == SIXTH_PROFILE else
                          [x for x in range(1, 48) if x not in (24, 45)][i]
                          if report['profile'] == FIFTH_PROFILE else
@@ -608,7 +737,8 @@ def validate_preflight(report, preparation=None):
             raise ValueError('sealed successor row indices')
         if expected['selection_index'] != fixed['prior_index'] or expected['parent_manifest_index'] != fixed['prior_index']*3+2:
             raise ValueError('sealed successor prior indices')
-    residual_value = ('8baa75fd5cb33fb6a75c42caa6e17158cf58023103a8dc9e14eaad618d3220fd' if report['profile'] == SIXTH_PROFILE else 'c3fe453a6ee0a2230034b3f908ba24c4733b3a9c9d059d11df0e8fdaaaf7b48a'
+    residual_value = ('fac60901abf805fec85f32a4625ff4c8aba6f1724915ef83eb7206687c78cfa5' if report['profile'] == NEXT42_PROFILE else
+                      '8baa75fd5cb33fb6a75c42caa6e17158cf58023103a8dc9e14eaad618d3220fd' if report['profile'] == SIXTH_PROFILE else 'c3fe453a6ee0a2230034b3f908ba24c4733b3a9c9d059d11df0e8fdaaaf7b48a'
                       if report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE} else '2c9895a89f0d58e2210f21f2129dc74de825a1b7ca03a15c600cda5f4c4a6dc3'
                       if report['profile'] == FOURTH_PROFILE else 'd25384032e092d1e74d81fc2819cdade58bae55c144d4a4f47ebf4449fc89a7a'
                       if report['profile'] == THIRD_PROFILE else '04d5cbb4aed88f984596c757d953bd962bf9e1353046b3e28af0aac6366cab93'
@@ -891,6 +1021,17 @@ def finite_profile(profile):
     Specs cannot supply these fields. Each fixed descriptor binds complete
     source, evidence order, full parity bodies and exclusive outputs.
     """
+    if profile == NEXT42_PROFILE:
+        if NEXT42_CONTRACT is None:
+            raise ValueError('fixed next42 descriptor not settled')
+        return dict(run=NEXT42_RUN, contract=NEXT42_CONTRACT,
+                    predecessor=NEXT42_PREDECESSOR_SOURCES,
+                    comparison=NEXT42_COMPARISON_PROFILES, argv=NEXT42_COMPARISON_ARGV,
+                    source_count=88, evidence_start=93, evidence_count=281,
+                    stem='next42', cli='7f82',
+                    tests=FIFTH_EQUIVALENCE_TESTS+['fifth_residual_saved_bundle_report_is_completely_equal',
+                                                'sixth_residual_saved_bundle_report_is_completely_equal'],
+                    equality_field='all16_unchanged_profiles_equal')
     if profile == FIFTH_PROFILE:
         return dict(run=FIFTH_RUN, contract=FIFTH_CONTRACT,
                     predecessor=FIFTH_PREDECESSOR_SOURCES,
@@ -945,7 +1086,7 @@ def sixth_inventory_shape(value):
     visit(value, 0)
 
 
-def expand_sixth_inventory(contract):
+def expand_sixth_inventory(contract, profile=SIXTH_PROFILE):
     """Expand only the sealed sixth authority's two fixed eight-cell lists.
 
     The caller authenticates the complete 131072-byte-bounded authority first.
@@ -955,14 +1096,15 @@ def expand_sixth_inventory(contract):
     No filesystem operation or authority selection occurs here. Any malformed
     cell or excess decoded graph raises ValueError before command construction.
     """
-    header = dict(schema='n4-fbb45-fixed-inventory-tuples-v1',
+    header = dict(schema=('n4-next42-fixed-inventory-tuples-v1' if profile == NEXT42_PROFILE else
+                          'n4-fbb45-fixed-inventory-tuples-v1'),
                   fields=list(SIXTH_INVENTORY_FIELDS), command_count=376,
                   outcome_count=24, null_means_absent=True)
     if not isinstance(contract, dict) or contract.get('inventory_encoding') != header \
             or contract['inventory_encoding'].get('null_means_absent') is not True \
             or type(contract['inventory_encoding'].get('command_count')) is not int \
             or type(contract['inventory_encoding'].get('outcome_count')) is not int \
-            or contract.get('schema') != 'n4-fbb45-finite-successor-v2':
+            or contract.get('schema') != ('n4-next42-finite-successor-v1' if profile == NEXT42_PROFILE else 'n4-fbb45-finite-successor-v2'):
         raise ValueError('sixth inventory encoding header')
     sixth_inventory_shape(contract)
     for name, count in [('command_inventory', 376), ('outcome_inventory', 24)]:
@@ -1009,8 +1151,8 @@ def fifth_contract(profile=FIFTH_PROFILE):
     fixed = finite_profile(profile)
     pin_file(fixed['contract']['path'], fixed['contract'], 131072)
     contract = read_json(fixed['contract']['path'], 131072)
-    if profile == SIXTH_PROFILE:
-        contract = expand_sixth_inventory(contract)
+    if profile in {SIXTH_PROFILE, NEXT42_PROFILE}:
+        contract = expand_sixth_inventory(contract, profile)
     authority_roles = [r for r in contract['command_inventory']
                        if r['group'] == 'current_tail54' and r['index'] == 40]
     if len(authority_roles) != 1 or authority_roles[0]['path'] != fixed['contract']['path'] or authority_roles[0]['cap_bytes'] != 131072:
@@ -1019,7 +1161,8 @@ def fifth_contract(profile=FIFTH_PROFILE):
     expected = contract['sealed_source_predecessor']
     if len(fixed['predecessor']) != expected['count'] or len(descriptor) != expected['canonical_bytes'] or hashlib.sha256(descriptor).hexdigest() != expected['canonical_sha256']:
         raise ValueError('sealed source predecessor descriptor')
-    comparison=json.dumps({('FIFTH_COMPARISON_PROFILES' if profile == FIFTH_PROFILE else 'SIXTH_COMPARISON_PROFILES'):fixed['comparison'],('FIFTH_COMPARISON_ARGV' if profile == FIFTH_PROFILE else 'SIXTH_COMPARISON_ARGV'):fixed['argv']},sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')
+    prefix = 'SEVENTH' if profile == NEXT42_PROFILE else 'FIFTH' if profile == FIFTH_PROFILE else 'SIXTH'
+    comparison=json.dumps({prefix+'_COMPARISON_PROFILES':fixed['comparison'],prefix+'_COMPARISON_ARGV':fixed['argv']},sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')
     if hashlib.sha256(comparison).hexdigest() != contract['comparison_descriptor_sha256']:
         raise ValueError('sealed current comparison descriptor')
     if profile == SIXTH_PROFILE and contract.get('s7_failure_utf8') != SIXTH_FAILURE_UTF8:
@@ -1035,6 +1178,24 @@ def verify_finite_inventory(pins, expected, profile=FIFTH_PROFILE, retained_summ
     """
     if not isinstance(pins, list) or len(pins) != len(expected):
         raise ValueError('finite inventory count')
+    if profile == NEXT42_PROFILE:
+        # Validate every slot before the first body read. Outcome reservations
+        # cannot be discounted by a later observation or actual output size.
+        for actual, required in zip(pins, expected):
+            if (type(actual) is not dict or set(actual) != {'path','bytes','sha256'}
+                    or actual['path'] != required['path'] or type(actual['bytes']) is not int
+                    or not 0 <= actual['bytes'] <= required.get('cap_bytes', required.get('bytes'))
+                    or type(actual['sha256']) is not str or len(actual['sha256']) != 64
+                    or any(c not in '0123456789abcdef' for c in actual['sha256'])):
+                raise ValueError('next42 exact role admission')
+            if not required.get('pending', False) and actual != {k: required[k] for k in ('path','bytes','sha256')}:
+                raise ValueError('next42 immutable role admission')
+        pool = [(a, r) for a, r in zip(pins, expected) if r['group'] == 'current_tail54']
+        pool += [(a, r) for a, r in zip(pins, expected) if r['group'] == 'precommand_paths']
+        if ([r['index'] for _, r in pool] != list(range(54)) + list(range(3))
+                or tuple(r['cap_bytes'] for _, r in pool) != SEVENTH_CURRENT_POOL_CAPS[:57]):
+            raise ValueError('next42 authenticated current slots')
+        reserve_seventh_current_evidence([a['bytes'] for a, _ in pool] + [None]*24)
     summary = None
     for actual, required in zip(pins, expected):
         if set(actual) != {'path', 'bytes', 'sha256'} or actual['path'] != required['path']:
@@ -1044,6 +1205,8 @@ def verify_finite_inventory(pins, expected, profile=FIFTH_PROFILE, retained_summ
         if not required.get('pending', False) and actual != {k: required[k] for k in ('path','bytes','sha256')}:
             raise ValueError('immutable finite role drift')
         cap=required.get('cap_bytes',required.get('bytes'))
+        if profile == NEXT42_PROFILE and required['group'] == 'history5':
+            continue
         if profile == SIXTH_PROFILE and actual['path'] == str(SIXTH_RUN.parent/'source/validation-summary.json'):
             if summary is not None or cap != 65536:
                 raise ValueError('one fixed sixth summary role')
@@ -1057,6 +1220,8 @@ def verify_finite_inventory(pins, expected, profile=FIFTH_PROFILE, retained_summ
                 summary=retained_summary
         else:
             pin_file(actual['path'], actual, cap)
+    if profile == NEXT42_PROFILE:
+        _verify_fixed_history(NEXT42_HISTORY_PARTS, NEXT42_HISTORY_MEMBERS, 192)
     return summary
 
 
@@ -1074,7 +1239,7 @@ def validate_fifth_selection(selected, prepared, contract):
                       address_hex=row['account_hex'],logical_key_hex=row['logical_key_hex'],key_preimage_hex=row['key_preimage_hex'])
         expected.append(dict(parent_manifest_index=row['parent_manifest_index'],source_row=source,tuple=tuple_))
     rows = [dict(original_parent_manifest_index=r['parent_manifest_index'],source_row=r['source_row'],identity=r['tuple']['identity'],account_hex=r['tuple']['address_hex']) for r in expected]
-    if len(expected) != 45 or selected != expected or prepared['rows'] != rows:
+    if len(expected) != (42 if contract['schema'] == 'n4-next42-finite-successor-v1' else 45) or selected != expected or prepared['rows'] != rows:
         raise ValueError('immutable fifth candidate selection')
 
 
@@ -1102,15 +1267,20 @@ FIFTH_EQUIVALENCE_TESTS = [
 FIFTH_COMPARISON_PROFILES = [{'profile': 'native-current', 'before': {'path': '/home/fry/artifacts/n4-binding-resume-20261011/native-live-replay-frame-cost.json', 'bytes': 10911, 'sha256': '2ccf155e2a851cd52161f090bcd3cc76b09f212a44647ba8f76b7db0b7511fbb'}, 'after': {'path': '/home/fry/artifacts/vrf-residual-20261014-current/source/compatibility/native-current.json', 'bytes': 10945, 'sha256': '6cc2a18103fb1ed1e1e1826fdee07edb70c6e4d8e2c9c61ffa1e556363e80377'}, 'fields': ['/source_profile/compiled/0', '/source_profile/compiled/10', '/source_profile/compiled/11', '/source_profile/compiled/12', '/source_profile/executable'], 'executable': {'bytes': 192505688, 'path': '/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_native_witness', 'sha256': 'a588690a16ad0d988b7cfdb4760bb4d091e20922bd0e7816436161a34c818def'}}, {'profile': 'first-d-current', 'before': {'path': '/home/fry/artifacts/n4-run-01a12d5e-f42f-74f0-86fb-26bc2c433942-20261011/vrf-first-d-independent-replay.json', 'bytes': 32805, 'sha256': '8bd32c28356e85944a37a900c95e8ae3cb7cbc7f942f27cc2769257b6be36854'}, 'after': {'path': '/home/fry/artifacts/vrf-residual-20261014-current/source/compatibility/first-d-current.json', 'bytes': 32813, 'sha256': 'c0f8597049363d641a20df01e60c73c9eda2c710d9b975d6468a45146277def7'}, 'fields': ['/authority/executable', '/authority/sources/2', '/authority/sources/16', '/authority/sources/17', '/authority/sources/18', '/vrf_sources/0', '/vrf_sources/3', '/vrf_sources/4', '/vrf_sources/5'], 'executable': {'bytes': 194461280, 'path': '/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/target/debug/replay_vrf_witness', 'sha256': '05ed77937c3bb64f43fad3f360b4e83fa9dfb73b0ffb3d8808fc534c7baab77b'}}]
 FIFTH_COMPARISON_ARGV = ['/usr/bin/python3','-c',"import sys;sys.path.insert(0,'/workspaces/rustaxa-evm/experiments/evm_feasibility/snapshot_qualifier/tools');import bounded_vrf;bounded_vrf.emit_fifth_comparison()"]
 
-def verify_fifth_comparison(payload, source_pins, tool_pin, module=None, profile=FIFTH_PROFILE):
+def verify_fifth_comparison(payload, source_pins, tool_pin, module=None, profile=FIFTH_PROFILE,
+                            observer=None, decoder=None):
     """Authenticate both whole reports and apply only the finite pin substitutions.
 
     No report path is followed. Exact UTF8 body pins and fixed mapping positions
     are required before complete JSON equality; no boolean supplies proof.
     """
-    fixed = finite_profile(profile)
+    fixed = (dict(comparison=NEXT42_COMPARISON_PROFILES) if profile == NEXT42_PROFILE
+             else finite_profile(profile))
     if module is None:
-        source = next(r for p in fifth_contract(profile)['reference_placements'] for r in p['references'] if r['role'] == 'record-builder-source')
+        source = (dict(path=str(Path(__file__).resolve().with_name('evidence_records.py')),
+                       bytes=9498, sha256='20fb60da67ae4e558963bfd955db0426882b1e6fee99be9f809a438711c9b16d')
+                  if profile == NEXT42_PROFILE else
+                  next(r for p in fifth_contract(profile)['reference_placements'] for r in p['references'] if r['role'] == 'record-builder-source'))
         module = record_verifier({k:source[k] for k in ('path','bytes','sha256')})
     module.bounded_shape(payload)
     if set(payload) != {'schema','tool_source','pairs'} or type(payload['schema']) is not int or payload['schema'] != 1 or payload['tool_source'] != tool_pin or not isinstance(payload['pairs'],list) or len(payload['pairs']) != 2:
@@ -1127,8 +1297,11 @@ def verify_fifth_comparison(payload, source_pins, tool_pin, module=None, profile
             if len(raw) != pin['bytes'] or hashlib.sha256(raw).hexdigest() != pin['sha256']:
                 raise ValueError('full current report body pin')
             if len(raw) > METADATA_CAP:raise ValueError('full report parse cap')
-            values.append(module.decode(raw,METADATA_CAP))
+            values.append(module.decode(raw,METADATA_CAP) if decoder is None else
+                          decoder(raw,METADATA_CAP,payload,source_pins,source_map,values))
         before,after = values
+        if observer is not None:
+            observer('comparison_pair', payload, source_pins, source_map, values)
         def locate(value,field):
             parts=field.strip('/').split('/')
             for part in parts[:-1]:value=value[int(part)] if isinstance(value,list) else value[part]
@@ -1148,12 +1321,16 @@ def verify_fifth_comparison(payload, source_pins, tool_pin, module=None, profile
             if b[bk] != expected:raise ValueError('finite current source/binary pin')
             a[ak]=expected
         if before != after:raise ValueError('complete current report inequality')
+        if profile == NEXT42_PROFILE:
+            # Release pair roots and parent aliases before the next pair decode.
+            del before,after,values,a,b,expected,old,path,mapping,raw
     return True
 
 
 def emit_fifth_comparison(profile=FIFTH_PROFILE):
     """Emit the two bounded complete offline pairs under the fixed inline argv."""
-    fixed = finite_profile(profile)
+    fixed = (dict(comparison=NEXT42_COMPARISON_PROFILES) if profile == NEXT42_PROFILE
+             else finite_profile(profile))
     source_pins=[pin_file(path,cap=SOURCE_CAP) for path in expected_source_paths(profile)]
     tool=pin_file(Path(__file__).resolve(),cap=SOURCE_CAP)
     pairs=[]
@@ -1184,26 +1361,38 @@ def verify_fifth_gate_result(result, log_pin, command):
         raise ValueError('current complete equivalence gate binding')
 
 
-def verify_fifth_equivalence(evidence, contract, module, profile=FIFTH_PROFILE):
+def verify_fifth_equivalence(evidence, contract, module, profile=FIFTH_PROFILE, descriptor=None,
+                             observer=None, reader=None, decoder=None):
     """Bind current full-report parity to exact source and complete gate outputs."""
-    fixed = finite_profile(profile)
+    fixed = finite_profile(profile) if descriptor is None else descriptor
+    read = (lambda path,cap,*graphs:read_json(path,cap)) if reader is None else reader
     tail = {r['index']:r['path'] for r in contract['command_inventory'] if r['group'] == 'current_tail54'}
     by_path = {r['path']:r for r in evidence}
-    summary = read_json(tail[46],16384)
+    summary = read(tail[46],16384,tail,by_path)
     fields = {'schema','source_freeze','gate_results','gate_logs','required_exact_tests','matched_tests',fixed['equality_field'],'native_and_first_d_complete_equal','accepted'}
     expected_results = [by_path[tail[i]] for i in (0,20)]
     expected_logs = [by_path[tail[i]] for i in (1,21,47)]
     if set(summary) != fields or type(summary['schema']) is not int or summary['schema'] != 1 or summary['accepted'] is not False or summary['source_freeze'] != by_path[tail[38]] or summary['gate_results'] != expected_results or summary['gate_logs'] != expected_logs or summary['required_exact_tests'] != fixed['tests'] or type(summary['matched_tests']) is not int or summary['matched_tests'] != len(fixed['tests']) or summary[fixed['equality_field']] is not True or summary['native_and_first_d_complete_equal'] is not True:
         raise ValueError('current complete equivalence summary')
     commands=[['rtk','proxy','cargo','test','--manifest-path','experiments/evm_feasibility/snapshot_qualifier/Cargo.toml','--lib','--bins'],['rtk','proxy',*fixed['argv']]]
+    result = None
     for result_pin,log_pin,command in zip(expected_results,expected_logs[:2],commands):
-        result = read_json(result_pin['path'],16384)
+        result = read(result_pin['path'],16384,summary,tail,by_path,expected_results,expected_logs,result)
         verify_fifth_gate_result(result,log_pin,command)
-    source_pins=read_json(tail[38],FREEZE_CAP)
-    tools=read_json(tail[39],METADATA_CAP)
+        if observer is not None:
+            observer('comparison_gate',summary,tail,by_path,expected_results,expected_logs,result)
+    source_pins=read(tail[38],FREEZE_CAP,summary,tail,by_path,expected_results,expected_logs,result)
+    tools=read(tail[39],METADATA_CAP,summary,tail,by_path,expected_results,expected_logs,result,source_pins)
     raw=read_fifth_body(tail[21],FREEZE_CAP)
-    payload=module.decode(raw,FREEZE_CAP)
-    verify_fifth_comparison(payload,source_pins,tools[0],module,profile)
+    payload=(module.decode(raw,FREEZE_CAP) if decoder is None else
+             decoder(raw,FREEZE_CAP,summary,tail,by_path,expected_results,expected_logs,result,source_pins,tools))
+    verify_fifth_comparison(payload,source_pins,tools[0],module,profile,
+        None if observer is None else lambda phase,*graphs:observer(
+            phase,summary,tail,by_path,result,expected_results,expected_logs,tools,*graphs),
+        None if decoder is None else lambda raw,cap,*graphs:decoder(
+            raw,cap,summary,tail,by_path,result,expected_results,expected_logs,tools,*graphs))
+    if profile == NEXT42_PROFILE:
+        del payload, raw, source_pins, tools
     # All original assertions compare entire reports, including logical/physical
     # results. These exact selectors cover ten complete and four residual profiles.
     output = read_fifth_body(tail[1],327680)
@@ -1239,10 +1428,40 @@ def verify_sixth_summary_buffer(raw, pin, module):
     verify_sixth_summary(module.decode(raw,65536))
 
 
-def verify_fifth_records(evidence, profile=FIFTH_PROFILE, summary_bytes=None):
+def _verify_historical_equivalence(historical, full, parse, observer=None):
+    """Apply every existing complete historical projection predicate."""
+    if full[0] != dict(role=parse['role'], **parse['pin']) or set(historical) != set(parse['exact_keys']):
+        raise ValueError('historical projection schema')
+    if historical['schema'] != 1 or historical['matched_tests'] != 11 or historical['new_facts'] != 0 or any(historical[k] is not True for k in ('first_second_third_and_ten_complete_equal','only_reviewed_provenance_changes_allowed')):
+        raise ValueError('historical projection facts')
+    native = historical['native_and_first_d_complete_equality']
+    if not isinstance(native,list) or [r.get('profile') for r in native] != ['native-current','first-d-current'] or any(r.get('complete_equal_except_exact_pin_mappings') is not True for r in native):
+        raise ValueError('historical native and first-D equality')
+    output = historical['full_gate_output']
+    projection = {k:v for k,v in historical.items() if k != 'full_gate_output'}
+    if observer is not None:
+        observer(historical,projection)
+    if not isinstance(output,str) or len(output.encode('utf-8')) != parse['output_bytes'] or hashlib.sha256(output.encode('utf-8')).hexdigest() != parse['output_sha256'] or hashlib.sha256(json.dumps(projection,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')).hexdigest() != parse['projection_canonical_sha256']:
+        raise ValueError('historical complete projection drift')
+
+
+def _verify_current_correction(correction, correction_spec):
+    """Apply the exact retained failure-body and current findings schema."""
+    if set(correction) != set(correction_spec['fields']) or correction['schema'] != correction_spec['schema'] or correction['accepted'] is not False or not isinstance(correction['findings'],str) or len(correction['findings'].encode('utf-8')) > correction_spec['findings_utf8_cap'] or len(correction['failures']) != len(correction_spec['failures']):
+        raise ValueError('finite current correction schema')
+    for actual, required in zip(correction['failures'],correction_spec['failures']):
+        if set(actual) != set(correction_spec['failure_fields']) or {k:actual[k] for k in required} != required or not isinstance(actual['body_utf8'],str):
+            raise ValueError('finite current correction role')
+        body = actual['body_utf8'].encode('utf-8')
+        if len(body) != required['bytes'] or hashlib.sha256(body).hexdigest() != required['sha256']:
+            raise ValueError('finite current full failure body')
+
+
+def verify_fifth_records(evidence, profile=FIFTH_PROFILE, summary_bytes=None, context=None,
+                         descriptor=None, equivalence=True):
     """Verify the three finite successor placements and each repeated charge."""
-    fixed = finite_profile(profile)
-    contract = fifth_contract(profile)
+    fixed = finite_profile(profile) if descriptor is None else descriptor
+    contract = fifth_contract(profile) if context is None else context
     placements = contract['reference_placements']
     sources = [r for p in placements for r in p['references'] if r['role'] == 'record-builder-source']
     if len(sources) != 1:
@@ -1276,29 +1495,13 @@ def verify_fifth_records(evidence, profile=FIFTH_PROFILE, summary_bytes=None):
         raise ValueError('historical semantic parse drift')
     historical = module.decode(raw, METADATA_CAP)
     parse = contract['historical_equivalence_parse']
-    if full[0] != dict(role=parse['role'], **parse['pin']) or set(historical) != set(parse['exact_keys']):
-        raise ValueError('historical projection schema')
-    if historical['schema'] != 1 or historical['matched_tests'] != 11 or historical['new_facts'] != 0 or any(historical[k] is not True for k in ('first_second_third_and_ten_complete_equal','only_reviewed_provenance_changes_allowed')):
-        raise ValueError('historical projection facts')
-    native = historical['native_and_first_d_complete_equality']
-    if not isinstance(native,list) or [r.get('profile') for r in native] != ['native-current','first-d-current'] or any(r.get('complete_equal_except_exact_pin_mappings') is not True for r in native):
-        raise ValueError('historical native and first-D equality')
-    output = historical['full_gate_output']
-    projection = {k:v for k,v in historical.items() if k != 'full_gate_output'}
-    if not isinstance(output,str) or len(output.encode('utf-8')) != parse['output_bytes'] or hashlib.sha256(output.encode('utf-8')).hexdigest() != parse['output_sha256'] or hashlib.sha256(json.dumps(projection,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')).hexdigest() != parse['projection_canonical_sha256']:
-        raise ValueError('historical complete projection drift')
+    _verify_historical_equivalence(historical, full, parse)
     correction_spec = contract['correction_record48']
     correction_path = next(r['path'] for r in contract['command_inventory'] if r['group'] == 'current_tail54' and r['index'] == 48)
     correction = module.decode(read_fifth_body(correction_path,FREEZE_CAP))
-    if set(correction) != set(correction_spec['fields']) or correction['schema'] != correction_spec['schema'] or correction['accepted'] is not False or not isinstance(correction['findings'],str) or len(correction['findings'].encode('utf-8')) > correction_spec['findings_utf8_cap'] or len(correction['failures']) != len(correction_spec['failures']):
-        raise ValueError('finite current correction schema')
-    for actual, required in zip(correction['failures'],correction_spec['failures']):
-        if set(actual) != set(correction_spec['failure_fields']) or {k:actual[k] for k in required} != required or not isinstance(actual['body_utf8'],str):
-            raise ValueError('finite current correction role')
-        body = actual['body_utf8'].encode('utf-8')
-        if len(body) != required['bytes'] or hashlib.sha256(body).hexdigest() != required['sha256']:
-            raise ValueError('finite current full failure body')
-    verify_fifth_equivalence(evidence,contract,module,profile)
+    _verify_current_correction(correction, correction_spec)
+    if equivalence:
+        verify_fifth_equivalence(evidence,contract,module,profile,descriptor)
     source_bytes = sum(r['bytes'] for p in placements for r in p['references']
                        if r['role'] in {'record-builder-source','record-builder-tests'})
     return dict(reference_count=count,referenced_bytes=total,streamed_bytes=streamed,
@@ -1379,6 +1582,747 @@ def fifth_spec_from_roster(source_commit, metadata, profile=FIFTH_PROFILE):
                 preparation=pins[374],copy_metadata=metadata)
 
 
+def _next42_correction_spec(predecessor):
+    """Apply only the independently reviewed five-occurrence amendment.
+
+    V7 stays immutable. Runtime reads no amendment/event/body path: the existing
+    role48 must carry every required complete UTF8 body for the shared checker.
+    This finite replacement admits neither automatic appends nor an empty row.
+    """
+    if (predecessor['schema'] != 'n4-next42-finite-current-corrections-v1'
+            or predecessor['failures'] != []
+            or type(predecessor.get('findings_cap_bytes')) is not int
+            or predecessor['findings_cap_bytes'] != 12288):
+        raise ValueError('next42 exact V7 correction predecessor')
+    return dict(predecessor, findings_utf8_cap=predecessor['findings_cap_bytes'],
+                failures=NEXT42_FAILURE_AMENDMENT['required_failures'])
+
+
+def _next42_source_prefix(findings):
+    """Require the exact reviewed complete source-review failure prefix."""
+    required=NEXT42_FAILURE_AMENDMENT['source28_findings_prefix']
+    if not isinstance(findings,str):raise ValueError('next42 source findings prefix')
+    prefix=findings.encode('utf-8')[:required['bytes']]
+    if (prefix!=required['body_utf8'].encode('utf-8')
+            or hashlib.sha256(prefix).hexdigest()!=required['sha256']):
+        raise ValueError('next42 source findings prefix')
+
+
+def _next42_physical_row(row):
+    """Resolve only five reviewed read locations, preserving logical pins."""
+    mappings=NEXT42_FAILURE_AMENDMENT['instruction_read_aliases']['mappings']
+    for mapping in mappings:
+        if row==mapping['logical']:
+            physical=mapping['physical']
+            if (physical['bytes'],physical['sha256'])!=(row['bytes'],row['sha256']):
+                raise ValueError('next42 predecessor content substitution')
+            return dict(row,path=physical['path'])
+    if any(row['path']==mapping['logical']['path'] for mapping in mappings):
+        raise ValueError('next42 exact historical instruction tuple')
+    return row
+
+
+def _next42_project_authority(contract, observer=None):
+    """Consume the validated authority into bounded, serialized role metadata.
+
+    The returned bytes preserve all400 ordered rows and every field. The small
+    verification context retains only child, correction and equivalence rules.
+    No decoded authority or complete command graph escapes this phase.
+    """
+    inventory = contract.pop('command_inventory')
+    outcomes = contract.pop('outcome_inventory')
+    tail = [dict(row)
+            for row in inventory if row['group'] == 'current_tail54']
+    context = {key: contract[key] for key in (
+        'reference_placements', 'historical_equivalence_parse', 'correction_record48')}
+    context['correction_record48'] = _next42_correction_spec(context['correction_record48'])
+    context['command_inventory'] = tail
+    if observer is not None:
+        observer('projection_before_compaction', contract, inventory, outcomes, context)
+    for rows in (inventory, outcomes):
+        for index, row in enumerate(rows):
+            rows[index] = [row.get(field) for field in SIXTH_INVENTORY_FIELDS]
+    if observer is not None:
+        observer('projection', contract, inventory, outcomes, context)
+    raw = (json.dumps([inventory, outcomes], separators=(',', ':'), ensure_ascii=True)+'\n').encode()
+    if len(raw) > 262144:
+        raise ValueError('next42 projected manifest cap')
+    return raw, context
+
+
+def _next42_decode_inventory(raw):
+    """Decode only the bounded400-row projection after authority release."""
+    if type(raw) is not bytes or len(raw) > 262144:
+        raise ValueError('next42 projected manifest bytes')
+    rows = json.loads(raw, object_pairs_hook=unique_object)
+    _next42_shape(rows)
+    if (type(rows) is not list or len(rows) != 2 or len(rows[0]) != 376
+            or len(rows[1]) != 24 or any(type(row) is not list or len(row) != 8
+                                      for group in rows for row in group)):
+        raise ValueError('next42 projected manifest shape')
+    return rows
+
+
+def _next42_pin_at(spec, row, slot, spec_pin, fit=False):
+    """Bind one declaration to one fixed row; never read its body here.
+
+    Fit pending observations retain their exact slot/path/schema/reservation.
+    They have no actual digest or successful semantic value and runtime rejects
+    them. The same ordered binding is used before admission and serialization.
+    """
+    if slot < 88:
+        value = spec['sources'][slot]
+    elif slot < 90:
+        value = spec['tool_sources'][slot-88]
+    elif slot < 92:
+        value = spec['binaries'][slot-90]
+    elif slot == 92:
+        value = spec['preflight']
+    elif slot < 374:
+        value = spec['evidence'][slot-93]
+        if type(value) is list and len(value) == 2:
+            value = dict(path=row[2], bytes=value[0], sha256=value[1])
+    elif slot == 374:
+        value = spec['preparation']
+    else:
+        value = spec_pin
+    if type(value) is dict and value.get('status') == 'FIT_PENDING':
+        required = dict(status='FIT_PENDING', slot=slot, group=row[0], index=row[1],
+                        path=row[2], schema_id=row[7], cap_bytes=row[5], reserved_bytes=row[5])
+        if not fit or row[6] is not True or row[0] not in {'current_tail54','precommand_paths'} or value != required:
+            raise ValueError('next42 pending role binding')
+        return value
+    cap = row[5] if row[5] is not None else row[3]
+    if (type(value) is not dict or set(value) != {'path','bytes','sha256'}
+            or value['path'] != row[2] or type(value['bytes']) is not int
+            or not 0 <= value['bytes'] <= cap or type(value['sha256']) is not str
+            or len(value['sha256']) != 64 or any(c not in '0123456789abcdef' for c in value['sha256'])):
+        raise ValueError('next42 declaration binding')
+    if row[6] is not True and value != dict(path=row[2], bytes=row[3], sha256=row[4]):
+        raise ValueError('next42 immutable declaration drift')
+    return value
+
+
+def _next42_admit(spec, rows, spec_pin, fit=False):
+    """Validate all declarations before reserving the unchanged81-role pool."""
+    if (len(spec['sources']) != 88 or len(spec['tool_sources']) != 2
+            or len(spec['binaries']) != 2 or len(spec['evidence']) != 281):
+        raise ValueError('next42 complete declaration counts')
+    sizes = [None] * 81
+    for slot, row in enumerate(rows[0]):
+        value = _next42_pin_at(spec, row, slot, spec_pin, fit)
+        if row[0] == 'current_tail54':
+            index = row[1]
+        elif row[0] == 'precommand_paths':
+            index = 54 + row[1]
+        else:
+            continue
+        if row[5] != SEVENTH_CURRENT_POOL_CAPS[index] or sizes[index] is not None:
+            raise ValueError('next42 current cap/order binding')
+        sizes[index] = value['reserved_bytes'] if value.get('status') == 'FIT_PENDING' else value['bytes']
+    if tuple(row[5] for row in rows[1]) != SEVENTH_CURRENT_POOL_CAPS[57:]:
+        raise ValueError('next42 outcome cap binding')
+    return reserve_seventh_current_evidence(sizes)
+
+
+def _build_next42_phased(spec_path, port):
+    """Account every actual read during the same strict/fit phase runner."""
+    with port.reads:
+        return _run_next42_phased(spec_path, port)
+
+
+def _run_next42_phased(spec_path, port):
+    """Execute fixed42 in the reviewed non-overlapping phase schedule.
+
+    Ports perform the same fixed input validation and resource checks. The
+    reviewed fit-only port may record typed deferred predicates; it never grants
+    production authority. All decoded preflight and authority objects are owned
+    here, released before pin construction, and never passed to later phases.
+    """
+    spec_raw, spec_pin = port.spec_bytes(spec_path)
+    authority = port.authority()
+    port.validate_authority(authority)
+    port.observe('authority', authority)
+    inventory_raw, context = _next42_project_authority(authority, port.observe)
+    del authority
+    port.boundary('authority_released')
+
+    rows = _next42_decode_inventory(inventory_raw)
+    spec = port.decode_spec(spec_raw, live=(rows, context))
+    reservation = _next42_admit(spec, rows, spec_pin, port.fit)
+    port.reads.reserved = sum(row[5] for slot,row in enumerate(rows[0])
+        if _next42_pin_at(spec,row,slot,spec_pin,port.fit).get('status') == 'FIT_PENDING') + 2523136
+    port.observe('admission', spec, rows, context)
+    del spec, rows
+    port.boundary('admitted')
+
+    spec = port.decode_spec(spec_raw, live=(context,))
+    report = port.preflight(spec, live=(context,))
+    header = port.validate_preflight(spec, report)
+    port.observe('preflight', spec, report, context, header)
+    del report, spec
+    port.boundary('preflight_released')
+
+    rows = _next42_decode_inventory(inventory_raw)
+    spec = port.decode_spec(spec_raw, live=(rows, context, header))
+    charges = port.verify_files(spec, rows, spec_pin)
+    del spec, rows
+    port.boundary('inventory_released')
+
+    port.verify_records(context, spec_raw, spec_pin, live=(header, charges))
+    for key in ('reference_placements', 'historical_equivalence_parse', 'correction_record48'):
+        context.pop(key)
+    port.verify_comparison(context, spec_raw, spec_pin, live=(header, charges))
+    del context
+    port.boundary('semantics_released')
+
+    rows = _next42_decode_inventory(inventory_raw)
+    spec = port.decode_spec(spec_raw, live=(rows, header))
+    pins = []
+    for slot, row in enumerate(rows[0]):
+        pins.append(_next42_pin_at(spec, row, slot, spec_pin, port.fit))
+        # Every declaration has already passed admission, authentication and
+        # semantic checks. Charge the transfer before releasing its input row.
+        port.observe('pin_transfer', spec, rows, pins, header, charges)
+        if slot < 88: spec['sources'][slot] = None
+        elif slot < 90: spec['tool_sources'][slot-88] = None
+        elif slot < 92: spec['binaries'][slot-90] = None
+        elif slot == 92: spec['preflight'] = None
+        elif slot < 374: spec['evidence'][slot-93] = None
+        elif slot == 374: spec['preparation'] = None
+        rows[0][slot] = None
+    del row
+    if port.fit:
+        header['fit_outcomes'] = [dict(status='FIT_PENDING', slot=376+i, group=row[0],
+                                      index=row[1], path=row[2], schema_id=row[7],
+                                      cap_bytes=row[5], reserved_bytes=row[5])
+                                  for i,row in enumerate(rows[1])]
+    port.observe('pins', spec, rows, pins, header, charges)
+    del spec, rows, inventory_raw
+    result = port.output(header, pins, charges, reservation)
+    del pins, header, charges, spec_raw
+    port.observe('output', result)
+    return port.serialize(result)
+
+
+def build_next42(spec_path):
+    """Use only the phased entry; incomplete fixed42 authority rejects early."""
+    if NEXT42_CONTRACT is None:
+        raise ValueError('fixed next42 descriptor not settled')
+    return _build_next42_phased(spec_path, _Next42Port())
+
+
+def _next42_phase_charge(*graphs):
+    """Charge active fixed descriptors and the unchanged reviewed reserves."""
+    fixed = sum(_next42_shape(value)['retained_bytes'] for value in (
+        NEXT42_HISTORY_MEMBERS, NEXT42_HISTORY_PARTS, NEXT42_PREDECESSOR_SOURCES,
+        NEXT42_COMPARISON_PROFILES, NEXT42_COMPARISON_ARGV, NEXT42_FAILURE_AMENDMENT,
+        NEXT42_BINARY_PINS, NEXT42_PREFLIGHT_PIN))
+    return (fixed + 131072 + 262144 + 65536 + 22528 + 4096
+            + sum(_next42_shape(value)['retained_bytes'] for value in graphs))
+
+
+def _next42_identity_bytes(identities):
+    """Charge native inode tuples and every retained path without a copy."""
+    return 128+sum(640+len(path.encode('utf-8')) for path in (identities or {}).values())
+
+
+def _next42_pin_map_bytes(pins):
+    return 128+sum(640+len(path.encode('utf-8'))+len(pin[1]) for path,pin in pins.items())
+
+
+class _Next42Reads:
+    """Count every synchronous Path/descriptor read, including repeated bodies.
+
+    Only the fixed adapter installs these hooks, restoring them on every exit.
+    Counters retain no file bodies or growing path list. The optional event sink
+    receives one bounded close record; a caller opens it before instrumentation.
+    """
+    def __init__(self, sink=None):
+        self.sink=sink;self.total=self.source=self.binary=self.opens=0
+        self.active={};self.reserved=5242880
+        self.source_override=None
+
+    def is_source(self, path):
+        # Reuse charged compiled rows; retain no second90-path collection.
+        if self.is_binary(path):return False
+        return (path==self.source_override or any(path==p['path'] for p in NEXT42_PREDECESSOR_SOURCES)
+            or path in tuple(str(SRC/f'bin/{kind}_vrf_residual_7f82.rs') for kind in ('live','replay'))
+            or path in tuple(str(Path(__file__).with_name(name)) for name in (
+                'bounded_vrf.py','test_bounded_vrf.py','evidence_records.py','test_evidence_records.py')))
+
+    def is_binary(self, path):
+        return any(path==p['path'] for p in NEXT42_BINARY_PINS)
+
+    def begin(self, path, token):
+        path=str(outside_database(path))
+        if Path(path).name=='AI.md' or len(self.active)>=4:
+            raise ValueError('next42 read metadata bound')
+        # Bound native bookkeeping before inserting/allocating another digest.
+        # Each entry reserves token, row, path, counter, digest and wrapper.
+        metadata=128+1024+len(path.encode())
+        metadata+=sum(1024+len(row[0].encode()) for row in self.active.values())
+        if metadata>4096:
+            raise ValueError('next42 active read metadata reserve')
+        self.active[token]=[path,0,hashlib.sha256()]
+        self.opens+=1
+
+    def charge(self, token, data):
+        row=self.active[token];size=len(data)
+        row[1]+=size;row[2].update(data);self.total+=size
+        self.source+=size if self.is_source(row[0]) else 0
+        self.binary+=size if self.is_binary(row[0]) else 0
+        if (self.total+self.reserved>PIN_TOTAL
+                or self.total-self.binary+self.reserved>31457280 or self.source>SOURCE_TOTAL):
+            raise ValueError('next42 actual repeated read aggregate')
+        return data
+
+    def limit(self, token, requested):
+        if requested<0:raise ValueError('next42 unbounded read')
+        path=self.active[token][0]
+        remaining=PIN_TOTAL-self.reserved-self.total
+        if not self.is_binary(path):
+            remaining=min(remaining,31457280-self.reserved-self.total+self.binary)
+        if self.is_source(path):
+            remaining=min(remaining,SOURCE_TOTAL-self.source)
+        # Preserve the existing one-byte growth/EOF sentinel. Any excess rejects
+        # before decoding and is retained as a failed read, never a fit result.
+        return min(requested,max(1,remaining+1))
+
+    def end(self, token):
+        row=self.active.pop(token)
+        if self.sink is not None:
+            self.sink(dict(path=row[0],bytes=row[1],sha256=row[2].hexdigest()))
+
+    def __enter__(self):
+        self.path_open=Path.open;self.os_open=os.open;self.os_read=os.read;self.os_close=os.close
+        owner=self
+        class Stream:
+            def __init__(self, path, args, kwargs):
+                self.token=object();owner.begin(path,self.token)
+                try:self.stream=owner.path_open(path,*args,**kwargs)
+                except BaseException:owner.end(self.token);raise
+            def read(self, count=-1):
+                return owner.charge(self.token,self.stream.read(owner.limit(self.token,count)))
+            def __enter__(self):return self
+            def __exit__(self,*args):
+                try:return self.stream.__exit__(*args)
+                finally:owner.end(self.token)
+        def path_open(path,*args,**kwargs):
+            mode=args[0] if args else kwargs.get('mode','r')
+            if mode!='rb':raise ValueError('next42 read-only binary stream')
+            return Stream(path,args,kwargs)
+        def descriptor_open(path,flags,*args,**kwargs):
+            outside_database(path)
+            if flags & (os.O_WRONLY|os.O_RDWR|os.O_CREAT|os.O_TRUNC):
+                raise ValueError('next42 read-only descriptor')
+            fd=owner.os_open(path,flags,*args,**kwargs)
+            try:owner.begin(path,fd)
+            except BaseException:owner.os_close(fd);raise
+            return fd
+        def descriptor_read(fd,count):
+            if fd not in owner.active or count<0:raise ValueError('next42 unknown read descriptor')
+            return owner.charge(fd,owner.os_read(fd,owner.limit(fd,count)))
+        def descriptor_close(fd):
+            try:return owner.os_close(fd)
+            finally:owner.end(fd)
+        Path.open=path_open;os.open=descriptor_open;os.read=descriptor_read;os.close=descriptor_close
+        return self
+
+    def __exit__(self,*args):
+        Path.open=self.path_open;os.open=self.os_open;os.read=self.os_read;os.close=self.os_close
+        if self.active and args[0] is None:raise ValueError('next42 leaked read descriptor')
+
+    def report(self):
+        return dict(actual_bytes=self.total,actual_source_bytes=self.source,
+            actual_binary_bytes=self.binary,actual_nonbinary_bytes=self.total-self.binary,
+            pending_and_outcome_reserved_bytes=self.reserved,charged_total_bytes=self.total+self.reserved,
+            charged_nonbinary_bytes=self.total-self.binary+self.reserved,open_occurrences=self.opens)
+
+
+class _Next42Port:
+    """Fixed42 file/metadata port with bounded phase accounting.
+
+    Runtime requires a settled compiled authority and rejects every fit pending
+    observation. Fit uses the same phase runner, row admission, file hashes,
+    history stream, shared child predicates and encoder. Only pending production
+    predicates are deferred; no pending source/binary/history is permitted.
+    """
+    fit = False
+
+    def __init__(self, authority_pin=None):
+        self.authority_pin = NEXT42_CONTRACT if authority_pin is None else authority_pin
+        if self.authority_pin is None:
+            raise ValueError('fixed next42 descriptor not settled')
+        self.metrics = {}
+        self.pending = 0
+        self.child_count = self.child_bytes = self.child_source_bytes = 0
+        self.history = None
+        self.deferred = []
+        self.decoder = None
+        self.reads = _Next42Reads()
+
+    def phase_state(self):
+        """Charge retained port values explicitly, outside native I/O reserve."""
+        return dict(authority_pin=self.authority_pin, history=self.history,
+            deferred=self.deferred, pending=self.pending, child_count=self.child_count,
+            child_bytes=self.child_bytes, child_source_bytes=self.child_source_bytes,
+            reads=self.reads.report())
+
+    def observe(self, phase, *graphs, extra_bytes=0):
+        self.metrics.setdefault(phase, 0)
+        charge = _next42_phase_charge(*graphs, self.metrics, self.phase_state()) + extra_bytes
+        if charge > 2097152:
+            raise ValueError(f'next42 phase {phase} allocation {charge}>2097152')
+        self.metrics[phase] = max(charge, self.metrics.get(phase, 0))
+
+    def boundary(self, phase):
+        """A test/observation boundary; retain no decoded input objects."""
+
+    def spec_bytes(self, spec_path):
+        if Path(spec_path) != NEXT42_RUN/'instance-spec.json':
+            raise ValueError('next42 fixed instance path')
+        raw = read_fifth_body(spec_path, METADATA_CAP)
+        return raw, dict(path=str(spec_path), bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+
+    def _decode(self, raw, cap, live=(), extra_bytes=0):
+        if self.decoder is None:
+            self.decoder = record_verifier(dict(
+                path=str(Path(__file__).resolve().with_name('evidence_records.py')), bytes=9498,
+                sha256='20fb60da67ae4e558963bfd955db0426882b1e6fee99be9f809a438711c9b16d'))
+        available = 2097152 - _next42_phase_charge(*live, self.metrics, self.phase_state()) - extra_bytes
+        # The shared lexical pass rejects before json.loads allocates. Decoded
+        # UTF8 string storage cannot exceed the complete raw body's byte count.
+        nodes = min(self.decoder.NODE_CAP, (available-len(raw))//128)
+        if nodes <= 0:
+            raise ValueError('next42 phase parse allocation')
+        previous = self.decoder.NODE_CAP
+        self.decoder.NODE_CAP = nodes
+        try:
+            return self.decoder.decode(raw, cap)
+        finally:
+            self.decoder.NODE_CAP = previous
+
+    def decode_spec(self, raw, live=()):
+        value = self._decode(raw, METADATA_CAP, live)
+        fields = {'schema','run','source_commit','sources','tool_sources','binaries',
+                  'preflight','evidence','preparation','copy_metadata'}
+        if (type(value) is not dict or set(value) != fields or type(value['schema']) is not int
+                or value['schema'] != 1 or value['run'] != str(NEXT42_RUN)
+                or type(value['source_commit']) is not str or len(value['source_commit']) != 40
+                or any(c not in '0123456789abcdef' for c in value['source_commit'])):
+            raise ValueError('next42 fixed spec schema')
+        return value
+
+    def _control_json(self, path, cap, live=()):
+        """Bound s4 metadata before parsing, including original timing scalars.
+
+        The shared reference decoder remains unchanged. Gate records alone have
+        finite float durations; each is charged as a128-byte scalar plus its
+        representation. Protocol reports still use the pinned strict decoder.
+        """
+        raw=read_fifth_body(path,cap)
+        nodes=depth=0;quoted=escaped=scalar=False
+        for byte in raw:
+            if quoted:
+                if escaped:escaped=False
+                elif byte==92:escaped=True
+                elif byte==34:quoted=False
+                continue
+            if byte==34:quoted=True;scalar=False;nodes+=1
+            elif byte in (91,123):nodes+=1;depth+=1;scalar=False
+            elif byte in (93,125):depth-=1;scalar=False
+            elif byte in (9,10,13,32,44,58):scalar=False
+            elif not scalar:nodes+=1;scalar=True
+            if nodes>8192 or depth>9:raise ValueError('next42 control preparse bound')
+        #32 extra bytes for every token bound any finite float representation
+        # before allocation (including expansion such as1e5 ->100000.0).
+        if _next42_phase_charge(*live,self.metrics,self.phase_state())+nodes*160+len(raw)>2097152:
+            raise ValueError('next42 control preparse allocation')
+        value=json.loads(raw,object_pairs_hook=unique_object)
+        self.observe('control_json',*live,value)
+        return value
+
+    def authority(self):
+        raw = read_fifth_body(self.authority_pin['path'], FREEZE_CAP)
+        if (len(raw) != self.authority_pin['bytes']
+                or hashlib.sha256(raw).hexdigest() != self.authority_pin['sha256']):
+            raise ValueError('next42 authority byte pin')
+        return expand_sixth_inventory(self._decode(raw, FREEZE_CAP), NEXT42_PROFILE)
+
+    def validate_authority(self, contract):
+        # Hash the authenticated graph in place. A second semantic occurrence
+        # of the complete authority exceeds the allocation model even when a
+        # shallow Python copy shares its children.
+        removed = {key: contract.pop(key) for key in (
+            'status','comparison_descriptor_sha256','comparison_descriptor_state')}
+        own = contract['command_inventory'][360]
+        location = own['path']
+        own['path'] = 'CURRENT_AUTHORITY'
+        try:
+            self.observe('authority_validation', contract, removed)
+            digest = hashlib.sha256()
+            encoder = json.JSONEncoder(sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+            for chunk in encoder.iterencode(contract):
+                block = chunk.encode('ascii')
+                if len(block) > 65536:
+                    raise ValueError('next42 authority canonical stream buffer')
+                digest.update(block)
+            if digest.hexdigest() != NEXT42_AUTHORITY_CORE_SHA:
+                raise ValueError('next42 immutable V7 authority core')
+        finally:
+            own['path'] = location
+            contract.update(removed)
+        del removed, encoder, digest, chunk, block
+        expected = contract['sealed_source_predecessor']
+        raw = json.dumps(NEXT42_PREDECESSOR_SOURCES, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+        descriptor = dict(SEVENTH_COMPARISON_PROFILES=NEXT42_COMPARISON_PROFILES,
+                          SEVENTH_COMPARISON_ARGV=NEXT42_COMPARISON_ARGV)
+        comparison = json.dumps(descriptor, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+        if (len(NEXT42_PREDECESSOR_SOURCES) != expected['count'] or len(raw) != expected['canonical_bytes']
+                or hashlib.sha256(raw).hexdigest() != expected['canonical_sha256']
+                or contract['comparison_descriptor_sha256'] != hashlib.sha256(comparison).hexdigest()):
+            raise ValueError('next42 fixed source/comparison descriptors')
+        if (contract['fixed_history']['containers'] != NEXT42_HISTORY_PARTS
+                or contract['fixed_history']['member_count'] != 192
+                or contract['shape']['payload_count'] != 42
+                or contract['shape']['bundle_proofs'] != 93
+                or contract['shape']['fresh_prior_proofs'] != 71):
+            raise ValueError('next42 fixed history/proof descriptors')
+        own = contract['command_inventory'][360]
+        if own['path'] != self.authority_pin['path'] or own['cap_bytes'] != FREEZE_CAP:
+            raise ValueError('next42 current authority slot')
+
+    def preflight(self, spec, live=()):
+        if spec['preflight'] != NEXT42_PREFLIGHT_PIN:
+            raise ValueError('next42 exact preflight pin')
+        raw = read_fifth_body(spec['preflight']['path'], METADATA_CAP)
+        if (len(raw) != spec['preflight']['bytes']
+                or hashlib.sha256(raw).hexdigest() != spec['preflight']['sha256']):
+            raise ValueError('next42 preflight byte pin')
+        return self._decode(raw, METADATA_CAP, (*live, spec))
+
+    def validate_preflight(self, spec, report):
+        current = json.dumps(spec['sources'], sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+        if (hashlib.sha256(current).hexdigest() != NEXT42_SOURCE_CANONICAL_SHA
+                or [r['path'] for r in spec['sources']] != expected_source_paths(NEXT42_PROFILE)
+                or spec['binaries'] != NEXT42_BINARY_PINS
+                or [r['path'] for r in spec['tool_sources']] !=
+                [str(Path(__file__).resolve()), str(Path(__file__).resolve().with_name('test_bounded_vrf.py'))]):
+            raise ValueError('next42 complete actual source/binary binding')
+        validate_preflight(report)
+        embedded = report['vrf_sources'] + report['authority']['six_input_owner']['sources']
+        source_map = {r['path']:r for r in spec['sources']}
+        if (len(report['vrf_sources']) != 22 or len(embedded) != 47
+                or [r['path'] for r in report['vrf_sources']] != NEXT42_EMBEDDED_PATHS
+                or report['authority']['six_input_owner']['executable'] != spec['binaries'][0]):
+            raise ValueError('next42 embedded source/executable closure')
+        for row in embedded:
+            actual = dict(row, path=str((SRC/row['path']).resolve()))
+            if source_map.get(actual['path']) != actual:
+                raise ValueError('next42 embedded source bytes')
+        expected_paths = [str(COPY),str(COPY/'db/db'),str(COPY/'db/state_db')]
+        if ([r['path'] for r in spec['copy_metadata']] != expected_paths
+                or any(set(r) != {'path','device','inode','mode','mtime_ns'} for r in spec['copy_metadata'])):
+            raise ValueError('next42 metadata port shape')
+        total = sum(r['bytes'] for r in spec['sources']+spec['tool_sources'])
+        if total > SOURCE_TOTAL:
+            raise ValueError('next42 source aggregate')
+        return dict(source_commit=spec['source_commit'], complete_source_bytes=total,
+                    embedded_source_bytes=sum(r['bytes'] for r in embedded),
+                    copy_metadata=spec['copy_metadata'], bounds=report['bounds'])
+
+    def verify_files(self, spec, rows, spec_pin):
+        total = binaries = 0
+        for slot, row in enumerate(rows[0]):
+            pin = _next42_pin_at(spec, row, slot, spec_pin, self.fit)
+            if pin.get('status') == 'FIT_PENDING':
+                self.pending |= 1 << slot
+                total += pin['reserved_bytes']
+                continue
+            total += pin['bytes']
+            if row[0] == 'binary_paths':
+                binaries += pin['bytes']
+            if row[0] != 'history5':
+                pin_file(pin['path'], pin, row[5] if row[5] is not None else row[3])
+        self.history = _verify_fixed_history(NEXT42_HISTORY_PARTS, NEXT42_HISTORY_MEMBERS, 192)
+        if total > PIN_TOTAL or total-binaries > 31457280:
+            raise ValueError('next42 complete role read aggregate')
+        return dict(pinned_file_bytes=total, binary_bytes=binaries)
+
+    def _tail_values(self, context, spec_raw, spec_pin, indices, live=()):
+        spec = self.decode_spec(spec_raw, live=(context,*live))
+        result = []
+        for row in context['command_inventory']:
+            if row['index'] in indices:
+                cells = [row.get(field) for field in SIXTH_INVENTORY_FIELDS]
+                result.append(_next42_pin_at(spec, cells, 320+row['index'], spec_pin, self.fit))
+        return result
+
+    def _module(self, context):
+        source = [r for p in context['reference_placements'] for r in p['references']
+                  if r['role'] == 'record-builder-source']
+        if len(source) != 1:
+            raise ValueError('next42 one shared verifier source')
+        return record_verifier({k:source[0][k] for k in ('path','bytes','sha256')})
+
+    def verify_records(self, context, spec_raw, spec_pin, live=()):
+        """Exercise the pinned shared decoder/verifier and all64 actual children.
+
+        Pending wrappers use bounded schema specimens with maximum findings.
+        They remain pending at their full reservation, with no actual wrapper
+        pin or successful acceptance. No specimen is written or published.
+        """
+        values = self._tail_values(context, spec_raw, spec_pin, {28,36,37,48,49},live)
+        module = self._module(context)
+        by_path = {r['path']:r for r in values}
+        instruction_path = next(r['path'] for r in context['command_inventory'] if r['index']==35)
+        instructions = self._decode(read_fifth_body(instruction_path,65536),65536,(context,*live,values,by_path))
+        for mapping in NEXT42_FAILURE_AMENDMENT['instruction_read_aliases']['mappings']:
+            observations=[r['current'] for r in instructions['instructions']
+                          if r['current']['path']==mapping['current']['path']]
+            if observations!=[mapping['current']]:
+                raise ValueError('next42 current instruction successor pin')
+            pin_file(mapping['current']['path'],mapping['current'],65536)
+        self.observe('instruction_successors',context,*live,values,by_path,instructions)
+        del instructions
+        identities = {}
+        count = total = streamed = 0
+        for placement in context['reference_placements']:
+            pin = by_path[placement['destination']]
+            source_record = placement['destination']==next(
+                r['path'] for r in context['command_inventory'] if r['index']==28)
+            if pin.get('status') == 'FIT_PENDING':
+                if not self.fit:
+                    raise ValueError('next42 pending runtime wrapper')
+                prefix=(NEXT42_FAILURE_AMENDMENT['source28_findings_prefix']['body_utf8']
+                        if source_record else '')
+                specimen = dict(schema=module.SCHEMA,destination=placement['destination'],
+                    ledger='validation',contract=placement['common_contract'],
+                    references=placement['references'],findings=(prefix+'FIT_ONLY_SCHEMA_SPECIMEN').ljust(16384,'x'),
+                    accepted=False)
+                self.observe('wrapper_specimen',context,*live,values,by_path,specimen,
+                             extra_bytes=_next42_identity_bytes(identities))
+                raw = encoded(specimen,FREEZE_CAP)
+                del specimen
+            else:
+                raw = read_fifth_body(pin['path'],FREEZE_CAP)
+            # Fixed rosters plus maximum16KiB findings fit the unchanged wrapper
+            # reserve, including encoder temporaries. No future cap is reduced.
+            if len(raw)>65536:
+                raise ValueError('next42 fixed wrapper encoding reserve')
+            value = self._decode(raw,FREEZE_CAP,(context,*live,values,by_path),
+                                 _next42_identity_bytes(identities))
+            if source_record:_next42_source_prefix(value['findings'])
+            original = module.authenticate
+            def authenticate(row, identities=None):
+                frame = sys._getframe(1)
+                # The pinned verifier calls authenticate from its sum generator.
+                if frame.f_code.co_name=='<genexpr>' and frame.f_back.f_code is module.verify.__code__:
+                    frame=frame.f_back
+                local = frame.f_locals
+                if frame.f_code is not module.verify.__code__:
+                    raise ValueError('next42 shared verifier caller')
+                physical = _next42_physical_row(row)
+                def observe():
+                    self.observe('children_verify',context,*live,values,by_path,value,local['rows'],physical,
+                        extra_bytes=_next42_identity_bytes(identities)+_next42_pin_map_bytes(local['pins']))
+                observe()
+                result = original(physical,identities)
+                observe()
+                return result
+            module.authenticate = authenticate
+            try:
+                result = module.verify(value,placement['destination'],placement['common_contract'],
+                                       placement['references'],identities)
+            finally:
+                module.authenticate = original
+            count += result['reference_count'];total += result['referenced_bytes'];streamed += result['streamed_bytes']
+            del value,raw,result
+        expected = sum(p['common_contract']['bytes']+sum(r['bytes'] for r in p['references'])
+                       for p in context['reference_placements'])
+        if count!=64 or total!=expected or total>1048576 or streamed!=total:
+            raise ValueError('next42 complete64 child coverage')
+        del identities,authenticate,by_path
+        full = [r for p in context['reference_placements'] for r in p['references']
+                if r['role']=='full-result-equivalence']
+        if len(full)!=1 or full[0]['bytes']!=45182:
+            raise ValueError('next42 historical semantic role')
+        raw = read_fifth_body(full[0]['path'],METADATA_CAP)
+        if len(raw)!=45182 or hashlib.sha256(raw).hexdigest()!=full[0]['sha256']:
+            raise ValueError('next42 historical semantic body')
+        historical = self._decode(raw,METADATA_CAP,(context,*live,values))
+        _verify_historical_equivalence(historical,full,context['historical_equivalence_parse'],
+            lambda *graphs:self.observe('historical_projection',context,*live,values,*graphs))
+        del historical,raw,full
+        correction_path = next(r['path'] for r in context['command_inventory'] if r['index']==48)
+        raw = read_fifth_body(correction_path,FREEZE_CAP)
+        correction = self._decode(raw,FREEZE_CAP,(context,*live,values))
+        self.observe('current_correction',context,*live,values,correction)
+        _verify_current_correction(correction,context['correction_record48'])
+        del correction,raw
+        scope_path = next(r['path'] for r in context['command_inventory'] if r['index']==36)
+        scope = self._decode(read_fifth_body(scope_path,65536),65536,(context,*live,values))
+        if scope['failure_retention_amendment']!=NEXT42_FAILURE_AMENDMENT:
+            raise ValueError('next42 exact compiled retention amendment')
+        self.observe('retention_scope',context,*live,values,scope)
+        self.child_count,self.child_bytes = count,total
+        self.child_source_bytes = sum(r['bytes'] for p in context['reference_placements']
+            for r in p['references'] if r['role'] in {'record-builder-source','record-builder-tests'})
+
+    def verify_comparison(self, context, spec_raw, spec_pin, live=()):
+        values = self._tail_values(context, spec_raw, spec_pin, {0,1,20,21,38,39,46,47},live)
+        if any(value.get('status') == 'FIT_PENDING' for value in values):
+            raise ValueError('next42 complete fit blocked: current comparator evidence required')
+        source = dict(path=str(Path(__file__).resolve().with_name('evidence_records.py')),
+                      bytes=9498, sha256='20fb60da67ae4e558963bfd955db0426882b1e6fee99be9f809a438711c9b16d')
+        module = record_verifier(source)
+        descriptor = dict(tests=FIFTH_EQUIVALENCE_TESTS+[
+            'fifth_residual_saved_bundle_report_is_completely_equal',
+            'sixth_residual_saved_bundle_report_is_completely_equal'],
+            equality_field='all16_unchanged_profiles_equal', argv=NEXT42_COMPARISON_ARGV)
+        verify_fifth_equivalence(values, context, module, NEXT42_PROFILE, descriptor,
+            lambda name,*graphs:self.observe(name,context,*live,values,*graphs),
+            reader=lambda path,cap,*graphs:self._control_json(path,cap,(context,*live,values,*graphs)),
+            decoder=lambda raw,cap,*graphs:self._decode(raw,cap,(context,*live,values,*graphs)))
+
+    def output(self, header, pins, charges, reservation):
+        total = charges['pinned_file_bytes'] + self.child_bytes + 45182
+        if (total > PIN_TOTAL or total-charges['binary_bytes'] > 31457280
+                or header['complete_source_bytes']+self.child_source_bytes > SOURCE_TOTAL):
+            raise ValueError('next42 full child/parse aggregate')
+        result = dict(schema=1, profile=NEXT42_PROFILE, run=str(NEXT42_RUN),
+                      cwd=str(REPO), environment=ENV, pins=pins, pin_count=376,
+                      source_count=88, pinned_file_bytes=total, accepted=False, **header)
+        if self.fit:
+            result.update(status='COMPLETE_ACTUAL_INPUT_BUILDER_FIT_WITH_PENDING_VALIDATION',
+                          ready=False, new_facts=0, current_reserved_bytes=reservation,
+                          outcome_reserved_bytes=2523136, phase_peaks=dict(self.metrics),
+                          deferred_production_checks=list(self.deferred), child_occurrences=self.child_count,
+                          history=self.history)
+            result['actual_read_accounting'] = self.reads.report()
+        else:
+            result['capture_command'] = [NEXT42_BINARY_PINS[0]['path'],'--bundle-output',
+                                         str(NEXT42_RUN/'next42.rcv5'),'--report-output',
+                                         str(NEXT42_RUN/'next42-capture.json')]
+        return result
+
+    def serialize(self, result):
+        return encoded(result, FREEZE_CAP)
+
+
+class _Next42FitPort(_Next42Port):
+    """Reviewed fit-only pending states; never selected by the runtime CLI."""
+    fit = True
+
+    def __init__(self, authority_pin):
+        super().__init__(authority_pin)
+        self.deferred = ['source acceptance', 'future commit and normal hook',
+                         'exact command READY', 'one-use capture', 'fresh71 and new93 replay',
+                         'reverse controls and independent fact/seal acceptance',
+                         'copy metadata observation and complete DB preservation']
+
+
 def build_fifth(spec_path, spec, report):
     """Build one of the two sealed fixed45 instances through the shared verifier.
 
@@ -1387,6 +2331,8 @@ def build_fifth(spec_path, spec, report):
     No database path is opened or inspected here. Missing evidence rejects all.
     """
     profile = report['profile']
+    if profile == NEXT42_PROFILE:
+        raise ValueError('next42 requires the phased builder entry')
     fixed = finite_profile(profile)
     contract = fifth_contract(profile)
     fields = {'schema','run','source_commit','sources','tool_sources','binaries','preflight','evidence','copy_metadata','preparation'}
@@ -1407,6 +2353,11 @@ def build_fifth(spec_path, spec, report):
     # Earlier source pins stay immutable except this explicitly reviewed delta.
     old = fixed['predecessor']
     changed = {str(SRC/'vrf_shared_window.rs'),str(REPO/'rust/crates/rustaxa-storage/src/concrete_state/witness_live.rs'),str(REPO/'rust/crates/rustaxa-storage/src/concrete_state/witness_live_tests.rs')}
+    if profile == NEXT42_PROFILE:
+        changed = {str(REPO / p) for p in contract['sealed_source_predecessor']['allowed_changed_relative_paths']}
+        current = json.dumps(spec['sources'], sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('utf-8')
+        if hashlib.sha256(current).hexdigest() != NEXT42_SOURCE_CANONICAL_SHA or spec['preflight'] != NEXT42_PREFLIGHT_PIN or spec['binaries'] != NEXT42_BINARY_PINS:
+            raise ValueError('exact next42 source/binary/preflight instance')
     if len(old) != fixed['source_count']-2 or len({r['path'] for r in old}) != len(old) or [r['path'] for r in old] != [r['path'] for r in spec['sources'][:len(old)]]:
         raise ValueError('complete fifth predecessor coverage')
     for before, after in zip(old,spec['sources']):
@@ -1418,8 +2369,11 @@ def build_fifth(spec_path, spec, report):
     embedded = report['vrf_sources']+report['authority']['six_input_owner']['sources']
     if len(report['vrf_sources']) != 22 or len(report['authority']['six_input_owner']['sources']) != 25:
         raise ValueError('sealed fifth embedded counts')
-    baseline = read_json(SHARED_RUN/'seventh-voter/vrf-seventh-voter-window-preflight.json',FREEZE_CAP)
-    expected_paths = [r['path'] for r in baseline['vrf_sources'][:19]]+['vrf_shared_window.rs',f'bin/live_vrf_residual_{fixed["cli"]}.rs' ,f'bin/replay_vrf_residual_{fixed["cli"]}.rs' ]
+    if profile == NEXT42_PROFILE:
+        expected_paths = NEXT42_EMBEDDED_PATHS
+    else:
+        baseline = read_json(SHARED_RUN/'seventh-voter/vrf-seventh-voter-window-preflight.json',FREEZE_CAP)
+        expected_paths = [r['path'] for r in baseline['vrf_sources'][:19]]+['vrf_shared_window.rs',f'bin/live_vrf_residual_{fixed["cli"]}.rs' ,f'bin/replay_vrf_residual_{fixed["cli"]}.rs' ]
     if [r['path'] for r in report['vrf_sources']] != expected_paths:
         raise ValueError('sealed fifth embedded source order')
     source_map = {r['path']:r for r in spec['sources']}
@@ -1436,7 +2390,8 @@ def build_fifth(spec_path, spec, report):
         raise ValueError('sealed fifth source HEAD')
     if [r['path'] for r in spec['copy_metadata']] != [str(COPY),str(COPY/'db/db'),str(COPY/'db/state_db')] or any(set(r) != {'path','device','inode','mode','mtime_ns'} for r in spec['copy_metadata']):
         raise ValueError('sealed fifth metadata')
-    command = [spec['binaries'][0]['path'],'--bundle-output',str(run/(fixed['stem']+'.rcv4')),'--report-output',str(run/(fixed['stem']+'-capture.json'))]
+    extension = '.rcv5' if profile == NEXT42_PROFILE else '.rcv4'
+    command = [spec['binaries'][0]['path'],'--bundle-output',str(run/(fixed['stem']+extension)),'--report-output',str(run/(fixed['stem']+'-capture.json'))]
     return encoded(dict(schema=1,profile=profile,run=str(run),source_commit=spec['source_commit'],cwd=str(REPO),environment=ENV,capture_command=command,pins=pins,pin_count=len(pins),pinned_file_bytes=total,source_count=fixed['source_count'],complete_source_bytes=source_total,embedded_source_bytes=sum(r['bytes'] for r in embedded),copy_metadata=spec['copy_metadata'],accepted=False),FREEZE_CAP)
 
 
@@ -1447,10 +2402,17 @@ def build(spec_path):
     function never opens, scans or stats a database path and publishes nothing.
     """
     spec = read_json(spec_path)
+    if spec.get('run') == str(NEXT42_RUN):
+        del spec
+        return build_next42(spec_path)
     pin_file(spec['preflight']['path'], spec['preflight'], FREEZE_CAP)
     report = read_json(spec['preflight']['path'], FREEZE_CAP)
+    if report.get('profile') == NEXT42_PROFILE:
+        # The caller must release these graphs too. Deleting them only inside
+        # build_fifth would leave this frame's references alive throughout build.
+        raise ValueError('next42 fixed run required')
     fixed = sealed_profile(report['profile'])
-    if report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE}:
+    if report['profile'] in {FIFTH_PROFILE, SIXTH_PROFILE, NEXT42_PROFILE}:
         return build_fifth(spec_path, spec, report)
     residual = report['profile'] in RESIDUAL_PROFILES
     ordinal = fixed['ordinal']
@@ -1626,6 +2588,12 @@ def build(spec_path):
 
 
 def verify_files(freeze):
+    if freeze.get('profile') == NEXT42_PROFILE:
+        if freeze.get('pin_count') != 376 or type(freeze.get('pins')) is not list or len(freeze['pins']) != 376:
+            raise ValueError('next42 frozen exact count')
+        if json.loads(build(Path(freeze['pins'][-1]['path']))) != freeze:
+            raise ValueError('next42 complete deterministic freeze')
+        return
     if freeze['pin_count'] != len(freeze['pins']) or len(freeze['pins']) > PIN_COUNT:
         raise ValueError('frozen pin count')
     total = 0

@@ -6,6 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import weakref
 from unittest.mock import patch
 
 import bounded_vrf as guard
@@ -1736,6 +1737,265 @@ class SeventhReservationControls(Fixture):
         for sizes in [[0]*80,[0]*82,tuple([0]*81),{},None]:
             with patch.object(Path,'open',side_effect=AssertionError('unexpected I/O')),self.assertRaises(ValueError):
                 guard.reserve_seventh_current_evidence(sizes)
+
+class Next42IntegrationControls(Fixture):
+    def test_instruction_read_mapping_preserves_exact_logical_rows(self):
+        mappings=guard.NEXT42_FAILURE_AMENDMENT['instruction_read_aliases']['mappings']
+        self.assertEqual(len(mappings),5)
+        module=guard.record_verifier(dict(
+            path=str(Path(guard.__file__).with_name('evidence_records.py')),bytes=9498,
+            sha256='20fb60da67ae4e558963bfd955db0426882b1e6fee99be9f809a438711c9b16d'))
+        for mapping in mappings:
+            logical=dict(mapping['logical']);before=dict(logical)
+            physical=guard._next42_physical_row(logical)
+            self.assertEqual(logical,before)
+            self.assertEqual(physical,dict(mapping['physical'],role=logical['role']))
+            self.assertEqual(module.authenticate(physical,{}),logical['bytes'])
+            for key,bad in [('role','wrong'),('bytes',logical['bytes']+1),('sha256','0'*64)]:
+                with self.subTest(key=key),self.assertRaises(ValueError):
+                    guard._next42_physical_row(dict(logical,**{key:bad}))
+        unknown=dict(mappings[0]['logical'],path=str(self.root/'missing-instruction'))
+        self.assertIs(guard._next42_physical_row(unknown),unknown)
+        with self.assertRaises(OSError):module.authenticate(unknown,{})
+        wrong=self.root/'wrong-snapshot';wrong.write_bytes(b'current bytes')
+        with self.assertRaises(ValueError):
+            module.authenticate(dict(mappings[0]['logical'],path=str(wrong)),{})
+
+    def test_instruction_physical_authentication_keeps_inode_alias_rejection(self):
+        module=guard.record_verifier(dict(
+            path=str(Path(guard.__file__).with_name('evidence_records.py')),bytes=9498,
+            sha256='20fb60da67ae4e558963bfd955db0426882b1e6fee99be9f809a438711c9b16d'))
+        first=self.root/'physical-first';second=self.root/'physical-second'
+        first.write_bytes(b'same');guard.os.link(first,second)
+        identities={};pin=guard.pin_file(first)
+        row=dict(pin,role='instruction')
+        module.authenticate(row,identities)
+        with self.assertRaisesRegex(ValueError,'inode path alias'):
+            module.authenticate(dict(row,path=str(second)),identities)
+
+    def test_comparison_releases_pair_roots_and_parent_aliases(self):
+        old=Path('/home/fry/artifacts/vrf-round3-01a141ba-20261016')
+        # Full pinned reports are unchanged inputs; this test controls ownership,
+        # not the current-tool comparator gate or complete adapter fit.
+        payload=guard.read_json(old/'native-first-full-comparison-payload.json',131072)
+        source_pins=guard.read_json(old/'source/source-freeze.json',131072)
+        module=guard.record_verifier(dict(
+            path=str(Path(guard.__file__).with_name('evidence_records.py')),bytes=9498,
+            sha256='20fb60da67ae4e558963bfd955db0426882b1e6fee99be9f809a438711c9b16d'))
+        class Tracked(dict):pass
+        refs=[];calls=0
+        def track(value):
+            if isinstance(value,dict):
+                result=Tracked({k:track(v) for k,v in value.items()})
+                refs.append(weakref.ref(result));return result
+            if isinstance(value,list):return [track(v) for v in value]
+            return value
+        def decode(raw,cap,*live):
+            nonlocal calls
+            if calls==2:self.assertTrue(all(ref() is None for ref in refs))
+            calls+=1
+            return track(module.decode(raw,cap))
+        self.assertTrue(guard.verify_fifth_comparison(payload,source_pins,payload['tool_source'],
+            module,guard.NEXT42_PROFILE,decoder=decode))
+        self.assertEqual(calls,4)
+        self.assertTrue(all(ref() is None for ref in refs))
+
+    def test_review_prefix_and_control_float_bounds(self):
+        prefix=guard.NEXT42_FAILURE_AMENDMENT['source28_findings_prefix']['body_utf8']
+        guard._next42_source_prefix(prefix+'later source findings')
+        for bad in (prefix[:-1],prefix[1:],None,'summary'):
+            with self.subTest(prefix=bad),self.assertRaises(ValueError):
+                guard._next42_source_prefix(bad)
+        path=self.root/'timing.json';path.write_bytes(b'{"seconds":1e5}')
+        port=guard._Next42Port(dict(path='fixture',bytes=0,sha256='0'*64))
+        self.assertEqual(port._control_json(path,16384)['seconds'],100000.0)
+        for number in (float('nan'),float('inf')):
+            with self.assertRaises(ValueError):guard._next42_shape(number)
+
+    def test_read_accounting_counts_repeated_streams_and_descriptors(self):
+        path=self.root/'read-accounting.json'
+        path.write_bytes(b'{"x":1}\n')
+        expected=guard.pin_file(path)
+        original=(Path.open,guard.os.open,guard.os.read,guard.os.close)
+        events=[];reads=guard._Next42Reads(events.append)
+        with reads:
+            guard.pin_file(path,expected,65536)
+            self.assertEqual(guard.read_fifth_body(path,65536),b'{"x":1}\n')
+            descriptor=guard.os.open(path,guard.os.O_RDONLY)
+            try:self.assertEqual(guard.os.read(descriptor,65536),b'{"x":1}\n')
+            finally:guard.os.close(descriptor)
+        self.assertEqual(reads.total,expected['bytes']*3)
+        self.assertEqual(reads.opens,3)
+        self.assertEqual(len(events),3)
+        self.assertTrue(all(e['sha256']==expected['sha256'] for e in events))
+        self.assertEqual((Path.open,guard.os.open,guard.os.read,guard.os.close),original)
+        with self.assertRaisesRegex(ValueError,'unbounded read'),reads:
+            with path.open('rb') as stream:stream.read()
+        self.assertEqual((Path.open,guard.os.open,guard.os.read,guard.os.close),original)
+
+    def test_read_accounting_rejects_database_and_source_overrun(self):
+        path=self.root/'source-accounting.rs';path.write_bytes(b'x')
+        reads=guard._Next42Reads();reads.source_override=str(path);reads.source=guard.SOURCE_TOTAL
+        with self.assertRaisesRegex(ValueError,'actual repeated read aggregate'),reads:
+            guard.read_fifth_body(path,65536)
+        reads=guard._Next42Reads()
+        with patch.object(Path,'stat',side_effect=AssertionError('database stat')),reads:
+            with self.assertRaises(ValueError):
+                guard.read_fifth_body(guard.COPY/'db/db/file',65536)
+
+    def test_fixed_failure_amendment_preserves_v7_and_rejects_drift(self):
+        old = Path('/home/fry/artifacts/vrf-round3-01a141ba-20261016')
+        authority = guard.expand_sixth_inventory(
+            guard.read_json(old/'astra/next42-successor-contract-v7.json',131072),guard.NEXT42_PROFILE)
+        predecessor = authority['correction_record48']
+        original = json.dumps(predecessor,sort_keys=True)
+        spec = guard._next42_correction_spec(predecessor)
+        self.assertEqual(json.dumps(predecessor,sort_keys=True),original)
+        self.assertEqual(len(spec['failures']),5)
+        self.assertEqual(spec['findings_utf8_cap'],predecessor['findings_cap_bytes'])
+        self.assertEqual({k:v for k,v in spec.items() if k not in {'failures','findings_utf8_cap'}},
+                         {k:v for k,v in predecessor.items() if k!='failures'})
+        rows = [dict(row,body_utf8=Path(row['path']).read_bytes().decode('utf-8'))
+                for row in spec['failures']]
+        value = dict(schema=spec['schema'],failures=rows,findings='',accepted=False)
+        guard._verify_current_correction(value,spec)
+        variants = [dict(value,failures=rows[:-1]),dict(value,failures=rows+[rows[0]]),
+                    dict(value,failures=list(reversed(rows))),dict(value,accepted=True),
+                    dict(value,failures=[dict(rows[0],body_utf8=rows[0]['body_utf8']+'x'),*rows[1:]])]
+        for bad in variants:
+            with self.subTest(bad=bad),self.assertRaises(ValueError):
+                guard._verify_current_correction(bad,spec)
+        with self.assertRaisesRegex(ValueError,'exact V7 correction predecessor'):
+            guard._next42_correction_spec(dict(predecessor,failures=rows))
+        for bad in (None,True,12289,'12288'):
+            with self.subTest(cap=bad),self.assertRaises(ValueError):
+                guard._next42_correction_spec(dict(predecessor,findings_cap_bytes=bad))
+
+    def test_authority_validation_streams_and_restores_one_graph(self):
+        old = Path('/home/fry/artifacts/vrf-round3-01a141ba-20261016')
+        authority = guard.expand_sixth_inventory(
+            guard.read_json(old/'astra/next42-successor-contract-v7.json',131072),guard.NEXT42_PROFILE)
+        descriptor = dict(SEVENTH_COMPARISON_PROFILES=guard.NEXT42_COMPARISON_PROFILES,
+                          SEVENTH_COMPARISON_ARGV=guard.NEXT42_COMPARISON_ARGV)
+        authority['comparison_descriptor_sha256'] = guard.hashlib.sha256(
+            json.dumps(descriptor,sort_keys=True,separators=(',', ':'),ensure_ascii=True).encode()).hexdigest()
+        before = json.dumps(authority,sort_keys=True)
+        port = guard._Next42Port(dict(path=authority['command_inventory'][360]['path']))
+        dumps = json.dumps
+        def bounded_dumps(value, *args, **kwargs):
+            self.assertIsNot(value, authority, 'complete authority must stream')
+            return dumps(value, *args, **kwargs)
+        with patch.object(guard.json,'dumps',side_effect=bounded_dumps):
+            port.validate_authority(authority)
+        self.assertEqual(json.dumps(authority,sort_keys=True),before)
+        self.assertLessEqual(port.metrics['authority_validation'],2097152)
+        with patch.object(guard,'NEXT42_AUTHORITY_CORE_SHA','0'*64):
+            with self.assertRaisesRegex(ValueError,'immutable V7 authority core'):
+                port.validate_authority(authority)
+        self.assertEqual(json.dumps(authority,sort_keys=True),before)
+
+    def test_phased_builder_releases_authority_and_preflight_before_pins(self):
+        """Exercise real graph sizes and detect retained caller/port references.
+
+        File and protocol execution are separate controls. This port tests graph
+        ownership with the accepted maximum spec and actual preflight/authority;
+        it supplies no actual-input fit or source acceptance.
+        """
+        old = Path('/home/fry/artifacts/vrf-round3-01a141ba-20261016')
+        class Tracked(dict):
+            pass
+        test = self
+        class LifetimePort(guard._Next42Port):
+            fit = True
+            def __init__(self):
+                super().__init__(dict(path='fixture', bytes=0, sha256='0'*64))
+                self.refs = {}
+            def spec_bytes(self, path):
+                with (old/'sol/fit-replay-v7/max-complete-spec.json').open('rb') as stream:
+                    raw = stream.read(65537)
+                test.assertLessEqual(len(raw),65536)
+                return raw, dict(path=str(guard.NEXT42_RUN/'instance-spec.json'),
+                                 bytes=len(raw), sha256=guard.hashlib.sha256(raw).hexdigest())
+            def authority(self):
+                value = Tracked(guard.read_json(old/'astra/next42-successor-contract-v7.json',131072))
+                guard.expand_sixth_inventory(value, guard.NEXT42_PROFILE)
+                self.refs['authority'] = weakref.ref(value)
+                return value
+            def validate_authority(self, value):
+                test.assertEqual(len(value['command_inventory']),376)
+            def preflight(self, spec, live=()):
+                value = Tracked(guard.read_json(old/'next42/preflight.json',65536))
+                self.refs['preflight'] = weakref.ref(value)
+                return value
+            def validate_preflight(self, spec, report):
+                test.assertEqual(len(report['selection']),42)
+                return dict(source_commit=spec['source_commit'],
+                            complete_source_bytes=sum(r['bytes'] for r in spec['sources']+spec['tool_sources']),
+                            embedded_source_bytes=0, copy_metadata=spec['copy_metadata'])
+            def boundary(self, name):
+                if name == 'authority_released':
+                    test.assertIsNone(self.refs['authority']())
+                if name in {'preflight_released','inventory_released','semantics_released'}:
+                    test.assertTrue(all(ref() is None for ref in self.refs.values()))
+            def verify_files(self, spec, rows, spec_pin):
+                test.assertTrue(all(ref() is None for ref in self.refs.values()))
+                total = binary = 0
+                for slot,row in enumerate(rows[0]):
+                    pin = guard._next42_pin_at(spec,row,slot,spec_pin,self.fit)
+                    total += pin['bytes']
+                    if row[0] == 'binary_paths': binary += pin['bytes']
+                return dict(pinned_file_bytes=total,binary_bytes=binary)
+            def verify_records(self, context, raw, pin, live=()):
+                self.child_count,self.child_bytes,self.child_source_bytes=64,1048091,17030
+                self.observe('records',context,*live)
+            def verify_comparison(self, context, raw, pin, live=()):
+                self.observe('comparison',context,*live)
+            def observe(self, phase, *graphs, extra_bytes=0):
+                if phase == 'pins':
+                    spec, rows, pins, header, charges = graphs
+                    test.assertEqual(len(pins),376)
+                    test.assertTrue(all(row is None for row in rows[0]))
+                    test.assertTrue(all(row is None for row in spec['sources']))
+                    test.assertTrue(all(row is None for row in spec['evidence']))
+                return super().observe(phase,*graphs,extra_bytes=extra_bytes)
+            def output(self, *args):
+                test.assertTrue(all(ref() is None for ref in self.refs.values()))
+                return super().output(*args)
+        port = LifetimePort()
+        result = json.loads(guard._build_next42_phased(guard.NEXT42_RUN/'instance-spec.json',port))
+        self.assertEqual(result['pin_count'],376)
+        self.assertEqual(len(result['fit_outcomes']),24)
+        self.assertLessEqual(max(port.metrics.values()),2097152)
+        self.assertGreater(len(port.metrics),5)
+        self.assertFalse(result['accepted'])
+
+    def test_phase_budget_rejects_old_co_lifetime(self):
+        old = Path('/home/fry/artifacts/vrf-round3-01a141ba-20261016')
+        authority = guard.expand_sixth_inventory(
+            guard.read_json(old/'astra/next42-successor-contract-v7.json',131072),guard.NEXT42_PROFILE)
+        report = guard.read_json(old/'next42/preflight.json',65536)
+        port = guard._Next42Port(dict(path='fixture',bytes=0,sha256='0'*64))
+        # Full pin materialization alone is mandatory in the legacy co-lifetime.
+        pins = [dict(path=row['path'],bytes=0,sha256='0'*64) for row in authority['command_inventory']]
+        with self.assertRaisesRegex(ValueError,'phase legacy allocation'):
+            port.observe('legacy',authority,report,pins)
+
+    def test_v7_history_extends_exact_v6_occurrences(self):
+        self.assertEqual(guard.NEXT42_HISTORY_MEMBERS[:190], guard.SEVENTH_HISTORY_MEMBERS)
+        self.assertEqual(len(guard.NEXT42_HISTORY_MEMBERS), 192)
+        result = guard._verify_fixed_history(guard.NEXT42_HISTORY_PARTS,
+                                             guard.NEXT42_HISTORY_MEMBERS, 192)
+        self.assertEqual(result['members'], 192)
+        self.assertEqual(result['containers'], 5)
+        self.assertEqual(result['charged_bytes'], 4686274)
+
+    def test_comparison_descriptor_binds_complete_current_pair_bodies(self):
+        self.assertEqual([p['profile'] for p in guard.NEXT42_COMPARISON_PROFILES],
+                         ['native-current', 'first-d-current'])
+        for pair in guard.NEXT42_COMPARISON_PROFILES:
+            for side in ('before', 'after'):
+                guard.pin_file(pair[side]['path'], pair[side], guard.METADATA_CAP)
+        self.assertEqual(len(guard.NEXT42_PREDECESSOR_SOURCES), 86)
 
 if __name__ == '__main__':
     unittest.main()
