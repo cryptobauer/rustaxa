@@ -1185,6 +1185,41 @@ class FourthResidualControls(Fixture):
         with self.assertRaisesRegex(ValueError,'strict third executable body cap'):
             guard._validate_third_fit([dict(bytes=1)],[dict(bytes=220200961),dict(bytes=220200959)])
 
+    def test_next42_strict_output_matches_exact_capture_schema(self):
+        header=dict(source_commit='0'*40,complete_source_bytes=0,embedded_source_bytes=0,
+                    copy_metadata=[],bounds=dict(ceiling_count=13))
+        port=guard._Next42Port()
+        result=port.output(header,[],dict(pinned_file_bytes=0,binary_bytes=0),5242880)
+        self.assertEqual(set(result),{'schema','profile','run','source_commit','cwd','environment',
+            'capture_command','pins','pin_count','pinned_file_bytes','source_count',
+            'complete_source_bytes','embedded_source_bytes','copy_metadata','accepted'})
+        self.assertEqual(header['bounds'],dict(ceiling_count=13))
+        self.assertEqual(result['capture_command'],[guard.NEXT42_BINARY_PINS[0]['path'],
+            '--bundle-output',str(guard.NEXT42_RUN/'next42.rcv5'),
+            '--report-output',str(guard.NEXT42_RUN/'next42-capture.json')])
+
+    def test_next42_attempt_and_rcv5_collision_preserve_single_use(self):
+        run=self.root/'next42';run.mkdir()
+        spec=run/'spec.json';spec.write_text('{}')
+        spec_pin=guard.pin_file(spec)
+        value=dict(schema=1,profile=guard.NEXT42_PROFILE,run=str(run),source_commit='0'*40,
+            cwd=str(guard.REPO),environment=guard.ENV,capture_command=['/bin/false'],pins=[spec_pin],
+            pin_count=1,pinned_file_bytes=spec_pin['bytes'],source_count=88,complete_source_bytes=0,
+            embedded_source_bytes=0,copy_metadata=[],accepted=False)
+        freeze=run/'command-freeze.json';freeze.write_bytes(guard.encoded(value,guard.FREEZE_CAP))
+        sha=guard.pin_file(freeze)['sha256']
+        output=run/'next42.rcv5';output.write_bytes(b'preserve')
+        with patch.object(guard,'NEXT42_RUN',run),patch.object(guard,'verify_files'), \
+             patch.object(guard,'build',return_value=freeze.read_bytes()), \
+             patch.object(guard.subprocess,'check_output',return_value=b'0'*40), \
+             patch.object(Path,'cwd',return_value=guard.REPO), \
+             patch.object(guard,'copy_metadata',side_effect=AssertionError('metadata after collision')):
+            with self.assertRaisesRegex(ValueError,'single-use output collision'):
+                guard.capture(freeze,sha)
+            self.assertTrue((run/'next42-attempt.json').is_file())
+            with self.assertRaises(FileExistsError):guard.capture(freeze,sha)
+            self.assertEqual(output.read_bytes(),b'preserve')
+
     def test_fourth_attempt_marker_is_single_use_and_output_collision_preserves_bytes(self):
         run=self.root/'residual-fourth';run.mkdir()
         spec=run/'spec.json';spec.write_text('{}')
@@ -1692,10 +1727,28 @@ class SeventhHistoryControls(Fixture):
             with patch.object(guard,'SEVENTH_HISTORY_PARTS',parts),patch.object(Path,'open',side_effect=AssertionError('read before admission')),self.assertRaises(ValueError):
                 guard.verify_seventh_history()
 
-    def test_next42_remains_unsupported_by_command_builder(self):
+    def test_next42_disabled_authority_rejects_command_descriptors(self):
         profile = 'n4_residual_vrf_7f821a7f63c0e7251e332b9b7c08da0b757124b5_v1'
-        with self.assertRaises(ValueError): guard.finite_profile(profile)
-        with self.assertRaises(ValueError): guard.sealed_profile(profile)
+        with patch.object(guard,'NEXT42_CONTRACT',None):
+            with self.assertRaises(ValueError): guard.finite_profile(profile)
+            with self.assertRaises(ValueError): guard.sealed_profile(profile)
+
+    def test_next42_active_descriptor_preserves_strict_pending_rejection(self):
+        fixed=guard.finite_profile(guard.NEXT42_PROFILE)
+        self.assertEqual(fixed['run'],guard.NEXT42_RUN)
+        self.assertEqual(fixed['contract'],dict(
+            path='/home/fry/artifacts/vrf42-completion-01a1470a-fa17-7543-9cb1-e6f3f69ae0b6-20261016/resume-20261017/next42-authority-v8.json',
+            bytes=117645,sha256='9fedd924c0d79db4330d5862674a149626e72a725fc8100e22e2edc6a730a46a'))
+        self.assertEqual((fixed['stem'],fixed['source_count'],fixed['evidence_start'],fixed['evidence_count']),
+                         ('next42',88,93,281))
+        sealed=guard.sealed_profile(guard.NEXT42_PROFILE)
+        self.assertEqual((sealed['ordinal'],sealed['voter'],sealed['key'],sealed['indices']),
+            ('next42','7f821a7f63c0e7251e332b9b7c08da0b757124b5',guard.NEXT42_KEY,guard.NEXT42_INDICES))
+        spec=guard.read_json(guard.NEXT42_RUN/'instance-spec.json',65536)
+        authority=guard.expand_sixth_inventory(guard.read_json(fixed['contract']['path'],131072),guard.NEXT42_PROFILE)
+        rows=json.loads(guard._next42_project_authority(authority)[0])
+        with self.assertRaisesRegex(ValueError,'next42 pending role binding'):
+            guard._next42_pin_at(spec,rows[0][344],344,{},False)
 
 
 class SeventhReservationControls(Fixture):
