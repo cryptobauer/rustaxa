@@ -276,10 +276,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time follows Unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "rustaxa-concrete-genesis-{name}-{}-{nanos}",
-            std::process::id()
-        ))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa-concrete-genesis-{name}-{}-{nanos}",
+                std::process::id()
+            )),
+            true,
+        )
     }
 
     fn fixture_reader(oracle: &Value) -> FixtureReader {
@@ -508,7 +511,7 @@ mod tests {
 
         drop(reopened);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 
     #[test]
@@ -569,6 +572,6 @@ mod tests {
 
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }

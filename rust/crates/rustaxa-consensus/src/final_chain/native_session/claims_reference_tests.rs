@@ -103,6 +103,9 @@ impl ReferenceState {
         let mut accounts = self.accounts.borrow_mut();
         for mutation in mutations {
             match mutation {
+                FinalChainNativeOrdinaryMutation::NonceReplace { .. } => {
+                    panic!("reward claims must not change account nonces")
+                }
                 FinalChainNativeOrdinaryMutation::EnsureExists {
                     address,
                     expected_exists,
@@ -225,10 +228,13 @@ fn temp_db_path(test_name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "rustaxa-consensus-claims-corpus-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
+    crate::closeout_test_scratch::new_path(
+        std::env::temp_dir().join(format!(
+            "rustaxa-consensus-claims-corpus-{test_name}-{}-{nanos}",
+            std::process::id()
+        )),
+        true,
+    )
 }
 
 fn with_reference_chain(test_name: &str, test: impl FnOnce(&FinalChain)) {
@@ -257,18 +263,20 @@ fn with_reference_chain(test_name: &str, test: impl FnOnce(&FinalChain)) {
         storage.clone(),
         1_000_000.into(),
         0,
-        Vec::new(),
-        vec![GenesisValidator {
-            address: VALIDATOR,
-            vrf_key: [0x44; 32],
-            total_stake: U256::from(1_000_u64).to_big_endian().to_vec(),
-            delegations: vec![(DELEGATOR, U256::from(1_000_u64).to_big_endian().to_vec())],
-            metadata: GenesisValidatorMetadata {
-                owner: OWNER,
-                commission: 100,
-                ..Default::default()
-            },
-        }],
+        crate::FinalChainGenesisAllocation {
+            accounts: Vec::new(),
+            validators: vec![GenesisValidator {
+                address: VALIDATOR,
+                vrf_key: [0x44; 32],
+                total_stake: U256::from(1_000_u64).to_big_endian().to_vec(),
+                delegations: vec![(DELEGATOR, U256::from(1_000_u64).to_big_endian().to_vec())],
+                metadata: GenesisValidatorMetadata {
+                    owner: OWNER,
+                    commission: 100,
+                    ..Default::default()
+                },
+            }],
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: U256::from(100_u64).into(),
             vote_eligibility_balance_step: U256::from(10_u64).into(),
@@ -284,7 +292,7 @@ fn with_reference_chain(test_name: &str, test: impl FnOnce(&FinalChain)) {
     test(&chain);
     drop(chain);
     drop(storage);
-    let _ = std::fs::remove_dir_all(path);
+    let _ = crate::closeout_test_scratch::dispose(path);
 }
 
 fn hex_bytes(bytes: impl AsRef<[u8]>) -> String {

@@ -678,6 +678,18 @@ impl std::fmt::Display for NativePortError {
     }
 }
 
+/// A precompile mutation of its borrowed input, separate from immutable
+/// transaction bytes and from return data copied by the caller frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeInputMutation {
+    /// Offset in the completed invocation's input slice.
+    pub offset: usize,
+    /// Required original byte.
+    pub expected: u8,
+    /// Replacement byte.
+    pub replacement: u8,
+}
+
 impl std::error::Error for NativePortError {}
 
 /// Staged FinalChain-native execution used by the EVM frame driver.
@@ -693,6 +705,15 @@ impl std::error::Error for NativePortError {}
 /// effects. Any integrity/infrastructure error aborts the whole pending period;
 /// exact native serialization and cache lifecycle remain an S5 adapter concern.
 pub trait NativeExecutionPort {
+    /// Returns effects for the exact completed invocation. Ports with immutable
+    /// input semantics retain the empty default. Never return stale effects.
+    fn input_mutations(
+        &mut self,
+        _id: NativeInvocationId,
+    ) -> Result<Vec<NativeInputMutation>, NativePortError> {
+        Ok(Vec::new())
+    }
+
     /// Prepares reference cache and computes gas against the authoritative journal.
     fn prepare(
         &mut self,

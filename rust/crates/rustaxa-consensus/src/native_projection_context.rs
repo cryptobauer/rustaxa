@@ -133,8 +133,11 @@ impl FinalChainNativeProjectionContext {
                 "FINAL_CHAIN_NATIVE_CONTEXT_FRAME_MISMATCH"
             );
             ensure!(
-                request.contract == crate::final_chain::DPOS_CONTRACT_ADDRESS
-                    && request.state_address == request.contract,
+                matches!(
+                    request.contract,
+                    crate::final_chain::DPOS_CONTRACT_ADDRESS
+                        | crate::final_chain::SLASHING_CONTRACT_ADDRESS
+                ) && request.state_address == request.contract,
                 "FINAL_CHAIN_NATIVE_CONTEXT_ADDRESS_UNSUPPORTED"
             );
             ensure!(
@@ -176,7 +179,11 @@ pub(crate) fn validate_read_sets(
     let mut seen = BTreeSet::new();
     for read in raw_reads {
         ensure!(
-            read.address == crate::final_chain::DPOS_CONTRACT_ADDRESS,
+            matches!(
+                read.address,
+                crate::final_chain::DPOS_CONTRACT_ADDRESS
+                    | crate::final_chain::SLASHING_CONTRACT_ADDRESS
+            ),
             "FINAL_CHAIN_NATIVE_CONTEXT_RAW_ADDRESS_UNSUPPORTED"
         );
         ensure!(

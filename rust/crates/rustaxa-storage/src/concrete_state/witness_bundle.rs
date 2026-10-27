@@ -13,10 +13,12 @@ pub(super) enum Profile {
     VrfResidual,
     VrfResidual49f8,
     VrfResidual7f82,
+    VrfResidualE946,
 }
 impl Profile {
     fn header(self) -> [u8; 16] {
         match self {
+            Self::VrfResidualE946 => [82, 67, 86, 54, 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 40, 0],
             Self::VrfResidual7f82 => [82, 67, 86, 53, 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 42, 0],
             Self::VrfResidual49f8 => [82, 67, 86, 52, 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 45, 0],
             Self::VrfResidual => [b'R', b'C', b'V', b'3', 1, 0, 0, 0, 4, 0, 2, 0, 51, 0, 46, 0],
@@ -28,6 +30,7 @@ impl Profile {
     pub(super) fn proofs(self) -> usize {
         match self {
             Self::VrfResidual7f82 => 93,
+            Self::VrfResidualE946 => 91,
             Self::VrfResidual49f8 => 96,
             Self::VrfResidual => 97,
             Self::Native => PROOFS,

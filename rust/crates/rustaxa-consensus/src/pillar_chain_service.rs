@@ -697,7 +697,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time is available")
             .as_nanos();
-        let path: PathBuf = std::env::temp_dir().join(format!("{name}_{nonce}"));
+        let path: PathBuf = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        );
         Arc::new(Storage::new(Config::new(path)).expect("storage opens"))
     }
 

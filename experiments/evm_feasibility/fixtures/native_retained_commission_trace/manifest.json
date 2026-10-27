@@ -1,0 +1,82 @@
+{
+  "accepted_estimate_manifest_sha256": "48859d8fac0516a24eccd5efd3eaec6b6f03b3a803dea642ecc71a7ef918eb6e",
+  "actual_calls": 32,
+  "configuration_sha256": "956339f2f45cb18330930f3e355d3be39a0db00b273b054c7efff1feb94e0aa3",
+  "generated_seed_sha256": "3544e4be25910363f9bef3b2ee0a40ae2107b1562382d76f3225ffc949fd18e0",
+  "go_version": "go version go1.24.4 linux/amd64",
+  "helper_sha256": [
+    "766ca7ed53d88d414d968cb9bb57e5346812fc4dee870dba6d16ecf2b3d3d76e",
+    "d6e0276bb4342b886d68168dad0d74e0ae53b39a9bc2456495b010530dfd76ec",
+    "884dae58564aa04052195518d202d98aafd4c6ca390c2b0463da47e16976b66c"
+  ],
+  "hook_free_control_scope": "ordinary requests/results/configuration/committed identity; live state observations only in instrumented runs",
+  "hooks": {
+    "local": {
+      "account_effective": "4578e3b197851f74753d31cd159eef48edbf4df8f1982924f918aa1075566c37",
+      "account_original": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+      "trace_effective": "f6ee277e8ce07e9561a8a00c4d19c2a01bde937406d1ec8a97394ef6119c0759",
+      "trace_original": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd"
+    },
+    "local.control": {
+      "account_effective": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+      "account_original": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+      "trace_effective": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd",
+      "trace_original": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd"
+    },
+    "public": {
+      "account_effective": "4578e3b197851f74753d31cd159eef48edbf4df8f1982924f918aa1075566c37",
+      "account_original": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+      "trace_effective": "f6ee277e8ce07e9561a8a00c4d19c2a01bde937406d1ec8a97394ef6119c0759",
+      "trace_original": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd"
+    },
+    "public.control": {
+      "account_effective": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+      "account_original": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+      "trace_effective": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd",
+      "trace_original": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd"
+    }
+  },
+  "input_sha256": "57b6ea12dbc0ac2da75a4d75ebae13c4f17ead5505f89182b3e7cc1f68c9ce8d",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "sha256": {
+    "local": [
+      "9269c68631ea77d89417bf317216e96ab6577ec9648ea67e50628ad9042d91b6",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "local.control": [
+      "5f43140cad4d623b7601e34badc822fd0c442753de2ec926b181754b540196f5",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public": [
+      "9269c68631ea77d89417bf317216e96ab6577ec9648ea67e50628ad9042d91b6",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "public.control": [
+      "5f43140cad4d623b7601e34badc822fd0c442753de2ec926b181754b540196f5",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  },
+  "sources": {
+    "native_cancel_reward_reference.go": "394408c2b91827885489f4f723ebdf4aa55275631c43a9118093ca992db63ada",
+    "native_redelegate_reward_reference.py": "2c10f9cab99a9e9326c1a8e6ff85c7590f9d97a47e43586df62c848009dd6fc4",
+    "native_retained_commission_estimate_reference.py": "b790a686a6b5edaef49ddd5ac206b8f5a80459fa76e9507ca3edd6a012c20323",
+    "native_retained_commission_reference.go": "203e0cd3f367ddb682072165b5b45344e6962b438b9e0b85a74b1cf86ff1a16a",
+    "native_retained_commission_reference.py": "ebdc8af00ac3ac12e6e010283b0af769a5f9ae82e041e141a8469ff0e0236253",
+    "native_retained_commission_trace_reference.go": "1b19e8fd0eb6b21e8e7521a2be238e45ccffd3cc4280c66f5e508233c89dfcbb",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
+    "native_v1_custody_reference.go": "4e8227c57133f09354d585367ac9be2fa1baa15ef6e0726d7b42d9089a9f7cec",
+    "native_v1_custody_reference.py": "b1083d2ae1a9062cc2ec6a623764f35b86fa229c5dd90247f52022f9e8e07918",
+    "reference.py": "498c4942265f1b38a3840a157d911a0ac509fab85480a7f6d415f18c0e9f54f6"
+  },
+  "trace_sequences": 24
+}

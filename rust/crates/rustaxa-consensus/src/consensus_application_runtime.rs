@@ -5,6 +5,33 @@
 //! key custody, physical transport, and concrete external-EVM execution. They
 //! never receive a manager action or mutable consensus object.
 
+/// Borrowed service owners used during one consensus run.
+/// This value only groups existing borrows; readiness, generation and effect
+/// checks remain in the runtime methods, with no new defaults or authority.
+pub struct ConsensusRuntimeServices<'a> {
+    /// PBFT protocol and finalization service.
+    pub pbft: &'a PbftService,
+    /// DAG transaction service used by the same application.
+    pub dag: &'a DagTransactionService,
+    /// Existing FinalChain owner used by this run.
+    pub final_chain: &'a FinalChain,
+}
+
+struct FinalizationPorts<'a, S, T, E, O> {
+    signer: &'a S,
+    transport: &'a T,
+    evm: &'a E,
+    observer: &'a O,
+}
+
+struct SlashingPorts<'a, P, S, T> {
+    process: &'a P,
+    signer: &'a S,
+    transport: &'a T,
+}
+
+type PreparedProposalVote = (u64, Vec<u8>, PbftGeneratedVote, ConsensusStateVoteTask);
+
 use crate::FinalChain;
 use crate::consensus_application::DagProposerConfig;
 use crate::consensus_application_startup::{
@@ -1456,13 +1483,8 @@ impl ConsensusApplicationRuntime {
         generation: u64,
         request: &PbftApplicationFinalizationRequest,
         mut step: PbftApplicationFinalizationStep,
-        pbft: &PbftService,
-        dag: &DagTransactionService,
-        final_chain: &FinalChain,
-        signer: &S,
-        transport: &T,
-        evm: &E,
-        observer: &O,
+        services: ConsensusRuntimeServices<'_>,
+        ports: FinalizationPorts<'_, S, T, E, O>,
     ) -> Result<bool>
     where
         E: ConsensusExecutionPort,
@@ -1470,6 +1492,18 @@ impl ConsensusApplicationRuntime {
         T: ConsensusTransportPort,
         O: ConsensusObserverPort,
     {
+        let ConsensusRuntimeServices {
+            pbft,
+            dag,
+            final_chain,
+        } = services;
+        let FinalizationPorts {
+            signer,
+            transport,
+            evm,
+            observer,
+        } = ports;
+
         loop {
             step = match step {
                 PbftApplicationFinalizationStep::Complete(_) => return Ok(true),
@@ -1586,9 +1620,11 @@ impl ConsensusApplicationRuntime {
                         final_chain,
                         request,
                         gossip,
-                        report.succeeded,
-                        u8::from(!report.succeeded),
-                        report.error_code,
+                        crate::pbft_application_finalization::PbftApplicationPillarGossipReport {
+                            succeeded: report.succeeded,
+                            status: u8::from(!report.succeeded),
+                            error_code: report.error_code,
+                        },
                     )?;
                     ensure!(
                         succeeded,
@@ -1675,12 +1711,8 @@ impl ConsensusApplicationRuntime {
         &self,
         generation: u64,
         effect: &crate::SlashingTransactionEffect,
-        pbft: &PbftService,
-        dag: &DagTransactionService,
-        final_chain: &FinalChain,
-        process: &P,
-        signer: &S,
-        transport: &T,
+        services: ConsensusRuntimeServices<'_>,
+        ports: SlashingPorts<'_, P, S, T>,
         submitters: &[crate::SlashingSubmitterIdentity],
     ) -> Result<()>
     where
@@ -1688,6 +1720,17 @@ impl ConsensusApplicationRuntime {
         S: ConsensusSigningPort,
         T: ConsensusTransportPort,
     {
+        let ConsensusRuntimeServices {
+            pbft,
+            dag,
+            final_chain,
+        } = services;
+        let SlashingPorts {
+            process,
+            signer,
+            transport,
+        } = ports;
+
         let leaves = RuntimeSyncedLeaves {
             runtime: self,
             generation,
@@ -1773,9 +1816,7 @@ impl ConsensusApplicationRuntime {
     /// until their composed service operations are available.
     pub fn run<P, S, T, E, O>(
         &self,
-        pbft: &PbftService,
-        dag_transaction: &DagTransactionService,
-        final_chain: &FinalChain,
+        services: ConsensusRuntimeServices<'_>,
         process: &P,
         signer: &S,
         transport: &T,
@@ -1789,6 +1830,12 @@ impl ConsensusApplicationRuntime {
         E: ConsensusExecutionPort,
         O: ConsensusObserverPort,
     {
+        let ConsensusRuntimeServices {
+            pbft,
+            dag: dag_transaction,
+            final_chain,
+        } = services;
+
         let generation = self.begin_run()?;
         struct RunningGuard<'a>(&'a AtomicBool);
         impl Drop for RunningGuard<'_> {
@@ -2132,13 +2179,17 @@ impl ConsensusApplicationRuntime {
                                             generation,
                                             &request,
                                             prepared.step,
-                                            pbft,
-                                            dag_transaction,
-                                            final_chain,
-                                            signer,
-                                            transport,
-                                            evm,
-                                            observer,
+                                            ConsensusRuntimeServices {
+                                                pbft,
+                                                dag: dag_transaction,
+                                                final_chain,
+                                            },
+                                            FinalizationPorts {
+                                                signer,
+                                                transport,
+                                                evm,
+                                                observer,
+                                            },
                                         )? {
                                             PbftManagerRuntimeActionResultCode::ProgressRestartLoop
                                         } else {
@@ -2213,63 +2264,62 @@ impl ConsensusApplicationRuntime {
                                 eligible.push(identity.wallet_index);
                             }
                         }
-                        let prepare_proposal_vote = |wallet_index: u64,
-                                                     block_rlp: Vec<u8>|
-                         -> Result<
-                            Option<(u64, Vec<u8>, PbftGeneratedVote, ConsensusStateVoteTask)>,
-                        > {
-                            let identity = self
-                                .signing_identities
-                                .get(wallet_index as usize)
-                                .filter(|identity| identity.wallet_index == wallet_index)
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!("CONSENSUS_PROPOSAL_SIGNER_MISSING")
+                        let prepare_proposal_vote =
+                            |wallet_index: u64,
+                             block_rlp: Vec<u8>|
+                             -> Result<Option<PreparedProposalVote>> {
+                                let identity = self
+                                    .signing_identities
+                                    .get(wallet_index as usize)
+                                    .filter(|identity| identity.wallet_index == wallet_index)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("CONSENSUS_PROPOSAL_SIGNER_MISSING")
+                                    })?;
+                                let link = rustaxa_types::pbft::PbftBlockLink::try_from(
+                                    rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp::new(
+                                        &block_rlp,
+                                    ),
+                                )?;
+                                let vrf = prepare_pbft_vote_vrf(PbftVoteGenerationPublicInput {
+                                    wallet_index,
+                                    block_hash: link.block_hash,
+                                    vote_type: PbftVoteType::Propose,
+                                    period: live.period,
+                                    round: live.round,
+                                    step: 1,
+                                    voter: ethereum_types::H160(identity.address),
+                                    voter_public_key: identity.node_public_key,
+                                    vrf_public_key: identity.vrf_public_key,
                                 })?;
-                            let link = rustaxa_types::pbft::PbftBlockLink::try_from(
-                                rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp::new(
-                                    &block_rlp,
-                                ),
-                            )?;
-                            let vrf = prepare_pbft_vote_vrf(PbftVoteGenerationPublicInput {
-                                wallet_index,
-                                block_hash: link.block_hash,
-                                vote_type: PbftVoteType::Propose,
-                                period: live.period,
-                                round: live.round,
-                                step: 1,
-                                voter: ethereum_types::H160(identity.address),
-                                voter_public_key: identity.node_public_key,
-                                vrf_public_key: identity.vrf_public_key,
-                            })?;
-                            let proof = self.prove_vrf(
-                                generation,
-                                wallet_index,
-                                vrf.message.clone(),
-                                signer,
-                            )?;
-                            let Some(signing) =
-                                pbft.prepare_state_vote_signing(final_chain, vrf, proof)?
-                            else {
-                                return Ok(None);
+                                let proof = self.prove_vrf(
+                                    generation,
+                                    wallet_index,
+                                    vrf.message.clone(),
+                                    signer,
+                                )?;
+                                let Some(signing) =
+                                    pbft.prepare_state_vote_signing(final_chain, vrf, proof)?
+                                else {
+                                    return Ok(None);
+                                };
+                                let signature = self.sign_digest(
+                                    generation,
+                                    wallet_index,
+                                    signing.signing_hash.0,
+                                    signer,
+                                )?;
+                                let generated = complete_pbft_vote_signing(signing, signature)?;
+                                let task = ConsensusStateVoteTask {
+                                    period: live.period,
+                                    round: live.round,
+                                    step: 1,
+                                    vote_type: PbftVoteType::Propose,
+                                    block_hash: link.block_hash,
+                                    proposed_block_rlp: block_rlp.clone(),
+                                    commit: ConsensusStateVoteCommit::None,
+                                };
+                                Ok(Some((wallet_index, block_rlp, generated, task)))
                             };
-                            let signature = self.sign_digest(
-                                generation,
-                                wallet_index,
-                                signing.signing_hash.0,
-                                signer,
-                            )?;
-                            let generated = complete_pbft_vote_signing(signing, signature)?;
-                            let task = ConsensusStateVoteTask {
-                                period: live.period,
-                                round: live.round,
-                                step: 1,
-                                vote_type: PbftVoteType::Propose,
-                                block_hash: link.block_hash,
-                                proposed_block_rlp: block_rlp.clone(),
-                                commit: ConsensusStateVoteCommit::None,
-                            };
-                            Ok(Some((wallet_index, block_rlp, generated, task)))
-                        };
                         let action = compose_value_proposal(
                             pbft,
                             final_chain,
@@ -2433,12 +2483,16 @@ impl ConsensusApplicationRuntime {
                                         self.execute_slashing_effect(
                                             generation,
                                             effect,
-                                            pbft,
-                                            dag_transaction,
-                                            final_chain,
-                                            process,
-                                            signer,
-                                            transport,
+                                            ConsensusRuntimeServices {
+                                                pbft,
+                                                dag: dag_transaction,
+                                                final_chain,
+                                            },
+                                            SlashingPorts {
+                                                process,
+                                                signer,
+                                                transport,
+                                            },
                                             submitters,
                                         )?;
                                     }
@@ -2531,12 +2585,16 @@ impl ConsensusApplicationRuntime {
                                     self.execute_slashing_effect(
                                         generation,
                                         effect,
-                                        pbft,
-                                        dag_transaction,
-                                        final_chain,
-                                        process,
-                                        signer,
-                                        transport,
+                                        ConsensusRuntimeServices {
+                                            pbft,
+                                            dag: dag_transaction,
+                                            final_chain,
+                                        },
+                                        SlashingPorts {
+                                            process,
+                                            signer,
+                                            transport,
+                                        },
                                         submitters,
                                     )?;
                                 }
@@ -2592,13 +2650,17 @@ impl ConsensusApplicationRuntime {
                                     generation,
                                     &request,
                                     prepared.step,
-                                    pbft,
-                                    dag_transaction,
-                                    final_chain,
-                                    signer,
-                                    transport,
-                                    evm,
-                                    observer,
+                                    ConsensusRuntimeServices {
+                                        pbft,
+                                        dag: dag_transaction,
+                                        final_chain,
+                                    },
+                                    FinalizationPorts {
+                                        signer,
+                                        transport,
+                                        evm,
+                                        observer,
+                                    },
                                 )
                             },
                         ) {
@@ -2679,10 +2741,11 @@ mod tests {
                     sequence: request.effect_id.sequence + u64::from(self.stale),
                 },
                 succeeded: !self.stale,
-                error_code: self
-                    .stale
-                    .then_some("INJECTED_STALE_OBSERVER_REPORT".to_owned())
-                    .unwrap_or_default(),
+                error_code: if self.stale {
+                    "INJECTED_STALE_OBSERVER_REPORT".to_owned()
+                } else {
+                    String::new()
+                },
             })
         }
     }
@@ -2798,10 +2861,16 @@ mod tests {
             Ok(ConsensusSignReport {
                 effect_id: request.effect_id,
                 succeeded: self.succeed,
-                signature: self.succeed.then_some(vec![9; 65]).unwrap_or_default(),
-                error_code: (!self.succeed)
-                    .then_some("SIGN_REJECTED".into())
-                    .unwrap_or_default(),
+                signature: if self.succeed {
+                    vec![9; 65]
+                } else {
+                    Vec::new()
+                },
+                error_code: if self.succeed {
+                    String::new()
+                } else {
+                    "SIGN_REJECTED".into()
+                },
             })
         }
         fn prove_vrf(&self, request: &ConsensusVrfRequest) -> Result<ConsensusVrfReport> {
@@ -2832,9 +2901,11 @@ mod tests {
                     sequence: effect_id.sequence + u64::from(self.stale),
                 },
                 succeeded: self.succeed,
-                error_code: (!self.succeed)
-                    .then_some("TRANSPORT_REJECTED".into())
-                    .unwrap_or_default(),
+                error_code: if self.succeed {
+                    String::new()
+                } else {
+                    "TRANSPORT_REJECTED".into()
+                },
             }
         }
     }
@@ -2874,9 +2945,11 @@ mod tests {
             Ok(ConsensusTransportReport {
                 effect_id: request.effect_id,
                 succeeded: call > 0,
-                error_code: (call == 0)
-                    .then_some("TRANSPORT_REJECTED".to_owned())
-                    .unwrap_or_default(),
+                error_code: if call == 0 {
+                    "TRANSPORT_REJECTED".to_owned()
+                } else {
+                    String::new()
+                },
             })
         }
 

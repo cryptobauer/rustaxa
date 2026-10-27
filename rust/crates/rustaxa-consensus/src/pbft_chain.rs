@@ -629,7 +629,7 @@ fn hex_bytes(input: &str) -> Result<Vec<u8>> {
         return Err(anyhow!("hex input has odd length"));
     }
     let mut out = Vec::with_capacity(input.len() / 2);
-    for chunk in input.as_bytes().chunks_exact(2) {
+    for chunk in input.as_bytes().as_chunks::<2>().0 {
         let high = hex_value(chunk[0])?;
         let low = hex_value(chunk[1])?;
         out.push((high << 4) | low);
@@ -651,7 +651,6 @@ mod tests {
     use super::*;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -673,8 +672,11 @@ mod tests {
 
     fn temp_storage(name: &str) -> Storage {
         let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("{name}_{}_{}", std::process::id(), id));
-        let _ = fs::remove_dir_all(&path);
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{}_{}", std::process::id(), id)),
+            true,
+        );
+        let _ = crate::closeout_test_scratch::clear_before_open(&path);
         Storage::new(Config::new(path)).unwrap()
     }
 

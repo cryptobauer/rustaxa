@@ -557,9 +557,23 @@ impl FinalChainNativeSession<'_> {
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
         let vote_key = ConcreteStorageKey(concrete_storage_key(&[&[4]]));
+        // Go leaves this scalar absent when genesis registers no validators.
+        // Later zero values still require their normal committed encoding.
+        let empty_genesis = self.pending_period.as_u64() == 1
+            && self.period_start_total_vote_count == 0
+            && self
+                .final_chain
+                .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                .map_err(custody::map_kernel_error)?
+                .validator_order
+                .is_empty();
         validate_raw_value(
             &trace.current(DPOS_CONTRACT_ADDRESS, vote_key)?,
-            &concrete_compact_u64(self.period_start_total_vote_count),
+            &if empty_genesis {
+                Vec::new()
+            } else {
+                concrete_compact_u64(self.period_start_total_vote_count)
+            },
             "eligible vote count",
         )?;
         let amount_key = ConcreteStorageKey(concrete_storage_key(&[&[5]]));
@@ -614,10 +628,20 @@ impl FinalChainNativeSession<'_> {
         (bool, Option<FinalChainPreparedRewardSchedulerSuccessor>),
         FinalChainNativeSessionError,
     > {
+        let parent = self
+            .pending_period
+            .as_u64()
+            .checked_sub(1)
+            .ok_or(FinalChainNativeSessionError::PeriodMismatch)?;
+        let batched_parent = self
+            .final_chain
+            .reward_cleanup_visible_snapshot(parent.into(), snapshot, self.reward_scheduler_basis)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let visible = batched_parent.as_ref().unwrap_or(snapshot);
         let scheduled = self.reward_scheduler_basis.map(|basis| {
             basis.plan_cleanup(
-                &snapshot.slashing_jailed_validators,
-                &snapshot.slashing_jail_blocks,
+                &visible.slashing_jailed_validators,
+                &visible.slashing_jail_blocks,
             )
         });
         if let Some(plan) = &scheduled {
@@ -688,6 +712,13 @@ impl FinalChainNativeSession<'_> {
             .final_chain
             .dpos_snapshot_at_finalized_block(parent)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        if let Some(verified) = &self.verified_slashing {
+            return if verified.matches(&self.dpos_state) {
+                Ok(())
+            } else {
+                Err(FinalChainNativeSessionError::RewardsScopeUnsupported)
+            };
+        }
         if self.dpos_state.slashing_jail_blocks != committed.slashing_jail_blocks
             || self.dpos_state.slashing_jailed_validators != committed.slashing_jailed_validators
             || self.dpos_state.slashing_double_voting_proofs
@@ -773,6 +804,37 @@ fn domain(message: &'static str) -> FinalChainNativeSessionError {
     FinalChainNativeSessionError::Domain(message.to_owned())
 }
 
+impl FinalChain {
+    pub(in crate::final_chain) fn reward_cleanup_visible_snapshot(
+        &self,
+        parent: FinalChainBlockNumber,
+        current: &DposSnapshot,
+        basis: Option<reward_scheduler::FinalChainRewardSchedulerBasis>,
+    ) -> Result<Option<DposSnapshot>, anyhow::Error> {
+        #[cfg(feature = "synthetic-fixtures")]
+        if self.synthetic_batched_lifecycle {
+            // The authenticated process-local timer makes this a no-read
+            // path. Keep transaction changes; publication still binds the
+            // unchanged successor to the admitted generation.
+            if basis
+                .is_some_and(reward_scheduler::FinalChainRewardSchedulerBasis::skips_before_current)
+            {
+                return Ok(None);
+            }
+            let committed = self.dpos_snapshot_at_finalized_block(parent)?;
+            let changed = current.slashing_jail_blocks != committed.slashing_jail_blocks
+                || current.slashing_jailed_validators != committed.slashing_jailed_validators;
+            anyhow::ensure!(
+                !changed || committed.slashing_jailed_validators.is_empty(),
+                "SYNTHETIC_BATCHED_EXISTING_JAIL_LIST_CHANGE_UNQUALIFIED"
+            );
+            return Ok(Some(committed));
+        }
+        let _ = (parent, current, basis);
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,11 +868,13 @@ mod tests {
     ];
     type RewardRows = BTreeMap<([u8; 20], [u8; 32]), ConcreteRead<Vec<u8>>>;
 
+    type RewardRead = (([u8; 20], [u8; 32]), ConcreteRead<Vec<u8>>);
+
     #[derive(Default)]
     struct RewardState {
         rows: RefCell<RewardRows>,
         account_reads: Cell<usize>,
-        raw_reads: RefCell<Vec<(([u8; 20], [u8; 32]), ConcreteRead<Vec<u8>>)>>,
+        raw_reads: RefCell<Vec<RewardRead>>,
         dpos_balance: RefCell<BigInt>,
     }
 
@@ -903,10 +967,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "rustaxa-current-rewards-{}-{nanos}",
-            std::process::id()
-        ))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa-current-rewards-{}-{nanos}",
+                std::process::id()
+            )),
+            true,
+        )
     }
 
     fn with_reward_chain(yield_percentage: u16, test: impl FnOnce(&FinalChain)) {
@@ -957,24 +1024,26 @@ mod tests {
             storage.clone(),
             1_000_000.into(),
             0,
-            if distribution_frequency == 2 {
-                [(DELEGATOR_ONE, 1_000_u64), (DELEGATOR_TWO, 1_000)]
-                    .into_iter()
-                    .map(|(address, balance)| GenesisAccount {
-                        address,
-                        balance: FinalChainAccountBalance::from_cpp_genesis_bytes(
-                            &U256::from(balance).to_big_endian(),
-                        )
-                        .unwrap(),
-                    })
-                    .collect()
-            } else {
-                Vec::new()
+            crate::FinalChainGenesisAllocation {
+                accounts: if distribution_frequency == 2 {
+                    [(DELEGATOR_ONE, 1_000_u64), (DELEGATOR_TWO, 1_000)]
+                        .into_iter()
+                        .map(|(address, balance)| GenesisAccount {
+                            address,
+                            balance: FinalChainAccountBalance::from_cpp_genesis_bytes(
+                                &U256::from(balance).to_big_endian(),
+                            )
+                            .unwrap(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                validators: vec![
+                    validator(VALIDATOR_ONE, DELEGATOR_ONE, 1_000, 100),
+                    validator(VALIDATOR_TWO, DELEGATOR_TWO, 2_000, 2_500),
+                ],
             },
-            vec![
-                validator(VALIDATOR_ONE, DELEGATOR_ONE, 1_000, 100),
-                validator(VALIDATOR_TWO, DELEGATOR_TWO, 2_000, 2_500),
-            ],
             GenesisDposConfig {
                 eligibility_balance_threshold: U256::from(100).into(),
                 vote_eligibility_balance_step: U256::from(10).into(),
@@ -1011,7 +1080,7 @@ mod tests {
         test(&chain);
         drop(chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn with_current_reward_chain(test: impl FnOnce(&FinalChain)) {
@@ -1899,7 +1968,8 @@ mod tests {
                 ),
                 Err(FinalChainNativeSessionError::PendingPeriodMismatch)
             ));
-            for request in [[0x75; 32]] {
+            {
+                let request = [0x75; 32];
                 let period = 1_u64;
                 let mut session = chain
                     .begin_native_session_bound(

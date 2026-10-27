@@ -24,7 +24,7 @@ use revm::{
         InputsImpl, InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
         SharedMemory,
         interpreter::{EthInterpreter, ExtBytecode},
-        interpreter_types::{Jumps, LoopControl, ReturnData},
+        interpreter_types::{Jumps, LoopControl, MemoryTr, ReturnData},
     },
     primitives::{Address, Bytes, U256, hardfork::SpecId},
 };
@@ -162,11 +162,26 @@ pub trait NativeAddressClassifier {
     ) -> bool;
 }
 
-struct NativeExecution<'a> {
+pub(crate) struct NativeExecution<'a> {
     consensus_addresses: &'a dyn NativeAddressClassifier,
     port: &'a mut dyn NativeExecutionPort,
     sequence: &'a mut PeriodConsensusSequence,
     stateless_sequence: TransactionStatelessSequence,
+}
+
+impl<'a> NativeExecution<'a> {
+    pub(crate) fn new(
+        consensus_addresses: &'a dyn NativeAddressClassifier,
+        port: &'a mut dyn NativeExecutionPort,
+        sequence: &'a mut PeriodConsensusSequence,
+    ) -> Self {
+        Self {
+            consensus_addresses,
+            port,
+            sequence,
+            stateless_sequence: TransactionStatelessSequence::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -319,6 +334,7 @@ fn invoke_stateless(
         .map_err(ExecutionDriverError::StatelessResult)?;
     let NativeInvocationResult::Completed(outcome) = result else {
         return Ok(NativeFrameOutcome {
+            input_mutations: Vec::new(),
             status: CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
             required_gas: quote.required_gas,
             gas_left: expected.supplied_gas,
@@ -334,6 +350,7 @@ fn invoke_stateless(
         });
     }
     Ok(NativeFrameOutcome {
+        input_mutations: Vec::new(),
         status: match outcome.status {
             NativeStatus::Success => CodeExecutionStatus::Success,
             NativeStatus::ContractFailure(error) => {
@@ -889,7 +906,11 @@ fn execute_admitted_create<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifier>(
+pub(crate) fn execute_admitted_call<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+>(
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
     native_addresses: &N,
@@ -1197,6 +1218,17 @@ fn observe_opcode_step(
             InstructionResult::Stop | InstructionResult::Return | InstructionResult::SelfDestruct,
         ) => None,
         Err(InstructionResult::Revert) => Some(InstructionResult::Revert),
+        // A CALL to a consensus precompile suspends only to enter the native
+        // adapter. Its opcode cost already includes forwarded gas, as in the
+        // Go pre-execution logger; native execution emits no bytecode steps.
+        Err(InstructionResult::Suspend)
+            if before.opcode == 0xf1
+                && before.stack.len() >= 7
+                && before.stack[before.stack.len() - 2][12..31] == [0; 19]
+                && matches!(before.stack[before.stack.len() - 2][31], 0xee | 0xfe) =>
+        {
+            None
+        }
         Err(InstructionResult::OutOfOffset) if before.opcode == 0x3e => {
             Some(InstructionResult::OutOfOffset)
         }
@@ -1646,6 +1678,42 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
                 return Err(error);
             }
         };
+        if !outcome.input_mutations.is_empty()
+            && let CallInput::SharedBuffer(range) = &inputs.input
+        {
+            let local = range
+                .start
+                .checked_sub(parent.interpreter.memory.local_memory_offset())
+                .ok_or(ExecutionDriverError::Native(
+                    NativeAdapterError::InputMutation {
+                        offset: range.start,
+                    },
+                ))?;
+            let mut memory = parent.interpreter.memory.context_memory_mut();
+            let mut updates = std::collections::BTreeMap::new();
+            for mutation in &outcome.input_mutations {
+                let offset =
+                    local
+                        .checked_add(mutation.offset)
+                        .ok_or(ExecutionDriverError::Native(
+                            NativeAdapterError::InputMutation {
+                                offset: mutation.offset,
+                            },
+                        ))?;
+                let byte = memory.get_mut(offset).ok_or(ExecutionDriverError::Native(
+                    NativeAdapterError::InputMutation { offset },
+                ))?;
+                if updates.get(&offset).copied().unwrap_or(*byte) != mutation.expected {
+                    return Err(ExecutionDriverError::Native(
+                        NativeAdapterError::InputMutation { offset },
+                    ));
+                }
+                updates.insert(offset, mutation.replacement);
+            }
+            for (offset, replacement) in updates {
+                memory[offset] = replacement;
+            }
+        }
         if outcome.status == CodeExecutionStatus::Success {
             journal.commit_checkpoint(checkpoint)?;
         } else {

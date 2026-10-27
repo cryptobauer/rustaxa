@@ -1829,10 +1829,12 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit_with_nati
     }
     let (dpos_snapshot_rlp, account_snapshot_rlp, scheduler_successor) = final_chain
         .external_evm_concrete_projection(
-            evm_request.request_id,
-            state_api_epoch,
-            session.block_number,
-            evm_request.block_author,
+            crate::final_chain::FinalChainProjectionIdentity {
+                request_id: evm_request.request_id,
+                state_api_epoch,
+                block_number: session.block_number,
+                block_author: evm_request.block_author,
+            },
             &evm_request.transactions,
             &projection,
             &prepared_rewards_stats_plan,

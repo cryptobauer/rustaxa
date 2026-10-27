@@ -1989,10 +1989,10 @@ fn check_existing_value(
     error_code: &str,
 ) -> Result<bool> {
     let _ = error_code;
-    if let Some(existing) = storage.get_raw(column, key)? {
-        if existing != expected {
-            return Ok(true);
-        }
+    if let Some(existing) = storage.get_raw(column, key)?
+        && existing != expected
+    {
+        return Ok(true);
     }
     Ok(false)
 }
@@ -3342,7 +3342,6 @@ fn unique_positioned_hash_count(writes: &[PbftFinalizationPositionedHash]) -> u6
 mod tests {
     use super::*;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3360,7 +3359,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be available")
             .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        )
     }
 
     fn hash(v: u64) -> H256 {
@@ -3607,7 +3609,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -3637,7 +3639,7 @@ mod tests {
                 .expect("idempotent commit should succeed");
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -3718,7 +3720,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -3750,7 +3752,7 @@ mod tests {
                 "PBFT_FINALIZE_MALFORMED_PREPARED_PILLAR_BLOCK"
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -3791,7 +3793,7 @@ mod tests {
                 "PBFT_FINALIZE_PREPARED_PILLAR_BLOCK_PERIOD_MISMATCH"
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -3824,7 +3826,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -3913,7 +3915,7 @@ mod tests {
             assert_eq!(storage.extra_reward_votes_reset_generation(), 2);
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -3976,7 +3978,7 @@ mod tests {
                 .is_empty()
         );
         drop(storage);
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -4025,7 +4027,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -4088,7 +4090,7 @@ mod tests {
                 .expect("idempotent dynamic lambda commit should succeed");
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -4129,7 +4131,7 @@ mod tests {
                 .expect("executed status commit should succeed");
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     fn dynamic_lambda_fact() -> PbftDynamicLambdaFact {
@@ -4544,7 +4546,7 @@ mod tests {
             assert!(complete.replay_actions.is_empty());
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -5432,7 +5434,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -5454,7 +5456,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]

@@ -1,0 +1,287 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "cacti_custody_donor",
+    "head": 24187339,
+    "first_retained": 24187335,
+    "periods": [
+      24187340,
+      24187341,
+      24187342,
+      24187343
+    ],
+    "pending_periods": [
+      24187301,
+      24187302,
+      24187303,
+      24187304,
+      24187305,
+      24187306,
+      24187307,
+      24187308,
+      24187309,
+      24187310,
+      24187311,
+      24187312,
+      24187313,
+      24187314,
+      24187315,
+      24187316,
+      24187317,
+      24187318,
+      24187319,
+      24187320,
+      24187321,
+      24187322,
+      24187323,
+      24187324,
+      24187325,
+      24187326,
+      24187327,
+      24187328,
+      24187329,
+      24187330,
+      24187331,
+      24187332,
+      24187333,
+      24187334,
+      24187335,
+      24187336,
+      24187337,
+      24187338,
+      24187339
+    ],
+    "seed_actions_only": true,
+    "no_warmup_delegation": true,
+    "actions": [
+      {
+        "period": 24187340,
+        "who": 4,
+        "name": "old_delegation",
+        "method": "delegate",
+        "validator": 0,
+        "value": "2000000000000000000000"
+      },
+      {
+        "period": 24187341,
+        "who": 0,
+        "name": "old_v1_queue",
+        "method": "undelegate",
+        "validator": 0,
+        "amount": "1000000000000000000000"
+      },
+      {
+        "period": 24187342,
+        "who": 0,
+        "name": "old_v2_queue",
+        "method": "undelegateV2",
+        "validator": 0,
+        "amount": "1000000000000000000000"
+      },
+      {
+        "period": 24187341,
+        "who": 4,
+        "name": "old_jail_proof",
+        "method": "slash",
+        "validator": 0,
+        "vote_period": 24187336
+      },
+      {
+        "period": 24187343,
+        "who": 4,
+        "name": "old_cacti_subject_jail",
+        "method": "slash",
+        "validator": 2,
+        "vote_period": 24187338
+      }
+    ]
+  },
+  "scheduler_manifest_sha256": "9cb6b078b1cadc5ad8b8005280f76e598b1590c6f94795b037fd9b06fea4e681",
+  "support": {
+    "mainnet_era_reference.py": "77f074df930a30378343b6d979f9a1e24a300d4f475e985a623f19b2af6c042c",
+    "mainnet_era_profile.py": "a3f0f921c8f1bf64ecf2a6affd0874f3d4d4ef5d50dc201597c4fa8e1292a8cf",
+    "mainnet_era_reference.go": "e87714f3515106fa1c35df1f4a174e9473c19140a44964a3063a98646b9218aa",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7"
+  },
+  "streams": {
+    "public": {
+      "file": "2e88aaa45d84ca5b9a750c824707dca87dc7948cb08e999fd58d721f3d6099b0.json.gz",
+      "sha256": "2e88aaa45d84ca5b9a750c824707dca87dc7948cb08e999fd58d721f3d6099b0",
+      "bytes": 1599191,
+      "gzip_sha256": "0ae4bbb1b2a6deb89f04078f2f88a24682c6f0666cbf0357c96216d5f2e6132b",
+      "gzip_bytes": 286751,
+      "capture": null
+    },
+    "local": {
+      "file": "4f79dd893cef7a78d10911bd53c9904969a9a4a5c0fb8b5de44b17f2b97f763b.json.gz",
+      "sha256": "4f79dd893cef7a78d10911bd53c9904969a9a4a5c0fb8b5de44b17f2b97f763b",
+      "bytes": 1687599,
+      "gzip_sha256": "fd0f2971058e0ed8c7b34ec1d5429ccb5155d7805e48e6e1344dab8192ee925c",
+      "gzip_bytes": 291111,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "file": "4722d6c85ee4ec26744cf0f5f9d4ba4578ecffbb52d22a65545a0e87a26293d1.json.gz",
+            "sha256": "4722d6c85ee4ec26744cf0f5f9d4ba4578ecffbb52d22a65545a0e87a26293d1",
+            "bytes": 1218498,
+            "gzip_sha256": "c649a28bddfb043d887b591fe280edbb1741eb973d9ae98329c1bc0801867863",
+            "gzip_bytes": 232721,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti_custody_donor-t675i8ed"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24187336,
+            "end": 24187344
+          },
+          "stream": {
+            "file": "6751b22b0d1095395ed4beea03f9827ca7b8bf111a6f85082c1a023e221e1238.json.gz",
+            "sha256": "6751b22b0d1095395ed4beea03f9827ca7b8bf111a6f85082c1a023e221e1238",
+            "bytes": 387435,
+            "gzip_sha256": "93874e88e257bf6c4b4f99baff20020f5465d720ec4272d034d1d1027c75b71c",
+            "gzip_bytes": 55929,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti_custody_donor-rpedvvjb"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "file": "1a8dc0f8723ebfe6f06539ba1c980a11110a3e4ac60e3131159652c86a7172b1.json.gz",
+            "sha256": "1a8dc0f8723ebfe6f06539ba1c980a11110a3e4ac60e3131159652c86a7172b1",
+            "bytes": 1232475,
+            "gzip_sha256": "3e3caca5c82b47e0343faa6218ab88c258e7b0164b314e410f18c14c27401fee",
+            "gzip_bytes": 233834,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti_custody_donor-yna4ziza"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24187336,
+            "end": 24187344
+          },
+          "stream": {
+            "file": "0b6b3cabc0c98f6cfe1c649755a9fe38594d2e7b9c7c39701f34d2f0a2a9862e.json.gz",
+            "sha256": "0b6b3cabc0c98f6cfe1c649755a9fe38594d2e7b9c7c39701f34d2f0a2a9862e",
+            "bytes": 461864,
+            "gzip_sha256": "c4834d5e85b3e89995f3154026ed24dc4d574e9be0bb0fbff8a18aa65fafc63b",
+            "gzip_bytes": 59346,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti_custody_donor-y17ff0bp"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "9de6110dcc9816cb8436c1ac585497c59375aef085d18bfd8e8a7e2398fee1a6",
+    "streams": {
+      "public": "b0955e7143fc1ba1cf4ec54f4cb0e906cee930d36d53a096ba0d67aef5788999",
+      "local": "0db31d7a5b5e4a72d33f7a47a0b5c8e43435d51159d7b851e5e3fe7ae5f32fef"
+    },
+    "forks": {}
+  }
+}

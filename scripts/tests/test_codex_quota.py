@@ -59,7 +59,7 @@ class QuotaTests(unittest.TestCase):
         reset = (self.now + timedelta(days=1)).timestamp()
         QUOTA.initialize_budget(state_path, self.budget_observation(20, reset=reset), now=self.now)
         original = state_path.read_bytes()
-        for drift in (-2, -1, 0, 1, 2):
+        for drift in (-10, -4, -2, -1, 0, 1, 2, 4, 10):
             for used, expected in ((29, 0), (30, 2)):
                 with self.subTest(drift=drift, used=used):
                     result, code = QUOTA.inspect_budget(
@@ -69,7 +69,7 @@ class QuotaTests(unittest.TestCase):
                     self.assertEqual(result['baseline_remaining_percent'], 80)
                     self.assertEqual(result['floor_remaining_percent'], 70)
                     self.assertEqual(result['reset_drift_seconds'], drift)
-                    self.assertEqual(result['reset_tolerance_seconds'], 2)
+                    self.assertEqual(result['reset_tolerance_seconds'], 10)
                     self.assertEqual(state_path.read_bytes(), original)
 
     def test_budget_reset_tolerance_cannot_drift_transitively(self):
@@ -77,7 +77,7 @@ class QuotaTests(unittest.TestCase):
         reset = (self.now + timedelta(days=1)).timestamp()
         QUOTA.initialize_budget(state_path, self.budget_observation(20, reset=reset), now=self.now)
         original = state_path.read_bytes()
-        for drift, expected in ((2, 0), (4, 3), (-2.0001, 3), (2.0001, 3), (604800, 3)):
+        for drift, expected in ((10, 0), (20, 3), (-10.0001, 3), (10.0001, 3), (604800, 3)):
             result, code = QUOTA.inspect_budget(
                 state_path, self.budget_observation(21, reset=reset+drift), now=self.now)
             self.assertEqual(code, expected)
@@ -87,7 +87,7 @@ class QuotaTests(unittest.TestCase):
 
     def test_log_reset_jitter_cannot_hide_usage_regression(self):
         reset = (self.now + timedelta(days=1)).timestamp()
-        for earlier, later in ((-2, 2), (2, -2), (0, 2), (2, 0)):
+        for earlier, later in ((-10, 10), (10, -10), (0, 4), (4, 0), (0, 10), (10, 0)):
             self.evaluate(used=30, reset=reset+earlier, min_remaining_percent=0)
             first = self.path.read_text()
             self.evaluate(used=29, reset=reset+later, min_remaining_percent=0)
@@ -100,7 +100,7 @@ class QuotaTests(unittest.TestCase):
     def test_log_reset_peak_neighborhood_is_not_transitive(self):
         reset = (self.now + timedelta(days=1)).timestamp()
         records = ''
-        for drift, used in ((0, 50), (4, 49), (8, 49)):
+        for drift, used in ((0, 50), (40, 49), (80, 49)):
             self.evaluate(used=used, reset=reset+drift, min_remaining_percent=0)
             records += self.path.read_text()
         self.path.write_text(records)

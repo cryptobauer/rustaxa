@@ -225,7 +225,7 @@ fn duplicate_old_publication_does_not_rewind_live_account_snapshot() {
 
     drop(chain);
     drop(storage);
-    let _ = std::fs::remove_dir_all(path);
+    let _ = crate::closeout_test_scratch::dispose(path);
 }
 
 fn run_reopen_fixture(label: &str, fixture: &Value) {
@@ -277,7 +277,7 @@ fn run_reopen_fixture(label: &str, fixture: &Value) {
 
     drop(chain);
     drop(storage);
-    let _ = std::fs::remove_dir_all(path);
+    let _ = crate::closeout_test_scratch::dispose(path);
 }
 
 fn run_period(
@@ -407,11 +407,13 @@ fn current_reward_chain(storage: Arc<Storage>) -> FinalChain {
         storage,
         1_000_000.into(),
         0,
-        Vec::new(),
-        vec![
-            validator(VALIDATOR_ONE, DELEGATOR_ONE, 1_000, 100),
-            validator(VALIDATOR_TWO, DELEGATOR_TWO, 2_000, 2_500),
-        ],
+        crate::FinalChainGenesisAllocation {
+            accounts: Vec::new(),
+            validators: vec![
+                validator(VALIDATOR_ONE, DELEGATOR_ONE, 1_000, 100),
+                validator(VALIDATOR_TWO, DELEGATOR_TWO, 2_000, 2_500),
+            ],
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: U256::from(100).into(),
             vote_eligibility_balance_step: U256::from(10).into(),
@@ -513,10 +515,13 @@ fn temp_db_path(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "rustaxa-current-rewards-scheduler-{label}-{}-{nanos}",
-        std::process::id()
-    ))
+    crate::closeout_test_scratch::new_path(
+        std::env::temp_dir().join(format!(
+            "rustaxa-current-rewards-scheduler-{label}-{}-{nanos}",
+            std::process::id()
+        )),
+        true,
+    )
 }
 
 fn hex(bytes: impl AsRef<[u8]>) -> String {

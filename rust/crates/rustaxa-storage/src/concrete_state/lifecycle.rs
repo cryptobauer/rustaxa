@@ -132,13 +132,118 @@ impl ConcreteStateLifecycle {
         path: impl AsRef<Path>,
         chain_id: [u8; 32],
         genesis: ConcreteStateMutationBatch,
+        genesis_catalog: Vec<ConcreteStorageSlot>,
+    ) -> Result<Self, ConcreteReadError> {
+        Self::create_initial_exclusive(
+            path.as_ref(),
+            chain_id,
+            genesis,
+            genesis_catalog,
+            FinalChainBlockNumber::GENESIS,
+        )
+    }
+
+    /// Exclusively initializes a declared synthetic fixture at its first retained
+    /// coordinate. The incremental writer computes the root from complete logical
+    /// inputs; this API accepts no expected root, existing database or execution
+    /// marker. Generation zero identifies initialization, not executed history.
+    ///
+    /// This test seam cannot qualify imported or production state. The fixture
+    /// owner must authenticate its inventory and paired native/header/scheduler
+    /// facts, then execute each subsequent retained period through normal owners.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn create_synthetic_exclusive(
+        path: impl AsRef<Path>,
+        chain_id: [u8; 32],
+        period: FinalChainBlockNumber,
+        state: ConcreteStateMutationBatch,
+        catalog: Vec<ConcreteStorageSlot>,
+    ) -> Result<Self, ConcreteReadError> {
+        if period.is_genesis() {
+            return Err(corrupt(
+                "synthetic nonzero initialization requires a nonzero period",
+            ));
+        }
+        Self::create_initial_exclusive(path.as_ref(), chain_id, state, catalog, period)
+    }
+
+    /// Appends one explicitly declared synthetic prehistory state using the real
+    /// incremental writer. This fixture-only transition is permitted only while
+    /// provenance still identifies initialization and no execution is pending.
+    /// It accepts no root or execution marker. Callers pair every returned root
+    /// with validated native/account/header seed facts before normal execution.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn initialize_synthetic_successor(
+        self,
+        state: ConcreteStateMutationBatch,
+        mut catalog: Vec<ConcreteStorageSlot>,
+    ) -> Result<Self, ConcreteReadError> {
+        if self.pending.is_some()
+            || self.provenance.plan_hash != [0; 32]
+            || self.provenance.projection_hash != [0; 32]
+            || self.provenance.transactions_hash != [0; 32]
+            || self.provenance.rewards_hash != [0; 32]
+            || self.provenance.committed_state.period == 0
+        {
+            return Err(corrupt(
+                "synthetic prehistory requires an unexecuted nonzero initializer",
+            ));
+        }
+        catalog.extend(self.catalog.iter().copied());
+        catalog.sort_unstable();
+        catalog.dedup();
+        if state.storage.iter().any(|row| {
+            !catalog.contains(&ConcreteStorageSlot {
+                address: row.address,
+                key: row.key.0,
+            })
+        }) {
+            return Err(corrupt(
+                "synthetic prehistory mutation is absent from its catalog",
+            ));
+        }
+        let period = concrete_identity(self.provenance.committed_state)
+            .period
+            .checked_next()
+            .ok_or_else(|| corrupt("synthetic prehistory period overflow"))?;
+        let prepared = self.writer.prepare(period, state)?;
+        let committed = prepared.next_identity();
+        let mut provenance = self.provenance.clone();
+        provenance.generation = provenance
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| corrupt("synthetic initialization generation overflow"))?;
+        provenance.committed_state = lifecycle_state(committed);
+        provenance.catalog_hash = concrete_storage_slot_catalog_hash(catalog.iter().copied());
+        let provenance_rlp = encode_concrete_state_provenance(&provenance);
+        decode_concrete_state_provenance(&provenance_rlp).map_err(corrupt)?;
+        let catalog_rlp = encode_concrete_storage_catalog(catalog.iter().copied());
+        let mut batch = WriteBatch::default();
+        self.writer
+            .append_prepared_contents(&prepared, &mut batch, false)?;
+        batch.put(DESCRIPTOR_KEY, encode_descriptor(committed));
+        batch.put(PROVENANCE_KEY, provenance_rlp);
+        batch.put(CATALOG_KEY, catalog_rlp);
+        write_sync(&self.writer.db, batch)?;
+        let path = self.writer.path().to_path_buf();
+        let chain_id = provenance.identity.chain_id;
+        drop(self);
+        Self::open(path, chain_id, committed)
+    }
+
+    fn create_initial_exclusive(
+        path: &Path,
+        chain_id: [u8; 32],
+        genesis: ConcreteStateMutationBatch,
         mut genesis_catalog: Vec<ConcreteStorageSlot>,
+        period: FinalChainBlockNumber,
     ) -> Result<Self, ConcreteReadError> {
         if chain_id == [0; 32] {
             return Err(corrupt("fresh concrete chain identity is zero"));
         }
-        let path = path.as_ref();
         std::fs::create_dir(path).map_err(io)?;
+        #[cfg(test)]
+        crate::closeout_test_scratch::created(path);
         let mut options = Options::default();
         options.create_if_missing(true);
         options.create_missing_column_families(true);
@@ -147,7 +252,18 @@ impl ConcreteStateLifecycle {
             .map(|name| ColumnFamilyDescriptor::new(*name, Options::default()));
         let db = DB::open_cf_descriptors(&options, path, descriptors).map_err(io)?;
         let writer = ConcreteStateWriter::from_fresh_database(db, path.to_path_buf());
-        let prepared = writer.prepare_genesis(genesis)?;
+        let prepared = if period.is_genesis() {
+            writer.prepare_genesis(genesis)?
+        } else {
+            #[cfg(feature = "synthetic-fixtures")]
+            {
+                writer.prepare_synthetic_initial_state(period, genesis)?
+            }
+            #[cfg(not(feature = "synthetic-fixtures"))]
+            {
+                return Err(corrupt("nonzero initialization requires fixture support"));
+            }
+        };
         let database_id = random_database_id()?;
         let identity = FinalChainConcreteIdentity {
             policy_version: FINAL_CHAIN_CONCRETE_PROJECTION_VERSION,
@@ -717,20 +833,114 @@ mod tests {
 
     impl TestPath {
         fn new() -> Self {
-            Self(std::env::temp_dir().join(format!(
+            let path = std::env::temp_dir().join(format!(
                 "rustaxa-concrete-lifecycle-{}-{}",
                 std::process::id(),
                 NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
-            )))
+            ));
+            crate::closeout_test_scratch::register(&path);
+            Self(path)
         }
     }
 
     impl Drop for TestPath {
         fn drop(&mut self) {
-            if self.0.exists() {
+            if self.0.exists() && !crate::closeout_test_scratch::preserve(&self.0) {
                 std::fs::remove_dir_all(&self.0).unwrap();
             }
         }
+    }
+
+    #[cfg(feature = "synthetic-fixtures")]
+    #[test]
+    fn synthetic_nonzero_initialization_computes_root_and_preserves_strict_history() {
+        let path = TestPath::new();
+        let address = [0xaa; 20];
+        let key = ConcreteStorageKey([1; 32]);
+        let initial = ConcreteStateMutationBatch {
+            accounts: vec![ConcreteAccountMutation::Upsert {
+                address,
+                record: account(1, 100),
+            }],
+            storage: vec![ConcreteStorageMutation {
+                address,
+                key,
+                value: Some(vec![0x11]),
+            }],
+            code: Vec::new(),
+        };
+        let catalog = vec![ConcreteStorageSlot {
+            address,
+            key: key.0,
+        }];
+        let chain = [0x33; 32];
+        assert!(
+            ConcreteStateLifecycle::create_synthetic_exclusive(
+                &path.0,
+                chain,
+                0.into(),
+                initial.clone(),
+                catalog.clone()
+            )
+            .is_err()
+        );
+        assert!(!path.0.exists());
+        let owner = ConcreteStateLifecycle::create_synthetic_exclusive(
+            &path.0,
+            chain,
+            25_706_889.into(),
+            initial.clone(),
+            catalog.clone(),
+        )
+        .unwrap();
+        let observed = owner.observation().unwrap();
+        assert_eq!(observed.committed.period.as_u64(), 25_706_889);
+        assert_eq!(observed.generation, 0);
+        assert!(observed.pending_marker_rlp.is_empty());
+        assert_eq!(
+            owner.prior_reader().storage(address, key).unwrap(),
+            ConcreteRead::Present(vec![0x11])
+        );
+        drop(owner);
+        assert!(
+            ConcreteStateLifecycle::create_synthetic_exclusive(
+                &path.0,
+                chain,
+                25_706_889.into(),
+                initial.clone(),
+                catalog.clone()
+            )
+            .is_err()
+        );
+        let reopened = ConcreteStateLifecycle::open(&path.0, chain, observed.committed).unwrap();
+        assert_eq!(reopened.observation().unwrap(), observed);
+        drop(reopened);
+        let genesis_path = TestPath::new();
+        let genesis = ConcreteStateLifecycle::create_fresh_exclusive(
+            &genesis_path.0,
+            chain,
+            initial,
+            catalog,
+        )
+        .unwrap();
+        // Trie content is independent of the physical row version coordinate.
+        assert_eq!(
+            genesis.observation().unwrap().committed.state_root,
+            observed.committed.state_root
+        );
+        let old = super::super::ConcreteStateReader::open_historical_read_only(
+            &path.0,
+            observed.committed,
+            ConcreteStateIdentity {
+                period: 25_706_888.into(),
+                state_root: observed.committed.state_root,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            old.account(address),
+            Err(ConcreteReadError::HistoryUnavailable(_))
+        ));
     }
 
     #[test]

@@ -898,7 +898,6 @@ mod tests {
     use super::*;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -933,7 +932,10 @@ mod tests {
             .expect("clock should be after UNIX_EPOCH")
             .as_nanos();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("{prefix}_{now_ns}_{id}"))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{prefix}_{now_ns}_{id}")),
+            true,
+        )
     }
 
     fn default_cfg() -> SortitionTuningConfig {
@@ -991,7 +993,7 @@ mod tests {
 
         drop(clone);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -1016,7 +1018,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn pbft_block_rlp(period: u64, pivot: H256) -> Vec<u8> {
@@ -1285,7 +1287,7 @@ mod tests {
             assert_eq!(change.period, 0);
             assert_eq!(change.threshold_upper, 10_000);
         }
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(&temp_dir);
     }
 
     #[test]
@@ -1310,7 +1312,7 @@ mod tests {
                 .expect("storage lookup should succeed");
             assert_eq!(params.vrf.threshold_upper, 1_234);
         }
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(&temp_dir);
     }
 
     #[test]
@@ -1335,7 +1337,7 @@ mod tests {
                 5_000
             );
         }
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(&temp_dir);
     }
 
     #[test]
@@ -1364,6 +1366,6 @@ mod tests {
                 change.threshold_upper
             );
         }
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(&temp_dir);
     }
 }

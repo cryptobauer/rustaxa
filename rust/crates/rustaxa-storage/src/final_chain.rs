@@ -346,6 +346,40 @@ impl<D: DbReader> FinalChainRepository<D> {
     }
 }
 
+impl<D: DbReader> FinalChainRepository<D> {
+    /// Enumerates existing non-genesis DPoS sidecars through the committed head.
+    /// Missing periods stay missing. Numeric ordering is independent of the
+    /// little-endian physical key order; malformed matching keys are errors.
+    pub fn retained_dpos_snapshots_through(&self, head: u64) -> Result<Vec<(u64, Vec<u8>)>> {
+        self.retained_snapshots_through(Self::DPOS_SNAPSHOT_KEY_PREFIX, head)
+    }
+
+    /// Enumerates existing non-genesis account sidecars through the committed
+    /// head, with the same strict key decoding as the DPoS enumeration.
+    pub fn retained_account_snapshots_through(&self, head: u64) -> Result<Vec<(u64, Vec<u8>)>> {
+        self.retained_snapshots_through(Self::ACCOUNT_SNAPSHOT_KEY_PREFIX, head)
+    }
+
+    fn retained_snapshots_through(&self, prefix: &[u8], head: u64) -> Result<Vec<(u64, Vec<u8>)>> {
+        let mut rows = Vec::new();
+        for item in self.db.iter(Column::FinalChainMeta) {
+            let (key, value) = item?;
+            let Some(period) = key.strip_prefix(prefix) else {
+                continue;
+            };
+            let period: [u8; 8] = period
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid final-chain snapshot period key"))?;
+            let period = u64::from_le_bytes(period);
+            if period != 0 && period <= head {
+                rows.push((period, value.into_vec()));
+            }
+        }
+        rows.sort_unstable_by_key(|(period, _)| *period);
+        Ok(rows)
+    }
+}
+
 impl<D: DbReader + DbWriter> FinalChainRepository<D> {
     /// Atomically removes block lookup rows below `first_to_keep`.
     ///
@@ -1012,6 +1046,50 @@ mod tests {
 
         let result = repo.meta_value(1).unwrap();
         assert_eq!(result, Some(77u64.to_le_bytes().to_vec()));
+    }
+
+    #[test]
+    fn retained_snapshot_scan_preserves_sparse_numeric_history_and_rejects_corrupt_keys() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+        for period in [25_706_894, 1, 256, 255, 25_707_000, 0] {
+            db.put(
+                Column::FinalChainMeta,
+                &FinalChainRepository::<MockFinalChainStore>::dpos_snapshot_key(period),
+                &period.to_le_bytes(),
+            );
+            db.put(
+                Column::FinalChainMeta,
+                &FinalChainRepository::<MockFinalChainStore>::account_snapshot_key(period),
+                &period.to_le_bytes(),
+            );
+        }
+        db.put(Column::FinalChainMeta, b"unrelated", b"metadata");
+        let expected = vec![1, 255, 256, 25_706_894];
+        assert_eq!(
+            repo.retained_dpos_snapshots_through(25_706_894)
+                .unwrap()
+                .iter()
+                .map(|(period, _)| *period)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            repo.retained_account_snapshots_through(25_706_894)
+                .unwrap()
+                .iter()
+                .map(|(period, _)| *period)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let malformed = [
+            FinalChainRepository::<MockFinalChainStore>::DPOS_SNAPSHOT_KEY_PREFIX,
+            &[1, 2],
+        ]
+        .concat();
+        db.put(Column::FinalChainMeta, &malformed, b"corrupt");
+        assert!(repo.retained_dpos_snapshots_through(25_706_894).is_err());
+        assert!(repo.retained_account_snapshots_through(25_706_894).is_ok());
     }
 
     #[test]

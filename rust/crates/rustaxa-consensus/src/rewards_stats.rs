@@ -252,6 +252,53 @@ impl RewardsStatsRuntime {
         }
     }
 
+    /// Processes a period with an independently authenticated C++ distribution
+    /// vector. Before Aspen one, C++ iterates its unordered period map, so an
+    /// ascending Rust cache alone does not establish historical order parity.
+    ///
+    /// `period_order` must contain every scheduled period exactly once. At and
+    /// after Aspen one it must also match the runtime's ascending order. It must
+    /// be empty when no distribution is due. This method preserves each row's
+    /// bytes and occurrence and never normalizes reward outcomes. Invalid inputs
+    /// leave the runtime unchanged, including its current-period cache entry.
+    pub fn process_period_with_distribution_order(
+        &mut self,
+        fact: FinalizedRewardsPeriodFact,
+        period_order: &[u64],
+    ) -> Result<RewardsStatsProcessPlan> {
+        let period = fact.period;
+        let mut candidate = self.clone();
+        let mut plan = candidate.process_period_result(fact)?;
+        let actual = plan
+            .distribution_stats
+            .iter()
+            .map(|row| row.period)
+            .collect::<Vec<_>>();
+        let requested = period_order.iter().copied().collect::<BTreeSet<_>>();
+        if requested.len() != period_order.len()
+            || requested != actual.iter().copied().collect::<BTreeSet<_>>()
+        {
+            bail!("REWARDS_STATS_DISTRIBUTION_ORDER_MEMBERSHIP");
+        }
+        if period >= self.config.aspen_part_one_period && actual != period_order {
+            bail!("REWARDS_STATS_POST_ASPEN_DISTRIBUTION_ORDER");
+        }
+        let mut rows = plan
+            .distribution_stats
+            .into_iter()
+            .map(|row| (row.period, row))
+            .collect::<BTreeMap<_, _>>();
+        plan.distribution_stats = period_order
+            .iter()
+            .map(|period| {
+                rows.remove(period)
+                    .expect("validated complete distribution order")
+            })
+            .collect();
+        *self = candidate;
+        Ok(plan)
+    }
+
     /// Clears the in-memory rewards interval cache when the committed period is
     /// a distribution boundary.
     ///
@@ -715,6 +762,54 @@ mod tests {
 
     fn validator_stats_count(stats_rlp: &[u8]) -> usize {
         Rlp::new(stats_rlp).at(2).unwrap().item_count().unwrap()
+    }
+
+    #[test]
+    fn historical_distribution_order_preserves_rows_and_rejects_missing_or_duplicate_periods() {
+        let mut original = runtime(3);
+        original.process_period(fact(1));
+        original.process_period(fact(2));
+        let before = original.cached_stats_rlp();
+        for invalid in [vec![], vec![1, 2], vec![1, 2, 2], vec![1, 2, 4]] {
+            assert!(
+                original
+                    .process_period_with_distribution_order(fact(3), &invalid)
+                    .is_err()
+            );
+            assert_eq!(original.cached_stats_rlp(), before);
+        }
+        let mut ascending = original.clone();
+        let expected = ascending.process_period(fact(3)).distribution_stats;
+        let ordered = original
+            .process_period_with_distribution_order(fact(3), &[3, 1, 2])
+            .unwrap();
+        assert_eq!(
+            ordered.distribution_stats,
+            vec![
+                expected[2].clone(),
+                expected[0].clone(),
+                expected[1].clone()
+            ]
+        );
+        let mut post = runtime(3);
+        post.process_period(fact(22));
+        post.process_period(fact(23));
+        let before = post.cached_stats_rlp();
+        assert!(
+            post.process_period_with_distribution_order(fact(24), &[24, 22, 23])
+                .is_err()
+        );
+        assert_eq!(post.cached_stats_rlp(), before);
+        let plan = post
+            .process_period_with_distribution_order(fact(24), &[22, 23, 24])
+            .unwrap();
+        assert_eq!(
+            plan.distribution_stats
+                .iter()
+                .map(|row| row.period)
+                .collect::<Vec<_>>(),
+            vec![22, 23, 24]
+        );
     }
 
     #[test]

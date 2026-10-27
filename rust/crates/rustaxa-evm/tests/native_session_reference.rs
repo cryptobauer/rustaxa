@@ -705,7 +705,7 @@ fn run_case(row: &Value, success_logs: &[ExecutionLog]) {
     drop(port);
     drop(final_chain);
     drop(storage);
-    let _ = std::fs::remove_dir_all(path);
+    let _ = crate::closeout_test_scratch::dispose(path);
 }
 
 fn assert_native_invocation(row: &Value, port: &SessionPort<'_>) {
@@ -779,10 +779,13 @@ fn temp_db_path(test_name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "rustaxa-native-session-reference-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
+    crate::closeout_test_scratch::new_path(
+        std::env::temp_dir().join(format!(
+            "rustaxa-native-session-reference-{test_name}-{}-{nanos}",
+            std::process::id()
+        )),
+        true,
+    )
 }
 
 fn bytes(value: &Value) -> Vec<u8> {
@@ -841,3 +844,23 @@ mod redelegate_both_current_four_frames;
 
 #[path = "native_session_reference/redelegate_rewarded_partial_frames.rs"]
 mod redelegate_rewarded_partial_frames;
+
+#[path = "native_session_reference/retained_commission_frames.rs"]
+mod retained_commission_frames;
+
+#[allow(dead_code)]
+#[path = "support/mixed_native.rs"]
+mod mixed_native;
+
+#[path = "native_session_reference/commission_lifecycle.rs"]
+mod commission_lifecycle;
+
+#[path = "support/native_integration_bootstrap.rs"]
+mod native_integration;
+#[test]
+fn native_integration_signed_registration_frames() -> anyhow::Result<()> {
+    native_integration::run(false)
+}
+
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;

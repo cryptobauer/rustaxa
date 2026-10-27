@@ -15,8 +15,8 @@ use rustaxa_types::{
 use crate::{
     contracts::{
         CodeExecutionError, CodeExecutionStatus, ConsensusNativeDisposition,
-        ConsensusNativeObservation, NativeExecutionPort, NativeInvocation, NativeInvocationResult,
-        NativePortError, NativeResultValidationError, NativeStatus,
+        ConsensusNativeObservation, NativeExecutionPort, NativeInputMutation, NativeInvocation,
+        NativeInvocationResult, NativePortError, NativeResultValidationError, NativeStatus,
     },
     journal::{ExecutionJournal, JournalError},
 };
@@ -29,6 +29,8 @@ use crate::{
 /// generic exceptional-bytecode insertion must not silently burn it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeFrameOutcome {
+    /// Ordered mutations of the borrowed input slice, before caller return copy.
+    pub input_mutations: Vec<NativeInputMutation>,
     /// Success, exact native contract failure or native gas-admission failure.
     pub status: CodeExecutionStatus,
     /// Accepted native quote, including unfunded calls, retained for the existing
@@ -43,6 +45,8 @@ pub struct NativeFrameOutcome {
 /// Integrity/infrastructure failure requiring whole-period discard.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeAdapterError {
+    /// Borrowed input metadata did not match the completed invocation.
+    InputMutation { offset: usize },
     /// The staged port could not prepare or execute safely.
     Port(NativePortError),
     /// A quote/result did not satisfy the accepted invocation and gas contract.
@@ -104,12 +108,17 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
             disposition: ConsensusNativeDisposition::OwnFrameReverted,
         });
         return Ok(NativeFrameOutcome {
+            input_mutations: Vec::new(),
             status: CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
             required_gas: quote.required_gas,
             gas_left: invocation.supplied_gas,
             output: Vec::new(),
         });
     };
+    let input_mutations = port
+        .input_mutations(invocation.id)
+        .map_err(NativeAdapterError::Port)?;
+    validate_input_mutations(&invocation.input, &input_mutations)?;
     journal
         .apply_native_account_mutations(&outcome.account_mutations)
         .map_err(NativeAdapterError::Journal)?;
@@ -152,10 +161,81 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
         journal.push_log(log);
     }
     Ok(NativeFrameOutcome {
+        input_mutations,
         required_gas: quote.required_gas,
         status,
         // Result validation proves supplied >= quote and charged == quote.
         gas_left: (invocation.supplied_gas.as_u64() - quote.required_gas.as_u64()).into(),
         output: outcome.output,
     })
+}
+
+fn validate_input_mutations(
+    input: &[u8],
+    mutations: &[NativeInputMutation],
+) -> Result<(), NativeAdapterError> {
+    let mut working = input.to_vec();
+    for mutation in mutations {
+        let byte = working
+            .get_mut(mutation.offset)
+            .ok_or(NativeAdapterError::InputMutation {
+                offset: mutation.offset,
+            })?;
+        if *byte != mutation.expected {
+            return Err(NativeAdapterError::InputMutation {
+                offset: mutation.offset,
+            });
+        }
+        *byte = mutation.replacement;
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_integration_borrowed_input_validation_is_atomic_and_ordered() {
+        let canonical = vec![27, 8];
+        let original = canonical.clone();
+        let change = NativeInputMutation {
+            offset: 0,
+            expected: 27,
+            replacement: 0,
+        };
+        assert_eq!(validate_input_mutations(&canonical, &[change]), Ok(()));
+        assert_eq!(
+            validate_input_mutations(
+                &canonical,
+                &[
+                    change,
+                    NativeInputMutation {
+                        offset: 0,
+                        expected: 0,
+                        replacement: 229
+                    }
+                ]
+            ),
+            Ok(())
+        );
+        for invalid in [
+            NativeInputMutation {
+                offset: 2,
+                expected: 8,
+                replacement: 0,
+            },
+            NativeInputMutation {
+                offset: 1,
+                expected: 9,
+                replacement: 0,
+            },
+        ] {
+            assert_eq!(
+                validate_input_mutations(&canonical, &[change, invalid]),
+                Err(NativeAdapterError::InputMutation {
+                    offset: invalid.offset
+                })
+            );
+            assert_eq!(canonical, original);
+        }
+    }
 }

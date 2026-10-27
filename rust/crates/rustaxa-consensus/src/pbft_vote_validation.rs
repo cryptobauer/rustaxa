@@ -781,12 +781,14 @@ pub fn validate_canonical_pbft_vote(
             inspection,
             PbftVoteValidationStatus::InvalidVoteType,
             "PBFT_CANONICAL_VOTE_MALFORMED_RLP",
-            false,
-            false,
-            0,
-            false,
-            0,
-            [0; VRF_OUTPUT_BYTES],
+            VoteValidationEvidence {
+                vrf_valid: false,
+                has_sortition_threshold: false,
+                sortition_threshold: 0,
+                weight_calculated: false,
+                calculated_weight: 0,
+                vrf_output: [0; VRF_OUTPUT_BYTES],
+            },
         ));
     }
     if inspection.status == PbftCanonicalVoteInspectionStatus::InvalidSignature {
@@ -794,12 +796,14 @@ pub fn validate_canonical_pbft_vote(
             inspection,
             PbftVoteValidationStatus::InvalidSignature,
             "PBFT_VOTE_VALIDATION_INVALID_SIGNATURE",
-            false,
-            false,
-            0,
-            false,
-            0,
-            [0; VRF_OUTPUT_BYTES],
+            VoteValidationEvidence {
+                vrf_valid: false,
+                has_sortition_threshold: false,
+                sortition_threshold: 0,
+                weight_calculated: false,
+                calculated_weight: 0,
+                vrf_output: [0; VRF_OUTPUT_BYTES],
+            },
         ));
     }
 
@@ -828,12 +832,14 @@ pub fn validate_canonical_pbft_vote(
             inspection,
             plan,
             vote_validation_error_code(plan.status),
-            true,
-            true,
-            plan.sortition_threshold,
-            true,
-            facts.preverified_weight,
-            [0; VRF_OUTPUT_BYTES],
+            VoteValidationEvidence {
+                vrf_valid: true,
+                has_sortition_threshold: true,
+                sortition_threshold: plan.sortition_threshold,
+                weight_calculated: true,
+                calculated_weight: facts.preverified_weight,
+                vrf_output: [0; VRF_OUTPUT_BYTES],
+            },
         ));
     }
 
@@ -863,12 +869,14 @@ pub fn validate_canonical_pbft_vote(
             inspection,
             plan,
             vote_validation_error_code(plan.status),
-            false,
-            false,
-            0,
-            false,
-            0,
-            [0; VRF_OUTPUT_BYTES],
+            VoteValidationEvidence {
+                vrf_valid: false,
+                has_sortition_threshold: false,
+                sortition_threshold: 0,
+                weight_calculated: false,
+                calculated_weight: 0,
+                vrf_output: [0; VRF_OUTPUT_BYTES],
+            },
         ));
     }
 
@@ -887,12 +895,14 @@ pub fn validate_canonical_pbft_vote(
             inspection,
             plan,
             vote_validation_error_code(plan.status),
-            true,
-            false,
-            0,
-            false,
-            0,
-            [0; VRF_OUTPUT_BYTES],
+            VoteValidationEvidence {
+                vrf_valid: true,
+                has_sortition_threshold: false,
+                sortition_threshold: 0,
+                weight_calculated: false,
+                calculated_weight: 0,
+                vrf_output: [0; VRF_OUTPUT_BYTES],
+            },
         ));
     };
 
@@ -901,12 +911,14 @@ pub fn validate_canonical_pbft_vote(
             inspection,
             plan,
             vote_validation_error_code(plan.status),
-            true,
-            false,
-            0,
-            false,
-            0,
-            vrf_output,
+            VoteValidationEvidence {
+                vrf_valid: true,
+                has_sortition_threshold: false,
+                sortition_threshold: 0,
+                weight_calculated: false,
+                calculated_weight: 0,
+                vrf_output,
+            },
         ));
     }
     if !plan.has_sortition_threshold {
@@ -914,12 +926,14 @@ pub fn validate_canonical_pbft_vote(
             inspection,
             plan,
             "PBFT_VOTE_VALIDATION_MISSING_SORTITION_THRESHOLD",
-            true,
-            false,
-            0,
-            false,
-            0,
-            vrf_output,
+            VoteValidationEvidence {
+                vrf_valid: true,
+                has_sortition_threshold: false,
+                sortition_threshold: 0,
+                weight_calculated: false,
+                calculated_weight: 0,
+                vrf_output,
+            },
         ));
     }
 
@@ -938,12 +952,14 @@ pub fn validate_canonical_pbft_vote(
         inspection,
         plan,
         vote_validation_error_code(plan.status),
-        true,
-        true,
-        plan.sortition_threshold,
-        true,
-        weight,
-        vrf_output,
+        VoteValidationEvidence {
+            vrf_valid: true,
+            has_sortition_threshold: true,
+            sortition_threshold: plan.sortition_threshold,
+            weight_calculated: true,
+            calculated_weight: weight,
+            vrf_output,
+        },
     ))
 }
 
@@ -1212,17 +1228,30 @@ const fn pbft_vote_type_from_step(step: u64) -> PbftVoteType {
     }
 }
 
-fn validation_from_inspection(
-    inspection: PbftCanonicalVoteInspection,
-    status: PbftVoteValidationStatus,
-    error_code: &'static str,
+struct VoteValidationEvidence {
     vrf_valid: bool,
     has_sortition_threshold: bool,
     sortition_threshold: u64,
     weight_calculated: bool,
     calculated_weight: u64,
     vrf_output: [u8; VRF_OUTPUT_BYTES],
+}
+
+fn validation_from_inspection(
+    inspection: PbftCanonicalVoteInspection,
+    status: PbftVoteValidationStatus,
+    error_code: &'static str,
+    evidence: VoteValidationEvidence,
 ) -> PbftCanonicalVoteValidation {
+    let VoteValidationEvidence {
+        vrf_valid,
+        has_sortition_threshold,
+        sortition_threshold,
+        weight_calculated,
+        calculated_weight,
+        vrf_output,
+    } = evidence;
+
     let rejected = !matches!(
         status,
         PbftVoteValidationStatus::Pending | PbftVoteValidationStatus::Valid
@@ -1256,13 +1285,17 @@ fn validation_from_plan(
     inspection: PbftCanonicalVoteInspection,
     plan: PbftVoteValidationPlan,
     error_code: &'static str,
-    vrf_valid: bool,
-    has_sortition_threshold: bool,
-    sortition_threshold: u64,
-    weight_calculated: bool,
-    calculated_weight: u64,
-    vrf_output: [u8; VRF_OUTPUT_BYTES],
+    evidence: VoteValidationEvidence,
 ) -> PbftCanonicalVoteValidation {
+    let VoteValidationEvidence {
+        vrf_valid,
+        has_sortition_threshold,
+        sortition_threshold,
+        weight_calculated,
+        calculated_weight,
+        vrf_output,
+    } = evidence;
+
     PbftCanonicalVoteValidation {
         status: plan.status,
         error_code,

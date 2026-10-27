@@ -1,4 +1,19 @@
 find_package(GTest REQUIRED)
+if(RUSTAXA_ENABLE)
+    # Generate test-only retention shims without editing upstream C++ inputs.
+    set(RUSTAXA_TEST_OVERLAY_DIR "${CMAKE_BINARY_DIR}/rustaxa-closeout-tests")
+    file(GLOB_RECURSE RUSTAXA_TEST_OVERLAY_INPUTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_util/*")
+    list(FILTER RUSTAXA_TEST_OVERLAY_INPUTS EXCLUDE REGEX "(^|/)AI\\.md$")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/scripts/era_cpp_test_overlay.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/rpc_test.cpp" ${RUSTAXA_TEST_OVERLAY_INPUTS})
+    execute_process(COMMAND python3 "${CMAKE_SOURCE_DIR}/scripts/era_cpp_test_overlay.py"
+        --source "${CMAKE_SOURCE_DIR}" --output "${RUSTAXA_TEST_OVERLAY_DIR}"
+        RESULT_VARIABLE RUSTAXA_TEST_OVERLAY_STATUS)
+    if(NOT RUSTAXA_TEST_OVERLAY_STATUS EQUAL 0)
+        message(FATAL_ERROR "Rust closeout test overlay failed")
+    endif()
+endif()
 add_subdirectory(test_util)
 add_subdirectory(storage_conformance)
 if(RUSTAXA_ENABLE)
@@ -128,7 +143,11 @@ if(NOT RUSTAXA_ENABLE)
     add_test(gas_pricer_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/gas_pricer_test)
 endif()
 
-add_executable(rpc_test rpc_test.cpp)
+if(RUSTAXA_ENABLE)
+    add_executable(rpc_test "${RUSTAXA_TEST_OVERLAY_DIR}/rpc_test.cpp")
+else()
+    add_executable(rpc_test rpc_test.cpp)
+endif()
 target_link_libraries(rpc_test test_util)
 add_test(rpc_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rpc_test)
 

@@ -497,3 +497,6 @@ fn persisted_missing_code_or_slot_aborts_simulation_without_state_changes() {
         assert_eq!(db.rows(), before);
     }
 }
+
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;

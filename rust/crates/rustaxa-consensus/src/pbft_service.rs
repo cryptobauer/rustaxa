@@ -5083,7 +5083,7 @@ impl PbftService {
             };
 
         if voter_dpos_vote_count == 0 {
-            return Ok(generate_pbft_vote_with_weight(
+            return generate_pbft_vote_with_weight(
                 input,
                 PbftVoteWeightFacts {
                     voter_dpos_vote_count,
@@ -5091,7 +5091,7 @@ impl PbftService {
                     committee_size,
                     number_of_proposers,
                 },
-            )?);
+            );
         }
 
         let total_dpos_vote_count =
@@ -6474,7 +6474,6 @@ mod tests {
     };
     use rustaxa_vdf::vrf;
     use std::convert::TryFrom;
-    use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
@@ -6503,12 +6502,15 @@ mod tests {
     }
 
     fn temp_storage(name: &str) -> (PathBuf, Arc<Storage>) {
-        let path = std::env::temp_dir().join(format!(
-            "{name}_{}_{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&path);
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "{name}_{}_{}",
+                std::process::id(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            )),
+            true,
+        );
+        let _ = crate::closeout_test_scratch::clear_before_open(&path);
         let storage = Arc::new(Storage::new(Config::new(path.clone())).expect("storage opens"));
         (path, storage)
     }
@@ -6643,7 +6645,7 @@ mod tests {
 
         drop(final_chain);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -6670,7 +6672,7 @@ mod tests {
 
         drop(final_chain);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -6722,7 +6724,7 @@ mod tests {
 
         drop(final_chain);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -6871,7 +6873,7 @@ mod tests {
 
         drop(final_chain);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn signed_period_one_sync_packet() -> (Vec<u8>, Vec<u8>) {
@@ -7001,7 +7003,7 @@ mod tests {
 
         drop(final_chain);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -7029,7 +7031,7 @@ mod tests {
 
         drop(final_chain);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -7087,8 +7089,10 @@ mod tests {
             assert!(initial.validation.accepted);
 
             let incoming = generated_vote_at_period(previous_hash, 1);
-            let (packet_rlp, _) =
-                signed_period_two_sync_packet(&[incoming.vote_rlp.clone()], conflicting.vote_hash);
+            let (packet_rlp, _) = signed_period_two_sync_packet(
+                std::slice::from_ref(&incoming.vote_rlp),
+                conflicting.vote_hash,
+            );
             let peer = [0x6b; 64];
             let awaiting = service
                 .begin_pbft_sync_ingress(
@@ -7124,7 +7128,7 @@ mod tests {
 
             drop(final_chain);
             drop(service);
-            let _ = fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 
@@ -8948,7 +8952,7 @@ mod tests {
 
         drop(active);
         drop(inactive);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -8984,7 +8988,7 @@ mod tests {
 
         drop(restored);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9013,7 +9017,7 @@ mod tests {
         drop(final_chain);
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9057,7 +9061,7 @@ mod tests {
         drop(final_chain);
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9106,7 +9110,7 @@ mod tests {
         drop(final_chain);
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9260,7 +9264,7 @@ mod tests {
         drop(first);
         drop(second);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9277,7 +9281,7 @@ mod tests {
                 .to_string()
                 .contains("PILLAR_BLOCKS_INTERVAL_MUST_EXCEED_ONE")
         );
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9310,7 +9314,7 @@ mod tests {
         assert_eq!(decision.queued_effect_count, 2);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9394,7 +9398,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9451,7 +9455,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     struct ProcessSyncedLeavesStub;
@@ -9494,7 +9498,7 @@ mod tests {
         drop(final_chain);
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9544,7 +9548,7 @@ mod tests {
         assert!(outcome.reset_current_round_timer);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9584,7 +9588,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9640,7 +9644,7 @@ mod tests {
         assert_eq!(service.manager_snapshot(), snapshot);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9711,7 +9715,7 @@ mod tests {
         assert_eq!(storage.pbft().manager_field(1).unwrap(), Some(6));
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9772,7 +9776,7 @@ mod tests {
 
         drop(final_chain);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9818,7 +9822,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9869,7 +9873,7 @@ mod tests {
         assert!(!service.pbft_block_in_db(H256::repeat_byte(0x77)).unwrap());
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9916,7 +9920,7 @@ mod tests {
         drop(dag);
         drop(service);
         drop(storage);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -9978,7 +9982,7 @@ mod tests {
         drop(dag);
         drop(service);
         drop(storage);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -10016,7 +10020,7 @@ mod tests {
         drop(dag);
         drop(service);
         drop(storage);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -10076,7 +10080,7 @@ mod tests {
 
         drop(service);
         drop(storage);
-        fs::remove_dir_all(path).expect("temporary storage cleanup");
+        crate::closeout_test_scratch::dispose(path).expect("temporary storage cleanup");
     }
 
     #[test]
@@ -10107,7 +10111,7 @@ mod tests {
         drop(dag);
         drop(service);
         drop(storage);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -10148,7 +10152,7 @@ mod tests {
         drop(dag);
         drop(service);
         drop(storage);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -10188,7 +10192,7 @@ mod tests {
         drop(dag);
         drop(service);
         drop(storage);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -10250,7 +10254,7 @@ mod tests {
         assert!(!rejected.last_saved_period_lambda.found);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10265,7 +10269,7 @@ mod tests {
         assert!(service.is_ready());
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10285,7 +10289,7 @@ mod tests {
         assert!(!service.finalization_ready(&final_chain).unwrap());
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10314,7 +10318,7 @@ mod tests {
 
         drop(service);
         drop(final_chain);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10392,7 +10396,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10477,7 +10481,7 @@ mod tests {
         assert!(service.pbft_sync_queue_drain_next().is_some());
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10530,7 +10534,7 @@ mod tests {
         ));
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn service_finalization_intent(
@@ -10602,7 +10606,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10627,7 +10631,7 @@ mod tests {
         assert_eq!(plan.status, PbftFinalizationStatus::StalePeriod);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10653,7 +10657,7 @@ mod tests {
         assert_eq!(plan.status, PbftFinalizationStatus::PreviousHashMismatch);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10679,7 +10683,7 @@ mod tests {
         assert_eq!(error.to_string(), "PBFT_CHAIN_SERVICE_LOCK_POISONED");
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn composed_block_validation_fact(
@@ -10767,7 +10771,7 @@ mod tests {
         assert_eq!(plan.status, Status::Accepted);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
         Ok(())
     }
 
@@ -10822,7 +10826,7 @@ mod tests {
         drop(final_chain);
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
         Ok(())
     }
 
@@ -10978,7 +10982,7 @@ mod tests {
         drop(final_chain);
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
         Ok(())
     }
 
@@ -11007,7 +11011,7 @@ mod tests {
         drop(final_chain);
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
         Ok(())
     }
 
@@ -11092,7 +11096,7 @@ mod tests {
         drop(final_chain);
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
         Ok(())
     }
 
@@ -11130,7 +11134,7 @@ mod tests {
         assert_eq!(plan.status, Status::DagOrderMissing);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11171,7 +11175,7 @@ mod tests {
         assert_eq!(plan.status, Status::DagOrderInvalid);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
         Ok(())
     }
 
@@ -11249,7 +11253,7 @@ mod tests {
 
         drop(dag);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
         Ok(())
     }
 
@@ -11286,7 +11290,7 @@ mod tests {
         assert_eq!(plan.action, Action::Reject);
         assert_eq!(plan.status, Status::PbftChainInvalid);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11317,7 +11321,7 @@ mod tests {
         assert_eq!(plan.action, Action::Reject);
         assert_eq!(plan.status, Status::FinalChainHashInvalid);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11350,7 +11354,7 @@ mod tests {
         assert_eq!(plan.action, Action::Reject);
         assert_eq!(plan.status, Status::RewardVotesInvalid);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11390,7 +11394,7 @@ mod tests {
         assert_eq!(plan.action, Action::Reject);
         assert_eq!(plan.status, Status::PillarBlockInvalid);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11424,7 +11428,7 @@ mod tests {
         assert_eq!(plan.status, Status::FinalChainHashMissing);
         assert_eq!(plan.next_check, NextCheck::ValidateFinalChainHash);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11463,7 +11467,7 @@ mod tests {
             "unexpected pillar readiness error: {error:#}"
         );
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11519,7 +11523,7 @@ mod tests {
         assert_eq!(storage.pbft().proposed_rlp().unwrap().len(), 1);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11618,7 +11622,7 @@ mod tests {
         assert!(service.pbft_sync_admission_next().is_none());
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn sync_final_chain_admission_fact(
@@ -11657,7 +11661,7 @@ mod tests {
         assert_eq!(validation.expected_hash, H256::zero());
         assert!(validation.error_code.is_empty());
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11687,7 +11691,7 @@ mod tests {
             "PBFT_MANAGER_FINAL_CHAIN_HASH_MISMATCH"
         );
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11717,7 +11721,7 @@ mod tests {
         );
         assert!(step.plan.wait_for_finalization);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11769,7 +11773,7 @@ mod tests {
             vec![H256::repeat_byte(0xa3)]
         );
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11794,7 +11798,7 @@ mod tests {
         assert!(step.complete);
         assert!(!step.plan.accept_period_data);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11854,7 +11858,7 @@ mod tests {
             vec![H256::repeat_byte(0x72)]
         );
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11888,7 +11892,7 @@ mod tests {
         assert!(step.plan.warnings.is_empty());
         assert!(!step.plan.contains_finalized_transaction_warning);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11920,7 +11924,7 @@ mod tests {
         );
         assert!(!step.plan.contains_finalized_transaction_warning);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11961,7 +11965,7 @@ mod tests {
         );
         assert!(step.plan.contains_finalized_transaction_warning);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -11987,7 +11991,7 @@ mod tests {
         assert_eq!(step.error_code, "PBFT_SYNC_ADMISSION_SESSION_ABORTED");
         assert!(service.pbft_sync_admission_next().is_none());
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12018,7 +12022,7 @@ mod tests {
             crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash
         );
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12056,7 +12060,7 @@ mod tests {
             crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash
         );
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12119,7 +12123,7 @@ mod tests {
         assert_eq!(final_sync.at(1).unwrap().as_raw(), &[0xc1, 0x02]);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12145,7 +12149,7 @@ mod tests {
         assert_eq!(public_head, manager_head);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12193,7 +12197,7 @@ mod tests {
 
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12255,7 +12259,7 @@ mod tests {
 
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12293,7 +12297,7 @@ mod tests {
             data
         );
 
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12352,7 +12356,7 @@ mod tests {
             .unwrap_err();
         assert!(format!("{stale:#}").contains("PILLAR_BLOCK_CREATION_STALE_ANCHOR"));
 
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12394,7 +12398,7 @@ mod tests {
             .unwrap();
         assert_eq!(missing.status, 11);
         drop(zero_service);
-        let _ = fs::remove_dir_all(zero_path);
+        let _ = crate::closeout_test_scratch::dispose(zero_path);
 
         let (apply_path, apply_storage) =
             temp_storage("rustaxa_consensus_pbft_service_pillar_vote_apply");
@@ -12422,7 +12426,7 @@ mod tests {
         assert!(applied.validator_vote_count > 0);
         assert_eq!(applied.voter, apply_voter);
         drop(apply_service);
-        let _ = fs::remove_dir_all(apply_path);
+        let _ = crate::closeout_test_scratch::dispose(apply_path);
 
         let (future_path, future_storage) =
             temp_storage("rustaxa_consensus_pbft_service_pillar_bundle_future");
@@ -12448,7 +12452,7 @@ mod tests {
             .unwrap();
         assert!(future_plan.missing_threshold);
         drop(future_service);
-        let _ = fs::remove_dir_all(future_path);
+        let _ = crate::closeout_test_scratch::dispose(future_path);
 
         let (bundle_path, bundle_storage) =
             temp_storage("rustaxa_consensus_pbft_service_pillar_bundle_zero");
@@ -12473,7 +12477,7 @@ mod tests {
         assert_eq!(bundle_plan.status, 5);
         assert_eq!(bundle_plan.first_bad_vote_hash, bundle_hash);
         drop(bundle_service);
-        let _ = fs::remove_dir_all(bundle_path);
+        let _ = crate::closeout_test_scratch::dispose(bundle_path);
     }
 
     #[test]
@@ -12511,7 +12515,7 @@ mod tests {
         drop(service);
         drop(final_chain);
         drop(storage);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -12549,7 +12553,7 @@ mod tests {
             drop(service);
             drop(final_chain);
             drop(storage);
-            fs::remove_dir_all(path)?;
+            crate::closeout_test_scratch::dispose(path)?;
         }
         Ok(())
     }
@@ -12586,7 +12590,7 @@ mod tests {
 
         drop(service);
         drop(storage);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -12605,7 +12609,7 @@ mod tests {
                 .contains("PBFT_MANAGER_STARTUP_INVALID_LAMBDA_CONFIG")
         );
 
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12650,7 +12654,7 @@ mod tests {
         drop(manager);
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12685,7 +12689,7 @@ mod tests {
         assert_eq!(service.manager_snapshot().period, 2);
 
         drop(service);
-        fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -12732,7 +12736,7 @@ mod tests {
 
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12776,7 +12780,7 @@ mod tests {
 
         drop(service);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12843,7 +12847,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -12891,6 +12895,6 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 }

@@ -36,8 +36,9 @@ impl FinalChainNativeSession<'_> {
         }
         if let DposTransaction::ClaimCommissionRewards { owner, validator } = &transaction {
             // Preserve the contract's owner-check precedence. Once ownership is
-            // established, zero-stake commission claims enter fork-sensitive
-            // validator deletion/retention paths outside this first corpus.
+            // established, require the reviewed post-Phalaenopsis lifecycle.
+            // Pending authority comes from actual V1/V2 queue entries, including
+            // checked V2 iterable metadata. Zero pending entries admit deletion.
             if self
                 .dpos_state
                 .validator_metadata
@@ -49,7 +50,10 @@ impl FinalChainNativeSession<'_> {
                     .get(validator)
                     .is_some_and(StoredDposTokenAmount::is_zero)
             {
-                return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+                checked_undelegations_count(&self.dpos_state, *validator)?;
+                if self.pending_period < self.final_chain.dpos_phalaenopsis_period {
+                    return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+                }
             }
         }
 
@@ -188,7 +192,7 @@ impl FinalChainNativeSession<'_> {
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
         if !after.total_stakes.contains_key(&validator) {
-            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+            return self.serialize_deleted_validator(validator, before, trace);
         }
         put_rewards(before, after, validator, trace)
     }

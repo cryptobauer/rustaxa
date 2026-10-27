@@ -109,7 +109,7 @@ fn redelegate_new_destination_first_and_repeat_match_actual_go() {
         drop(session);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -174,7 +174,7 @@ fn redelegate_new_destination_authenticates_absence_and_append_membership() {
     drop(successful);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn redelegate_new_destination_reader_errors_abort_without_advancement() {
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn redelegate_new_destination_repeat_reauthenticates_without_duplicate_membershi
     drop(first);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn redelegate_new_destination_rejects_orphan_cursors_and_bad_reward_nodes() {
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -426,6 +426,6 @@ fn redelegate_new_destination_preserves_normal_failure_prefixes_and_scope() {
         drop(session);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }

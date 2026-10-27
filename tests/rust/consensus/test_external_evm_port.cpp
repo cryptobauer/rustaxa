@@ -1,3 +1,4 @@
+#include "../closeout_test_scratch.hpp"
 #include <gtest/gtest.h>
 
 #include <array>
@@ -71,11 +72,11 @@ std::array<uint8_t, 32> concreteChainIdentity(const FullNodeConfig& config) {
 class ExternalEvmPortTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    test_dir = std::filesystem::temp_directory_path() / "rustaxa_external_evm_port_test";
-    std::filesystem::remove_all(test_dir);
+    test_dir = rustaxa_closeout::path("rustaxa_external_evm_port_test");
+    if (!rustaxa_closeout::active()) std::filesystem::remove_all(test_dir);
   }
 
-  void TearDown() override { std::filesystem::remove_all(test_dir); }
+  void TearDown() override { if (!rustaxa_closeout::active()) std::filesystem::remove_all(test_dir); }
 
   void initialize() {
     config.genesis.state.dpos.yield_percentage = 0;

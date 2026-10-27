@@ -50,6 +50,24 @@ impl<'a> SimulationNativeExecutionPort<'a> {
 }
 
 impl NativeExecutionPort for SimulationNativeExecutionPort<'_> {
+    fn input_mutations(
+        &mut self,
+        id: rustaxa_evm::contracts::NativeInvocationId,
+    ) -> Result<Vec<rustaxa_evm::contracts::NativeInputMutation>, NativePortError> {
+        self.simulation
+            .input_mutations(consensus_id(id))
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|m| rustaxa_evm::contracts::NativeInputMutation {
+                        offset: m.offset,
+                        expected: m.expected,
+                        replacement: m.replacement,
+                    })
+                    .collect()
+            })
+            .map_err(native_port_error)
+    }
+
     fn prepare(
         &mut self,
         invocation: &NativeInvocation,
@@ -285,6 +303,24 @@ impl<'a> MixedNativeExecutionPort<'a> {
 }
 
 impl NativeExecutionPort for MixedNativeExecutionPort<'_> {
+    fn input_mutations(
+        &mut self,
+        id: rustaxa_evm::contracts::NativeInvocationId,
+    ) -> Result<Vec<rustaxa_evm::contracts::NativeInputMutation>, NativePortError> {
+        self.session
+            .input_mutations(consensus_id(id))
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|m| rustaxa_evm::contracts::NativeInputMutation {
+                        offset: m.offset,
+                        expected: m.expected,
+                        replacement: m.replacement,
+                    })
+                    .collect()
+            })
+            .map_err(native_port_error)
+    }
+
     fn prepare(
         &mut self,
         invocation: &NativeInvocation,
@@ -443,6 +479,17 @@ fn ordinary_mutations(
     mutations
         .iter()
         .map(|mutation| match mutation {
+            FinalChainNativeOrdinaryMutation::NonceReplace {
+                address,
+                expected_exists,
+                expected,
+                replacement,
+            } => NativeOrdinaryAccountMutation::Nonce {
+                address: *address,
+                expected_exists: *expected_exists,
+                expected: expected.clone(),
+                replacement: replacement.clone(),
+            },
             FinalChainNativeOrdinaryMutation::EnsureExists {
                 address,
                 expected_exists,

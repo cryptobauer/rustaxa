@@ -1,3 +1,4 @@
+#include "../closeout_test_scratch.hpp"
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -20,14 +21,14 @@ using namespace rustaxa;
 class RustFinalChainTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    test_dir = std::filesystem::temp_directory_path() / "rustaxa_consensus_final_chain_test";
-    if (std::filesystem::exists(test_dir)) {
+    test_dir = rustaxa_closeout::path("rustaxa_consensus_final_chain_test");
+    if (!rustaxa_closeout::active() && std::filesystem::exists(test_dir)) {
       std::filesystem::remove_all(test_dir);
     }
   }
 
   void TearDown() override {
-    if (std::filesystem::exists(test_dir)) {
+    if (!rustaxa_closeout::active() && std::filesystem::exists(test_dir)) {
       std::filesystem::remove_all(test_dir);
     }
   }

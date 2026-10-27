@@ -42,8 +42,19 @@ impl FinalChainNativeSession<'_> {
         transaction: DposTransaction,
         abi_data_len: usize,
         quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
     ) -> std::result::Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
         let diagnostic = query_failure_diagnostic(&transaction, abi_data_len);
+        if self.origin == NativeSessionOrigin::CurrentHistoricalTrace
+            && matches!(
+                transaction,
+                DposTransaction::IsValidatorEligible(_)
+                    | DposTransaction::GetTotalEligibleVotesCount
+                    | DposTransaction::GetValidatorEligibleVotesCount(_)
+            )
+        {
+            return self.invoke_trace_eligibility(transaction, diagnostic, quote, state);
+        }
         let outcome = match transaction {
             eligibility @ (DposTransaction::IsValidatorEligible(_)
             | DposTransaction::GetTotalEligibleVotesCount

@@ -3389,7 +3389,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_vote_progress_identity_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_vote_progress_identity_{nonce}")),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let mut runtime = PbftVoteAdmissionRuntime::new();
         let first = vote_rlp([2; 32], 3);
@@ -3453,7 +3456,7 @@ mod tests {
 
         drop(service);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3579,7 +3582,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_votes_restore_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_verified_votes_restore_{nonce}")),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let canonical = vote_rlp([8; 32], 3);
         let weighted = build_weighted_pbft_vote_payload(&canonical, 7).unwrap();
@@ -3647,7 +3653,7 @@ mod tests {
             vec![weighted]
         );
         drop(reopened);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3660,9 +3666,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_finalized_reward_cursor_crash_window_{nonce}"
-        ));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa_finalized_reward_cursor_crash_window_{nonce}"
+            )),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let finalized_block = write_finalized_pbft_block(&storage, 12);
         let finalized_vote = build_weighted_pbft_vote_payload(
@@ -3752,7 +3761,7 @@ mod tests {
 
         drop(restored);
         drop(reopened);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3761,8 +3770,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_legacy_reward_cursor_newer_cert_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_legacy_reward_cursor_newer_cert_{nonce}")),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let finalized_block = write_finalized_pbft_block(&storage, 12);
         write_legacy_pbft_head(&storage, 12, finalized_block);
@@ -3787,7 +3798,7 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3796,9 +3807,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_legacy_reward_cursor_embedded_period_{nonce}"
-        ));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa_legacy_reward_cursor_embedded_period_{nonce}"
+            )),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let block_hash = write_mapped_pbft_block(&storage, 11, 12);
         write_legacy_pbft_head(&storage, 12, block_hash);
@@ -3823,7 +3837,7 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3832,8 +3846,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_legacy_reward_cursor_missing_cert_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_legacy_reward_cursor_missing_cert_{nonce}")),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let finalized_block = write_finalized_pbft_block(&storage, 12);
         write_legacy_pbft_head(&storage, 12, finalized_block);
@@ -3844,7 +3860,7 @@ mod tests {
         assert!(error.contains("finalized PBFT head has no cert bundle"));
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3853,9 +3869,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_legacy_reward_cursor_malformed_cert_{nonce}"
-        ));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa_legacy_reward_cursor_malformed_cert_{nonce}"
+            )),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let finalized_block = write_finalized_pbft_block(&storage, 12);
         write_legacy_pbft_head(&storage, 12, finalized_block);
@@ -3874,7 +3893,7 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3883,7 +3902,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_votes_bad_restore_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_verified_votes_bad_restore_{nonce}")),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         storage
             .pbft()
@@ -3893,7 +3915,7 @@ mod tests {
         assert!(PbftVoteAdmissionRuntime::restore_from_storage(&storage).is_err());
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3902,9 +3924,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_verified_votes_hash_mismatch_restore_{nonce}"
-        ));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa_verified_votes_hash_mismatch_restore_{nonce}"
+            )),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let weighted = build_weighted_pbft_vote_payload(&vote_rlp([9; 32], 3), 7).unwrap();
         let wrong_hash = H256::from_low_u64_be(99);
@@ -3917,7 +3942,7 @@ mod tests {
         assert!(PbftVoteAdmissionRuntime::restore_from_storage(&storage).is_err());
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3926,9 +3951,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_extra_reward_hash_mismatch_restore_{nonce}"
-        ));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa_extra_reward_hash_mismatch_restore_{nonce}"
+            )),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let weighted = build_weighted_pbft_vote_payload(&vote_rlp([10; 32], 3), 7).unwrap();
         let wrong_hash = H256::from_low_u64_be(100);
@@ -3941,7 +3969,7 @@ mod tests {
         assert!(PbftVoteAdmissionRuntime::restore_from_storage(&storage).is_err());
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3950,7 +3978,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_reward_cursor_commit_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_reward_cursor_commit_{nonce}")),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let weighted = build_weighted_pbft_vote_payload(&vote_rlp([11; 32], 3), 7).unwrap();
         let bundle = build_weighted_pbft_vote_bundle(std::slice::from_ref(&weighted)).unwrap();
@@ -4179,7 +4210,7 @@ mod tests {
         assert_eq!(runtime.reward_vote_cursor(), Some(newer));
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -4268,7 +4299,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_reward_cursor_single_use_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_reward_cursor_single_use_{nonce}")),
+            true,
+        );
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let first_weighted =
             build_weighted_pbft_vote_payload(&vote_rlp_for([21; 32], 12, 1, 3, NODE_SECRET), 7)
@@ -4408,7 +4442,7 @@ mod tests {
         assert_eq!(runtime.reward_vote_cursor(), Some(second));
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -4417,7 +4451,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_reward_reset_service_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_reward_reset_service_{nonce}")),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let block_hash = [0x61; 32];
         let first = vote_rlp_from_secret(block_hash, 3, NODE_SECRET);
@@ -4633,7 +4670,7 @@ mod tests {
 
         drop(restarted);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -4642,8 +4679,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_restore_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_restore_{nonce}")),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let canonical = vote_rlp([20; 32], 3);
         let weighted = build_weighted_pbft_vote_payload(&canonical, 7).unwrap();
@@ -4686,7 +4725,7 @@ mod tests {
         );
 
         drop(clone);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -4695,8 +4734,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_lock_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_lock_{nonce}")),
+            true,
+        );
         let service = PbftVerifiedVotesService::from_runtime(
             Arc::new(Storage::new(Config::new(path.clone())).unwrap()),
             PbftVoteAdmissionRuntime::new(),
@@ -4739,7 +4780,7 @@ mod tests {
         assert_eq!(runtime.verified_votes().size(), 1);
         assert!(runtime.replay_contains(first_validation.vote_hash));
         drop(runtime);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -4748,8 +4789,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_malformed_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_malformed_{nonce}")),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         storage
             .pbft()
@@ -4761,7 +4804,7 @@ mod tests {
             .expect("malformed durable vote must prevent service publication");
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -4770,7 +4813,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_access_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_verified_access_{nonce}")),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let block_hash = [0x71; 32];
         let first = vote_rlp_from_secret(block_hash, 3, NODE_SECRET);
@@ -4914,7 +4960,7 @@ mod tests {
 
         drop(service);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -4926,7 +4972,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_persist_lock_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_verified_persist_lock_{nonce}")),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let service = PbftVerifiedVotesService::from_runtime(
             storage.clone(),
@@ -4956,7 +5005,7 @@ mod tests {
 
         drop(service);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -4965,7 +5014,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_own_votes_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("rustaxa_verified_own_votes_{nonce}")),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let service = PbftVerifiedVotesService::from_runtime(
             storage.clone(),
@@ -5009,6 +5061,6 @@ mod tests {
 
         drop(service);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 }

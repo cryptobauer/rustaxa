@@ -19,12 +19,12 @@ use crate::{
         ExecutionTransactionKind, NativeExecutionPort, NativePortError, TransactionExecutionResult,
     },
     driver::{
-        ExecutionDriverError, NativeAddressClassifier, PeriodConsensusSequence,
-        execute_top_level_call, execute_top_level_call_with_native,
+        ExecutionDriverError, NativeAddressClassifier, NativeExecution, PeriodConsensusSequence,
+        execute_admitted_call, execute_top_level_call, execute_top_level_call_with_native,
         execute_top_level_call_with_trace, execute_top_level_create,
         execute_top_level_create_with_native, execute_top_level_create_with_trace,
     },
-    envelope::EnvelopeRules,
+    envelope::{EnvelopeAdmission, EnvelopeRules, IntrinsicGasSchedule, admit},
     journal::ExecutionJournal,
     profile::TaraxaProfile,
     structured_trace::{
@@ -500,23 +500,33 @@ pub fn run_structured_trace_with_native<
     let mut observed = Vec::with_capacity(targets.len());
     for (index, transaction) in targets.iter().enumerate() {
         let mut collector = TraceCollector::default();
-        let direct_native = transaction.receiver.is_some_and(|address| {
-            all_native_addresses.is_native_address(block.period, address)
-                || consensus_native_addresses.is_native_address(block.period, address)
-        });
-        let execution = if direct_native {
-            execute_top_level_call_with_native(
+        let execution = if transaction.kind == ExecutionTransactionKind::Call {
+            match admit(
                 &mut journal,
-                block_hashes,
-                all_native_addresses,
-                consensus_native_addresses,
-                &mut port,
-                &mut sequence,
-                block,
                 transaction,
                 envelope_rules,
-                profile,
-            )
+                IntrinsicGasSchedule::PINNED,
+            ) {
+                Ok(EnvelopeAdmission::Rejected(result)) => {
+                    Ok(TransactionExecutionResult::ConsensusFailure(result))
+                }
+                Ok(EnvelopeAdmission::Admitted(admitted)) => execute_admitted_call(
+                    &mut journal,
+                    block_hashes,
+                    all_native_addresses,
+                    block,
+                    transaction,
+                    &admitted,
+                    profile,
+                    Some(NativeExecution::new(
+                        consensus_native_addresses,
+                        &mut port,
+                        &mut sequence,
+                    )),
+                    Some(&mut collector),
+                ),
+                Err(error) => Err(error.into()),
+            }
         } else {
             execute_traced(
                 &mut journal,

@@ -3,6 +3,10 @@ name = "rustaxa-storage"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Explicit synthetic fixture initialization; never enabled by production crates.
+synthetic-fixtures = []
+
 [dependencies]
 anyhow = "1.0.100"
 ethereum-types = { version = "0.16.0", features = ["rlp"] }

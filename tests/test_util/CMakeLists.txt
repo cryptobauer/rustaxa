@@ -16,7 +16,14 @@ if(NOT RUSTAXA_ENABLE)
 endif()
 
 # Configure file with version
+if(RUSTAXA_ENABLE)
+  set(SOURCES "${RUSTAXA_TEST_OVERLAY_DIR}/test_util/src/samples.cpp"
+              "${RUSTAXA_TEST_OVERLAY_DIR}/test_util/src/test_util.cpp")
+endif()
 add_library(test_util ${SOURCES} ${HEADERS})
+if(RUSTAXA_ENABLE)
+  target_include_directories(test_util BEFORE PUBLIC "${RUSTAXA_TEST_OVERLAY_DIR}/test_util/include")
+endif()
 target_include_directories(test_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(test_util PUBLIC app core_libs gtest::gtest)
 

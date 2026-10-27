@@ -226,6 +226,7 @@ impl PersistedApiFixture {
             !path.exists(),
             "unique fixture path must not replace existing data"
         );
+        let path = crate::closeout_test_scratch::new_path(path, true);
         let mut options = rocksdb::Options::default();
         options.create_if_missing(true);
         options.create_missing_column_families(true);
@@ -329,6 +330,6 @@ impl PersistedApiFixture {
 
 impl Drop for PersistedApiFixture {
     fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
+        crate::closeout_test_scratch::dispose(&self.0).unwrap();
     }
 }

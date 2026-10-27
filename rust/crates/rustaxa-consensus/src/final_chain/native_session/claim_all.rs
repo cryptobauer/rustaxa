@@ -46,6 +46,14 @@ pub(super) struct PreparedClaimAll {
     count_read: ConcreteRead<Vec<u8>>,
 }
 
+#[derive(Clone)]
+pub(super) struct PreparedCurrentClaimAll {
+    caller: [u8; 20],
+    validators: Vec<[u8; 20]>,
+    count_key: ConcreteStorageKey,
+    count_read: ConcreteRead<Vec<u8>>,
+}
+
 fn scope<T>() -> Result<T, FinalChainNativeSessionError> {
     Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
 }
@@ -61,6 +69,13 @@ impl FinalChainNativeSession<'_> {
         request: &FinalChainNativeRequest,
         state: &dyn FinalChainNativeStateRead,
     ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        if self.final_chain.cacti_active(self.pending_period)
+            && self.final_chain.aspen_part_two_active(self.pending_period)
+            && !self.origin.is_claim_all_trace()
+            && self.origin != NativeSessionOrigin::ClaimAllNonPayable
+        {
+            return self.prepare_current_claim_all(request, state);
+        }
         if self.origin == NativeSessionOrigin::ClaimAllNonPayable {
             return self.prepare_nonpayable_claim_all(request);
         }
@@ -141,6 +156,147 @@ impl FinalChainNativeSession<'_> {
             kind,
         });
         Ok(quote)
+    }
+
+    fn prepare_current_claim_all(
+        &mut self,
+        request: &FinalChainNativeRequest,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        let transaction = DposTransaction::ClaimAllRewards {
+            delegator: request.caller,
+            batch: None,
+        };
+        let admission = self
+            .final_chain
+            .native_invocation_admission(
+                &transaction,
+                request.period,
+                request.depth,
+                request.value.value(),
+                request.supplied_gas,
+                Some(&self.dpos_state),
+            )
+            .map_err(map_kernel_error)?;
+        let quote = FinalChainNativeGasQuote {
+            invocation: request.id,
+            required_gas: admission.required_gas,
+        };
+        let kind = if matches!(
+            admission.failure,
+            Some(super::super::native_admission::NativeAdmissionFailure::NonPayable)
+        ) {
+            PreparedKind::NonPayable
+        } else {
+            let validators = self
+                .dpos_state
+                .delegator_validators
+                .get(&request.caller)
+                .cloned()
+                .unwrap_or_default();
+            let count_key = iterable_count_key(&delegator_validators_prefix(request.caller));
+            let count_read = state.raw_storage(DPOS_CONTRACT_ADDRESS, &count_key)?;
+            let count = u32::try_from(validators.len())
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+            let matches = match &count_read {
+                ConcreteRead::Present(bytes) => {
+                    bytes == &count.to_le_bytes() || (count == 0 && bytes.is_empty())
+                }
+                ConcreteRead::Absent | ConcreteRead::Tombstone => count == 0,
+            };
+            if !matches {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "current claim-all count".into(),
+                ));
+            }
+            if admission.failure.is_some() {
+                PreparedKind::InsufficientGas
+            } else {
+                PreparedKind::CurrentClaimAll(PreparedCurrentClaimAll {
+                    caller: request.caller,
+                    validators,
+                    count_key,
+                    count_read,
+                })
+            }
+        };
+        self.prepared = Some(PreparedCall {
+            request: request.clone(),
+            quote,
+            kind,
+        });
+        Ok(quote)
+    }
+
+    pub(super) fn invoke_current_claim_all(
+        &mut self,
+        prepared: PreparedCurrentClaimAll,
+        quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        if state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.count_key)? != prepared.count_read {
+            return Err(FinalChainNativeSessionError::RawIntegrity(
+                "current claim-all bound count".into(),
+            ));
+        }
+        if !self.dpos_state.delegation_ledger_history_complete
+            || !self.dpos_state.redelegate_same_validator_history_complete
+        {
+            return scope();
+        }
+        validate_dpos_principal_ledger(&self.dpos_state).map_err(map_kernel_error)?;
+        let prefix = delegator_validators_prefix(prepared.caller);
+        let mut unique = BTreeSet::new();
+        for (index, validator) in prepared.validators.iter().enumerate() {
+            if !unique.insert(*validator)
+                || state.raw_storage(
+                    DPOS_CONTRACT_ADDRESS,
+                    &iterable_item_key(&prefix, index as u32 + 1),
+                )? != ConcreteRead::Present(validator.to_vec())
+            {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "current claim-all ordered item".into(),
+                ));
+            }
+        }
+        let mut next = self.dpos_state.clone();
+        let mut accounts = StagedDposAccountPort::from_state(state);
+        let mut trace = FinalChainNativeRawTrace::new(state);
+        let mut logs = Vec::new();
+        for validator in prepared.validators {
+            let before = next.clone();
+            let outcome = self
+                .final_chain
+                .apply_dpos_delegator_reward_claim_for_contract(
+                    &mut next,
+                    &mut accounts,
+                    validator,
+                    prepared.caller,
+                )
+                .map_err(map_kernel_error)?;
+            if outcome.status_code != 1 {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "claim-all semantic membership is incomplete".into(),
+                ));
+            }
+            self.serialize_delegator_claim(prepared.caller, validator, &before, &next, &mut trace)?;
+            logs.extend(outcome.logs.into_iter().map(|log| FinalChainCallLog {
+                address: log.address,
+                topics: log.topics,
+                data: log.data,
+            }));
+        }
+        self.dpos_state = next;
+        Ok(FinalChainNativeInvocationResult::Completed(
+            FinalChainNativeOutcome {
+                status: FinalChainNativeStatus::Success,
+                gas_used: quote.required_gas,
+                output: Vec::new(),
+                account_mutations: accounts.into_mutations(),
+                raw_mutations: trace.finish(),
+                logs,
+            },
+        ))
     }
 
     /// Admits the measured underfunded P1 and zero-payout P0 trace profiles.

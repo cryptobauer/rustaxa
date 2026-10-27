@@ -117,7 +117,9 @@ impl<R: ConcreteStateRead> ConsensusExecutionPort for PreflightAdapter<'_, R> {
 fn existing_final_chain_port_checks_pair_without_adopting_or_publishing() -> Result<()> {
     let path = std::env::temp_dir().join(format!("rustaxa-evm-s1-{}", std::process::id()));
     // Never remove an unknown pre-existing directory on test entry.
+    crate::closeout_test_scratch::register(&path);
     std::fs::create_dir(&path)?;
+    crate::closeout_test_scratch::created(&path);
     {
         let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
         // Fresh synthetic application identity, never applied to imported data.
@@ -201,6 +203,9 @@ fn existing_final_chain_port_checks_pair_without_adopting_or_publishing() -> Res
         );
         assert_eq!(chain.block_header(FinalChainBlockNumber::GENESIS)?, before);
     }
-    std::fs::remove_dir_all(path)?;
+    crate::closeout_test_scratch::dispose(path)?;
     Ok(())
 }
+
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;

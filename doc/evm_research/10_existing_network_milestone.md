@@ -50,6 +50,12 @@ do not leave four independent implementations for a final integration step.
 
 ## Assignments and ownership
 
+For the owner-approved orchestrated current-era and Cacti closeout only, the
+[task policy](n6_retained_commission_task_policy.md) replaces conflicting startup, allowance and
+development-bookkeeping steps below. Independent review and all parity,
+validation, source-data and runtime protections remain required. Fixed40
+contracts are unchanged. No exception applies without owner approval.
+
 Use the current [08 assignment table](08_implementation_plan.md#agent-and-model-assignments)
 and [September 30 setup validation](n6_model_setup_validation.md). Prospective
 implementation uses `gpt-6.1-sol` and contract/semantic review uses `gpt-6-astra`,

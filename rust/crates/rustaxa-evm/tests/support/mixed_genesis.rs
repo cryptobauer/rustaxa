@@ -54,30 +54,61 @@ pub(super) fn open_chain(path: &Path, fixture: &Value) -> Result<(Arc<Storage>, 
         .map(|row| Ok((fixed_hex(row, "address")?, decimal(row, "balance")?)))
         .collect::<Result<BTreeMap<[u8; 20], U256>>>()?;
     let mut effective_allocations = original_allocations.clone();
-    let delegations = array(initial_validator, "delegations")?
-        .iter()
-        .map(|row| Ok((fixed_hex(row, "delegator")?, decimal(row, "amount")?)))
-        .collect::<Result<Vec<([u8; 20], U256)>>>()?;
-    let total_stake = delegations
-        .iter()
-        .try_fold(U256::zero(), |total, (_, amount)| {
-            total
+    let validator_rows = match inputs.get("initial_validators") {
+        Some(rows) => rows
+            .as_array()
+            .context("initial validators")?
+            .iter()
+            .collect::<Vec<_>>(),
+        None => vec![initial_validator],
+    };
+    let mut validators = Vec::new();
+    let mut total_stake = U256::zero();
+    for row in validator_rows {
+        let delegations = array(row, "delegations")?
+            .iter()
+            .map(|entry| Ok((fixed_hex(entry, "delegator")?, decimal(entry, "amount")?)))
+            .collect::<Result<Vec<([u8; 20], U256)>>>()?;
+        let mut stake = U256::zero();
+        for (delegator, amount) in &delegations {
+            stake = stake
                 .checked_add(*amount)
-                .context("fixture genesis stake sum overflows uint256")
-        })?;
-    for (delegator, amount) in &delegations {
-        let balance = effective_allocations.get_mut(delegator).with_context(|| {
-            format!(
-                "delegator {} lacks configured allocation",
-                hex::encode(delegator)
-            )
-        })?;
-        *balance = balance.checked_sub(*amount).with_context(|| {
-            format!(
-                "delegator {} allocation is below its delegation",
-                hex::encode(delegator)
-            )
-        })?;
+                .context("validator stake overflow")?;
+            let balance = effective_allocations
+                .get_mut(delegator)
+                .context("unfunded genesis delegator")?;
+            *balance = balance
+                .checked_sub(*amount)
+                .context("genesis delegation exceeds allocation")?;
+        }
+        total_stake = total_stake
+            .checked_add(stake)
+            .context("total stake overflow")?;
+        validators.push(GenesisValidator {
+            address: fixed_hex(row, "address")?,
+            vrf_key: fixed_hex(row, "vrf_key")?,
+            total_stake: stake.to_big_endian().to_vec(),
+            delegations: delegations
+                .iter()
+                .map(|(a, n)| (*a, n.to_big_endian().to_vec()))
+                .collect(),
+            metadata: GenesisValidatorMetadata {
+                owner: fixed_hex(row, "owner")?,
+                commission: number(row, "commission")?
+                    .try_into()
+                    .context("commission fits u16")?,
+                description: row
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                endpoint: row
+                    .get("endpoint")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            },
+        });
     }
 
     let mut genesis_accounts = Vec::new();
@@ -125,23 +156,6 @@ pub(super) fn open_chain(path: &Path, fixture: &Value) -> Result<(Arc<Storage>, 
         });
     }
 
-    let validator = GenesisValidator {
-        address: fixed_hex(initial_validator, "address")?,
-        vrf_key: fixed_hex(initial_validator, "vrf_key")?,
-        total_stake: total_stake.to_big_endian().to_vec(),
-        delegations: delegations
-            .iter()
-            .map(|(delegator, amount)| (*delegator, amount.to_big_endian().to_vec()))
-            .collect(),
-        metadata: GenesisValidatorMetadata {
-            owner: fixed_hex(initial_validator, "owner")?,
-            commission: number(initial_validator, "commission")?
-                .try_into()
-                .context("commission fits u16")?,
-            description: String::new(),
-            endpoint: String::new(),
-        },
-    };
     let genesis_dpos = GenesisDposConfig {
         eligibility_balance_threshold: decimal(dpos, "eligibility_balance_threshold")?.into(),
         vote_eligibility_balance_step: decimal(dpos, "vote_eligibility_balance_step")?.into(),
@@ -204,34 +218,65 @@ pub(super) fn open_chain(path: &Path, fixture: &Value) -> Result<(Arc<Storage>, 
         cacti_delegation_locking_period: number(cacti, "delegation_locking_period")?,
         magnolia_jail_time: number(magnolia, "jail_time")?,
         cacti_jail_time: number(cacti, "jail_time")?,
-        rewards_distribution_frequency: vec![(FinalChainBlockNumber::GENESIS, 1)],
+        rewards_distribution_frequency: array(hardforks, "rewards_distribution_frequency")?
+            .iter()
+            .map(|row| {
+                Ok((
+                    number(row, "start_period")?.into(),
+                    number(row, "frequency")?
+                        .try_into()
+                        .context("frequency fits u32")?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?,
         ..Default::default()
     };
 
     let existing_path = path.exists();
+    let fixture_genesis_hash = if fixture["profile"] == "synthetic_mainnet_era" {
+        if fixture["oracle_lifecycle"] == "public_batched" {
+            keccak256(serde_json::to_vec(&(
+                configuration,
+                inputs,
+                "public_batched",
+            ))?)
+            .0
+        } else {
+            keccak256(serde_json::to_vec(&(configuration, inputs))?).0
+        }
+    } else {
+        FIXTURE_GENESIS_HASH
+    };
     let storage = Arc::new(Storage::new(Config::new(path.to_path_buf()))?);
     match storage.metadata().genesis_hash()? {
         Some(existing) => ensure!(
-            existing == FIXTURE_GENESIS_HASH,
+            existing == fixture_genesis_hash,
             "existing application metadata has a different genesis hash"
         ),
         None if !existing_path => storage
             .metadata()
-            .set_genesis_hash_if_empty(&FIXTURE_GENESIS_HASH)?,
+            .set_genesis_hash_if_empty(&fixture_genesis_hash)?,
         None => anyhow::bail!("existing application database has no genesis metadata"),
     }
-    let chain = FinalChain::new_with_genesis_state_root_and_ficus_activation(
+    let mut chain = FinalChain::new_with_genesis_state_root_and_ficus_activation(
         storage.clone(),
         number(configuration, "block_gas_limit")?.into(),
         0,
         H256(fixed_hex(genesis, "root")?),
         true,
         genesis_accounts,
-        vec![validator],
+        validators,
         genesis_dpos,
         rewards,
         number(object(hardforks, "ficus")?, "block")?.into(),
     )?;
+    if fixture["oracle_lifecycle"] == "public_batched" {
+        ensure!(
+            fixture["profile"] == "synthetic_mainnet_era",
+            "bounded batched fixture profile"
+        );
+        chain.configure_synthetic_batched_lifecycle();
+    }
     Ok((storage, chain))
 }
 
@@ -244,6 +289,16 @@ pub(super) fn fresh_concrete(
     path: &Path,
     chain: &FinalChain,
     fixture: &Value,
+) -> Result<ConcreteStateLifecycle> {
+    construct_concrete(path, chain, fixture, None)
+}
+
+/// Constructs genesis or an explicitly declared nonzero synthetic state.
+pub(super) fn construct_concrete(
+    path: &Path,
+    chain: &FinalChain,
+    fixture: &Value,
+    period: Option<FinalChainBlockNumber>,
 ) -> Result<ConcreteStateLifecycle> {
     let genesis = object(fixture, "genesis")?;
     let mut accounts = Vec::new();
@@ -301,6 +356,17 @@ pub(super) fn fresh_concrete(
     let mut storage = Vec::with_capacity(slots.len());
     let mut catalog = Vec::with_capacity(slots.len());
     for row in slots {
+        if matches!(
+            fixture.get("profile").and_then(Value::as_str),
+            Some("synthetic_current" | "synthetic_mainnet_era")
+        ) && row.get("present") == Some(&Value::Bool(false))
+        {
+            ensure!(
+                bytes(row, "value")?.is_empty(),
+                "absent genesis slot has bytes"
+            );
+            continue;
+        }
         ensure!(
             row.get("present") == Some(&Value::Bool(true)),
             "genesis catalog has non-present slot"
@@ -319,19 +385,30 @@ pub(super) fn fresh_concrete(
             key: key.0,
         });
     }
-    let concrete = ConcreteStateLifecycle::create_fresh_exclusive(
-        path,
-        chain.concrete_chain_identity()?,
-        ConcreteStateMutationBatch {
-            accounts,
-            storage,
-            code: code
-                .into_iter()
-                .map(|(code_hash, code)| ConcreteCodeInsertion { code_hash, code })
-                .collect(),
-        },
-        catalog,
-    )?;
+    let batch = ConcreteStateMutationBatch {
+        accounts,
+        storage,
+        code: code
+            .into_iter()
+            .map(|(code_hash, code)| ConcreteCodeInsertion { code_hash, code })
+            .collect(),
+    };
+    let concrete = if let Some(period) = period {
+        ConcreteStateLifecycle::create_synthetic_exclusive(
+            path,
+            chain.concrete_chain_identity()?,
+            period,
+            batch,
+            catalog,
+        )?
+    } else {
+        ConcreteStateLifecycle::create_fresh_exclusive(
+            path,
+            chain.concrete_chain_identity()?,
+            batch,
+            catalog,
+        )?
+    };
     let computed_root = concrete.observation()?.committed.state_root;
     let observed_root = fixed_hex(genesis, "root")?;
     ensure!(

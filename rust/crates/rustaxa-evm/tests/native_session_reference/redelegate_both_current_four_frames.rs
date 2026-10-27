@@ -183,34 +183,36 @@ fn chain(storage: Arc<Storage>, row: &Value) -> FinalChain {
         storage,
         1_000_000.into(),
         0,
-        Vec::new(),
-        [0x31, 0x32]
-            .into_iter()
-            .map(|last| GenesisValidator {
-                address: addr(last),
-                vrf_key: [match last {
-                    0x31 => 0x44,
-                    0x32 => 0x55,
-                    _ => 0x66,
-                }; 32],
-                total_stake: ethereum_types::U256::from(2000).to_big_endian().to_vec(),
-                delegations: vec![(
-                    addr(0xa1),
-                    ethereum_types::U256::from(1000).to_big_endian().to_vec(),
-                )]
+        rustaxa_consensus::FinalChainGenesisAllocation {
+            accounts: Vec::new(),
+            validators: [0x31, 0x32]
                 .into_iter()
-                .chain(Some((
-                    addr(0xaa),
-                    ethereum_types::U256::from(1000).to_big_endian().to_vec(),
-                )))
+                .map(|last| GenesisValidator {
+                    address: addr(last),
+                    vrf_key: [match last {
+                        0x31 => 0x44,
+                        0x32 => 0x55,
+                        _ => 0x66,
+                    }; 32],
+                    total_stake: ethereum_types::U256::from(2000).to_big_endian().to_vec(),
+                    delegations: vec![(
+                        addr(0xa1),
+                        ethereum_types::U256::from(1000).to_big_endian().to_vec(),
+                    )]
+                    .into_iter()
+                    .chain(Some((
+                        addr(0xaa),
+                        ethereum_types::U256::from(1000).to_big_endian().to_vec(),
+                    )))
+                    .collect(),
+                    metadata: GenesisValidatorMetadata {
+                        owner: addr(0xa1),
+                        commission: 100,
+                        ..Default::default()
+                    },
+                })
                 .collect(),
-                metadata: GenesisValidatorMetadata {
-                    owner: addr(0xa1),
-                    commission: 100,
-                    ..Default::default()
-                },
-            })
-            .collect(),
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: ethereum_types::U256::from(100).into(),
             vote_eligibility_balance_step: ethereum_types::U256::from(10).into(),
@@ -588,6 +590,6 @@ fn both_current_four_four_transaction_frames_match_actual_prefix_and_target() {
         }
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }

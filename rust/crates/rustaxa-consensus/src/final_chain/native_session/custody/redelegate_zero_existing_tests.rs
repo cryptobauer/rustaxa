@@ -108,7 +108,7 @@ fn redelegate_zero_existing_pairs_matches_actual_go() {
         assert_eq!(chain.dpos_snapshot(committed_period).unwrap(), committed);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -183,7 +183,7 @@ fn redelegate_zero_existing_pairs_authentication_failures_do_not_advance() {
     drop(discovery);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn redelegate_zero_existing_pairs_preserves_scope_and_aspen_precedence() {
         drop(session);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
     let (mut chain, storage, path) = kernel_chain(1_000_000);
     chain.rewards_config.aspen_part_two_period = 1.into();
@@ -251,5 +251,5 @@ fn redelegate_zero_existing_pairs_preserves_scope_and_aspen_precedence() {
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }

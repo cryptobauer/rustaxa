@@ -80,6 +80,47 @@ use triehash::ordered_trie_root;
 use self::native_session::account::{DposAccountPort, transfer_dpos_contract_balance};
 
 mod concrete_genesis;
+#[cfg(feature = "synthetic-fixtures")]
+mod synthetic_fixture;
+#[cfg(feature = "synthetic-fixtures")]
+pub use synthetic_fixture::FinalChainSyntheticDonor;
+
+/// Effective genesis allocation supplied to the Ficus-aware constructor.
+/// Account balances already exclude genesis delegation debits. This container
+/// preserves both vectors unchanged; the constructor retains validation and
+/// restart behavior and credits each validator's escrow exactly once.
+pub struct FinalChainGenesisAllocation {
+    /// Effective ordinary accounts in the caller's original order.
+    pub accounts: Vec<GenesisAccount>,
+    /// Validators and their original genesis delegations.
+    pub validators: Vec<GenesisValidator>,
+}
+
+/// Exact projection identity supplied by the existing execution owner.
+/// Every field remains independently checked by projection replay. Packing the
+/// fields does not infer, replace, or relax any root, period or epoch binding.
+pub(crate) struct FinalChainProjectionIdentity {
+    pub(crate) request_id: [u8; 32],
+    pub(crate) state_api_epoch: u64,
+    pub(crate) block_number: FinalChainBlockNumber,
+    pub(crate) block_author: [u8; 20],
+}
+
+struct ConcreteNativeReplayState<'a> {
+    dpos_snapshot: &'a mut DposSnapshot,
+    dpos_gas_snapshot: &'a mut DposSnapshot,
+    accounts: &'a mut HashMap<[u8; 20], Account>,
+    head_block_number: FinalChainBlockNumber,
+    dpos_eligibility_read_snapshot: &'a mut Option<(DposSnapshot, FinalChainBlockNumber)>,
+    slashing_validator_snapshot: Option<&'a DposSnapshot>,
+    slashing_read_snapshot: &'a mut Option<DposSnapshot>,
+}
+
+struct NativeRewardsExecutedInputs<'a> {
+    finalized_transactions: &'a [FinalizationTransaction],
+    finalized_dag_blocks: &'a [FinalizationDagBlock],
+    transaction_fees: &'a [([u8; 32], DposTokenAmount)],
+}
 
 #[cfg(test)]
 mod mixed_genesis_tests;
@@ -153,10 +194,13 @@ mod concrete_projection_tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "rustaxa-consensus-concrete-{test_name}-{}-{nanos}",
-            std::process::id()
-        ))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa-consensus-concrete-{test_name}-{}-{nanos}",
+                std::process::id()
+            )),
+            true,
+        )
     }
 
     fn genesis_account(address: [u8; 20], balance: U256) -> GenesisAccount {
@@ -169,7 +213,7 @@ mod concrete_projection_tests {
         }
     }
 
-    fn test_transaction(
+    struct TestTransactionInput {
         hash_byte: u8,
         sender: [u8; 20],
         receiver: Option<[u8; 20]>,
@@ -179,7 +223,21 @@ mod concrete_projection_tests {
         gas_limit: u64,
         data: Vec<u8>,
         rlp: Vec<u8>,
-    ) -> FinalizationTransaction {
+    }
+
+    fn test_transaction(input: TestTransactionInput) -> FinalizationTransaction {
+        let TestTransactionInput {
+            hash_byte,
+            sender,
+            receiver,
+            nonce,
+            value,
+            gas_price,
+            gas_limit,
+            data,
+            rlp,
+        } = input;
+
         FinalizationTransaction {
             hash: [hash_byte; 32],
             sender,
@@ -289,7 +347,7 @@ mod concrete_projection_tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -323,7 +381,7 @@ mod concrete_projection_tests {
         );
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -386,7 +444,7 @@ mod concrete_projection_tests {
         );
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -500,7 +558,7 @@ mod concrete_projection_tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -561,7 +619,7 @@ mod concrete_projection_tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -595,7 +653,7 @@ mod concrete_projection_tests {
         );
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -708,7 +766,7 @@ mod concrete_projection_tests {
         );
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -752,17 +810,17 @@ mod concrete_projection_tests {
         let execution = final_chain
             .execute_native_transactions_from_state(
                 1.into(),
-                &[test_transaction(
-                    0x53,
+                &[test_transaction(TestTransactionInput {
+                    hash_byte: 0x53,
                     sender,
-                    Some(recipient),
-                    1,
-                    U256::from(5_000u64),
-                    U256::one(),
-                    gas,
-                    vec![],
-                    vec![0xc0],
-                )],
+                    receiver: Some(recipient),
+                    nonce: 1,
+                    value: U256::from(5_000u64),
+                    gas_price: U256::one(),
+                    gas_limit: gas,
+                    data: vec![],
+                    rlp: vec![0xc0],
+                })],
                 accounts,
                 dpos,
                 false,
@@ -785,7 +843,7 @@ mod concrete_projection_tests {
         );
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -811,9 +869,8 @@ mod concrete_projection_tests {
         let mut eligibility_snapshot = None;
         let mut slashing_read_snapshot = None;
         final_chain
-            .replay_concrete_precompile_invocation(
-                1.into(),
-                &FinalChainConcreteInvocation {
+            .replay_concrete_precompile_invocation(1.into(),
+&FinalChainConcreteInvocation {
                     transaction_index: 0,
                     sequence: 0,
                     depth: 2,
@@ -828,14 +885,7 @@ mod concrete_projection_tests {
                     disposition: crate::concrete_state_projection::FINAL_CHAIN_CONCRETE_INVOCATION_PARENT_FRAME_REVERTED,
                     ..Default::default()
                 },
-                &mut dpos,
-                &mut gas_snapshot,
-                &mut accounts,
-                FinalChainBlockNumber::GENESIS,
-                &mut eligibility_snapshot,
-                None,
-                &mut slashing_read_snapshot,
-            )
+ConcreteNativeReplayState { dpos_snapshot: &mut dpos, dpos_gas_snapshot: &mut gas_snapshot, accounts: &mut accounts, head_block_number: FinalChainBlockNumber::GENESIS, dpos_eligibility_read_snapshot: &mut eligibility_snapshot, slashing_validator_snapshot: None, slashing_read_snapshot: &mut slashing_read_snapshot },)
             .unwrap();
         assert!(eligibility_snapshot.is_some());
 
@@ -859,20 +909,22 @@ mod concrete_projection_tests {
                     disposition: FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
                     ..Default::default()
                 },
-                &mut dpos,
-                &mut gas_snapshot,
-                &mut accounts,
-                FinalChainBlockNumber::GENESIS,
-                &mut no_eligibility_snapshot,
-                None,
-                &mut slashing_read_snapshot,
+                ConcreteNativeReplayState {
+                    dpos_snapshot: &mut dpos,
+                    dpos_gas_snapshot: &mut gas_snapshot,
+                    accounts: &mut accounts,
+                    head_block_number: FinalChainBlockNumber::GENESIS,
+                    dpos_eligibility_read_snapshot: &mut no_eligibility_snapshot,
+                    slashing_validator_snapshot: None,
+                    slashing_read_snapshot: &mut slashing_read_snapshot,
+                },
             )
             .unwrap();
         assert_eq!(dpos, dpos_before_oog);
         assert!(no_eligibility_snapshot.is_none());
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -1378,6 +1430,10 @@ pub struct FinalChain {
     /// and replaced only after a finalized block and its rewards-cache mutation
     /// have committed successfully.
     rewards_stats_runtime: Mutex<FinalChainRewardsStatsRuntimeState>,
+    #[cfg(feature = "synthetic-fixtures")]
+    synthetic_legacy_distribution_orders: Mutex<BTreeMap<u64, Vec<u64>>>,
+    #[cfg(feature = "synthetic-fixtures")]
+    synthetic_batched_lifecycle: bool,
     /// Process-local Go-compatible slashing cleanup scheduler. Its timer is
     /// never serialized and advances only with its exact durable publication.
     reward_scheduler_runtime: Mutex<FinalChainRewardSchedulerRuntime>,
@@ -1699,8 +1755,10 @@ impl FinalChain {
             storage,
             block_gas_limit,
             genesis_timestamp,
-            genesis_accounts,
-            genesis_validators,
+            crate::FinalChainGenesisAllocation {
+                accounts: genesis_accounts,
+                validators: genesis_validators,
+            },
             genesis_dpos_config,
             rewards_config,
             FinalChainBlockNumber::MAX,
@@ -1709,19 +1767,24 @@ impl FinalChain {
 
     /// Constructs FinalChain with explicit Ficus native-DPoS activation.
     ///
-    /// Inputs otherwise match [`Self::new_with_rewards_config`]. The inclusive
-    /// `ficus_activation_period` governs only the bounded native DPoS
+    /// Inputs match [`Self::new_with_rewards_config`], with accounts and
+    /// validators grouped in `allocation`. The inclusive `ficus_activation_period`
+    /// governs only the bounded native DPoS
     /// serialization predicate; `FinalChainBlockNumber::MAX` disables it.
     pub fn new_with_rewards_config_and_ficus_activation(
         storage: Arc<Storage>,
         block_gas_limit: FinalChainGas,
         genesis_timestamp: u64,
-        genesis_accounts: Vec<GenesisAccount>,
-        genesis_validators: Vec<GenesisValidator>,
+        allocation: FinalChainGenesisAllocation,
         genesis_dpos_config: GenesisDposConfig,
         rewards_config: FinalChainRewardsConfig,
         ficus_activation_period: FinalChainBlockNumber,
     ) -> Result<Self> {
+        let FinalChainGenesisAllocation {
+            accounts: genesis_accounts,
+            validators: genesis_validators,
+        } = allocation;
+
         Self::new_with_genesis_state_root_and_ficus_activation(
             storage,
             block_gas_limit,
@@ -2015,6 +2078,10 @@ impl FinalChain {
                 .dag_vdf_sortition_total_vote_count_until_period,
             rewards_config,
             ficus_activation_period,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_legacy_distribution_orders: Mutex::new(BTreeMap::new()),
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_batched_lifecycle: false,
             rewards_stats_runtime: Mutex::new(FinalChainRewardsStatsRuntimeState {
                 durable_head: rewards_stats_runtime_head,
                 generation: 0,
@@ -2060,6 +2127,20 @@ impl FinalChain {
                 },
             )])),
         };
+        if final_chain.rewards_config.aspen_part_two_period == FinalChainBlockNumber::GENESIS {
+            let mut snapshots = final_chain
+                .dpos_snapshots
+                .lock()
+                .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
+            let genesis = snapshots
+                .get_mut(&FinalChainBlockNumber::GENESIS)
+                .ok_or_else(|| anyhow::anyhow!("genesis DPoS snapshot is unavailable"))?;
+            let supply = final_chain.initial_aspen_part_two_supply(genesis)?;
+            genesis.aspen_supply_state = AspenSupplyState::Migrated {
+                total_supply: StoredDposTokenAmount::canonical_after_mutation(supply),
+                current_yield: final_chain.aspen_genesis_yield(supply),
+            };
+        }
         final_chain.ensure_genesis_header()?;
         final_chain.load_persisted_account_snapshots()?;
         final_chain.load_persisted_dpos_snapshots()?;
@@ -4407,9 +4488,11 @@ impl FinalChain {
         let rewards_stats_plan = self.native_rewards_stats_plan(
             &pbft,
             block_number,
-            &transactions,
-            &finalized_dag_blocks,
-            &transaction_fees,
+            NativeRewardsExecutedInputs {
+                finalized_transactions: &transactions,
+                finalized_dag_blocks: &finalized_dag_blocks,
+                transaction_fees: &transaction_fees,
+            },
             blocks_per_year,
             cert_votes,
         )?;
@@ -4902,6 +4985,27 @@ impl FinalChain {
         Ok(initial_supply)
     }
 
+    /// Go's genesis path persists only the low 64 bits of the uint256 curve.
+    /// Its zero divisor yields zero, and multiplication wraps at 256 bits.
+    /// No reward is minted at genesis; ordinary reward checks remain separate.
+    fn aspen_genesis_yield(&self, total_supply: DposTokenAmount) -> AspenYield {
+        let supply = total_supply.as_u256();
+        let numerator = self
+            .rewards_config
+            .aspen_max_supply
+            .as_u256()
+            .overflowing_sub(supply)
+            .0
+            .overflowing_mul(U256::from(ASPEN_YIELD_PRECISION))
+            .0;
+        let value = if supply.is_zero() {
+            U256::zero()
+        } else {
+            numerator / supply
+        };
+        AspenYield(value.low_u64())
+    }
+
     fn aspen_current_yield(
         &self,
         total_supply: DposTokenAmount,
@@ -5107,13 +5211,13 @@ impl FinalChain {
             .get(&validator)
             .map(StoredDposTokenAmount::amount)
             .unwrap_or_default();
-        let reward_per_stake = self.apply_reward_reference_graph(snapshot, |graph| {
+        let (reward_per_stake, created) = self.apply_reward_reference_graph(snapshot, |graph| {
             let current_block = graph.current_block()?;
             match graph.load_node(&NodeKey {
                 validator,
                 block: current_block,
             }) {
-                Ok(node) => return Ok(node.reward_per_stake),
+                Ok(node) => return Ok((node.reward_per_stake, false)),
                 Err(DposRewardGraphError::MissingNode { .. }) => {}
                 Err(error) => return Err(error),
             }
@@ -5146,15 +5250,17 @@ impl FinalChain {
                 true,
                 &[],
             )?;
-            Ok(reward_per_stake)
+            Ok((reward_per_stake, true))
         })?;
         snapshot.validator_reward_per_stake.insert(
             validator,
             StoredDposRewardIndex::canonical_after_mutation(reward_per_stake.clone()),
         );
-        snapshot
-            .delegator_rewards
-            .insert(validator, StoredDposTokenAmount::default());
+        if created {
+            snapshot
+                .delegator_rewards
+                .insert(validator, StoredDposTokenAmount::default());
+        }
         Ok(reward_per_stake)
     }
 
@@ -5296,7 +5402,7 @@ impl FinalChain {
         // block, so mutations earlier in this block must remain invisible.
         let mut dpos_eligibility_read_snapshot = None;
         let delayed_snapshot_block = FinalChainBlockNumber::new(
-            block_number
+            head_block_number
                 .as_u64()
                 .saturating_sub(self.dpos_delegation_delay),
         );
@@ -5305,11 +5411,17 @@ impl FinalChain {
                 .dpos_snapshots
                 .lock()
                 .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
-            if delayed_snapshot_block == block_number {
-                None
-            } else {
-                snapshots.get(&delayed_snapshot_block).cloned()
-            }
+            Some(
+                snapshots
+                    .get(&delayed_snapshot_block)
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "slashing delayed validator snapshot is unavailable at {}",
+                            delayed_snapshot_block.as_u64()
+                        )
+                    })?,
+            )
         };
 
         for transaction in transactions.iter() {
@@ -5784,10 +5896,7 @@ impl FinalChain {
     /// Without a context, the existing transaction-boundary replay is retained.
     pub(crate) fn external_evm_concrete_projection(
         &self,
-        request_id: [u8; 32],
-        state_api_epoch: u64,
-        block_number: FinalChainBlockNumber,
-        block_author: [u8; 20],
+        identity: FinalChainProjectionIdentity,
         transactions: &[FinalChainEvmTransactionInput],
         projection: &FinalChainConcreteStateProjection,
         rewards_plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
@@ -5796,6 +5905,13 @@ impl FinalChain {
             &crate::native_projection_context::FinalChainNativeProjectionContext,
         >,
     ) -> Result<(Vec<u8>, Vec<u8>, FinalChainPreparedRewardSchedulerSuccessor), anyhow::Error> {
+        let FinalChainProjectionIdentity {
+            request_id,
+            state_api_epoch,
+            block_number,
+            block_author,
+        } = identity;
+
         anyhow::ensure!(
             projection.transaction_effects.len() == transactions.len(),
             "FINAL_CHAIN_CONCRETE_TRANSACTION_EFFECT_COUNT_MISMATCH"
@@ -5832,21 +5948,24 @@ impl FinalChain {
         let mut dpos_gas_snapshot = dpos_snapshot.clone();
         let mut dpos_eligibility_read_snapshot = None;
         let mut slashing_read_snapshot = None;
-        let delayed_snapshot_block = FinalChainBlockNumber::new(
-            block_number
-                .as_u64()
-                .saturating_sub(self.dpos_delegation_delay),
-        );
+        let delayed_snapshot_block =
+            FinalChainBlockNumber::new(head.as_u64().saturating_sub(self.dpos_delegation_delay));
         let slashing_validator_snapshot = {
             let snapshots = self
                 .dpos_snapshots
                 .lock()
                 .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
-            if delayed_snapshot_block == block_number {
-                None
-            } else {
-                snapshots.get(&delayed_snapshot_block).cloned()
-            }
+            Some(
+                snapshots
+                    .get(&delayed_snapshot_block)
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "slashing delayed validator snapshot is unavailable at {}",
+                            delayed_snapshot_block.as_u64()
+                        )
+                    })?,
+            )
         };
 
         for (transaction, effect) in transactions.iter().zip(&projection.transaction_effects) {
@@ -5923,13 +6042,15 @@ impl FinalChain {
                         self.replay_concrete_precompile_invocation(
                             block_number,
                             invocation,
-                            &mut replay_dpos,
-                            &mut replay_gas_snapshot,
-                            &mut replay_accounts,
-                            head,
-                            &mut dpos_eligibility_read_snapshot,
-                            slashing_validator_snapshot.as_ref(),
-                            &mut slashing_read_snapshot,
+                            ConcreteNativeReplayState {
+                                dpos_snapshot: &mut replay_dpos,
+                                dpos_gas_snapshot: &mut replay_gas_snapshot,
+                                accounts: &mut replay_accounts,
+                                head_block_number: head,
+                                dpos_eligibility_read_snapshot: &mut dpos_eligibility_read_snapshot,
+                                slashing_validator_snapshot: slashing_validator_snapshot.as_ref(),
+                                slashing_read_snapshot: &mut slashing_read_snapshot,
+                            },
                         )?;
                     }
                 }
@@ -5950,13 +6071,15 @@ impl FinalChain {
                         self.replay_concrete_precompile_invocation(
                             block_number,
                             invocation,
-                            &mut dpos_snapshot,
-                            &mut dpos_gas_snapshot,
-                            &mut accounts,
-                            head,
-                            &mut dpos_eligibility_read_snapshot,
-                            slashing_validator_snapshot.as_ref(),
-                            &mut slashing_read_snapshot,
+                            ConcreteNativeReplayState {
+                                dpos_snapshot: &mut dpos_snapshot,
+                                dpos_gas_snapshot: &mut dpos_gas_snapshot,
+                                accounts: &mut accounts,
+                                head_block_number: head,
+                                dpos_eligibility_read_snapshot: &mut dpos_eligibility_read_snapshot,
+                                slashing_validator_snapshot: slashing_validator_snapshot.as_ref(),
+                                slashing_read_snapshot: &mut slashing_read_snapshot,
+                            },
                         )?;
                     }
                 }
@@ -6002,9 +6125,12 @@ impl FinalChain {
             _ => anyhow::bail!("FINAL_CHAIN_NATIVE_CONTEXT_SESSION_MISMATCH"),
         };
         let dpos_before_rewards = dpos_snapshot.clone();
+        let cleanup_visible =
+            self.reward_cleanup_visible_snapshot(head, &dpos_snapshot, Some(scheduler_basis))?;
+        let cleanup_source = cleanup_visible.as_ref().unwrap_or(&dpos_snapshot);
         let cleanup_plan = scheduler_basis.plan_cleanup(
-            &dpos_snapshot.slashing_jailed_validators,
-            &dpos_snapshot.slashing_jail_blocks,
+            &cleanup_source.slashing_jailed_validators,
+            &cleanup_source.slashing_jail_blocks,
         );
         if cleanup_plan.ran {
             dpos_snapshot.slashing_jailed_validators = cleanup_plan.retained_validators.clone();
@@ -6065,14 +6191,18 @@ impl FinalChain {
         &self,
         block_number: FinalChainBlockNumber,
         invocation: &FinalChainConcreteInvocation,
-        dpos_snapshot: &mut DposSnapshot,
-        dpos_gas_snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
-        head_block_number: FinalChainBlockNumber,
-        dpos_eligibility_read_snapshot: &mut Option<(DposSnapshot, FinalChainBlockNumber)>,
-        slashing_validator_snapshot: Option<&DposSnapshot>,
-        slashing_read_snapshot: &mut Option<DposSnapshot>,
+        state: ConcreteNativeReplayState<'_>,
     ) -> Result<(), anyhow::Error> {
+        let ConcreteNativeReplayState {
+            dpos_snapshot,
+            dpos_gas_snapshot,
+            accounts,
+            head_block_number,
+            dpos_eligibility_read_snapshot,
+            slashing_validator_snapshot,
+            slashing_read_snapshot,
+        } = state;
+
         anyhow::ensure!(
             invocation.call_type <= 3,
             "FINAL_CHAIN_CONCRETE_INVOCATION_CALL_TYPE_INVALID"
@@ -6574,11 +6704,11 @@ impl FinalChain {
 
         let mut loaded = Vec::new();
         let mut previous_supply_state: Option<AspenSupplyState> = None;
-        for block_number in 1..=last_block.as_u64() {
-            let Some(raw_snapshot) = self.storage.final_chain().dpos_snapshot_raw(block_number)?
-            else {
-                continue;
-            };
+        for (block_number, raw_snapshot) in self
+            .storage
+            .final_chain()
+            .retained_dpos_snapshots_through(last_block.as_u64())?
+        {
             let block_number = FinalChainBlockNumber::new(block_number);
             let snapshot = decode_dpos_snapshot_rlp(&raw_snapshot)?;
             self.validate_aspen_supply_state(block_number, &snapshot.aspen_supply_state)?;
@@ -6640,14 +6770,11 @@ impl FinalChain {
             .account_snapshots
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?;
-        for block_number in 1..=last_block.as_u64() {
-            let Some(raw_snapshot) = self
-                .storage
-                .final_chain()
-                .account_snapshot_raw(block_number)?
-            else {
-                continue;
-            };
+        for (block_number, raw_snapshot) in self
+            .storage
+            .final_chain()
+            .retained_account_snapshots_through(last_block.as_u64())?
+        {
             let snapshot = decode_account_snapshot_rlp(&raw_snapshot).map_err(|err| {
                 anyhow::anyhow!(
                     "failed to decode persisted account snapshot for block {block_number}: {err}"
@@ -8072,14 +8199,33 @@ impl FinalChain {
         block_number: FinalChainBlockNumber,
         proof: VerifiedLegacyDoubleVotingProof,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
+        let reader = validator_snapshot.unwrap_or(snapshot);
+        let offender: [u8; 20] = proof.offender.0;
+        let member = reader
+            .total_stakes
+            .get(&offender)
+            .map(StoredDposTokenAmount::as_u256)
+            .unwrap_or_default()
+            >= self.dpos_eligibility_balance_threshold.as_u256();
+        let jailed = reader.slashing_jailed_validators.clone();
+        self.apply_slashing_with_read_facts(snapshot, block_number, proof, member, &jailed)
+    }
+
+    /// Applies a verified proof using separately authenticated reader facts.
+    /// Trace readers can retain cached bytes while current writes advance.
+    fn apply_slashing_with_read_facts(
+        &self,
+        snapshot: &mut DposSnapshot,
+        block_number: FinalChainBlockNumber,
+        proof: VerifiedLegacyDoubleVotingProof,
+        validator_exists: bool,
+        delayed_jailed: &[[u8; 20]],
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
         if !self.magnolia_active(block_number) {
             return Ok(DposApplyOutcome::contract_failure());
         }
         let mut offender = [0u8; 20];
         offender.copy_from_slice(proof.offender.as_bytes());
-        let validator_exists = validator_snapshot
-            .map(|snapshot| snapshot.total_stakes.contains_key(&offender))
-            .unwrap_or_else(|| snapshot.total_stakes.contains_key(&offender));
         if !validator_exists {
             return Ok(DposApplyOutcome::contract_failure());
         }
@@ -8098,8 +8244,10 @@ impl FinalChain {
             .checked_add(jail_time)
             .ok_or_else(|| anyhow::anyhow!("slashing jail block overflow"))?;
         snapshot.slashing_jail_blocks.insert(offender, jail_block);
-        if !snapshot.slashing_jailed_validators.contains(&offender) {
-            snapshot.slashing_jailed_validators.push(offender);
+        if !delayed_jailed.contains(&offender) {
+            let mut jailed = delayed_jailed.to_vec();
+            jailed.push(offender);
+            snapshot.slashing_jailed_validators = jailed;
         }
         Ok(DposApplyOutcome::success(vec![slashing_jailed_log(
             offender,
@@ -8148,10 +8296,10 @@ impl FinalChain {
 
         let validator = registration.validator;
         let owner = registration.metadata.owner;
-        let stake = u256_from_big_endian(&registration.stake);
+        let full_stake = BigUint::from_bytes_be(&registration.stake);
 
         let minimum_stake = self.dpos_minimum_deposit.as_u256();
-        if stake < minimum_stake {
+        if full_stake < BigUint::from_bytes_be(&minimum_stake.to_big_endian()) {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::InsufficientDelegation,
             ));
@@ -8188,11 +8336,12 @@ impl FinalChain {
         }
 
         let maximum_stake = self.dpos_validator_maximum_stake.as_u256();
-        if stake > maximum_stake {
+        if full_stake > BigUint::from_bytes_be(&maximum_stake.to_big_endian()) {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::ValidatorsMaxStakeExceeded,
             ));
         }
+        let stake = u256_from_big_endian(&registration.stake);
 
         let vote_count = dpos_vote_count(
             &registration.stake,
@@ -9791,14 +9940,46 @@ impl FinalChain {
         // Restore the actual earlier-loaded current source copy only within the
         // evidence-bound distinct-validator profile. Other kernel paths retain
         // their behavior, including the separate pre-fix same-validator repair.
-        let bounded_source_loaded_node = self.bounded_redelegate_loaded_source_node(
-            snapshot,
-            delegator,
-            from,
-            to,
-            amount,
-            block_number,
-        )?;
+        let current_source_loaded_node = if self.aspen_part_two_active(block_number)
+            && self.cacti_active(block_number)
+            && from != to
+            && snapshot.delegation_ledger_history_complete
+            && snapshot.redelegate_same_validator_history_complete
+            && (snapshot
+                .total_stakes
+                .get(&from)
+                .is_some_and(|stake| stake.as_u256() > amount)
+                || snapshot
+                    .commission_rewards
+                    .get(&from)
+                    .is_some_and(|pool| !pool.is_zero()))
+            && snapshot
+                .delegations
+                .get(&from)
+                .and_then(|rows| rows.get(&delegator))
+                .is_some_and(|principal| principal.as_u256() == amount)
+            && snapshot
+                .reward_reference_graph
+                .read_cursor(&from, &delegator)?
+                == snapshot.reward_reference_graph.current_block()?
+        {
+            let key = NodeKey {
+                validator: from,
+                block: snapshot.reward_reference_graph.current_block()?,
+            };
+            Some((key, snapshot.reward_reference_graph.load_node(&key)?))
+        } else {
+            None
+        };
+        let bounded_source_loaded_node = current_source_loaded_node.or(self
+            .bounded_redelegate_loaded_source_node(
+                snapshot,
+                delegator,
+                from,
+                to,
+                amount,
+                block_number,
+            )?);
         let bounded_source_loaded_node = bounded_source_loaded_node.or(self
             .bounded_existing_destination_loaded_source_node(
                 snapshot,
@@ -9891,6 +10072,28 @@ impl FinalChain {
             same_validator.then(|| snapshot.vote_counts.get(&from).copied().unwrap_or_default());
         let initial_same_delegator_rewards =
             same_validator.then(|| snapshot.delegator_rewards.get(&from).cloned());
+        let omitted_source_checkpoint = !same_validator
+            && self.aspen_part_two_active(block_number)
+            && self.cacti_active(block_number)
+            && snapshot
+                .total_stakes
+                .get(&from)
+                .is_some_and(|stake| stake.as_u256() == amount)
+            && snapshot
+                .commission_rewards
+                .get(&from)
+                .is_none_or(StoredDposTokenAmount::is_zero)
+            && dpos_undelegations_count_for_validator(snapshot, from) != 0;
+        let source_current_was_absent = omitted_source_checkpoint
+            && matches!(
+                snapshot.reward_reference_graph.load_node(&NodeKey {
+                    validator: from,
+                    block: snapshot.reward_reference_graph.current_block()?,
+                }),
+                Err(DposRewardGraphError::MissingNode { .. })
+            );
+        let source_pool_before = snapshot.delegator_rewards.get(&from).cloned();
+        let source_index_before = snapshot.validator_reward_per_stake.get(&from).cloned();
         let mut logs = self
             .remove_dpos_delegation_stake(
                 snapshot,
@@ -9904,7 +10107,30 @@ impl FinalChain {
             .filter(is_dpos_rewards_claimed_log)
             .collect::<Vec<_>>();
         let total_vote_count_after_source = snapshot.total_vote_count;
-        if let Some((key, loaded)) = repeated_full_loaded_node.or(bounded_source_loaded_node) {
+        if omitted_source_checkpoint && source_current_was_absent {
+            snapshot
+                .reward_reference_graph
+                .detach_validator_head(&from)?;
+            match source_pool_before {
+                Some(pool) => {
+                    snapshot.delegator_rewards.insert(from, pool);
+                }
+                None => {
+                    snapshot.delegator_rewards.remove(&from);
+                }
+            }
+            match source_index_before {
+                Some(index) => {
+                    snapshot.validator_reward_per_stake.insert(from, index);
+                }
+                None => {
+                    snapshot.validator_reward_per_stake.remove(&from);
+                }
+            }
+        }
+        if !omitted_source_checkpoint
+            && let Some((key, loaded)) = repeated_full_loaded_node.or(bounded_source_loaded_node)
+        {
             snapshot
                 .reward_reference_graph
                 .restore_loaded_node(key, loaded)?;
@@ -10130,6 +10356,18 @@ impl FinalChain {
             }
             (state.generation, state.runtime.clone())
         };
+        #[cfg(feature = "synthetic-fixtures")]
+        let plan = if let Some(order) = self
+            .synthetic_legacy_distribution_orders
+            .lock()
+            .map_err(|_| anyhow::anyhow!("synthetic distribution order lock"))?
+            .get(&fact.period)
+        {
+            runtime.process_period_with_distribution_order(fact, order)?
+        } else {
+            runtime.process_period(fact)
+        };
+        #[cfg(not(feature = "synthetic-fixtures"))]
         let plan = runtime.process_period(fact);
         if plan.status != RewardsStatsStatus::Applied {
             anyhow::bail!("{}", plan.error_code);
@@ -10245,12 +10483,16 @@ impl FinalChain {
         &self,
         pbft: &rustaxa_types::PbftBlockMetadata,
         block_number: FinalChainBlockNumber,
-        finalized_transactions: &[FinalizationTransaction],
-        finalized_dag_blocks: &[FinalizationDagBlock],
-        transaction_fees: &[([u8; 32], DposTokenAmount)],
+        executed: NativeRewardsExecutedInputs<'_>,
         blocks_per_year: u32,
         cert_votes: Vec<RewardCertVoteFact>,
     ) -> Result<NativeRewardsStatsPlan, anyhow::Error> {
+        let NativeRewardsExecutedInputs {
+            finalized_transactions,
+            finalized_dag_blocks,
+            transaction_fees,
+        } = executed;
+
         let expected_prior_head = self.last_block_number_typed()?;
         let expected_next_head = expected_prior_head
             .checked_next()
@@ -15497,7 +15739,7 @@ mod tests {
             "FINAL_CHAIN_DPOS_ASPEN_CONFIGURED_SUPPLY_EXCEEDS_MAXIMUM"
         );
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn temp_db_path(test_name: &str) -> PathBuf {
@@ -15505,10 +15747,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "rustaxa-consensus-final-chain-{test_name}-{}-{nanos}",
-            std::process::id()
-        ))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa-consensus-final-chain-{test_name}-{}-{nanos}",
+                std::process::id()
+            )),
+            true,
+        )
     }
 
     #[test]
@@ -15674,7 +15919,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -15717,7 +15962,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -15820,7 +16065,7 @@ mod tests {
 
             drop(final_chain);
             drop(storage);
-            let _ = std::fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 
@@ -15968,7 +16213,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -16035,28 +16280,28 @@ mod tests {
             let signing_key = SigningKey::from_slice(&[72u8; 32]).unwrap();
             let first_pbft = signed_pbft_block(&signing_key, first_period, 271);
             let second_pbft = signed_pbft_block(&signing_key, second_period, 272);
-            let failed_undelegate_tx = test_transaction(
-                0xF1,
-                case.sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                undelegate_v2_input(case.input_validator, U256::from(case.amount)),
-                vec![0xc1, 0xF1],
-            );
-            let transfer_tx = test_transaction(
-                0xF2,
-                case.sender,
-                Some(case.recipient),
-                1u64.into(),
-                U256::from(5_000u64),
-                U256::one(),
-                intrinsic_gas(&vec![], false).unwrap(),
-                vec![],
-                vec![0xc1, 0xF2],
-            );
+            let failed_undelegate_tx = test_transaction(TestTransactionInput {
+                hash_byte: 0xF1,
+                sender: case.sender,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: undelegate_v2_input(case.input_validator, U256::from(case.amount)),
+                rlp: vec![0xc1, 0xF1],
+            });
+            let transfer_tx = test_transaction(TestTransactionInput {
+                hash_byte: 0xF2,
+                sender: case.sender,
+                receiver: Some(case.recipient),
+                nonce: 1u64,
+                value: U256::from(5_000u64),
+                gas_price: U256::one(),
+                gas_limit: intrinsic_gas(&[], false).unwrap(),
+                data: vec![],
+                rlp: vec![0xc1, 0xF2],
+            });
 
             let config = GenesisDposConfig {
                 eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
@@ -16154,7 +16399,7 @@ mod tests {
 
             drop(final_chain);
             drop(storage);
-            let _ = std::fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 
@@ -16192,7 +16437,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -16226,7 +16471,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -16613,7 +16858,7 @@ mod tests {
         storage.commit_write_batch_with_sync(batch, false).unwrap();
     }
 
-    fn test_transaction(
+    struct TestTransactionInput {
         hash_byte: u8,
         sender: [u8; 20],
         receiver: Option<[u8; 20]>,
@@ -16623,7 +16868,21 @@ mod tests {
         gas_limit: u64,
         data: Vec<u8>,
         rlp: Vec<u8>,
-    ) -> FinalizationTransaction {
+    }
+
+    fn test_transaction(input: TestTransactionInput) -> FinalizationTransaction {
+        let TestTransactionInput {
+            hash_byte,
+            sender,
+            receiver,
+            nonce,
+            value,
+            gas_price,
+            gas_limit,
+            data,
+            rlp,
+        } = input;
+
         FinalizationTransaction {
             hash: [hash_byte; 32],
             sender,
@@ -17423,7 +17682,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn encode_legacy_dpos_snapshot_without_undelegations(snapshot: &DposSnapshot) -> Vec<u8> {
@@ -17615,8 +17874,7 @@ mod tests {
         slashing_double_voting_proofs.insert([0x99u8; 32]);
         let mut delegator_validators = BTreeMap::new();
         delegator_validators.insert(delegator, vec![validator]);
-        let mut validator_order = Vec::new();
-        validator_order.push(validator);
+        let validator_order = vec![validator];
         let mut vrf_keys = BTreeMap::new();
         vrf_keys.insert(validator, [0x55u8; 32]);
         let mut reward_reference_graph = DposRewardGraph::new();
@@ -17694,7 +17952,7 @@ mod tests {
         let v2_custody = vec![0x67];
         let delegator_reward = Vec::new();
         let minted_tokens = vec![0x89];
-        let _total_supply = vec![0x9a];
+        let _total_supply = [0x9a];
         let mut reward_per_stake = vec![0; 40];
         reward_per_stake[39] = 0xab;
         let mut reward_cursor = vec![0; 41];
@@ -18187,7 +18445,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -18313,39 +18571,39 @@ mod tests {
             .execute_native_transactions(
                 1u64.into(),
                 &[
-                    test_transaction(
-                        0x8f,
-                        delegator,
-                        Some(DPOS_CONTRACT_ADDRESS),
-                        0,
-                        U256::zero(),
-                        U256::zero(),
-                        200_000,
-                        undelegate_input(expected_order[0], U256::from(10_000u64)),
-                        vec![0xc1, 0x8f],
-                    ),
-                    test_transaction(
-                        0x90,
-                        delegator,
-                        Some(DPOS_CONTRACT_ADDRESS),
-                        1,
-                        U256::zero(),
-                        U256::zero(),
-                        200_000,
-                        undelegate_input(expected_order[1], U256::from(10_000u64)),
-                        vec![0xc1, 0x90],
-                    ),
-                    test_transaction(
-                        0x91,
-                        delegator,
-                        Some(DPOS_CONTRACT_ADDRESS),
-                        2,
-                        U256::zero(),
-                        U256::zero(),
-                        200_000,
-                        native_read_input.clone(),
-                        vec![0xc1, 0x91],
-                    ),
+                    test_transaction(TestTransactionInput {
+                        hash_byte: 0x8f,
+                        sender: delegator,
+                        receiver: Some(DPOS_CONTRACT_ADDRESS),
+                        nonce: 0,
+                        value: U256::zero(),
+                        gas_price: U256::zero(),
+                        gas_limit: 200_000,
+                        data: undelegate_input(expected_order[0], U256::from(10_000u64)),
+                        rlp: vec![0xc1, 0x8f],
+                    }),
+                    test_transaction(TestTransactionInput {
+                        hash_byte: 0x90,
+                        sender: delegator,
+                        receiver: Some(DPOS_CONTRACT_ADDRESS),
+                        nonce: 1,
+                        value: U256::zero(),
+                        gas_price: U256::zero(),
+                        gas_limit: 200_000,
+                        data: undelegate_input(expected_order[1], U256::from(10_000u64)),
+                        rlp: vec![0xc1, 0x90],
+                    }),
+                    test_transaction(TestTransactionInput {
+                        hash_byte: 0x91,
+                        sender: delegator,
+                        receiver: Some(DPOS_CONTRACT_ADDRESS),
+                        nonce: 2,
+                        value: U256::zero(),
+                        gas_price: U256::zero(),
+                        gas_limit: 200_000,
+                        data: native_read_input.clone(),
+                        rlp: vec![0xc1, 0x91],
+                    }),
                 ],
             )
             .unwrap();
@@ -18462,7 +18720,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -18516,7 +18774,7 @@ mod tests {
                 .contains("graph history is incomplete")
         );
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -18609,7 +18867,7 @@ mod tests {
         assert_eq!(accounts, accounts_before);
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(storage_path);
+        let _ = crate::closeout_test_scratch::dispose(storage_path);
     }
 
     #[test]
@@ -18660,7 +18918,7 @@ mod tests {
         assert_eq!(accounts, accounts_before);
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -18742,7 +19000,7 @@ mod tests {
         assert_eq!(accounts, accounts_before_repeat);
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -18839,7 +19097,7 @@ mod tests {
         );
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -18919,7 +19177,7 @@ mod tests {
         }
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -19017,7 +19275,7 @@ mod tests {
         );
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -19166,7 +19424,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -19222,7 +19480,7 @@ mod tests {
         assert_eq!(snapshot.undelegation_v2_last_ids.get(&validator), Some(&1));
         assert_eq!(
             u256_from_big_endian(
-                &snapshot
+                snapshot
                     .undelegations_v2
                     .get(&validator)
                     .expect("missing V2 undelegation queue")
@@ -19268,7 +19526,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -19368,7 +19626,7 @@ mod tests {
         );
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn undelegate_input(validator: [u8; 20], amount: U256) -> Vec<u8> {
@@ -19502,7 +19760,7 @@ mod tests {
             "failed planning must leave the live runtime unchanged"
         );
         drop(final_chain);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 
     #[test]
@@ -19549,9 +19807,11 @@ mod tests {
         let native_error = match final_chain.native_rewards_stats_plan(
             &metadata,
             FinalChainBlockNumber::MAX,
-            &[],
-            &[],
-            &[],
+            NativeRewardsExecutedInputs {
+                finalized_transactions: &[],
+                finalized_dag_blocks: &[],
+                transaction_fees: &[],
+            },
             1,
             Vec::new(),
         ) {
@@ -19564,7 +19824,7 @@ mod tests {
             generation
         );
         drop(final_chain);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 
     #[test]
@@ -19646,7 +19906,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 
     fn new_final_chain_with_dpos(
@@ -19707,7 +19967,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -19750,7 +20010,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -19781,7 +20041,7 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -19842,8 +20102,8 @@ mod tests {
         drop(zero_storage);
         drop(boundary);
         drop(boundary_storage);
-        let _ = std::fs::remove_dir_all(zero_path);
-        let _ = std::fs::remove_dir_all(boundary_path);
+        let _ = crate::closeout_test_scratch::dispose(zero_path);
+        let _ = crate::closeout_test_scratch::dispose(boundary_path);
     }
 
     #[test]
@@ -19854,8 +20114,10 @@ mod tests {
             boundary_storage.clone(),
             0.into(),
             0,
-            vec![],
-            vec![],
+            crate::FinalChainGenesisAllocation {
+                accounts: vec![],
+                validators: vec![],
+            },
             GenesisDposConfig::default(),
             FinalChainRewardsConfig::default(),
             7.into(),
@@ -19882,8 +20144,8 @@ mod tests {
         drop(boundary_storage);
         drop(disabled);
         drop(disabled_storage);
-        let _ = std::fs::remove_dir_all(boundary_path);
-        let _ = std::fs::remove_dir_all(disabled_path);
+        let _ = crate::closeout_test_scratch::dispose(boundary_path);
+        let _ = crate::closeout_test_scratch::dispose(disabled_path);
     }
 
     #[test]
@@ -19934,7 +20196,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -19966,7 +20228,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -20036,7 +20298,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -20119,7 +20381,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -20200,7 +20462,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -20445,8 +20707,8 @@ mod tests {
         drop(storage);
         drop(cornus_chain);
         drop(cornus_storage);
-        let _ = std::fs::remove_dir_all(path);
-        let _ = std::fs::remove_dir_all(cornus_path);
+        let _ = crate::closeout_test_scratch::dispose(path);
+        let _ = crate::closeout_test_scratch::dispose(cornus_path);
     }
 
     #[test]
@@ -20562,7 +20824,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -20622,7 +20884,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -20719,7 +20981,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -20758,72 +21020,72 @@ mod tests {
         let intrinsic_oog_limit = intrinsic_gas(&valid_validator_input, false).unwrap() - 1;
         let action_oog_limit = intrinsic_gas(&valid_validator_input, false).unwrap();
         let pre_transactions = vec![
-            test_transaction(
-                0x31,
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x31,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::from(7u64),
-                U256::one(),
-                100_000,
-                valid_total_input.clone(),
-                vec![0xc1, 0x31],
-            ),
-            test_transaction(
-                0x32,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::from(7u64),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: valid_total_input.clone(),
+                rlp: vec![0xc1, 0x31],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x32,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::from(9u64),
-                U256::one(),
-                100_000,
-                malformed_input,
-                vec![0xc1, 0x32],
-            ),
-            test_transaction(
-                0x33,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::from(9u64),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: malformed_input,
+                rlp: vec![0xc1, 0x32],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x33,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::from(11u64),
-                U256::one(),
-                100_000,
-                unknown_input,
-                vec![0xc1, 0x33],
-            ),
-            test_transaction(
-                0x34,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::from(11u64),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: unknown_input,
+                rlp: vec![0xc1, 0x33],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x34,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                intrinsic_oog_limit,
-                valid_validator_input.clone(),
-                vec![0xc1, 0x34],
-            ),
-            test_transaction(
-                0x35,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: intrinsic_oog_limit,
+                data: valid_validator_input.clone(),
+                rlp: vec![0xc1, 0x34],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x35,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                action_oog_limit,
-                valid_validator_input.clone(),
-                vec![0xc1, 0x35],
-            ),
-            test_transaction(
-                0x36,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: action_oog_limit,
+                data: valid_validator_input.clone(),
+                rlp: vec![0xc1, 0x35],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x36,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                valid_validator_input.clone(),
-                vec![0xc1, 0x36],
-            ),
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: valid_validator_input.clone(),
+                rlp: vec![0xc1, 0x36],
+            }),
         ];
         let pre_execution = pre_chain
             .execute_native_transactions(1.into(), &pre_transactions)
@@ -20895,39 +21157,39 @@ mod tests {
         .unwrap();
         let cornus_intrinsic = intrinsic_gas(&valid_validator_input, false).unwrap();
         let cornus_transactions = vec![
-            test_transaction(
-                0x41,
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x41,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::from(13u64),
-                U256::one(),
-                100_000,
-                valid_validator_input.clone(),
-                vec![0xc1, 0x41],
-            ),
-            test_transaction(
-                0x42,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::from(13u64),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: valid_validator_input.clone(),
+                rlp: vec![0xc1, 0x41],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x42,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::zero(),
-                U256::one(),
-                cornus_intrinsic - 1,
-                valid_validator_input.clone(),
-                vec![0xc1, 0x42],
-            ),
-            test_transaction(
-                0x43,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: cornus_intrinsic - 1,
+                data: valid_validator_input.clone(),
+                rlp: vec![0xc1, 0x42],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x43,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                valid_validator_input,
-                vec![0xc1, 0x43],
-            ),
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: valid_validator_input,
+                rlp: vec![0xc1, 0x43],
+            }),
         ];
         let cornus_execution = cornus_chain
             .execute_native_transactions(1.into(), &cornus_transactions)
@@ -20967,8 +21229,8 @@ mod tests {
         drop(pre_storage);
         drop(cornus_chain);
         drop(cornus_storage);
-        let _ = std::fs::remove_dir_all(pre_path);
-        let _ = std::fs::remove_dir_all(cornus_path);
+        let _ = crate::closeout_test_scratch::dispose(pre_path);
+        let _ = crate::closeout_test_scratch::dispose(cornus_path);
     }
 
     #[test]
@@ -21187,8 +21449,8 @@ mod tests {
         drop(pre_storage);
         drop(cornus_chain);
         drop(cornus_storage);
-        let _ = std::fs::remove_dir_all(pre_path);
-        let _ = std::fs::remove_dir_all(cornus_path);
+        let _ = crate::closeout_test_scratch::dispose(pre_path);
+        let _ = crate::closeout_test_scratch::dispose(cornus_path);
     }
 
     #[test]
@@ -21222,61 +21484,61 @@ mod tests {
         let validator_input = get_validator_input(validator);
         let validator_intrinsic = intrinsic_gas(&validator_input, false).unwrap();
         let pre_transactions = vec![
-            test_transaction(
-                0x71,
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x71,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::from(7u64),
-                U256::one(),
-                100_000,
-                validator_input.clone(),
-                vec![0xc1, 0x71],
-            ),
-            test_transaction(
-                0x72,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::from(7u64),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: validator_input.clone(),
+                rlp: vec![0xc1, 0x71],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x72,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::from(9u64),
-                U256::one(),
-                100_000,
-                DPOS_GET_VALIDATOR_SELECTOR.to_vec(),
-                vec![0xc1, 0x72],
-            ),
-            test_transaction(
-                0x73,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::from(9u64),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: DPOS_GET_VALIDATOR_SELECTOR.to_vec(),
+                rlp: vec![0xc1, 0x72],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x73,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::from(11u64),
-                U256::one(),
-                100_000,
-                get_undelegation_v2_input(sender, validator, 1),
-                vec![0xc1, 0x73],
-            ),
-            test_transaction(
-                0x74,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::from(11u64),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: get_undelegation_v2_input(sender, validator, 1),
+                rlp: vec![0xc1, 0x73],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x74,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                validator_intrinsic,
-                validator_input.clone(),
-                vec![0xc1, 0x74],
-            ),
-            test_transaction(
-                0x75,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: validator_intrinsic,
+                data: validator_input.clone(),
+                rlp: vec![0xc1, 0x74],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x75,
                 sender,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                validator_input.clone(),
-                vec![0xc1, 0x75],
-            ),
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: validator_input.clone(),
+                rlp: vec![0xc1, 0x75],
+            }),
         ];
         let pre_execution = pre_chain
             .execute_native_transactions(1.into(), &pre_transactions)
@@ -21352,94 +21614,94 @@ mod tests {
         let malformed_v2 = DPOS_GET_UNDELEGATION_V2_SELECTOR.to_vec();
         let missing_v2 = get_undelegation_v2_input(validator, validator, 99);
         let cornus_transactions = vec![
-            test_transaction(
-                0x81,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                undelegate,
-                vec![0xc1, 0x81],
-            ),
-            test_transaction(
-                0x82,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                validator_input.clone(),
-                vec![0xc1, 0x82],
-            ),
-            test_transaction(
-                0x83,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                get_v2.clone(),
-                vec![0xc1, 0x83],
-            ),
-            test_transaction(
-                0x84,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::one(),
-                U256::one(),
-                100_000,
-                validator_input.clone(),
-                vec![0xc1, 0x84],
-            ),
-            test_transaction(
-                0x85,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                malformed_v2.clone(),
-                vec![0xc1, 0x85],
-            ),
-            test_transaction(
-                0x86,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                5,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                missing_v2.clone(),
-                vec![0xc1, 0x86],
-            ),
-            test_transaction(
-                0x87,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                6,
-                U256::zero(),
-                U256::one(),
-                validator_intrinsic,
-                validator_input.clone(),
-                vec![0xc1, 0x87],
-            ),
-            test_transaction(
-                0x88,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                7,
-                U256::zero(),
-                U256::one(),
-                100_000,
-                validator_input,
-                vec![0xc1, 0x88],
-            ),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x81,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: undelegate,
+                rlp: vec![0xc1, 0x81],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x82,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: validator_input.clone(),
+                rlp: vec![0xc1, 0x82],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x83,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: get_v2.clone(),
+                rlp: vec![0xc1, 0x83],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x84,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::one(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: validator_input.clone(),
+                rlp: vec![0xc1, 0x84],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x85,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: malformed_v2.clone(),
+                rlp: vec![0xc1, 0x85],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x86,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 5,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: missing_v2.clone(),
+                rlp: vec![0xc1, 0x86],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x87,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 6,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: validator_intrinsic,
+                data: validator_input.clone(),
+                rlp: vec![0xc1, 0x87],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x88,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 7,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 100_000,
+                data: validator_input,
+                rlp: vec![0xc1, 0x88],
+            }),
         ];
         let cornus_execution = cornus_chain
             .execute_native_transactions(1.into(), &cornus_transactions)
@@ -21528,8 +21790,8 @@ mod tests {
         drop(pre_storage);
         drop(cornus_chain);
         drop(cornus_storage);
-        let _ = std::fs::remove_dir_all(pre_path);
-        let _ = std::fs::remove_dir_all(cornus_path);
+        let _ = crate::closeout_test_scratch::dispose(pre_path);
+        let _ = crate::closeout_test_scratch::dispose(cornus_path);
     }
 
     #[test]
@@ -21736,7 +21998,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -21774,83 +22036,83 @@ mod tests {
         let malformed_v1 = DPOS_GET_UNDELEGATIONS_SELECTOR.to_vec();
         let v1_intrinsic = intrinsic_gas(&v1_page, false).unwrap();
         let pre_transactions = vec![
-            test_transaction(
-                0xb1,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                undelegate,
-                vec![0xc1, 0xb1],
-            ),
-            test_transaction(
-                0xb2,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::from(7u64),
-                U256::one(),
-                200_000,
-                v1_page.clone(),
-                vec![0xc1, 0xb2],
-            ),
-            test_transaction(
-                0xb3,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::from(11u64),
-                U256::one(),
-                200_000,
-                malformed_v1.clone(),
-                vec![0xc1, 0xb3],
-            ),
-            test_transaction(
-                0xb4,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::from(13u64),
-                U256::one(),
-                200_000,
-                v2_page.clone(),
-                vec![0xc1, 0xb4],
-            ),
-            test_transaction(
-                0xb5,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                v1_intrinsic + DPOS_BATCH_GET_REWARDS_GAS - 1,
-                v1_page.clone(),
-                vec![0xc1, 0xb5],
-            ),
-            test_transaction(
-                0xb6,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                5,
-                U256::zero(),
-                U256::one(),
-                v1_intrinsic - 1,
-                v1_page.clone(),
-                vec![0xc1, 0xb6],
-            ),
-            test_transaction(
-                0xb7,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                5,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                v1_page.clone(),
-                vec![0xc1, 0xb7],
-            ),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xb1,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: undelegate,
+                rlp: vec![0xc1, 0xb1],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xb2,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::from(7u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: v1_page.clone(),
+                rlp: vec![0xc1, 0xb2],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xb3,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::from(11u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: malformed_v1.clone(),
+                rlp: vec![0xc1, 0xb3],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xb4,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::from(13u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: v2_page.clone(),
+                rlp: vec![0xc1, 0xb4],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xb5,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: v1_intrinsic + DPOS_BATCH_GET_REWARDS_GAS - 1,
+                data: v1_page.clone(),
+                rlp: vec![0xc1, 0xb5],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xb6,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 5,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: v1_intrinsic - 1,
+                data: v1_page.clone(),
+                rlp: vec![0xc1, 0xb6],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xb7,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 5,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: v1_page.clone(),
+                rlp: vec![0xc1, 0xb7],
+            }),
         ];
         let pre_execution = pre_chain
             .execute_native_transactions(1.into(), &pre_transactions)
@@ -21946,138 +22208,138 @@ mod tests {
         let v2_intrinsic = intrinsic_gas(&v2_page, false).unwrap();
         let malformed_v2 = DPOS_GET_UNDELEGATIONS_V2_SELECTOR.to_vec();
         let cornus_transactions = vec![
-            test_transaction(
-                0xc1,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                undelegate_v2_input(validator, U256::from(1_000u64)),
-                vec![0xc1, 0xc1],
-            ),
-            test_transaction(
-                0xc2,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                v2_page.clone(),
-                vec![0xc1, 0xc2],
-            ),
-            test_transaction(
-                0xc3,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                cancel_undelegate_v2_input(validator, 1),
-                vec![0xc1, 0xc3],
-            ),
-            test_transaction(
-                0xc4,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                v2_page.clone(),
-                vec![0xc1, 0xc4],
-            ),
-            test_transaction(
-                0xc5,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                undelegate_v2_input(validator, U256::from(1_000u64)),
-                vec![0xc1, 0xc5],
-            ),
-            test_transaction(
-                0xc6,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                5,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                v2_page.clone(),
-                vec![0xc1, 0xc6],
-            ),
-            test_transaction(
-                0xc7,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                6,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                confirm_undelegate_v2_input(validator, 2),
-                vec![0xc1, 0xc7],
-            ),
-            test_transaction(
-                0xc8,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                7,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                v2_page.clone(),
-                vec![0xc1, 0xc8],
-            ),
-            test_transaction(
-                0xc9,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                8,
-                U256::one(),
-                U256::one(),
-                200_000,
-                malformed_v2.clone(),
-                vec![0xc1, 0xc9],
-            ),
-            test_transaction(
-                0xca,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                9,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                malformed_v1.clone(),
-                vec![0xc1, 0xca],
-            ),
-            test_transaction(
-                0xcb,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                10,
-                U256::zero(),
-                U256::one(),
-                v1_intrinsic - 1,
-                v1_page.clone(),
-                vec![0xc1, 0xcb],
-            ),
-            test_transaction(
-                0xcc,
-                validator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                11,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                v1_page,
-                vec![0xc1, 0xcc],
-            ),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc1,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: undelegate_v2_input(validator, U256::from(1_000u64)),
+                rlp: vec![0xc1, 0xc1],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc2,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: v2_page.clone(),
+                rlp: vec![0xc1, 0xc2],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc3,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: cancel_undelegate_v2_input(validator, 1),
+                rlp: vec![0xc1, 0xc3],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc4,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: v2_page.clone(),
+                rlp: vec![0xc1, 0xc4],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc5,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: undelegate_v2_input(validator, U256::from(1_000u64)),
+                rlp: vec![0xc1, 0xc5],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc6,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 5,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: v2_page.clone(),
+                rlp: vec![0xc1, 0xc6],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc7,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 6,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: confirm_undelegate_v2_input(validator, 2),
+                rlp: vec![0xc1, 0xc7],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc8,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 7,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: v2_page.clone(),
+                rlp: vec![0xc1, 0xc8],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xc9,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 8,
+                value: U256::one(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: malformed_v2.clone(),
+                rlp: vec![0xc1, 0xc9],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xca,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 9,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: malformed_v1.clone(),
+                rlp: vec![0xc1, 0xca],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xcb,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 10,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: v1_intrinsic - 1,
+                data: v1_page.clone(),
+                rlp: vec![0xc1, 0xcb],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xcc,
+                sender: validator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 11,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: v1_page,
+                rlp: vec![0xc1, 0xcc],
+            }),
         ];
         let cornus_execution = cornus_chain
             .execute_native_transactions(1.into(), &cornus_transactions)
@@ -22160,8 +22422,8 @@ mod tests {
         drop(pre_storage);
         drop(cornus_chain);
         drop(cornus_storage);
-        let _ = std::fs::remove_dir_all(pre_path);
-        let _ = std::fs::remove_dir_all(cornus_path);
+        let _ = crate::closeout_test_scratch::dispose(pre_path);
+        let _ = crate::closeout_test_scratch::dispose(cornus_path);
     }
 
     #[test]
@@ -22201,182 +22463,182 @@ mod tests {
         )
         .unwrap();
         let pre_transactions = vec![
-            test_transaction(
-                0xd0,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::from(7u64),
-                U256::one(),
-                200_000,
-                read.clone(),
-                vec![0xd0],
-            ),
-            test_transaction(
-                0xd1,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::from(9u64),
-                U256::one(),
-                200_000,
-                malformed.clone(),
-                vec![0xd1],
-            ),
-            test_transaction(
-                0xd2,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::zero(),
-                U256::one(),
-                read_intrinsic + DPOS_BATCH_GET_REWARDS_GAS - 1,
-                read.clone(),
-                vec![0xd2],
-            ),
-            test_transaction(
-                0xd3,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                read_intrinsic - 1,
-                read.clone(),
-                vec![0xd3],
-            ),
-            test_transaction(
-                0xd4,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::from(1_000u64),
-                U256::one(),
-                200_000,
-                delegate_input(second_validator),
-                vec![0xd4],
-            ),
-            test_transaction(
-                0xd5,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                read.clone(),
-                vec![0xd5],
-            ),
-            test_transaction(
-                0xd6,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                5,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                undelegate_input(second_validator, U256::from(1_000u64)),
-                vec![0xd6],
-            ),
-            test_transaction(
-                0xd7,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                6,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                read.clone(),
-                vec![0xd7],
-            ),
-            test_transaction(
-                0xd8,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                7,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                cancel_undelegate_input(second_validator),
-                vec![0xd8],
-            ),
-            test_transaction(
-                0xd9,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                8,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                read.clone(),
-                vec![0xd9],
-            ),
-            test_transaction(
-                0xda,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                9,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                redelegate_input(second_validator, delegator, U256::from(1_000u64)),
-                vec![0xda],
-            ),
-            test_transaction(
-                0xdb,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                10,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                read.clone(),
-                vec![0xdb],
-            ),
-            test_transaction(
-                0xdc,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                11,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                undelegate_input(delegator, U256::from(11_000u64)),
-                vec![0xdc],
-            ),
-            test_transaction(
-                0xdd,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                12,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                read.clone(),
-                vec![0xdd],
-            ),
-            test_transaction(
-                0xde,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                13,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                confirm_undelegate_input(delegator),
-                vec![0xde],
-            ),
-            test_transaction(
-                0xdf,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                14,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                read.clone(),
-                vec![0xdf],
-            ),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd0,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::from(7u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: read.clone(),
+                rlp: vec![0xd0],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd1,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::from(9u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: malformed.clone(),
+                rlp: vec![0xd1],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd2,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: read_intrinsic + DPOS_BATCH_GET_REWARDS_GAS - 1,
+                data: read.clone(),
+                rlp: vec![0xd2],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd3,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: read_intrinsic - 1,
+                data: read.clone(),
+                rlp: vec![0xd3],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd4,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::from(1_000u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: delegate_input(second_validator),
+                rlp: vec![0xd4],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd5,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: read.clone(),
+                rlp: vec![0xd5],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd6,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 5,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: undelegate_input(second_validator, U256::from(1_000u64)),
+                rlp: vec![0xd6],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd7,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 6,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: read.clone(),
+                rlp: vec![0xd7],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd8,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 7,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: cancel_undelegate_input(second_validator),
+                rlp: vec![0xd8],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xd9,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 8,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: read.clone(),
+                rlp: vec![0xd9],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xda,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 9,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: redelegate_input(second_validator, delegator, U256::from(1_000u64)),
+                rlp: vec![0xda],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xdb,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 10,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: read.clone(),
+                rlp: vec![0xdb],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xdc,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 11,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: undelegate_input(delegator, U256::from(11_000u64)),
+                rlp: vec![0xdc],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xdd,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 12,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: read.clone(),
+                rlp: vec![0xdd],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xde,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 13,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: confirm_undelegate_input(delegator),
+                rlp: vec![0xde],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xdf,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 14,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: read.clone(),
+                rlp: vec![0xdf],
+            }),
         ];
         let pre_execution = pre_chain
             .execute_native_transactions(1.into(), &pre_transactions)
@@ -22463,61 +22725,61 @@ mod tests {
         permissive_read[4..16].fill(0xee);
         permissive_read.extend_from_slice(&[0xaa]);
         let cornus_transactions = vec![
-            test_transaction(
-                0xe0,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::one(),
-                U256::one(),
-                200_000,
-                read.clone(),
-                vec![0xe0],
-            ),
-            test_transaction(
-                0xe1,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::one(),
-                U256::one(),
-                200_000,
-                malformed.clone(),
-                vec![0xe1],
-            ),
-            test_transaction(
-                0xe2,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::zero(),
-                U256::one(),
-                read_intrinsic - 1,
-                read.clone(),
-                vec![0xe2],
-            ),
-            test_transaction(
-                0xe3,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                read_intrinsic + DPOS_BATCH_GET_REWARDS_GAS - 1,
-                read.clone(),
-                vec![0xe3],
-            ),
-            test_transaction(
-                0xe4,
-                delegator,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                permissive_read,
-                vec![0xe4],
-            ),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xe0,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::one(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: read.clone(),
+                rlp: vec![0xe0],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xe1,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::one(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: malformed.clone(),
+                rlp: vec![0xe1],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xe2,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: read_intrinsic - 1,
+                data: read.clone(),
+                rlp: vec![0xe2],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xe3,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: read_intrinsic + DPOS_BATCH_GET_REWARDS_GAS - 1,
+                data: read.clone(),
+                rlp: vec![0xe3],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xe4,
+                sender: delegator,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: permissive_read,
+                rlp: vec![0xe4],
+            }),
         ];
         let cornus_execution = cornus_chain
             .execute_native_transactions(1.into(), &cornus_transactions)
@@ -22567,8 +22829,8 @@ mod tests {
         drop(pre_storage);
         drop(cornus_chain);
         drop(cornus_storage);
-        let _ = std::fs::remove_dir_all(pre_path);
-        let _ = std::fs::remove_dir_all(cornus_path);
+        let _ = crate::closeout_test_scratch::dispose(pre_path);
+        let _ = crate::closeout_test_scratch::dispose(cornus_path);
     }
 
     #[test]
@@ -22621,83 +22883,83 @@ mod tests {
         let malformed = DPOS_GET_VALIDATORS_SELECTOR.to_vec();
         let page_intrinsic = intrinsic_gas(&page, false).unwrap();
         let pre_transactions = vec![
-            test_transaction(
-                0x91,
-                [2; 20],
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                undelegate,
-                vec![0xc1, 0x91],
-            ),
-            test_transaction(
-                0x92,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::from(7u64),
-                U256::one(),
-                200_000,
-                page.clone(),
-                vec![0xc1, 0x92],
-            ),
-            test_transaction(
-                0x93,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::from(9u64),
-                U256::one(),
-                200_000,
-                owner_page.clone(),
-                vec![0xc1, 0x93],
-            ),
-            test_transaction(
-                0x94,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::from(11u64),
-                U256::one(),
-                200_000,
-                malformed.clone(),
-                vec![0xc1, 0x94],
-            ),
-            test_transaction(
-                0x95,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                page_intrinsic - 1,
-                page.clone(),
-                vec![0xc1, 0x95],
-            ),
-            test_transaction(
-                0x96,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                page_intrinsic,
-                page.clone(),
-                vec![0xc1, 0x96],
-            ),
-            test_transaction(
-                0x97,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                page.clone(),
-                vec![0xc1, 0x97],
-            ),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x91,
+                sender: [2; 20],
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: undelegate,
+                rlp: vec![0xc1, 0x91],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x92,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::from(7u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: page.clone(),
+                rlp: vec![0xc1, 0x92],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x93,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::from(9u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: owner_page.clone(),
+                rlp: vec![0xc1, 0x93],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x94,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::from(11u64),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: malformed.clone(),
+                rlp: vec![0xc1, 0x94],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x95,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: page_intrinsic - 1,
+                data: page.clone(),
+                rlp: vec![0xc1, 0x95],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x96,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: page_intrinsic,
+                data: page.clone(),
+                rlp: vec![0xc1, 0x96],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0x97,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: page.clone(),
+                rlp: vec![0xc1, 0x97],
+            }),
         ];
         let pre_execution = pre_chain
             .execute_native_transactions(1.into(), &pre_transactions)
@@ -22799,94 +23061,94 @@ mod tests {
         let overflow = get_validators_input(0xcccc_cccd);
         let malformed_for = DPOS_GET_VALIDATORS_FOR_SELECTOR.to_vec();
         let cornus_transactions = vec![
-            test_transaction(
-                0xa1,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::one(),
-                U256::one(),
-                200_000,
-                page.clone(),
-                vec![0xc1, 0xa1],
-            ),
-            test_transaction(
-                0xa2,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                1,
-                U256::one(),
-                U256::one(),
-                200_000,
-                malformed_for,
-                vec![0xc1, 0xa2],
-            ),
-            test_transaction(
-                0xa3,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                2,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                malformed.clone(),
-                vec![0xc1, 0xa3],
-            ),
-            test_transaction(
-                0xa4,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                3,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                overflow.clone(),
-                vec![0xc1, 0xa4],
-            ),
-            test_transaction(
-                0xa5,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                4,
-                U256::zero(),
-                U256::one(),
-                page_intrinsic - 1,
-                page.clone(),
-                vec![0xc1, 0xa5],
-            ),
-            test_transaction(
-                0xa6,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                5,
-                U256::zero(),
-                U256::one(),
-                page_intrinsic,
-                page.clone(),
-                vec![0xc1, 0xa6],
-            ),
-            test_transaction(
-                0xa7,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                6,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                page.clone(),
-                vec![0xc1, 0xa7],
-            ),
-            test_transaction(
-                0xa8,
-                reader,
-                Some(DPOS_CONTRACT_ADDRESS),
-                7,
-                U256::zero(),
-                U256::one(),
-                200_000,
-                owner_page.clone(),
-                vec![0xc1, 0xa8],
-            ),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xa1,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::one(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: page.clone(),
+                rlp: vec![0xc1, 0xa1],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xa2,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 1,
+                value: U256::one(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: malformed_for,
+                rlp: vec![0xc1, 0xa2],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xa3,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 2,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: malformed.clone(),
+                rlp: vec![0xc1, 0xa3],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xa4,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 3,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: overflow.clone(),
+                rlp: vec![0xc1, 0xa4],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xa5,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 4,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: page_intrinsic - 1,
+                data: page.clone(),
+                rlp: vec![0xc1, 0xa5],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xa6,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 5,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: page_intrinsic,
+                data: page.clone(),
+                rlp: vec![0xc1, 0xa6],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xa7,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 6,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: page.clone(),
+                rlp: vec![0xc1, 0xa7],
+            }),
+            test_transaction(TestTransactionInput {
+                hash_byte: 0xa8,
+                sender: reader,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 7,
+                value: U256::zero(),
+                gas_price: U256::one(),
+                gas_limit: 200_000,
+                data: owner_page.clone(),
+                rlp: vec![0xc1, 0xa8],
+            }),
         ];
         let cornus_execution = cornus_chain
             .execute_native_transactions(1.into(), &cornus_transactions)
@@ -22944,8 +23206,8 @@ mod tests {
         drop(pre_storage);
         drop(cornus_chain);
         drop(cornus_storage);
-        let _ = std::fs::remove_dir_all(pre_path);
-        let _ = std::fs::remove_dir_all(cornus_path);
+        let _ = crate::closeout_test_scratch::dispose(pre_path);
+        let _ = crate::closeout_test_scratch::dispose(cornus_path);
     }
 
     #[test]
@@ -23010,7 +23272,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23148,7 +23410,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23260,7 +23522,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23419,7 +23681,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23485,7 +23747,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23555,7 +23817,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23588,7 +23850,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23651,7 +23913,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23693,7 +23955,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23723,7 +23985,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23752,7 +24014,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn assert_finalize_block_executes_slashing(magnolia_period: u64, cacti_period: u64) {
@@ -23774,28 +24036,28 @@ mod tests {
         let input = commit_double_voting_proof_input(&vote_a, &vote_b);
         let first_tx_rlp = vec![0xc1, 0xD1];
         let second_tx_rlp = vec![0xc1, 0xD2];
-        let first_tx = test_transaction(
-            0xD1,
-            submitter,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            input.clone(),
-            first_tx_rlp.clone(),
-        );
-        let duplicate_tx = test_transaction(
-            0xD2,
-            submitter,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            input,
-            second_tx_rlp.clone(),
-        );
+        let first_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD1,
+            sender: submitter,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: input.clone(),
+            rlp: first_tx_rlp.clone(),
+        });
+        let duplicate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD2,
+            sender: submitter,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: input,
+            rlp: second_tx_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -23896,7 +24158,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -23930,28 +24192,28 @@ mod tests {
         let first_value = U256::from(777u64);
         let duplicate_value = U256::from(888u64);
         let gas_price = U256::from(3u64);
-        let first_tx = test_transaction(
-            0xD4,
-            submitter,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            0,
-            first_value,
+        let first_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD4,
+            sender: submitter,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: first_value,
             gas_price,
-            100_000,
-            input.clone(),
-            vec![0xc1, 0xd4],
-        );
-        let duplicate_tx = test_transaction(
-            0xD5,
-            submitter,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            1,
-            duplicate_value,
+            gas_limit: 100_000,
+            data: input.clone(),
+            rlp: vec![0xc1, 0xd4],
+        });
+        let duplicate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD5,
+            sender: submitter,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: duplicate_value,
             gas_price,
-            100_000,
-            input,
-            vec![0xc1, 0xd5],
-        );
+            gas_limit: 100_000,
+            data: input,
+            rlp: vec![0xc1, 0xd5],
+        });
         write_period_data(
             &storage,
             period,
@@ -24079,7 +24341,7 @@ mod tests {
 
         drop(restart_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24097,54 +24359,54 @@ mod tests {
         let jailed_value = U256::from(222u64);
         let malformed_value = U256::from(333u64);
         let oog_value = U256::from(444u64);
-        let jail_tx = test_transaction(
-            0xE1,
+        let jail_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE1,
             sender,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            0,
-            jail_value,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: jail_value,
             gas_price,
-            100_000,
-            get_jail_block_input(validator),
-            vec![0xc1, 0xe1],
-        );
+            gas_limit: 100_000,
+            data: get_jail_block_input(validator),
+            rlp: vec![0xc1, 0xe1],
+        });
         let mut jailed_input = get_jailed_validators_input();
         jailed_input.extend_from_slice(&[0xaa, 0xbb]);
-        let jailed_tx = test_transaction(
-            0xE2,
+        let jailed_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE2,
             sender,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            1,
-            jailed_value,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: jailed_value,
             gas_price,
-            100_000,
-            jailed_input,
-            vec![0xc1, 0xe2],
-        );
-        let malformed_tx = test_transaction(
-            0xE3,
+            gas_limit: 100_000,
+            data: jailed_input,
+            rlp: vec![0xc1, 0xe2],
+        });
+        let malformed_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE3,
             sender,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            2,
-            malformed_value,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 2,
+            value: malformed_value,
             gas_price,
-            100_000,
-            SLASHING_GET_JAIL_BLOCK_SELECTOR.to_vec(),
-            vec![0xc1, 0xe3],
-        );
+            gas_limit: 100_000,
+            data: SLASHING_GET_JAIL_BLOCK_SELECTOR.to_vec(),
+            rlp: vec![0xc1, 0xe3],
+        });
         let oog_input = get_jail_block_input(validator);
         let oog_intrinsic_gas = intrinsic_gas(&oog_input, false).unwrap();
-        let oog_tx = test_transaction(
-            0xE4,
+        let oog_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE4,
             sender,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            3,
-            oog_value,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 3,
+            value: oog_value,
             gas_price,
-            oog_intrinsic_gas,
-            oog_input,
-            vec![0xc1, 0xe4],
-        );
+            gas_limit: oog_intrinsic_gas,
+            data: oog_input,
+            rlp: vec![0xc1, 0xe4],
+        });
         let transactions = vec![
             jail_tx.clone(),
             jailed_tx.clone(),
@@ -24229,7 +24491,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24243,28 +24505,28 @@ mod tests {
         let value_at = U256::from(20u64);
         let mut read_input = get_jailed_validators_input();
         read_input.push(0xcc);
-        let before_tx = test_transaction(
-            0xE5,
+        let before_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE5,
             sender,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            0,
-            value_before,
-            U256::one(),
-            100_000,
-            read_input.clone(),
-            vec![0xc1, 0xe5],
-        );
-        let at_tx = test_transaction(
-            0xE6,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: value_before,
+            gas_price: U256::one(),
+            gas_limit: 100_000,
+            data: read_input.clone(),
+            rlp: vec![0xc1, 0xe5],
+        });
+        let at_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE6,
             sender,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            1,
-            value_at,
-            U256::one(),
-            100_000,
-            read_input,
-            vec![0xc1, 0xe6],
-        );
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: value_at,
+            gas_price: U256::one(),
+            gas_limit: 100_000,
+            data: read_input,
+            rlp: vec![0xc1, 0xe6],
+        });
         let before_pbft = signed_pbft_block(&signing_key, 1, 246);
         write_period_data(
             &storage,
@@ -24319,7 +24581,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24329,17 +24591,17 @@ mod tests {
         let sender = [0x87; 20];
         let signing_key = SigningKey::from_slice(&[0x88; 32]).unwrap();
         let pbft = signed_pbft_block(&signing_key, 1, 248);
-        let tx = test_transaction(
-            0xE7,
+        let tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE7,
             sender,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::one(),
-            100_000,
-            get_jailed_validators_input(),
-            vec![0xc1, 0xe7],
-        );
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::one(),
+            gas_limit: 100_000,
+            data: get_jailed_validators_input(),
+            rlp: vec![0xc1, 0xe7],
+        });
         write_period_data(&storage, 1, &pbft, std::slice::from_ref(&tx.rlp));
         let initial_balance = U256::from(1_000_000u64);
         let rewards_config = FinalChainRewardsConfig {
@@ -24389,7 +24651,7 @@ mod tests {
 
         drop(restart_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24450,7 +24712,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24461,8 +24723,11 @@ mod tests {
         let validator_h160 = address_from_signing_key(&signing_key);
         let mut validator = [0u8; 20];
         validator.copy_from_slice(validator_h160.as_bytes());
-        let mut dpos_config = GenesisDposConfig::default();
-        dpos_config.delegation_delay = 1;
+        let dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: U256::one().into(),
+            delegation_delay: 1,
+            ..Default::default()
+        };
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             100_000.into(),
@@ -24533,7 +24798,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24551,18 +24816,23 @@ mod tests {
         let tx_value = U256::from(555u64);
         let gas_price = U256::from(2u64);
         let malformed_input = SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR.to_vec();
-        let malformed_tx = test_transaction(
-            0xD6,
-            submitter,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            0,
-            tx_value,
+        let malformed_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD6,
+            sender: submitter,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: tx_value,
             gas_price,
-            100_000,
-            malformed_input,
-            vec![0xc1, 0xd6],
+            gas_limit: 100_000,
+            data: malformed_input,
+            rlp: vec![0xc1, 0xd6],
+        });
+        write_period_data(
+            &storage,
+            period,
+            &pbft,
+            std::slice::from_ref(&malformed_tx.rlp),
         );
-        write_period_data(&storage, period, &pbft, &[malformed_tx.rlp.clone()]);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             300_000.into(),
@@ -24631,7 +24901,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24644,18 +24914,23 @@ mod tests {
         let pbft = signed_pbft_block(&block_signing_key, period, 246);
         let gas_price = U256::from(2u64);
         let gas_limit = 100_000u64;
-        let transaction = test_transaction(
-            0xD7,
-            submitter,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            0,
-            U256::MAX,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xD7,
+            sender: submitter,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::MAX,
             gas_price,
             gas_limit,
-            SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR.to_vec(),
-            vec![0xc1, 0xd7],
+            data: SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR.to_vec(),
+            rlp: vec![0xc1, 0xd7],
+        });
+        write_period_data(
+            &storage,
+            period,
+            &pbft,
+            std::slice::from_ref(&transaction.rlp),
         );
-        write_period_data(&storage, period, &pbft, &[transaction.rlp.clone()]);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             300_000.into(),
@@ -24693,7 +24968,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24764,7 +25039,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24799,7 +25074,7 @@ mod tests {
         assert!(err.to_string().contains("does not fit into u64"));
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24831,7 +25106,7 @@ mod tests {
         assert!(err.to_string().contains("exceeds maximum stake"));
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24863,7 +25138,7 @@ mod tests {
         assert!(err.to_string().contains("vote step cannot be zero"));
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -24880,17 +25155,17 @@ mod tests {
         let beneficiary_bytes: [u8; 20] = beneficiary.into();
         let pbft_block = signed_pbft_block(&signing_key, period, timestamp);
         let transaction_rlp = vec![0xc1, 0x80];
-        let transaction = test_transaction(
-            0xA1,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xA1,
             sender,
-            Some(receiver),
-            0,
-            U256::from(13u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(13u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -25061,7 +25336,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -25074,17 +25349,17 @@ mod tests {
         let sender: [u8; 20] = address_from_signing_key(&signing_key).into();
         let pbft_block = signed_pbft_block(&signing_key, period, 88);
         let transaction_rlp = vec![0xc1, 0x81];
-        let transaction = test_transaction(
-            0xB1,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xB1,
             sender,
-            Some(receiver),
-            0,
-            U256::from(13u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(13u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -25139,7 +25414,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -25154,17 +25429,17 @@ mod tests {
         let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
         let gas_price = U256::from(2u64);
         let transaction_rlp = vec![0xc1, 0x82];
-        let transaction = test_transaction(
-            0xF8,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xF8,
             sender,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            set_validator_info_input(validator, "pre magnolia", "contract fee success"),
-            transaction_rlp.clone(),
-        );
+            gas_limit: 100_000,
+            data: set_validator_info_input(validator, "pre magnolia", "contract fee success"),
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -25227,7 +25502,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -25243,17 +25518,17 @@ mod tests {
         let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
         let gas_price = U256::from(3u64);
         let transaction_rlp = vec![0xc1, 0x83];
-        let transaction = test_transaction(
-            0xF9,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xF9,
             sender,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            set_validator_info_input(validator, "pre magnolia", "contract fee failure"),
-            transaction_rlp.clone(),
-        );
+            gas_limit: 100_000,
+            data: set_validator_info_input(validator, "pre magnolia", "contract fee failure"),
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -25316,7 +25591,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -25342,17 +25617,17 @@ mod tests {
         let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
         let pbft_block = signed_pbft_block(&signing_key, period, 121);
         let transaction_rlp = vec![0xc1, 0x85];
-        let transaction = test_transaction(
-            0xF6,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xF6,
             sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -25521,7 +25796,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -25543,17 +25818,17 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[18u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 181);
         let transaction_rlp = vec![0xc1, 0xA1];
-        let transaction = test_transaction(
-            0xA1,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xA1,
             sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::zero(),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::zero(),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -25640,7 +25915,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -25665,28 +25940,28 @@ mod tests {
         );
         let signing_key = SigningKey::from_slice(&[18u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 181);
-        let set_commission_tx = test_transaction(
-            0xD1,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            set_commission_input(validator, updated_commission),
-            vec![0xc1, 0xD1],
-        );
-        let transfer_tx = test_transaction(
-            0xD2,
+        let set_commission_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD1,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: set_commission_input(validator, updated_commission),
+            rlp: vec![0xc1, 0xD1],
+        });
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD2,
             sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::zero(),
-            50_000,
-            vec![],
-            vec![0xc1, 0xD2],
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::zero(),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xD2],
+        });
         write_period_data(
             &storage,
             period,
@@ -25815,17 +26090,17 @@ mod tests {
             },
         )
         .unwrap();
-        let failed_commission_tx = test_transaction(
-            0xE1,
+        let failed_commission_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE1,
             sender,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            set_commission_input(validator, updated_commission),
-            vec![0xc1, 0xE1],
-        );
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: set_commission_input(validator, updated_commission),
+            rlp: vec![0xc1, 0xE1],
+        });
         write_period_data(
             &storage,
             period,
@@ -25874,8 +26149,8 @@ mod tests {
 
         drop(failed_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
-        let _ = std::fs::remove_dir_all(failed_path);
+        let _ = crate::closeout_test_scratch::dispose(path);
+        let _ = crate::closeout_test_scratch::dispose(failed_path);
     }
 
     #[test]
@@ -25909,17 +26184,17 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let first_pbft = signed_pbft_block(&signing_key, first_period, 221);
         let first_transaction_rlp = vec![0xc1, 0x91];
-        let first_transaction = test_transaction(
-            0x91,
+        let first_transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0x91,
             sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            first_transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: first_transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             first_period,
@@ -25964,17 +26239,17 @@ mod tests {
         );
 
         let second_pbft = signed_pbft_block(&signing_key, second_period, 222);
-        let claim_tx = test_transaction(
-            0x92,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            claim_commission_rewards_input(validator),
-            vec![0xc1, 0x92],
-        );
+        let claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0x92,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: claim_commission_rewards_input(validator),
+            rlp: vec![0xc1, 0x92],
+        });
         write_period_data(
             &storage,
             second_period,
@@ -26017,7 +26292,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -26053,17 +26328,17 @@ mod tests {
         };
 
         let first_pbft = signed_pbft_block(&signing_key, first_period, 221);
-        let first_transaction = test_transaction(
-            0x91,
-            tx_sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            vec![0xc1, 0x91],
-        );
+        let first_transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0x91,
+            sender: tx_sender,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: vec![0xc1, 0x91],
+        });
         write_period_data(
             &storage,
             first_period,
@@ -26105,17 +26380,17 @@ mod tests {
             .unwrap();
 
         let second_pbft = signed_pbft_block(&signing_key, second_period, 222);
-        let undelegate_tx = test_transaction(
-            0x92,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_input(validator, U256::from(10_000u64)),
-            vec![0xc1, 0x92],
-        );
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0x92,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(10_000u64)),
+            rlp: vec![0xc1, 0x92],
+        });
         write_period_data(
             &storage,
             second_period,
@@ -26133,17 +26408,17 @@ mod tests {
         );
 
         let third_pbft = signed_pbft_block(&signing_key, third_period, 223);
-        let commission_claim_tx = test_transaction(
-            0x93,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            claim_commission_rewards_input(validator),
-            vec![0xc1, 0x93],
-        );
+        let commission_claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0x93,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: claim_commission_rewards_input(validator),
+            rlp: vec![0xc1, 0x93],
+        });
         write_period_data(
             &storage,
             third_period,
@@ -26174,17 +26449,17 @@ mod tests {
         assert!(!balance_of(&final_chain, DPOS_CONTRACT_ADDRESS).is_zero());
 
         let fourth_pbft = signed_pbft_block(&signing_key, fourth_period, 224);
-        let confirm_tx = test_transaction(
-            0x94,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            confirm_undelegate_input(validator),
-            vec![0xc1, 0x94],
-        );
+        let confirm_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0x94,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: confirm_undelegate_input(validator),
+            rlp: vec![0xc1, 0x94],
+        });
         write_period_data(
             &storage,
             fourth_period,
@@ -26235,15 +26510,15 @@ mod tests {
         );
 
         let fifth_pbft = signed_pbft_block(&signing_key, fifth_period, 225);
-        let register_tx = test_transaction(
-            0x95,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(10_000u64),
-            U256::from(2u64),
-            200_000,
-            register_validator_input(
+        let register_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0x95,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(10_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 200_000,
+            data: register_validator_input(
                 validator,
                 &register_validator_proof(&signing_key, validator, None),
                 [0xA5; 32],
@@ -26251,8 +26526,8 @@ mod tests {
                 "validator",
                 "endpoint",
             ),
-            vec![0xc1, 0x95],
-        );
+            rlp: vec![0xc1, 0x95],
+        });
         let register_gas =
             expected_native_contract_tx_gas(&final_chain, fifth_period.into(), &register_tx);
         write_period_data(
@@ -26290,7 +26565,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -26324,17 +26599,17 @@ mod tests {
         };
 
         let first_pbft = signed_pbft_block(&signing_key, first_period, 231);
-        let first_transaction = test_transaction(
-            0xB1,
+        let first_transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xB1,
             sender,
-            Some(owner),
-            0,
-            U256::from(1u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            vec![0xc1, 0xB1],
-        );
+            receiver: Some(owner),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xB1],
+        });
         write_period_data(
             &storage,
             first_period,
@@ -26376,17 +26651,17 @@ mod tests {
             .unwrap();
 
         let second_pbft = signed_pbft_block(&signing_key, second_period, 232);
-        let undelegate_tx = test_transaction(
-            0xB2,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_v2_input(validator, U256::from(10_000u64)),
-            vec![0xc1, 0xB2],
-        );
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xB2,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_v2_input(validator, U256::from(10_000u64)),
+            rlp: vec![0xc1, 0xB2],
+        });
         write_period_data(
             &storage,
             second_period,
@@ -26403,17 +26678,17 @@ mod tests {
         assert_eq!(undelegate_fields, (1, undelegate_gas, undelegate_gas));
 
         let third_pbft = signed_pbft_block(&signing_key, third_period, 233);
-        let confirm_tx = test_transaction(
-            0xB3,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            confirm_undelegate_v2_input(validator, 1),
-            vec![0xc1, 0xB3],
-        );
+        let confirm_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xB3,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: confirm_undelegate_v2_input(validator, 1),
+            rlp: vec![0xc1, 0xB3],
+        });
         write_period_data(
             &storage,
             third_period,
@@ -26448,17 +26723,17 @@ mod tests {
         );
 
         let fourth_pbft = signed_pbft_block(&signing_key, fourth_period, 234);
-        let claim_tx = test_transaction(
-            0xB4,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            claim_commission_rewards_input(validator),
-            vec![0xc1, 0xB4],
-        );
+        let claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xB4,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: claim_commission_rewards_input(validator),
+            rlp: vec![0xc1, 0xB4],
+        });
         write_period_data(
             &storage,
             fourth_period,
@@ -26484,7 +26759,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -26500,17 +26775,17 @@ mod tests {
         let first_period = 1u64;
         let second_period = 2u64;
         let first_pbft = signed_pbft_block(&signing_key, first_period, 241);
-        let transaction = test_transaction(
-            0xC1,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xC1,
             sender,
-            Some(recipient),
-            0,
-            U256::from(1u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            vec![0xc1, 0xC1],
-        );
+            receiver: Some(recipient),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xC1],
+        });
         write_period_data(
             &storage,
             first_period,
@@ -26559,28 +26834,28 @@ mod tests {
             .unwrap();
 
         let second_pbft = signed_pbft_block(&signing_key, second_period, 242);
-        let failed_claim_tx = test_transaction(
-            0xC2,
-            wrong_owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::from(1u64),
-            100_000,
-            claim_commission_rewards_input(validator),
-            vec![0xc1, 0xC2],
-        );
-        let transfer_tx = test_transaction(
-            0xC3,
-            wrong_owner,
-            Some(recipient),
-            1,
-            U256::from(5_000u64),
-            U256::from(1u64),
-            intrinsic_gas(&vec![], false).unwrap(),
-            vec![],
-            vec![0xc1, 0xC3],
-        );
+        let failed_claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC2,
+            sender: wrong_owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::from(1u64),
+            gas_limit: 100_000,
+            data: claim_commission_rewards_input(validator),
+            rlp: vec![0xc1, 0xC2],
+        });
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC3,
+            sender: wrong_owner,
+            receiver: Some(recipient),
+            nonce: 1,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(1u64),
+            gas_limit: intrinsic_gas(&[], false).unwrap(),
+            data: vec![],
+            rlp: vec![0xc1, 0xC3],
+        });
         let failed_claim_gas =
             expected_native_contract_tx_gas(&final_chain, second_period.into(), &failed_claim_tx);
         let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
@@ -26642,7 +26917,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -26791,7 +27066,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -26838,28 +27113,28 @@ mod tests {
             .unwrap();
 
         let second_pbft = signed_pbft_block(&signing_key, second_period, 262);
-        let failed_claim_tx = test_transaction(
-            0xD1,
+        let failed_claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD1,
             sender,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::from(1u64),
-            100_000,
-            claim_commission_rewards_input(validator),
-            vec![0xc1, 0xD1],
-        );
-        let transfer_tx = test_transaction(
-            0xD2,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::from(1u64),
+            gas_limit: 100_000,
+            data: claim_commission_rewards_input(validator),
+            rlp: vec![0xc1, 0xD1],
+        });
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD2,
             sender,
-            Some(recipient),
-            1,
-            U256::from(5_000u64),
-            U256::from(1u64),
-            50_000,
-            vec![],
-            vec![0xc1, 0xD2],
-        );
+            receiver: Some(recipient),
+            nonce: 1,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(1u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xD2],
+        });
         let failed_claim_gas =
             expected_native_contract_tx_gas(&final_chain, second_period.into(), &failed_claim_tx);
         let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
@@ -26914,7 +27189,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -26948,28 +27223,28 @@ mod tests {
             .unwrap();
 
         let second_pbft = signed_pbft_block(&signing_key, second_period, 264);
-        let malformed_claim_tx = test_transaction(
-            0xD3,
+        let malformed_claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD3,
             sender,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::one(),
-            100_000,
-            DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR.to_vec(),
-            vec![0xc1, 0xD3],
-        );
-        let transfer_tx = test_transaction(
-            0xD4,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::one(),
+            gas_limit: 100_000,
+            data: DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR.to_vec(),
+            rlp: vec![0xc1, 0xD3],
+        });
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD4,
             sender,
-            Some(recipient),
-            1,
-            U256::from(5_000u64),
-            U256::one(),
-            50_000,
-            vec![],
-            vec![0xc1, 0xD4],
-        );
+            receiver: Some(recipient),
+            nonce: 1,
+            value: U256::from(5_000u64),
+            gas_price: U256::one(),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xD4],
+        });
         let malformed_claim_gas = expected_native_contract_tx_gas(
             &final_chain,
             second_period.into(),
@@ -27033,7 +27308,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27045,17 +27320,17 @@ mod tests {
         let validator = [0xB1; 20];
         let signing_key = SigningKey::from_slice(&[29u8; 32]).unwrap();
         let pbft = signed_pbft_block(&signing_key, period, 223);
-        let mut action_tx = test_transaction(
-            0xB3,
+        let mut action_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xB3,
             sender,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::from(2u64),
-            100_000,
-            set_validator_info_input(validator, "bad action", "insufficient gas"),
-            vec![0xc1, 0xB3],
-        );
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::from(2u64),
+            gas_limit: 100_000,
+            data: set_validator_info_input(validator, "bad action", "insufficient gas"),
+            rlp: vec![0xc1, 0xB3],
+        });
         let tx_intrinsic_gas = intrinsic_gas(&action_tx.data, false).unwrap();
         let action_insufficient_tx_gas_limit = tx_intrinsic_gas;
         action_tx.gas_limit = action_insufficient_tx_gas_limit.into();
@@ -27099,7 +27374,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27130,39 +27405,39 @@ mod tests {
         };
         let signing_key = SigningKey::from_slice(&[34u8; 32]).unwrap();
         let pbft = signed_pbft_block(&signing_key, period, 231);
-        let failed_info_tx = test_transaction(
-            0xA0,
-            wrong_owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            set_validator_info_input(validator, "bad description", "bad endpoint"),
-            vec![0xc1, 0xA0],
-        );
-        let info_tx = test_transaction(
-            0xA1,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            set_validator_info_input(validator, "new description", "new endpoint"),
-            vec![0xc1, 0xA1],
-        );
-        let commission_tx = test_transaction(
-            0xA2,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            set_commission_input(validator, 1_500),
-            vec![0xc1, 0xA2],
-        );
+        let failed_info_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xA0,
+            sender: wrong_owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: set_validator_info_input(validator, "bad description", "bad endpoint"),
+            rlp: vec![0xc1, 0xA0],
+        });
+        let info_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xA1,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: set_validator_info_input(validator, "new description", "new endpoint"),
+            rlp: vec![0xc1, 0xA1],
+        });
+        let commission_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xA2,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: set_commission_input(validator, 1_500),
+            rlp: vec![0xc1, 0xA2],
+        });
         write_period_data(
             &storage,
             period,
@@ -27278,7 +27553,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27339,7 +27614,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27394,7 +27669,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27513,7 +27788,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27723,7 +27998,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27786,7 +28061,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27799,17 +28074,17 @@ mod tests {
         let first_period = 1u64;
         let first_pbft = signed_pbft_block(&signing_key, first_period, 201);
         let transaction_rlp = vec![0xc1, 0xC1];
-        let transaction = test_transaction(
-            0xC1,
-            validator,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::zero(),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xC1,
+            sender: validator,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::zero(),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         let transaction_hash = transaction.hash;
         write_period_data(
             &storage,
@@ -27878,17 +28153,17 @@ mod tests {
 
         let second_period = 2u64;
         let second_pbft = signed_pbft_block(&signing_key, second_period, 202);
-        let delegate_tx = test_transaction(
-            0xC2,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(1_000u64),
-            U256::zero(),
-            100_000,
-            delegate_input(validator),
-            vec![0xc1, 0xC2],
-        );
+        let delegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC2,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(1_000u64),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: delegate_input(validator),
+            rlp: vec![0xc1, 0xC2],
+        });
         write_period_data(
             &storage,
             second_period,
@@ -27921,7 +28196,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -27934,17 +28209,17 @@ mod tests {
         let first_period = 1u64;
         let first_pbft = signed_pbft_block(&signing_key, first_period, 203);
         let transaction_rlp = vec![0xc1, 0xD1];
-        let transaction = test_transaction(
-            0xD1,
-            validator,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::zero(),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xD1,
+            sender: validator,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::zero(),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         let transaction_hash = transaction.hash;
         write_period_data(
             &storage,
@@ -28014,17 +28289,17 @@ mod tests {
 
         let second_period = 2u64;
         let second_pbft = signed_pbft_block(&signing_key, second_period, 204);
-        let claim_tx = test_transaction(
-            0xD2,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            claim_all_rewards_input(),
-            vec![0xc1, 0xD2],
-        );
+        let claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD2,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: claim_all_rewards_input(),
+            rlp: vec![0xc1, 0xD2],
+        });
         write_period_data(
             &storage,
             second_period,
@@ -28060,7 +28335,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -28086,28 +28361,28 @@ mod tests {
             "validator",
             "endpoint",
         );
-        let register_tx = test_transaction(
-            0xD1,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::zero(),
-            150_000,
-            registration_input,
-            vec![0xc1, 0xD1],
-        );
-        let claim_tx = test_transaction(
-            0xD2,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            claim_all_rewards_input(),
-            vec![0xc1, 0xD2],
-        );
+        let register_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD1,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::zero(),
+            gas_limit: 150_000,
+            data: registration_input,
+            rlp: vec![0xc1, 0xD1],
+        });
+        let claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD2,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: claim_all_rewards_input(),
+            rlp: vec![0xc1, 0xD2],
+        });
         write_period_data(
             &storage,
             period,
@@ -28192,7 +28467,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -28205,17 +28480,17 @@ mod tests {
         let first_period = 1u64;
         let first_pbft = signed_pbft_block(&signing_key, first_period, 207);
         let transaction_rlp = vec![0xc1, 0xD3];
-        let transaction = test_transaction(
-            0xD3,
-            validator,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::zero(),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xD3,
+            sender: validator,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::zero(),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         let transaction_hash = transaction.hash;
         write_period_data(
             &storage,
@@ -28284,17 +28559,17 @@ mod tests {
 
         let second_period = 2u64;
         let second_pbft = signed_pbft_block(&signing_key, second_period, 208);
-        let claim_tx = test_transaction(
-            0xD4,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            claim_all_rewards_batch_input(0),
-            vec![0xc1, 0xD4],
-        );
+        let claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD4,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: claim_all_rewards_batch_input(0),
+            rlp: vec![0xc1, 0xD4],
+        });
         write_period_data(
             &storage,
             second_period,
@@ -28330,7 +28605,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -28343,17 +28618,17 @@ mod tests {
         let first_period = 1u64;
         let first_pbft = signed_pbft_block(&signing_key, first_period, 205);
         let transaction_rlp = vec![0xc1, 0xE1];
-        let transaction = test_transaction(
-            0xE1,
-            validator,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::zero(),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xE1,
+            sender: validator,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::zero(),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         let transaction_hash = transaction.hash;
         write_period_data(
             &storage,
@@ -28422,17 +28697,17 @@ mod tests {
 
         let second_period = 2u64;
         let second_pbft = signed_pbft_block(&signing_key, second_period, 206);
-        let claim_tx = test_transaction(
-            0xE2,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            claim_rewards_input(validator),
-            vec![0xc1, 0xE2],
-        );
+        let claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE2,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: claim_rewards_input(validator),
+            rlp: vec![0xc1, 0xE2],
+        });
         write_period_data(
             &storage,
             second_period,
@@ -28462,7 +28737,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -28524,17 +28799,17 @@ mod tests {
         let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
         let snapshot_before = final_chain.dpos_snapshot(first_period.into()).unwrap();
 
-        let failed_claim_tx = test_transaction(
-            0xE2,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
+        let failed_claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE2,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            claim_rewards_input(missing_validator),
-            vec![0xc1, 0xE2],
-        );
+            gas_limit: 100_000,
+            data: claim_rewards_input(missing_validator),
+            rlp: vec![0xc1, 0xE2],
+        });
         let failed_claim_gas =
             expected_native_contract_tx_gas(&final_chain, second_period.into(), &failed_claim_tx);
         write_period_data(
@@ -28585,7 +28860,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -28650,28 +28925,28 @@ mod tests {
         let snapshot_before = final_chain.dpos_snapshot(first_period.into()).unwrap();
         let transfer_value = U256::from(5_000u64);
 
-        let failed_claim_tx = test_transaction(
-            0xE3,
+        let failed_claim_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE3,
             sender,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            claim_rewards_input(validator),
-            vec![0xc1, 0xe3],
-        );
-        let transfer_tx = test_transaction(
-            0xE4,
+            gas_limit: 100_000,
+            data: claim_rewards_input(validator),
+            rlp: vec![0xc1, 0xe3],
+        });
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE4,
             sender,
-            Some(recipient),
-            1,
-            transfer_value,
+            receiver: Some(recipient),
+            nonce: 1,
+            value: transfer_value,
             gas_price,
-            100_000,
-            vec![],
-            vec![0xc1, 0xe4],
-        );
+            gas_limit: 100_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xe4],
+        });
         let failed_claim_gas =
             expected_native_contract_tx_gas(&final_chain, second_period.into(), &failed_claim_tx);
         assert_eq!(failed_claim_gas, 61_464);
@@ -28849,7 +29124,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -28981,7 +29256,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29027,7 +29302,7 @@ mod tests {
         );
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29073,7 +29348,11 @@ mod tests {
             max_votes_weight: 0,
         };
         let first_distribution = final_chain
-            .plan_minted_rewards(1.into(), &[zero_allocated_stats.clone()], &snapshot)
+            .plan_minted_rewards(
+                1.into(),
+                std::slice::from_ref(&zero_allocated_stats),
+                &snapshot,
+            )
             .unwrap();
         assert!(first_distribution.total_minted_reward.is_zero());
         let AspenSupplyState::Migrated { total_supply, .. } = &first_distribution.supply_after
@@ -29093,7 +29372,7 @@ mod tests {
         assert_eq!(total_supply.as_u256(), U256::from(1_150u64));
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29149,7 +29428,7 @@ mod tests {
         assert_eq!(snapshot, snapshot_before);
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29162,17 +29441,17 @@ mod tests {
         let period = 1u64;
         let pbft_block = signed_pbft_block(&signing_key, period, 191);
         let transaction_rlp = vec![0xc1, 0xB1];
-        let transaction = test_transaction(
-            0xB1,
-            validator,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::zero(),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xB1,
+            sender: validator,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::zero(),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -29322,7 +29601,7 @@ mod tests {
         );
         drop(restarted);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29358,7 +29637,7 @@ mod tests {
         );
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29404,7 +29683,7 @@ mod tests {
         assert_eq!(plan.supply_after, snapshot.aspen_supply_state);
 
         drop(final_chain);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29438,17 +29717,17 @@ mod tests {
         let gas_price = U256::from(2u64);
         let period_one_pbft = signed_pbft_block(&signing_key, period_one, 131);
         let period_one_rlp = vec![0xc1, 0x91];
-        let period_one_transaction = test_transaction(
-            0x91,
+        let period_one_transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0x91,
             sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
             gas_price,
-            50_000,
-            vec![],
-            period_one_rlp.clone(),
-        );
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: period_one_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period_one,
@@ -29509,17 +29788,17 @@ mod tests {
         .unwrap();
         let period_two_pbft = signed_pbft_block(&signing_key, period_two, 132);
         let period_two_rlp = vec![0xc1, 0x92];
-        let period_two_transaction = test_transaction(
-            0x92,
+        let period_two_transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0x92,
             sender,
-            Some(receiver),
-            1,
-            U256::from(1u64),
+            receiver: Some(receiver),
+            nonce: 1,
+            value: U256::from(1u64),
             gas_price,
-            50_000,
-            vec![],
-            period_two_rlp.clone(),
-        );
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: period_two_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period_two,
@@ -29563,7 +29842,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29578,17 +29857,17 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[16u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 151);
         let transaction_rlp = vec![0xc1, 0x93];
-        let transaction = test_transaction(
-            0x93,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0x93,
             sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -29652,7 +29931,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29726,7 +30005,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29741,17 +30020,17 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[13u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 122);
         let transaction_rlp = vec![0xc1, 0x86];
-        let transaction = test_transaction(
-            0xF7,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xF7,
             sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::from(2u64),
-            50_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -29799,7 +30078,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -29836,28 +30115,28 @@ mod tests {
             "delegation delay validator",
             "delegation delay endpoint",
         );
-        let register_tx = test_transaction(
-            0xE1,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_input,
-            vec![0xc1, 0xe1],
-        );
-        let delegate_tx = test_transaction(
-            0xE2,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(1_000u64),
-            U256::from(2u64),
-            100_000,
-            delegate_input(validator),
-            vec![0xc1, 0xe2],
-        );
+        let register_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE1,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_input,
+            rlp: vec![0xc1, 0xe1],
+        });
+        let delegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE2,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(1_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 100_000,
+            data: delegate_input(validator),
+            rlp: vec![0xc1, 0xe2],
+        });
 
         write_period_data(
             &storage,
@@ -29984,7 +30263,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -30018,17 +30297,17 @@ mod tests {
             "test validator",
             "test endpoint",
         );
-        let transaction = test_transaction(
-            0xA7,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            stake,
-            U256::from(2u64),
-            150_000,
-            input,
-            transaction_rlp.clone(),
-        );
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xA7,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: stake,
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: input,
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -30178,7 +30457,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -30202,15 +30481,15 @@ mod tests {
             dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&pbft_signing_key, period, 140);
-        let transaction = test_transaction(
-            0xA7,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xA7,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 validator,
                 &proof,
                 [0xA5; 32],
@@ -30218,8 +30497,8 @@ mod tests {
                 "wrong proof validator",
                 "endpoint",
             ),
-            vec![0xc1, 0x91],
-        );
+            rlp: vec![0xc1, 0x91],
+        });
         write_period_data(
             &storage,
             period,
@@ -30258,7 +30537,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -30285,15 +30564,15 @@ mod tests {
             let path = temp_db_path(&format!(
                 "finalize-dpos-register-validator-invalid-proof-length-{case}"
             ));
-            let transaction = test_transaction(
-                0xA7,
-                owner,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::from(5_000u64),
+            let transaction = test_transaction(TestTransactionInput {
+                hash_byte: 0xA7,
+                sender: owner,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::from(5_000u64),
                 gas_price,
-                150_000,
-                register_validator_input_with_raw_vrf(
+                gas_limit: 150_000,
+                data: register_validator_input_with_raw_vrf(
                     validator,
                     &proof,
                     &[0xA5; 32],
@@ -30301,8 +30580,8 @@ mod tests {
                     "invalid proof length",
                     "endpoint",
                 ),
-                vec![0xc1, 0x91],
-            );
+                rlp: vec![0xc1, 0x91],
+            });
 
             let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
             write_period_data(
@@ -30345,7 +30624,7 @@ mod tests {
 
             drop(final_chain);
             drop(storage);
-            let _ = std::fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 
@@ -30372,15 +30651,15 @@ mod tests {
                 "finalize-dpos-register-validator-invalid-recovery-id-{recovery_id}"
             ));
             let proof = register_validator_proof(&signing_key, validator, Some(recovery_id));
-            let tx = test_transaction(
-                0xA7,
-                owner,
-                Some(DPOS_CONTRACT_ADDRESS),
-                0,
-                U256::from(5_000u64),
-                U256::from(2u64),
-                150_000,
-                register_validator_input(
+            let tx = test_transaction(TestTransactionInput {
+                hash_byte: 0xA7,
+                sender: owner,
+                receiver: Some(DPOS_CONTRACT_ADDRESS),
+                nonce: 0,
+                value: U256::from(5_000u64),
+                gas_price: U256::from(2u64),
+                gas_limit: 150_000,
+                data: register_validator_input(
                     validator,
                     &proof,
                     [0xA5; 32],
@@ -30388,8 +30667,8 @@ mod tests {
                     "invalid recovery id",
                     "endpoint",
                 ),
-                vec![0xc1, 0x91],
-            );
+                rlp: vec![0xc1, 0x91],
+            });
             let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
             write_period_data(&storage, period, &pbft_block, std::slice::from_ref(&tx.rlp));
             let final_chain = FinalChain::new(
@@ -30422,7 +30701,7 @@ mod tests {
             );
             drop(final_chain);
             drop(storage);
-            let _ = std::fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 
@@ -30448,28 +30727,28 @@ mod tests {
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 143);
 
-        let first = test_transaction(
-            0xA7,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(validator, &proof, [0xA5; 32], 10, "first", "endpoint"),
-            vec![0xc1, 0x91],
-        );
-        let second = test_transaction(
-            0xA8,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(1_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(validator, &proof, [0xA6; 32], 10, "second", "endpoint"),
-            vec![0xc1, 0x92],
-        );
+        let first = test_transaction(TestTransactionInput {
+            hash_byte: 0xA7,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(validator, &proof, [0xA5; 32], 10, "first", "endpoint"),
+            rlp: vec![0xc1, 0x91],
+        });
+        let second = test_transaction(TestTransactionInput {
+            hash_byte: 0xA8,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(1_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(validator, &proof, [0xA6; 32], 10, "second", "endpoint"),
+            rlp: vec![0xc1, 0x92],
+        });
         write_period_data(
             &storage,
             period,
@@ -30518,7 +30797,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -30543,17 +30822,24 @@ mod tests {
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 144);
 
-        let below_minimum = test_transaction(
-            0xA7,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(500u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(validator, &proof, [0xA5; 32], 10, "below min", "endpoint"),
-            vec![0xc1, 0x91],
-        );
+        let below_minimum = test_transaction(TestTransactionInput {
+            hash_byte: 0xA7,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(500u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
+                validator,
+                &proof,
+                [0xA5; 32],
+                10,
+                "below min",
+                "endpoint",
+            ),
+            rlp: vec![0xc1, 0x91],
+        });
         write_period_data(
             &storage,
             period,
@@ -30594,17 +30880,24 @@ mod tests {
             minimum_deposit: DposTokenAmount::zero(),
             ..genesis_dpos_config
         };
-        let zero_stake = test_transaction(
-            0xA8,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(validator, &proof, [0xA6; 32], 10, "zero stake", "endpoint"),
-            vec![0xc1, 0x92],
-        );
+        let zero_stake = test_transaction(TestTransactionInput {
+            hash_byte: 0xA8,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
+                validator,
+                &proof,
+                [0xA6; 32],
+                10,
+                "zero stake",
+                "endpoint",
+            ),
+            rlp: vec![0xc1, 0x92],
+        });
         write_period_data(
             &storage,
             period,
@@ -30640,8 +30933,8 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
-        let _ = std::fs::remove_dir_all(zero_stake_path);
+        let _ = crate::closeout_test_scratch::dispose(path);
+        let _ = crate::closeout_test_scratch::dispose(zero_stake_path);
     }
 
     #[test]
@@ -30666,15 +30959,15 @@ mod tests {
         let pbft_block = signed_pbft_block(&signing_key, period, 145);
         let long_description = "x".repeat(DPOS_MAX_DESCRIPTION_LENGTH + 1);
         let long_endpoint = "y".repeat(DPOS_MAX_ENDPOINT_LENGTH + 1);
-        let too_long_desc_tx = test_transaction(
-            0xA7,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+        let too_long_desc_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xA7,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 validator,
                 &proof,
                 [0xA5; 32],
@@ -30682,17 +30975,17 @@ mod tests {
                 &long_description,
                 "endpoint",
             ),
-            vec![0xc1, 0x91],
-        );
-        let too_long_endpoint_tx = test_transaction(
-            0xA8,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+            rlp: vec![0xc1, 0x91],
+        });
+        let too_long_endpoint_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xA8,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 validator,
                 &proof,
                 [0xA5; 32],
@@ -30700,17 +30993,17 @@ mod tests {
                 "description",
                 &long_endpoint,
             ),
-            vec![0xc1, 0x92],
-        );
-        let bad_vrf_len_tx = test_transaction(
-            0xA9,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            2,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input_with_raw_vrf(
+            rlp: vec![0xc1, 0x92],
+        });
+        let bad_vrf_len_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xA9,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 2,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input_with_raw_vrf(
                 validator,
                 &proof,
                 &[0xA6; 31],
@@ -30718,8 +31011,8 @@ mod tests {
                 "description",
                 "endpoint",
             ),
-            vec![0xc1, 0x93],
-        );
+            rlp: vec![0xc1, 0x93],
+        });
         write_period_data(
             &storage,
             period,
@@ -30768,7 +31061,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -30796,15 +31089,15 @@ mod tests {
         };
         let pbft_block = signed_pbft_block(&above_max_key, period, 146);
 
-        let too_high_stake_tx = test_transaction(
-            0xC0,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(10_001u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+        let too_high_stake_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC0,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(10_001u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 above_max_validator,
                 &above_max_proof,
                 [0xA5; 32],
@@ -30812,17 +31105,17 @@ mod tests {
                 "above max",
                 "endpoint",
             ),
-            vec![0xc1, 0xc0],
-        );
-        let exact_max_stake_tx = test_transaction(
-            0xC1,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            max_stake,
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+            rlp: vec![0xc1, 0xc0],
+        });
+        let exact_max_stake_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC1,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: max_stake,
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 exact_max_validator,
                 &exact_max_proof,
                 [0xA6; 32],
@@ -30830,8 +31123,8 @@ mod tests {
                 "exact max",
                 "endpoint",
             ),
-            vec![0xc1, 0xc1],
-        );
+            rlp: vec![0xc1, 0xc1],
+        });
         write_period_data(
             &storage,
             period,
@@ -30876,17 +31169,16 @@ mod tests {
             max_stake
         );
         assert!(
-            final_chain
+            !final_chain
                 .dpos_snapshot(period.into())
                 .unwrap()
                 .total_stakes
-                .get(&above_max_validator)
-                .is_none()
+                .contains_key(&above_max_validator)
         );
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -30920,15 +31212,15 @@ mod tests {
         };
         let pbft_block = signed_pbft_block(&too_high_commission_key, period, 147);
 
-        let too_high_commission_tx = test_transaction(
-            0xC2,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+        let too_high_commission_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC2,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 too_high_commission_validator,
                 &too_high_commission_proof,
                 [0xA5; 32],
@@ -30936,17 +31228,17 @@ mod tests {
                 "commission too high",
                 "endpoint",
             ),
-            vec![0xc1, 0xc2],
-        );
-        let max_commission_tx = test_transaction(
-            0xC3,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+            rlp: vec![0xc1, 0xc2],
+        });
+        let max_commission_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC3,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 max_commission_validator,
                 &max_commission_proof,
                 [0xA6; 32],
@@ -30954,8 +31246,8 @@ mod tests {
                 "commission max",
                 "endpoint",
             ),
-            vec![0xc1, 0xc3],
-        );
+            rlp: vec![0xc1, 0xc3],
+        });
         write_period_data(
             &storage,
             period,
@@ -30997,7 +31289,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -31052,15 +31344,15 @@ mod tests {
         let description_ok = "d".repeat(DPOS_MAX_DESCRIPTION_LENGTH);
         let long_vrf_key = vec![0x11u8; 33];
 
-        let malformed_signature_tx = test_transaction(
-            0xC4,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+        let malformed_signature_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC4,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 malformed_signature_validator,
                 &malformed_65_signature,
                 [0xA5; 32],
@@ -31068,17 +31360,17 @@ mod tests {
                 "malformed signature",
                 "endpoint",
             ),
-            vec![0xc1, 0xc4],
-        );
-        let endpoint_too_long_tx = test_transaction(
-            0xC5,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+            rlp: vec![0xc1, 0xc4],
+        });
+        let endpoint_too_long_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC5,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 endpoint_validator,
                 &endpoint_proof,
                 [0xA5; 32],
@@ -31086,17 +31378,17 @@ mod tests {
                 "endpoint too long",
                 &endpoint_too_long,
             ),
-            vec![0xc1, 0xc5],
-        );
-        let endpoint_ok_tx = test_transaction(
-            0xC6,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            2,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+            rlp: vec![0xc1, 0xc5],
+        });
+        let endpoint_ok_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC6,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 2,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 endpoint_validator,
                 &endpoint_proof,
                 [0xA6; 32],
@@ -31104,17 +31396,17 @@ mod tests {
                 "endpoint max",
                 &endpoint_ok,
             ),
-            vec![0xc1, 0xc6],
-        );
-        let description_too_long_tx = test_transaction(
-            0xC7,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            3,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+            rlp: vec![0xc1, 0xc6],
+        });
+        let description_too_long_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC7,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 3,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 endpoint_validator,
                 &endpoint_proof,
                 [0xA7; 32],
@@ -31122,17 +31414,17 @@ mod tests {
                 &description_too_long,
                 "endpoint",
             ),
-            vec![0xc1, 0xc7],
-        );
-        let description_ok_tx = test_transaction(
-            0xC8,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            4,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+            rlp: vec![0xc1, 0xc7],
+        });
+        let description_ok_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC8,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 4,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 description_validator,
                 &description_proof,
                 [0xA8; 32],
@@ -31140,17 +31432,17 @@ mod tests {
                 &description_ok,
                 &endpoint_ok,
             ),
-            vec![0xc1, 0xc8],
-        );
-        let description_utf8_ok_tx = test_transaction(
-            0xC9,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            5,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+            rlp: vec![0xc1, 0xc8],
+        });
+        let description_utf8_ok_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC9,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 5,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 utf8_boundary_validator,
                 &utf8_boundary_proof,
                 [0xA9; 32],
@@ -31158,17 +31450,17 @@ mod tests {
                 &utf8_boundary_description,
                 &endpoint_ok,
             ),
-            vec![0xc1, 0xc9],
-        );
-        let description_invalid_utf8_tx = test_transaction(
-            0xCA,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            6,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input_with_metadata_bytes(
+            rlp: vec![0xc1, 0xc9],
+        });
+        let description_invalid_utf8_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xCA,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 6,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input_with_metadata_bytes(
                 utf8_over_validator,
                 &utf8_over_proof,
                 &[0xAAu8; 32],
@@ -31176,17 +31468,17 @@ mod tests {
                 &invalid_utf8_description,
                 endpoint_ok.as_bytes(),
             ),
-            vec![0xc1, 0xca],
-        );
-        let vrf33_tx = test_transaction(
-            0xCB,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            7,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input_with_raw_vrf(
+            rlp: vec![0xc1, 0xca],
+        });
+        let vrf33_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xCB,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 7,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input_with_raw_vrf(
                 vrf33_validator,
                 &vrf33_proof,
                 &long_vrf_key,
@@ -31194,8 +31486,8 @@ mod tests {
                 "vrf 33",
                 &endpoint_ok,
             ),
-            vec![0xc1, 0xcb],
-        );
+            rlp: vec![0xc1, 0xcb],
+        });
 
         write_period_data(
             &storage,
@@ -31341,7 +31633,7 @@ mod tests {
         assert_eq!(metadata.endpoint, endpoint_ok.as_bytes());
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -31384,18 +31676,25 @@ mod tests {
             .insert_dpos_snapshot(0.into(), snapshot)
             .unwrap();
 
-        let tx = test_transaction(
-            0xCC,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(validator, &proof, [0xA5; 32], 10, "orphan rows", "endpoint"),
-            vec![0xc1, 0xcc],
-        );
-        write_period_data(&storage, period, &pbft_block, &[tx.rlp.clone()]);
+        let tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xCC,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
+                validator,
+                &proof,
+                [0xA5; 32],
+                10,
+                "orphan rows",
+                "endpoint",
+            ),
+            rlp: vec![0xc1, 0xcc],
+        });
+        write_period_data(&storage, period, &pbft_block, std::slice::from_ref(&tx.rlp));
         let err = final_chain
             .finalize_block(pbft_block, vec![tx], vec![])
             .unwrap_err();
@@ -31403,7 +31702,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -31433,15 +31732,15 @@ mod tests {
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
-        let failed_tx = test_transaction(
-            0xCD,
+        let failed_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xCD,
             sender,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            failed_value,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: failed_value,
             gas_price,
-            150_000,
-            register_validator_input(
+            gas_limit: 150_000,
+            data: register_validator_input(
                 failed_validator,
                 &failed_proof,
                 [0xA5; 32],
@@ -31449,19 +31748,19 @@ mod tests {
                 "failed registration",
                 "endpoint",
             ),
-            vec![0xc1, 0xcd],
-        );
-        let transfer_probe = test_transaction(
-            0xCE,
+            rlp: vec![0xc1, 0xcd],
+        });
+        let transfer_probe = test_transaction(TestTransactionInput {
+            hash_byte: 0xCE,
             sender,
-            Some(recipient),
-            1,
-            U256::zero(),
+            receiver: Some(recipient),
+            nonce: 1,
+            value: U256::zero(),
             gas_price,
-            50_000,
-            vec![],
-            vec![0xc1, 0xce],
-        );
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xce],
+        });
         let failed_tx_gas =
             intrinsic_gas(&failed_tx.data, false).unwrap() + DPOS_REGISTER_VALIDATOR_GAS;
         let transfer_tx_gas = intrinsic_gas(&transfer_probe.data, false).unwrap();
@@ -31471,17 +31770,17 @@ mod tests {
             .and_then(|balance| balance.checked_sub(U256::one()))
             .expect("test sender balance must cover gas and continuation");
         assert!(transfer_value > failed_value);
-        let transfer_tx = test_transaction(
-            0xCE,
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xCE,
             sender,
-            Some(recipient),
-            1,
-            transfer_value,
+            receiver: Some(recipient),
+            nonce: 1,
+            value: transfer_value,
             gas_price,
-            50_000,
-            vec![],
-            vec![0xc1, 0xce],
-        );
+            gas_limit: 50_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xce],
+        });
         let final_chain = FinalChain::new(
             storage.clone(),
             300_000.into(),
@@ -31608,7 +31907,7 @@ mod tests {
 
         drop(restart_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -31641,29 +31940,29 @@ mod tests {
             "delegate vote",
             "delegate endpoint",
         );
-        let register_tx = test_transaction(
-            0xA8,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(5_000u64),
-            U256::from(2u64),
-            150_000,
-            register_input,
-            vec![0xc1, 0x90],
-        );
+        let register_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xA8,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(5_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_input,
+            rlp: vec![0xc1, 0x90],
+        });
 
-        let delegate_tx = test_transaction(
-            0xA9,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(4_000u64),
-            U256::from(2u64),
-            100_000,
-            delegate_input(validator),
-            vec![0xc1, 0x91],
-        );
+        let delegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xA9,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(4_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 100_000,
+            data: delegate_input(validator),
+            rlp: vec![0xc1, 0x91],
+        });
 
         write_period_data(
             &storage,
@@ -31749,7 +32048,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -31774,18 +32073,23 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 153);
 
-        let delegate_tx = test_transaction(
-            0xAA,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(4_000u64),
+        let delegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xAA,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(4_000u64),
             gas_price,
-            100_000,
-            delegate_input(missing_validator),
-            vec![0xc1, 0xaa],
+            gas_limit: 100_000,
+            data: delegate_input(missing_validator),
+            rlp: vec![0xc1, 0xaa],
+        });
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&delegate_tx.rlp),
         );
-        write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
             300_000.into(),
@@ -31827,7 +32131,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -31853,29 +32157,29 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[23u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 167);
 
-        let delegate_tx = test_transaction(
-            0xD1,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(delegate_value),
+        let delegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD1,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(delegate_value),
             gas_price,
-            100_000,
-            delegate_input(missing_validator),
-            vec![0xc1, 0xd1],
-        );
+            gas_limit: 100_000,
+            data: delegate_input(missing_validator),
+            rlp: vec![0xc1, 0xd1],
+        });
         let transfer_gas = intrinsic_gas(&[], false).unwrap();
-        let transfer_tx = test_transaction(
-            0xD2,
-            owner,
-            Some(recipient),
-            1,
-            U256::zero(),
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD2,
+            sender: owner,
+            receiver: Some(recipient),
+            nonce: 1,
+            value: U256::zero(),
             gas_price,
-            transfer_gas,
-            vec![],
-            vec![0xc1, 0xd2],
-        );
+            gas_limit: transfer_gas,
+            data: vec![],
+            rlp: vec![0xc1, 0xd2],
+        });
 
         let delegate_tx_gas = DPOS_DELEGATE_GAS + intrinsic_gas(&delegate_tx.data, false).unwrap();
         let owner_balance_before =
@@ -31922,7 +32226,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -31948,19 +32252,24 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[24u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 168);
 
-        let delegate_tx = test_transaction(
-            0xD3,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            delegate_value,
+        let delegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD3,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: delegate_value,
             gas_price,
-            100_000,
-            delegate_input(validator),
-            vec![0xc1, 0xd3],
-        );
+            gas_limit: 100_000,
+            data: delegate_input(validator),
+            rlp: vec![0xc1, 0xd3],
+        });
         let owner_balance_before = U256::from(5_000_000u64);
-        write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&delegate_tx.rlp),
+        );
         let final_chain = FinalChain::new(
             storage.clone(),
             300_000.into(),
@@ -32015,7 +32324,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32040,19 +32349,24 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[25u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 169);
 
-        let delegate_tx = test_transaction(
-            0xD4,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            delegate_value,
+        let delegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD4,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: delegate_value,
             gas_price,
-            100_000,
-            delegate_input(validator),
-            vec![0xc1, 0xd4],
-        );
+            gas_limit: 100_000,
+            data: delegate_input(validator),
+            rlp: vec![0xc1, 0xd4],
+        });
         let owner_balance_before = U256::from(5_000_000u64);
-        write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&delegate_tx.rlp),
+        );
         let final_chain = FinalChain::new(
             storage.clone(),
             300_000.into(),
@@ -32107,7 +32421,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32132,28 +32446,28 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[26u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 170);
 
-        let initial_delegate_tx = test_transaction(
-            0xD5,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(2_000u64),
+        let initial_delegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD5,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(2_000u64),
             gas_price,
-            100_000,
-            delegate_input(validator),
-            vec![0xc1, 0xd5],
-        );
-        let topup_tx = test_transaction(
-            0xD6,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(100u64),
+            gas_limit: 100_000,
+            data: delegate_input(validator),
+            rlp: vec![0xc1, 0xd5],
+        });
+        let topup_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD6,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(100u64),
             gas_price,
-            100_000,
-            delegate_input(validator),
-            vec![0xc1, 0xd6],
-        );
+            gas_limit: 100_000,
+            data: delegate_input(validator),
+            rlp: vec![0xc1, 0xd6],
+        });
         let owner_balance_before = U256::from(5_000_000u64);
         write_period_data(
             &storage,
@@ -32230,7 +32544,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32251,19 +32565,24 @@ mod tests {
         };
         let signing_key = SigningKey::from_slice(&[20u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 153);
-        let undelegate_tx = test_transaction(
-            0xBA,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::from(2u64),
-            100_000,
-            undelegate_input(validator, U256::from(3_000u64)),
-            vec![0xc1, 0xba],
-        );
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xBA,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::from(2u64),
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(3_000u64)),
+            rlp: vec![0xc1, 0xba],
+        });
 
-        write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&undelegate_tx.rlp),
+        );
         let final_chain = FinalChain::new(
             storage.clone(),
             200_000.into(),
@@ -32299,7 +32618,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32324,19 +32643,24 @@ mod tests {
         let pbft_block = signed_pbft_block(&signing_key, period, 155);
         let delegator_balance_before = U256::from(1_000_000u64);
         let gas_price = U256::from(2u64);
-        let undelegate_tx = test_transaction(
-            0xEF,
-            delegator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xEF,
+            sender: delegator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            undelegate_input(missing_validator, U256::from(1_000u64)),
-            vec![0xc1, 0xef],
-        );
+            gas_limit: 100_000,
+            data: undelegate_input(missing_validator, U256::from(1_000u64)),
+            rlp: vec![0xc1, 0xef],
+        });
 
-        write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&undelegate_tx.rlp),
+        );
         let final_chain = FinalChain::new(
             storage.clone(),
             200_000.into(),
@@ -32380,7 +32704,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32404,19 +32728,24 @@ mod tests {
         let pbft_block = signed_pbft_block(&signing_key, period, 156);
         let delegator_balance_before = U256::from(1_000_000u64);
         let gas_price = U256::from(2u64);
-        let undelegate_tx = test_transaction(
-            0xF0,
-            delegator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xF0,
+            sender: delegator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            undelegate_input(validator, U256::from(500u64)),
-            vec![0xc1, 0xf0],
-        );
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(500u64)),
+            rlp: vec![0xc1, 0xf0],
+        });
 
-        write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&undelegate_tx.rlp),
+        );
         let final_chain = FinalChain::new(
             storage.clone(),
             200_000.into(),
@@ -32460,7 +32789,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32483,19 +32812,24 @@ mod tests {
         let pbft_block = signed_pbft_block(&signing_key, period, 157);
         let validator_balance_before = U256::from(1_000_000u64);
         let gas_price = U256::from(2u64);
-        let undelegate_tx = test_transaction(
-            0xF1,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xF1,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            undelegate_input(validator, U256::from(7_000u64)),
-            vec![0xc1, 0xf1],
-        );
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(7_000u64)),
+            rlp: vec![0xc1, 0xf1],
+        });
 
-        write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&undelegate_tx.rlp),
+        );
         let final_chain = FinalChain::new(
             storage.clone(),
             200_000.into(),
@@ -32548,7 +32882,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32572,19 +32906,24 @@ mod tests {
         let pbft_block = signed_pbft_block(&signing_key, period, 158);
         let validator_balance_before = U256::from(1_000_000u64);
         let gas_price = U256::from(2u64);
-        let undelegate_tx = test_transaction(
-            0xF2,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xF2,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            undelegate_input(validator, U256::from(2_500u64)),
-            vec![0xc1, 0xf2],
-        );
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(2_500u64)),
+            rlp: vec![0xc1, 0xf2],
+        });
 
-        write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&undelegate_tx.rlp),
+        );
         let final_chain = FinalChain::new(
             storage.clone(),
             200_000.into(),
@@ -32626,7 +32965,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32647,18 +32986,23 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[34u8; 32]).unwrap();
         let mut pbft_block = signed_pbft_block(&signing_key, 1, 159);
         let gas_price = U256::from(1u64);
-        let transfer_tx = test_transaction(
-            0xF3,
-            validator,
-            Some([0xAA; 20]),
-            0,
-            U256::from(10u64),
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xF3,
+            sender: validator,
+            receiver: Some([0xAA; 20]),
+            nonce: 0,
+            value: U256::from(10u64),
             gas_price,
-            intrinsic_gas(&[], false).unwrap(),
-            vec![],
-            vec![0xc1, 0xf3],
+            gas_limit: intrinsic_gas(&[], false).unwrap(),
+            data: vec![],
+            rlp: vec![0xc1, 0xf3],
+        });
+        write_period_data(
+            &storage,
+            1,
+            &pbft_block,
+            std::slice::from_ref(&transfer_tx.rlp),
         );
-        write_period_data(&storage, 1, &pbft_block, &[transfer_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
             200_000.into(),
@@ -32701,18 +33045,23 @@ mod tests {
         );
 
         pbft_block = signed_pbft_block(&signing_key, 2, 160);
-        let undelegate_tx = test_transaction(
-            0xF3,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xF3,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            undelegate_input(validator, U256::from(1_500u64)),
-            vec![0xc1, 0xf3],
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(1_500u64)),
+            rlp: vec![0xc1, 0xf3],
+        });
+        write_period_data(
+            &storage,
+            2,
+            &pbft_block,
+            std::slice::from_ref(&undelegate_tx.rlp),
         );
-        write_period_data(&storage, 2, &pbft_block, &[undelegate_tx.rlp.clone()]);
 
         let err = final_chain
             .finalize_block(pbft_block, vec![undelegate_tx], vec![])
@@ -32743,7 +33092,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32764,18 +33113,23 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[35u8; 32]).unwrap();
         let period_one_block = signed_pbft_block(&signing_key, 1, 180);
         let gas_price = U256::from(1u64);
-        let transfer_tx = test_transaction(
-            0xF4,
-            validator,
-            Some([0xAB; 20]),
-            0,
-            U256::from(10u64),
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xF4,
+            sender: validator,
+            receiver: Some([0xAB; 20]),
+            nonce: 0,
+            value: U256::from(10u64),
             gas_price,
-            intrinsic_gas(&[], false).unwrap(),
-            vec![],
-            vec![0xc1, 0xf4],
+            gas_limit: intrinsic_gas(&[], false).unwrap(),
+            data: vec![],
+            rlp: vec![0xc1, 0xf4],
+        });
+        write_period_data(
+            &storage,
+            1,
+            &period_one_block,
+            std::slice::from_ref(&transfer_tx.rlp),
         );
-        write_period_data(&storage, 1, &period_one_block, &[transfer_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
             200_000.into(),
@@ -32801,18 +33155,23 @@ mod tests {
         let pre_fail_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
 
         let period_two_block = signed_pbft_block(&signing_key, 2, 181);
-        let undelegate_tx = test_transaction(
-            0xF4,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xF4,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
             gas_price,
-            100_000,
-            undelegate_v2_input(validator, U256::from(1_500u64)),
-            vec![0xc1, 0xf4],
+            gas_limit: 100_000,
+            data: undelegate_v2_input(validator, U256::from(1_500u64)),
+            rlp: vec![0xc1, 0xf4],
+        });
+        write_period_data(
+            &storage,
+            2,
+            &period_two_block,
+            std::slice::from_ref(&undelegate_tx.rlp),
         );
-        write_period_data(&storage, 2, &period_two_block, &[undelegate_tx.rlp.clone()]);
         let error = final_chain
             .finalize_block(period_two_block, vec![undelegate_tx], vec![])
             .unwrap_err();
@@ -32855,7 +33214,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -32882,22 +33241,22 @@ mod tests {
         };
         let period_one = 1u64;
         let period_one_block = signed_pbft_block(&signing_key, period_one, 161);
-        let undelegate_tx = test_transaction(
-            0xC1,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_v2_input(validator, U256::from(3_000u64)),
-            vec![0xc1, 0xc1],
-        );
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC1,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_v2_input(validator, U256::from(3_000u64)),
+            rlp: vec![0xc1, 0xc1],
+        });
         write_period_data(
             &storage,
             period_one,
             &period_one_block,
-            &[undelegate_tx.rlp.clone()],
+            std::slice::from_ref(&undelegate_tx.rlp),
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
@@ -33003,22 +33362,22 @@ mod tests {
 
         let period_two = 2u64;
         let period_two_block = signed_pbft_block(&signing_key, period_two, 162);
-        let locked_confirm_tx = test_transaction(
-            0xC2,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            confirm_undelegate_v2_input(validator, 1),
-            vec![0xc1, 0xc2],
-        );
+        let locked_confirm_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC2,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: confirm_undelegate_v2_input(validator, 1),
+            rlp: vec![0xc1, 0xc2],
+        });
         write_period_data(
             &storage,
             period_two,
             &period_two_block,
-            &[locked_confirm_tx.rlp.clone()],
+            std::slice::from_ref(&locked_confirm_tx.rlp),
         );
         let (_header_rlp, receipts) = final_chain
             .finalize_block(period_two_block, vec![locked_confirm_tx.clone()], vec![])
@@ -33033,22 +33392,22 @@ mod tests {
 
         let period_three = 3u64;
         let period_three_block = signed_pbft_block(&signing_key, period_three, 163);
-        let confirm_tx = test_transaction(
-            0xC3,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            2,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            confirm_undelegate_v2_input(validator, 1),
-            vec![0xc1, 0xc3],
-        );
+        let confirm_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC3,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 2,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: confirm_undelegate_v2_input(validator, 1),
+            rlp: vec![0xc1, 0xc3],
+        });
         write_period_data(
             &storage,
             period_three,
             &period_three_block,
-            &[confirm_tx.rlp.clone()],
+            std::slice::from_ref(&confirm_tx.rlp),
         );
         let (_header_rlp, receipts) = final_chain
             .finalize_block(period_three_block, vec![confirm_tx.clone()], vec![])
@@ -33100,7 +33459,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33122,28 +33481,28 @@ mod tests {
         let period = 1u64;
         let pbft_block = signed_pbft_block(&signing_key, period, 181);
         let duplicate_amount = U256::from(1_000u64);
-        let first_undelegate = test_transaction(
-            0xD5,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_input(validator, U256::from(3_000u64)),
-            vec![0xc1, 0xd5],
-        );
-        let second_undelegate = test_transaction(
-            0xD6,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_input(validator, duplicate_amount),
-            vec![0xc1, 0xd6],
-        );
+        let first_undelegate = test_transaction(TestTransactionInput {
+            hash_byte: 0xD5,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(3_000u64)),
+            rlp: vec![0xc1, 0xd5],
+        });
+        let second_undelegate = test_transaction(TestTransactionInput {
+            hash_byte: 0xD6,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_input(validator, duplicate_amount),
+            rlp: vec![0xc1, 0xd6],
+        });
         write_period_data(
             &storage,
             period,
@@ -33194,7 +33553,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33223,28 +33582,28 @@ mod tests {
         let period_two = 2u64;
         let period_one_block = signed_pbft_block(&signing_key, period_one, 191);
         let period_two_block = signed_pbft_block(&signing_key, period_two, 192);
-        let undelegate_tx = test_transaction(
-            0xD7,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_input(validator, U256::from(4_000u64)),
-            vec![0xc1, 0xd7],
-        );
-        let confirm_tx = test_transaction(
-            0xD8,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            confirm_undelegate_input(validator),
-            vec![0xc1, 0xd8],
-        );
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD7,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(4_000u64)),
+            rlp: vec![0xc1, 0xd7],
+        });
+        let confirm_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD8,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: confirm_undelegate_input(validator),
+            rlp: vec![0xc1, 0xd8],
+        });
         write_period_data(
             &storage,
             period_one,
@@ -33298,7 +33657,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33327,28 +33686,28 @@ mod tests {
         let period_two = 2u64;
         let period_one_block = signed_pbft_block(&signing_key, period_one, 201);
         let period_two_block = signed_pbft_block(&signing_key, period_two, 202);
-        let undelegate_tx = test_transaction(
-            0xD9,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_input(validator, U256::from(3_000u64)),
-            vec![0xc1, 0xd9],
-        );
-        let confirm_tx = test_transaction(
-            0xDA,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            confirm_undelegate_input(validator),
-            vec![0xc1, 0xda],
-        );
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD9,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(3_000u64)),
+            rlp: vec![0xc1, 0xd9],
+        });
+        let confirm_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xDA,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: confirm_undelegate_input(validator),
+            rlp: vec![0xc1, 0xda],
+        });
         write_period_data(
             &storage,
             period_one,
@@ -33415,7 +33774,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33437,17 +33796,17 @@ mod tests {
         };
         let period = 1u64;
         let period_block = signed_pbft_block(&signing_key, period, 211);
-        let cancel_tx = test_transaction(
-            0xDB,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            cancel_undelegate_input(missing_validator),
-            vec![0xc1, 0xdb],
-        );
+        let cancel_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xDB,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: cancel_undelegate_input(missing_validator),
+            rlp: vec![0xc1, 0xdb],
+        });
         write_period_data(
             &storage,
             period,
@@ -33504,7 +33863,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33531,28 +33890,28 @@ mod tests {
         let period_two = 2u64;
         let period_one_block = signed_pbft_block(&signing_key, period_one, 221);
         let period_two_block = signed_pbft_block(&signing_key, period_two, 222);
-        let undelegate_tx = test_transaction(
-            0xDC,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_input(validator, U256::from(4_000u64)),
-            vec![0xc1, 0xdc],
-        );
-        let cancel_tx = test_transaction(
-            0xDD,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            cancel_undelegate_input(validator),
-            vec![0xc1, 0xdd],
-        );
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xDC,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_input(validator, U256::from(4_000u64)),
+            rlp: vec![0xc1, 0xdc],
+        });
+        let cancel_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xDD,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: cancel_undelegate_input(validator),
+            rlp: vec![0xc1, 0xdd],
+        });
         write_period_data(
             &storage,
             period_one,
@@ -33632,7 +33991,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33659,22 +34018,22 @@ mod tests {
         };
         let period_one = 1u64;
         let period_one_block = signed_pbft_block(&signing_key, period_one, 171);
-        let undelegate_tx = test_transaction(
-            0xD1,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            undelegate_v2_input(validator, U256::from(4_000u64)),
-            vec![0xc1, 0xd1],
-        );
+        let undelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD1,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: undelegate_v2_input(validator, U256::from(4_000u64)),
+            rlp: vec![0xc1, 0xd1],
+        });
         write_period_data(
             &storage,
             period_one,
             &period_one_block,
-            &[undelegate_tx.rlp.clone()],
+            std::slice::from_ref(&undelegate_tx.rlp),
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
@@ -33695,22 +34054,22 @@ mod tests {
 
         let period_two = 2u64;
         let period_two_block = signed_pbft_block(&signing_key, period_two, 172);
-        let cancel_tx = test_transaction(
-            0xD2,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            100_000,
-            cancel_undelegate_v2_input(validator, 1),
-            vec![0xc1, 0xd2],
-        );
+        let cancel_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xD2,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 100_000,
+            data: cancel_undelegate_v2_input(validator, 1),
+            rlp: vec![0xc1, 0xd2],
+        });
         write_period_data(
             &storage,
             period_two,
             &period_two_block,
-            &[cancel_tx.rlp.clone()],
+            std::slice::from_ref(&cancel_tx.rlp),
         );
         let (_header_rlp, receipts) = final_chain
             .finalize_block(period_two_block, vec![cancel_tx.clone()], vec![])
@@ -33757,7 +34116,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33788,7 +34147,7 @@ mod tests {
         let pbft_block = signed_pbft_block(&pbft_signing_key, period, 152);
 
         let mut txs = Vec::new();
-        let tx_rlps = vec![vec![0xc1, 0xa1], vec![0xc1, 0xa2], vec![0xc1, 0xa3]];
+        let tx_rlps = [vec![0xc1, 0xa1], vec![0xc1, 0xa2], vec![0xc1, 0xa3]];
         let register_input = register_validator_input(
             first_validator,
             &first_validator_proof,
@@ -33797,26 +34156,26 @@ mod tests {
             "first",
             "endpoint",
         );
-        txs.push(test_transaction(
-            0xB0,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(10_000u64),
-            U256::from(2u64),
-            150_000,
-            register_input,
-            tx_rlps[0].clone(),
-        ));
-        txs.push(test_transaction(
-            0xB1,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(2_000u64),
-            U256::from(2u64),
-            150_000,
-            register_validator_input(
+        txs.push(test_transaction(TestTransactionInput {
+            hash_byte: 0xB0,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(10_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_input,
+            rlp: tx_rlps[0].clone(),
+        }));
+        txs.push(test_transaction(TestTransactionInput {
+            hash_byte: 0xB1,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(2_000u64),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: register_validator_input(
                 second_validator,
                 &second_validator_proof,
                 [0xA6; 32],
@@ -33824,19 +34183,19 @@ mod tests {
                 "second",
                 "endpoint",
             ),
-            tx_rlps[1].clone(),
-        ));
-        txs.push(test_transaction(
-            0xB2,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            2,
-            U256::zero(),
-            U256::from(2u64),
-            150_000,
-            redelegate_input(first_validator, second_validator, U256::from(3_000u64)),
-            tx_rlps[2].clone(),
-        ));
+            rlp: tx_rlps[1].clone(),
+        }));
+        txs.push(test_transaction(TestTransactionInput {
+            hash_byte: 0xB2,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 2,
+            value: U256::zero(),
+            gas_price: U256::from(2u64),
+            gas_limit: 150_000,
+            data: redelegate_input(first_validator, second_validator, U256::from(3_000u64)),
+            rlp: tx_rlps[2].clone(),
+        }));
 
         write_period_data(
             &storage,
@@ -33878,7 +34237,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33892,18 +34251,23 @@ mod tests {
         let first_validator: [u8; 20] = address_from_signing_key(&first_validator_key).into();
         let second_validator: [u8; 20] = address_from_signing_key(&second_validator_key).into();
         let pbft_block = signed_pbft_block(&pbft_signing_key, period, 153);
-        let redelegate_tx = test_transaction(
-            0xC4,
-            first_validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            150_000,
-            redelegate_input(first_validator, second_validator, U256::from(3_000u64)),
-            vec![0xc1, 0xC4],
+        let redelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xC4,
+            sender: first_validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 150_000,
+            data: redelegate_input(first_validator, second_validator, U256::from(3_000u64)),
+            rlp: vec![0xc1, 0xC4],
+        });
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&redelegate_tx.rlp),
         );
-        write_period_data(&storage, period, &pbft_block, &[redelegate_tx.rlp.clone()]);
         let genesis_dpos_config = GenesisDposConfig {
             eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
             vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
@@ -33966,7 +34330,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -33999,15 +34363,15 @@ mod tests {
         };
         let pbft_block = signed_pbft_block(&pbft_signing_key, period, 152);
 
-        let register_first_tx = test_transaction(
-            0xB0,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::from(10_000u64),
+        let register_first_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xB0,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::from(10_000u64),
             gas_price,
-            150_000,
-            register_validator_input(
+            gas_limit: 150_000,
+            data: register_validator_input(
                 first_validator,
                 &first_validator_proof,
                 [0xA5; 32],
@@ -34015,17 +34379,17 @@ mod tests {
                 "first",
                 "endpoint",
             ),
-            vec![0xc1, 0xa1],
-        );
-        let register_second_tx = test_transaction(
-            0xB1,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::from(30_000u64),
+            rlp: vec![0xc1, 0xa1],
+        });
+        let register_second_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xB1,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::from(30_000u64),
             gas_price,
-            150_000,
-            register_validator_input(
+            gas_limit: 150_000,
+            data: register_validator_input(
                 second_validator,
                 &second_validator_proof,
                 [0xA6; 32],
@@ -34033,30 +34397,30 @@ mod tests {
                 "second",
                 "endpoint",
             ),
-            vec![0xc1, 0xa2],
-        );
-        let redelegate_tx = test_transaction(
-            0xB2,
-            owner,
-            Some(DPOS_CONTRACT_ADDRESS),
-            2,
-            U256::zero(),
+            rlp: vec![0xc1, 0xa2],
+        });
+        let redelegate_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xB2,
+            sender: owner,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 2,
+            value: U256::zero(),
             gas_price,
-            150_000,
-            redelegate_input(first_validator, second_validator, U256::from(1_000u64)),
-            vec![0xc1, 0xa3],
-        );
-        let transfer_tx = test_transaction(
-            0xB3,
-            owner,
-            Some(transfer_receiver),
-            3,
-            U256::from(25_000u64),
+            gas_limit: 150_000,
+            data: redelegate_input(first_validator, second_validator, U256::from(1_000u64)),
+            rlp: vec![0xc1, 0xa3],
+        });
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xB3,
+            sender: owner,
+            receiver: Some(transfer_receiver),
+            nonce: 3,
+            value: U256::from(25_000u64),
             gas_price,
-            100_000,
-            vec![],
-            vec![0xc1, 0xb3],
-        );
+            gas_limit: 100_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xb3],
+        });
 
         write_period_data(
             &storage,
@@ -34205,7 +34569,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -34301,7 +34665,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -34319,61 +34683,61 @@ mod tests {
         let period_one_block = signed_pbft_block(&pbft_signing_key, period_one, 201);
         let period_two_block = signed_pbft_block(&pbft_signing_key, period_two, 202);
         let period_three_block = signed_pbft_block(&pbft_signing_key, period_three, 203);
-        let pre_fix_redelegation = test_transaction(
-            0xD3,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::zero(),
-            150_000,
-            redelegate_input(validator, validator, U256::from(1_000u64)),
-            vec![0xc1, 0xD3],
-        );
-        let fix_block_redelegation = test_transaction(
-            0xD4,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            1,
-            U256::zero(),
-            U256::zero(),
-            150_000,
-            redelegate_input(validator, validator, U256::from(1_000u64)),
-            vec![0xc1, 0xD4],
-        );
-        let post_fix_redelegation = test_transaction(
-            0xD5,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            2,
-            U256::zero(),
-            U256::zero(),
-            150_000,
-            redelegate_input(validator, validator, U256::from(1_000u64)),
-            vec![0xc1, 0xD5],
-        );
-        let post_fix_claim = test_transaction(
-            0xD6,
-            validator,
-            Some(DPOS_CONTRACT_ADDRESS),
-            3,
-            U256::zero(),
-            U256::zero(),
-            150_000,
-            claim_rewards_input(validator),
-            vec![0xc1, 0xD6],
-        );
+        let pre_fix_redelegation = test_transaction(TestTransactionInput {
+            hash_byte: 0xD3,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 150_000,
+            data: redelegate_input(validator, validator, U256::from(1_000u64)),
+            rlp: vec![0xc1, 0xD3],
+        });
+        let fix_block_redelegation = test_transaction(TestTransactionInput {
+            hash_byte: 0xD4,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 1,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 150_000,
+            data: redelegate_input(validator, validator, U256::from(1_000u64)),
+            rlp: vec![0xc1, 0xD4],
+        });
+        let post_fix_redelegation = test_transaction(TestTransactionInput {
+            hash_byte: 0xD5,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 2,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 150_000,
+            data: redelegate_input(validator, validator, U256::from(1_000u64)),
+            rlp: vec![0xc1, 0xD5],
+        });
+        let post_fix_claim = test_transaction(TestTransactionInput {
+            hash_byte: 0xD6,
+            sender: validator,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 3,
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas_limit: 150_000,
+            data: claim_rewards_input(validator),
+            rlp: vec![0xc1, 0xD6],
+        });
         write_period_data(
             &storage,
             period_one,
             &period_one_block,
-            &[pre_fix_redelegation.rlp.clone()],
+            std::slice::from_ref(&pre_fix_redelegation.rlp),
         );
         write_period_data(
             &storage,
             period_two,
             &period_two_block,
-            &[fix_block_redelegation.rlp.clone()],
+            std::slice::from_ref(&fix_block_redelegation.rlp),
         );
         write_period_data(
             &storage,
@@ -34601,7 +34965,7 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -34627,7 +34991,7 @@ mod tests {
         assert!(err.to_string().contains("account snapshot"));
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -34806,17 +35170,17 @@ mod tests {
         let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
         let pbft_block = signed_pbft_block(&signing_key, period, 88);
         let transaction_rlp = vec![0xc1, 0x81];
-        let transaction = test_transaction(
-            0xB2,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xB2,
             sender,
-            Some(receiver),
-            0,
-            U256::from(1u64),
-            U256::from(10u64),
-            30_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(1u64),
+            gas_price: U256::from(10u64),
+            gas_limit: 30_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -34852,7 +35216,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -34866,17 +35230,17 @@ mod tests {
         let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
         let pbft_block = signed_pbft_block(&signing_key, period, 99);
         let transaction_rlp = vec![0xc1, 0x82];
-        let transaction = test_transaction(
-            0xC3,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xC3,
             sender,
-            Some(receiver),
-            2,
-            U256::from(1u64),
-            U256::from(3u64),
-            30_000,
-            vec![],
-            transaction_rlp.clone(),
-        );
+            receiver: Some(receiver),
+            nonce: 2,
+            value: U256::from(1u64),
+            gas_price: U256::from(3u64),
+            gas_limit: 30_000,
+            data: vec![],
+            rlp: transaction_rlp.clone(),
+        });
         write_period_data(
             &storage,
             period,
@@ -34915,7 +35279,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -34932,50 +35296,50 @@ mod tests {
         let overflow_sender = [0xA9; 20];
         let gas_price = U256::one();
         let gas_limit = 30_000;
-        let equal_tx = test_transaction(
-            0xE1,
-            equal_sender,
-            Some(receiver),
-            0,
-            U256::from(50u64),
+        let equal_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE1,
+            sender: equal_sender,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(50u64),
             gas_price,
             gas_limit,
-            vec![],
-            vec![0xc1, 0xe1],
-        );
-        let skipped_tx = test_transaction(
-            0xE2,
-            skipped_sender,
-            Some(receiver),
-            2,
-            U256::from(50u64),
+            data: vec![],
+            rlp: vec![0xc1, 0xe1],
+        });
+        let skipped_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE2,
+            sender: skipped_sender,
+            receiver: Some(receiver),
+            nonce: 2,
+            value: U256::from(50u64),
             gas_price,
             gas_limit,
-            vec![],
-            vec![0xc1, 0xe2],
-        );
-        let low_tx = test_transaction(
-            0xE3,
-            low_sender,
-            Some(receiver),
-            0,
-            U256::from(50u64),
+            data: vec![],
+            rlp: vec![0xc1, 0xe2],
+        });
+        let low_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE3,
+            sender: low_sender,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(50u64),
             gas_price,
             gas_limit,
-            vec![],
-            vec![0xc1, 0xe3],
-        );
-        let overflow_tx = test_transaction(
-            0xE5,
-            overflow_sender,
-            Some(receiver),
-            0,
-            U256::from(50u64),
-            U256::MAX,
-            2,
-            vec![],
-            vec![0xc1, 0xe5],
-        );
+            data: vec![],
+            rlp: vec![0xc1, 0xe3],
+        });
+        let overflow_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE5,
+            sender: overflow_sender,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(50u64),
+            gas_price: U256::MAX,
+            gas_limit: 2,
+            data: vec![],
+            rlp: vec![0xc1, 0xe5],
+        });
         write_period_data(
             &storage,
             period,
@@ -35070,7 +35434,7 @@ mod tests {
 
         drop(restarted);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -35100,8 +35464,10 @@ mod tests {
             &pbft_block,
             std::slice::from_ref(&transaction.rlp),
         );
-        let mut rewards = FinalChainRewardsConfig::default();
-        rewards.cornus_period = 0.into();
+        let rewards = FinalChainRewardsConfig {
+            cornus_period: 0.into(),
+            ..Default::default()
+        };
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             200_000.into(),
@@ -35147,7 +35513,7 @@ mod tests {
         assert_eq!(restarted.account(sender).unwrap().unwrap().nonce, expected);
         drop(restarted);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -35159,17 +35525,17 @@ mod tests {
         let receiver = [0xA7; 20];
         let signing_key = SigningKey::from_slice(&[0xA8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 122);
-        let transaction = test_transaction(
-            0xE4,
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xE4,
             sender,
-            Some(receiver),
-            0,
-            U256::from(50u64),
-            U256::one(),
-            30_000,
-            vec![],
-            vec![0xc1, 0xe4],
-        );
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::from(50u64),
+            gas_price: U256::one(),
+            gas_limit: 30_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xe4],
+        });
         write_period_data(
             &storage,
             period,
@@ -35200,7 +35566,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -35214,30 +35580,40 @@ mod tests {
         let period_two = 2u64;
         let pbft_one = signed_pbft_block(&signing_key, period_one, 124);
         let pbft_two = signed_pbft_block(&signing_key, period_two, 125);
-        let tx_one = test_transaction(
-            0xE8,
+        let tx_one = test_transaction(TestTransactionInput {
+            hash_byte: 0xE8,
             sender,
-            Some(receiver),
-            0,
-            U256::zero(),
-            U256::one(),
-            30_000,
-            vec![],
-            vec![0xc1, 0xe8],
-        );
-        let tx_two = test_transaction(
-            0xE9,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::one(),
+            gas_limit: 30_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xe8],
+        });
+        let tx_two = test_transaction(TestTransactionInput {
+            hash_byte: 0xE9,
             sender,
-            Some(receiver),
-            0,
-            U256::zero(),
-            U256::one(),
-            30_000,
-            vec![],
-            vec![0xc1, 0xe9],
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::one(),
+            gas_limit: 30_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xe9],
+        });
+        write_period_data(
+            &storage,
+            period_one,
+            &pbft_one,
+            std::slice::from_ref(&tx_one.rlp),
         );
-        write_period_data(&storage, period_one, &pbft_one, &[tx_one.rlp.clone()]);
-        write_period_data(&storage, period_two, &pbft_two, &[tx_two.rlp.clone()]);
+        write_period_data(
+            &storage,
+            period_two,
+            &pbft_two,
+            std::slice::from_ref(&tx_two.rlp),
+        );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             100_000.into(),
@@ -35268,7 +35644,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -35281,28 +35657,28 @@ mod tests {
         let receiver = [0xAC; 20];
         let signing_key = SigningKey::from_slice(&[0xAD; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 123);
-        let malformed_tx = test_transaction(
-            0xE6,
-            malformed_sender,
-            Some(SLASHING_CONTRACT_ADDRESS),
-            0,
-            U256::zero(),
-            U256::one(),
-            30_000,
-            vec![0xde, 0xad],
-            vec![0xc1, 0xe6],
-        );
-        let transfer_tx = test_transaction(
-            0xE7,
-            transfer_sender,
-            Some(receiver),
-            0,
-            U256::one(),
-            U256::one(),
-            30_000,
-            vec![],
-            vec![0xc1, 0xe7],
-        );
+        let malformed_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE6,
+            sender: malformed_sender,
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::one(),
+            gas_limit: 30_000,
+            data: vec![0xde, 0xad],
+            rlp: vec![0xc1, 0xe6],
+        });
+        let transfer_tx = test_transaction(TestTransactionInput {
+            hash_byte: 0xE7,
+            sender: transfer_sender,
+            receiver: Some(receiver),
+            nonce: 0,
+            value: U256::one(),
+            gas_price: U256::one(),
+            gas_limit: 30_000,
+            data: vec![],
+            rlp: vec![0xc1, 0xe7],
+        });
         write_period_data(
             &storage,
             period,
@@ -35357,7 +35733,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -35380,17 +35756,17 @@ mod tests {
         let err = final_chain
             .finalize_block(
                 pbft_block,
-                vec![test_transaction(
-                    0xD4,
+                vec![test_transaction(TestTransactionInput {
+                    hash_byte: 0xD4,
                     sender,
-                    Some([0x88; 20]),
-                    0,
-                    U256::from(1u64),
-                    U256::from(1u64),
-                    30_000,
-                    vec![],
-                    vec![0xc1, 0x83],
-                )],
+                    receiver: Some([0x88; 20]),
+                    nonce: 0,
+                    value: U256::from(1u64),
+                    gas_price: U256::from(1u64),
+                    gas_limit: 30_000,
+                    data: vec![],
+                    rlp: vec![0xc1, 0x83],
+                })],
                 vec![],
             )
             .unwrap_err();
@@ -35401,7 +35777,7 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -35430,17 +35806,17 @@ mod tests {
         let err = final_chain
             .finalize_block(
                 pbft_block,
-                vec![test_transaction(
-                    0xE5,
+                vec![test_transaction(TestTransactionInput {
+                    hash_byte: 0xE5,
                     sender,
-                    None,
-                    0,
-                    U256::zero(),
-                    U256::from(1u64),
-                    30_000,
-                    vec![0x01],
-                    transaction_rlp,
-                )],
+                    receiver: None,
+                    nonce: 0,
+                    value: U256::zero(),
+                    gas_price: U256::from(1u64),
+                    gas_limit: 30_000,
+                    data: vec![0x01],
+                    rlp: transaction_rlp,
+                })],
                 vec![],
             )
             .unwrap_err();
@@ -35454,6 +35830,6 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 }

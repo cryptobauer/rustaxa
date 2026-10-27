@@ -34,8 +34,8 @@ use rustaxa_storage::{Config, StatusField, Storage};
 use rustaxa_types::LegacyTransactionEnvelope;
 use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
 use rustaxa_types::{
-    FinalChainBlockNumber, FinalChainGas, FinalChainRewardsConfig, GenesisAccount,
-    GenesisDposConfig, GenesisValidator, StoredFinalChainBlockHeader,
+    FinalChainGas, FinalChainRewardsConfig, GenesisAccount, GenesisDposConfig, GenesisValidator,
+    StoredFinalChainBlockHeader,
 };
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -955,9 +955,11 @@ impl ConsensusIngressService {
             submission: PublicTransactionSubmissionReport {
                 transaction_hash: envelope.hash,
                 accepted,
-                message: (!accepted)
-                    .then_some("DAG_SYNC_TRANSACTION_REJECTED".to_owned())
-                    .unwrap_or_default(),
+                message: if accepted {
+                    String::new()
+                } else {
+                    "DAG_SYNC_TRANSACTION_REJECTED".to_owned()
+                },
                 verification_status: verification,
                 queue_status: known.then_some(TransactionQueueInsertStatus::Known),
                 transaction_observed: false,
@@ -1415,9 +1417,11 @@ impl ConsensusApplication {
         O: crate::ConsensusObserverPort,
     {
         self.runtime.run(
-            self.pbft.as_ref(),
-            self.dag_transaction.as_ref(),
-            self.final_chain.as_ref(),
+            crate::ConsensusRuntimeServices {
+                pbft: self.pbft.as_ref(),
+                dag: self.dag_transaction.as_ref(),
+                final_chain: self.final_chain.as_ref(),
+            },
             process,
             signer,
             transport,
@@ -1712,7 +1716,7 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, StatusField};
-    use std::fs;
+    use rustaxa_types::FinalChainBlockNumber;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1781,7 +1785,7 @@ mod tests {
                 activation == 10
             );
             drop(root);
-            fs::remove_dir_all(path).expect("remove fixture");
+            crate::closeout_test_scratch::dispose(path).expect("remove fixture");
         }
     }
 
@@ -1790,7 +1794,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        )
     }
 
     fn signed_public_transaction_with_gas(gas: u64) -> (Vec<u8>, [u8; 20]) {
@@ -1945,7 +1952,7 @@ mod tests {
                 local_dag_level: 0,
             })
             .expect("bound network API retains the application siblings");
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -1965,7 +1972,7 @@ mod tests {
 
         drop(query);
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2002,7 +2009,7 @@ mod tests {
         assert!(duplicate.message.contains("already in transactions pool"));
 
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2033,7 +2040,7 @@ mod tests {
         );
 
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2063,7 +2070,7 @@ mod tests {
         );
 
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2095,7 +2102,7 @@ mod tests {
         assert!(replay.transaction_observed);
 
         drop(restarted);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2126,7 +2133,7 @@ mod tests {
             3
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2154,7 +2161,7 @@ mod tests {
             Some(vec![1; 32])
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2181,7 +2188,7 @@ mod tests {
                 .to_string()
                 .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
         );
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2198,7 +2205,7 @@ mod tests {
                 .to_string()
                 .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
         );
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2236,7 +2243,7 @@ mod tests {
                 .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
         );
         drop(restarted);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2275,7 +2282,7 @@ mod tests {
                 .to_string()
                 .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
         );
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2306,7 +2313,7 @@ mod tests {
             7
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2327,7 +2334,7 @@ mod tests {
             Some(vec![1; 32])
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2391,7 +2398,7 @@ mod tests {
         assert!(!report.transactions[0].submission.accepted);
         assert_eq!(root.dag_transaction.transaction_queue_size().unwrap(), 0);
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2417,6 +2424,6 @@ mod tests {
         assert!(report.transactions[0].submission.accepted);
         assert_eq!(root.dag_transaction.transaction_queue_size().unwrap(), 0);
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 }

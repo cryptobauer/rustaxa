@@ -1,46 +1,53 @@
 //! Actual current-source full removal: original-node restoration, local atomicity.
 use super::*;
 fn swap_append_chain() -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!(
-        "redelegate-composition-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let path = crate::closeout_test_scratch::new_path(
+        std::env::temp_dir().join(format!(
+            "redelegate-composition-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )),
+        true,
+    );
     let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
     let chain = FinalChain::new_with_rewards_config_and_ficus_activation(
         storage.clone(),
         1_000_000.into(),
         0,
-        Vec::new(),
-        [0x33, 0x31, 0x32]
-            .into_iter()
-            .map(|validator| GenesisValidator {
-                address: address(validator),
-                vrf_key: [match validator {
-                    0x31 => 0x44,
-                    0x32 => 0x55,
-                    _ => 0x66,
-                }; 32],
-                total_stake: U256::from(if validator != 0x32 { 2000 } else { 1000 })
-                    .to_big_endian()
-                    .to_vec(),
-                delegations: vec![(address(0xa1), U256::from(1000).to_big_endian().to_vec())]
-                    .into_iter()
-                    .chain(
-                        (validator != 0x32)
-                            .then_some((address(0xd1), U256::from(1000).to_big_endian().to_vec())),
-                    )
-                    .collect(),
-                metadata: GenesisValidatorMetadata {
-                    owner: address(0xa1),
-                    commission: 100,
-                    ..Default::default()
-                },
-            })
-            .collect(),
+        crate::FinalChainGenesisAllocation {
+            accounts: Vec::new(),
+            validators: [0x33, 0x31, 0x32]
+                .into_iter()
+                .map(|validator| GenesisValidator {
+                    address: address(validator),
+                    vrf_key: [match validator {
+                        0x31 => 0x44,
+                        0x32 => 0x55,
+                        _ => 0x66,
+                    }; 32],
+                    total_stake: U256::from(if validator != 0x32 { 2000 } else { 1000 })
+                        .to_big_endian()
+                        .to_vec(),
+                    delegations: vec![(address(0xa1), U256::from(1000).to_big_endian().to_vec())]
+                        .into_iter()
+                        .chain(
+                            (validator != 0x32).then_some((
+                                address(0xd1),
+                                U256::from(1000).to_big_endian().to_vec(),
+                            )),
+                        )
+                        .collect(),
+                    metadata: GenesisValidatorMetadata {
+                        owner: address(0xa1),
+                        commission: 100,
+                        ..Default::default()
+                    },
+                })
+                .collect(),
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: U256::from(100).into(),
             vote_eligibility_balance_step: U256::from(10).into(),
@@ -341,7 +348,7 @@ fn redelegate_source_last_current_kernel_and_cold_warm_ordered_parity() {
     drop(prefix_session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 /// Seed cold targets from the actual successful staged prefix; live targets keep
@@ -426,7 +433,7 @@ fn redelegate_source_last_current_every_prefix_cold_warm_auth_failure_is_atomic(
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -645,7 +652,7 @@ fn redelegate_source_last_current_shared_predicate_excludes_unmeasured_authority
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -689,7 +696,7 @@ fn redelegate_source_last_current_wrong_membership_discards_local_node_restore()
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -727,5 +734,5 @@ fn redelegate_source_last_current_rejects_both_absent_wrong_old_count() {
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }

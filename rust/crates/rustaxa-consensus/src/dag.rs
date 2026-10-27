@@ -4114,14 +4114,17 @@ mod tests {
     }
 
     fn temp_storage(name: &str) -> Storage {
-        let dir = std::env::temp_dir().join(format!(
-            "{name}_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "{name}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )),
+            true,
+        );
         Storage::new(Config::new(dir)).unwrap()
     }
 

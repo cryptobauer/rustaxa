@@ -38,6 +38,17 @@ pub struct FinalChainNativeAccount {
 /// with that frame, independently from irreversible native raw mutations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FinalChainNativeOrdinaryMutation {
+    /// Initializes a native account nonce in the ordinary, reversible lane.
+    NonceReplace {
+        /// Account whose nonce changes.
+        address: [u8; 20],
+        /// Exact existence observed before initialization.
+        expected_exists: bool,
+        /// Exact full-width nonce observed before initialization.
+        expected: FinalChainNonce,
+        /// Exact full-width nonce after initialization.
+        replacement: FinalChainNonce,
+    },
     /// Apply `SubBalance(0)`: create a missing account without dirtying an
     /// existing account.
     EnsureExists {
@@ -354,7 +365,11 @@ mod tests {
             let mut accounts = StagedDposAccountPort::from_state(&reader);
             let initial_accounts = accounts.accounts.clone();
             let initial_mutations = accounts.mutations.clone();
-            let mut expected_attempts = Vec::new();
+            let expected_attempts = [
+                CONTRACT, CONTRACT, CONTRACT, RECIPIENT, RECIPIENT, CONTRACT, CONTRACT, RECIPIENT,
+                RECIPIENT,
+            ]
+            .repeat(2);
 
             // A retry must read again rather than fabricate an empty account.
             for _ in 0..2 {
@@ -363,7 +378,6 @@ mod tests {
                     actual.downcast_ref::<FinalChainNativeStateReadError>(),
                     Some(&error)
                 );
-                expected_attempts.push(CONTRACT);
                 assert_eq!(accounts.accounts, initial_accounts);
                 assert_eq!(accounts.mutations, initial_mutations);
                 for amount in [BigUint::default(), BigUint::from(9_u8)] {
@@ -373,7 +387,6 @@ mod tests {
                             actual.downcast_ref::<FinalChainNativeStateReadError>(),
                             Some(&error)
                         );
-                        expected_attempts.push(address);
                         assert_eq!(accounts.accounts, initial_accounts);
                         assert_eq!(accounts.mutations, initial_mutations);
 
@@ -382,7 +395,6 @@ mod tests {
                             actual.downcast_ref::<FinalChainNativeStateReadError>(),
                             Some(&error)
                         );
-                        expected_attempts.push(address);
                         assert_eq!(accounts.accounts, initial_accounts);
                         assert_eq!(accounts.mutations, initial_mutations);
                     }

@@ -133,6 +133,33 @@ impl std::fmt::Display for ConcreteStorageInventoryError {
 impl std::error::Error for ConcreteStorageInventoryError {}
 
 impl ConcreteStateReader {
+    /// Complete retained physical storage-prefix inventory for a bounded
+    /// synthetic fixture. This does not infer logical absence or relax reads.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn synthetic_storage_history_prefixes(
+        &self,
+    ) -> Result<BTreeSet<[u8; 32]>, ConcreteReadError> {
+        let cf = self
+            .db
+            .cf_handle("5")
+            .ok_or_else(|| ConcreteReadError::Corrupt("missing storage column".into()))?;
+        let mut prefixes = BTreeSet::new();
+        for (count, entry) in self.db.iterator_cf(cf, IteratorMode::Start).enumerate() {
+            if count >= 1_000_000 {
+                return Err(ConcreteReadError::Corrupt("synthetic history bound".into()));
+            }
+            let (key, _) = entry.map_err(|error| ConcreteReadError::Io(error.to_string()))?;
+            if key.len() != 40 {
+                return Err(ConcreteReadError::Corrupt(
+                    "synthetic storage version width".into(),
+                ));
+            }
+            if u64::from_be_bytes(key[32..].try_into().unwrap()) <= self.identity.period.as_u64() {
+                prefixes.insert(key[..32].try_into().unwrap());
+            }
+        }
+        Ok(prefixes)
+    }
     /// Opens `state_db` read-only and pins `expected`. Existing column-family
     /// names are preserved; every reference concrete-state column must exist.
     pub fn open_read_only(
@@ -689,12 +716,14 @@ mod tests {
                 NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
             ));
             let mut options = Options::default();
+            crate::closeout_test_scratch::register(&path);
             options.create_if_missing(true);
             options.create_missing_column_families(true);
             let descriptors = REQUIRED_COLUMNS
                 .iter()
                 .map(|name| ColumnFamilyDescriptor::new(*name, Options::default()));
             let db = DB::open_cf_descriptors(&options, &path, descriptors).unwrap();
+            crate::closeout_test_scratch::created(&path);
             Self { path, db: Some(db) }
         }
 
@@ -723,7 +752,9 @@ mod tests {
     impl Drop for TestDb {
         fn drop(&mut self) {
             self.db.take();
-            std::fs::remove_dir_all(&self.path).unwrap();
+            if !crate::closeout_test_scratch::preserve(&self.path) {
+                std::fs::remove_dir_all(&self.path).unwrap();
+            }
         }
     }
 

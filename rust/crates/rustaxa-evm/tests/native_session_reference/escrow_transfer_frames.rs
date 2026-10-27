@@ -3,9 +3,7 @@
 use super::*;
 use rustaxa_evm::simulation::simulate_with_native;
 
-#[allow(dead_code)]
-#[path = "../support/mixed_native.rs"]
-mod mixed_native;
+use super::mixed_native;
 
 const WRAPPER: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xa1,
@@ -219,7 +217,7 @@ fn escrow_frames_match_go_value_transfer_and_parent_rollback_without_native_writ
         }
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -262,6 +260,6 @@ fn escrow_historical_probes_match_go_frames_and_discard_all_account_changes() {
         }
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }

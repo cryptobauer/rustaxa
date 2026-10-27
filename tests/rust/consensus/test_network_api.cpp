@@ -1,3 +1,4 @@
+#include "../closeout_test_scratch.hpp"
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -48,15 +49,14 @@ rustaxa::PbftServiceConfig serviceConfig() {
 struct TemporaryStorageDirectory {
   TemporaryStorageDirectory() {
     static std::atomic<uint64_t> sequence{0};
-    path = std::filesystem::temp_directory_path() /
-           ("rustaxa_network_api_bridge_" + std::to_string(sequence.fetch_add(1)));
+    path = rustaxa_closeout::path("rustaxa_network_api_bridge_" + std::to_string(sequence.fetch_add(1)));
     std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
+    if (!rustaxa_closeout::active()) std::filesystem::remove_all(path, ignored);
   }
 
   ~TemporaryStorageDirectory() {
     std::error_code ignored;
-    std::filesystem::remove_all(path, ignored);
+    if (!rustaxa_closeout::active()) std::filesystem::remove_all(path, ignored);
   }
 
   std::filesystem::path path;

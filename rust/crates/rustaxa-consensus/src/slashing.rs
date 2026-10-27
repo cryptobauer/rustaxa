@@ -173,11 +173,32 @@ pub fn verify_legacy_double_voting_proof_call_data(
 
     Ok(VerifiedLegacyDoubleVotingProof {
         offender: vote_a_offender,
-        proof_key: double_voting_proof_hash(sorted_vote_hashes[0], sorted_vote_hashes[1]),
+        proof_key: double_voting_proof_storage_key(sorted_vote_hashes[0], sorted_vote_hashes[1]),
         sorted_vote_hashes,
         vote_a: vote_a.metadata,
         vote_b: vote_b.metadata,
     })
+}
+
+/// Decodes the vote identities before the contract checks its live duplicate
+/// marker. Signature and slot validation occur only after that marker read.
+pub(crate) fn decoded_double_voting_proof_storage_key(
+    calldata: &[u8],
+) -> std::result::Result<H256, LegacyDoubleVotingProofDecodeError> {
+    let (left, right) = decode_commit_double_voting_call_data(calldata)
+        .map_err(|e| LegacyDoubleVotingProofDecodeError::OuterAbi(e.to_string()))?;
+    let left = decode_legacy_pbft_vote(left)
+        .map_err(|e| LegacyDoubleVotingProofDecodeError::NestedRlp(e.to_string()))?;
+    let right = decode_legacy_pbft_vote(right)
+        .map_err(|e| LegacyDoubleVotingProofDecodeError::NestedRlp(e.to_string()))?;
+    semantic_ensure!(
+        left.metadata.vote_hash != right.metadata.vote_hash,
+        "votes are identical"
+    );
+    Ok(double_voting_proof_storage_key(
+        left.metadata.vote_hash,
+        right.metadata.vote_hash,
+    ))
 }
 
 #[derive(Debug)]
@@ -814,6 +835,20 @@ fn same_pbft_slot(input: &DoubleVotingProofInput) -> bool {
         && input.vote_a_step == input.vote_b_step
 }
 
+/// Native contract key; the manager's RLP proof identity below is separate.
+fn double_voting_proof_storage_key(vote_a_hash: H256, vote_b_hash: H256) -> H256 {
+    let (first, second) = if vote_a_hash < vote_b_hash {
+        (vote_a_hash, vote_b_hash)
+    } else {
+        (vote_b_hash, vote_a_hash)
+    };
+    let mut bytes = [0; 65];
+    bytes[0] = 1;
+    bytes[1..33].copy_from_slice(first.as_bytes());
+    bytes[33..].copy_from_slice(second.as_bytes());
+    keccak256(&bytes)
+}
+
 fn double_voting_proof_hash(vote_a_hash: H256, vote_b_hash: H256) -> H256 {
     let (first, second) = if vote_a_hash < vote_b_hash {
         (vote_a_hash, vote_b_hash)
@@ -909,9 +944,10 @@ mod tests {
     }
 
     fn hex_bytes(value: &str) -> Vec<u8> {
-        let chunks = value.as_bytes().chunks_exact(2);
-        assert!(chunks.remainder().is_empty());
+        let (chunks, remainder) = value.as_bytes().as_chunks::<2>();
+        assert!(remainder.is_empty());
         chunks
+            .iter()
             .map(|chunk| (hex_nibble(chunk[0]) << 4) | hex_nibble(chunk[1]))
             .collect()
     }
@@ -996,7 +1032,7 @@ mod tests {
 
         assert_eq!(
             verified.proof_key,
-            double_voting_proof_hash(
+            double_voting_proof_storage_key(
                 legacy_pbft_vote_hash(H256::from_low_u64_be(7), &sortition_a),
                 legacy_pbft_vote_hash(H256::from_low_u64_be(8), &sortition_b),
             )

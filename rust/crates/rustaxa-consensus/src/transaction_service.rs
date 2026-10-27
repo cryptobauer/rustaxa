@@ -2316,7 +2316,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be available")
             .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        )
     }
 
     fn build_service_with_defaults(
@@ -2404,7 +2407,7 @@ mod tests {
         }
 
         drop(service);
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -2470,7 +2473,7 @@ mod tests {
         }
 
         drop(service);
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -2607,7 +2610,7 @@ mod tests {
 
         drop(runtime);
         drop(service);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2630,7 +2633,7 @@ mod tests {
 
         drop(runtime);
         drop(service);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2664,7 +2667,7 @@ mod tests {
         drop(runtime);
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2707,7 +2710,7 @@ mod tests {
             ethereum_types::U256::from(3_u64)
         );
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -2740,7 +2743,7 @@ mod tests {
             );
         }
 
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2792,7 +2795,7 @@ mod tests {
             "unexpected restoration error: {err:#}"
         );
 
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2901,7 +2904,7 @@ mod tests {
             TransactionServiceGasEstimationPlan::ExecuteEvm
         );
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -3005,7 +3008,7 @@ mod tests {
         );
         assert!(plan.views[3].found);
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -3042,7 +3045,7 @@ mod tests {
             .write_location(transaction_hash, 1, 0, false)
             .expect("proposal storage location should persist");
 
-        let period_data = period_data_with_transaction_rlps(&[transaction_rlp.clone()]);
+        let period_data = period_data_with_transaction_rlps(std::slice::from_ref(&transaction_rlp));
         runtime
             .storage
             .period()
@@ -3108,7 +3111,7 @@ mod tests {
                 .contains("TM_PROPOSAL_FINALIZED_ACCOUNT_NONCE_FACT_MISSING")
         );
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -3167,7 +3170,7 @@ mod tests {
                 .contains("TM_PROPOSAL_TRANSACTION_HASH_MISMATCH")
         );
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -3359,7 +3362,7 @@ mod tests {
                 .is_some_and(|view| view.found)
         );
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -3438,7 +3441,7 @@ mod tests {
         assert_eq!(finalized.demoted_hashes, vec![envelopes[0].hash]);
         assert_eq!(finalized.selected_transactions[0].hash, envelopes[1].hash);
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -3496,7 +3499,7 @@ mod tests {
         );
         assert!(!service.abort_compatibility_pack()?);
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -3557,7 +3560,7 @@ mod tests {
         assert!(!state.sidecar.contains_non_finalized(valid.hash));
         drop(state);
 
-        std::fs::remove_dir_all(temp_dir)?;
+        crate::closeout_test_scratch::dispose(temp_dir)?;
         Ok(())
     }
 
@@ -3651,7 +3654,7 @@ mod tests {
             "Transaction already in transactions pool"
         );
 
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3704,7 +3707,7 @@ mod tests {
         assert!(service.queue_transactions_dropped()?);
 
         drop(service);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3770,7 +3773,7 @@ mod tests {
         assert_eq!(report.public_result.message, "chain_id mismatch 1 2");
         assert!(!service.is_transaction_known(hash.0)?);
 
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3833,7 +3836,7 @@ mod tests {
         );
         drop(state);
 
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3903,7 +3906,7 @@ mod tests {
             7
         );
         drop(state);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3947,7 +3950,7 @@ mod tests {
             7
         );
         drop(state);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3972,7 +3975,7 @@ mod tests {
         .err()
         .expect("invalid percentile must reject construction");
         assert!(error.to_string().contains("percentile"));
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4004,7 +4007,7 @@ mod tests {
                 .to_string(),
             DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED
         );
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 }

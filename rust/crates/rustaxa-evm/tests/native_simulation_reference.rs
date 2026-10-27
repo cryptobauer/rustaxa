@@ -51,6 +51,9 @@ mod metadata_estimate;
 #[path = "native_simulation_reference/metadata_trace.rs"]
 mod metadata_trace;
 
+#[path = "native_simulation_reference/retained_commission_trace.rs"]
+mod retained_commission_trace;
+
 #[path = "native_simulation_reference/escrow.rs"]
 mod escrow;
 
@@ -96,13 +99,13 @@ impl FixturePath {
                 .as_nanos()
         ));
         assert!(!path.exists());
-        Self(path)
+        Self(crate::closeout_test_scratch::new_path(path, true))
     }
 }
 
 impl Drop for FixturePath {
     fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
+        crate::closeout_test_scratch::dispose(&self.0).unwrap();
     }
 }
 
@@ -719,3 +722,22 @@ mod reward_claim_all_h1_underfunded_trace;
 
 #[path = "native_simulation_reference/reward_claim_all_h1_prefix_trace.rs"]
 mod reward_claim_all_h1_prefix_trace;
+
+#[path = "native_simulation_reference/retained_commission.rs"]
+mod retained_commission;
+
+#[path = "native_simulation_reference/retained_commission_estimate.rs"]
+mod retained_commission_estimate;
+
+#[path = "native_simulation_reference/commission_lifecycle.rs"]
+mod commission_lifecycle;
+
+#[path = "support/native_integration_bootstrap.rs"]
+mod native_integration;
+#[test]
+fn native_integration_registration_call_fresh_sessions() -> anyhow::Result<()> {
+    native_integration::run(true)
+}
+
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;

@@ -547,10 +547,10 @@ impl DposRewardGraph {
         })
     }
 
-    /// Reproduces the pre-fix stale-head transition: decrement/delete the old
-    /// node while retaining its head block and adding the stale marker.
-    #[cfg(test)]
-    pub fn detach_validator_head(
+    /// Decrements/deletes the node while retaining its head and stale marker.
+    /// This also represents the current redelegation branch that retains a
+    /// zero-stake validator for custody without persisting its new checkpoint.
+    pub(crate) fn detach_validator_head(
         &mut self,
         validator: &Validator,
     ) -> Result<Option<u64>, DposRewardGraphError> {

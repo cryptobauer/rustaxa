@@ -3,6 +3,9 @@ name = "rustaxa-consensus"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+synthetic-fixtures = ["rustaxa-storage/synthetic-fixtures"]
+
 [dependencies]
 anyhow = "1.0.100"
 ethereum-types = { version = "0.16.0", features = ["rlp"] }
@@ -17,3 +20,6 @@ num-bigint = "0.4.6"
 rand = "0.9"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 triehash = "0.8.4"
+
+[dev-dependencies]
+flate2 = "1.1"

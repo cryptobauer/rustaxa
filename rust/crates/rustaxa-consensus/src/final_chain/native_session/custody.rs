@@ -340,6 +340,18 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_principal_removal(delegator, validator, before, after, trace, false)
+    }
+
+    fn serialize_principal_removal(
+        &self,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+        omit_checkpoint: bool,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
         let mut nodes = NodeTrace::new(before)?;
         let current_block = before
             .reward_reference_graph
@@ -391,6 +403,9 @@ impl FinalChainNativeSession<'_> {
             )?;
         }
 
+        if omit_checkpoint {
+            return self.put_validator(before, after, validator, trace);
+        }
         nodes.write_final(validator, current_block, after, trace)?;
         self.put_validator(before, after, validator, trace)?;
         put_rewards(before, after, validator, trace)
@@ -484,7 +499,22 @@ impl FinalChainNativeSession<'_> {
         )
     }
 
-    fn serialize_deleted_validator(
+    pub(super) fn serialize_deleted_validator(
+        &self,
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_deleted_validator_rows(validator, before, trace)?;
+        let mut nodes = NodeTrace::new(before)?;
+        let head = before
+            .reward_reference_graph
+            .read_validator_head(&validator)
+            .map_err(domain)?;
+        nodes.decrement_and_write(validator, head, trace)
+    }
+
+    fn serialize_deleted_validator_rows(
         &self,
         validator: [u8; 20],
         before: &DposSnapshot,
@@ -538,13 +568,7 @@ impl FinalChainNativeSession<'_> {
             .iter()
             .map(|address| address.to_vec())
             .collect::<Vec<_>>();
-        remove_iterable(trace, &[0, 5], &validators, &validator)?;
-        let mut nodes = NodeTrace::new(before)?;
-        let head = before
-            .reward_reference_graph
-            .read_validator_head(&validator)
-            .map_err(domain)?;
-        nodes.decrement_and_write(validator, head, trace)
+        remove_iterable(trace, &[0, 5], &validators, &validator)
     }
 
     fn serialize_confirm_v2(
@@ -575,7 +599,7 @@ impl FinalChainNativeSession<'_> {
                 Ok(())
             }
         } else {
-            Err(FinalChainNativeSessionError::CustodyScopeUnsupported)
+            self.serialize_deleted_validator(validator, before, trace)
         }
     }
 
@@ -892,7 +916,7 @@ pub(super) fn encode_delegation(
     Ok(row.out().to_vec())
 }
 
-fn encode_node(node: &Node) -> Vec<u8> {
+pub(super) fn encode_node(node: &Node) -> Vec<u8> {
     let reward = node.reward_per_stake.to_canonical_bytes();
     let mut row = rlp::RlpStream::new_list(2);
     row.append(&reward.as_slice()).append(&node.count);
@@ -914,7 +938,7 @@ pub(super) fn put_rewards(
     )
 }
 
-fn encode_rewards(snapshot: &DposSnapshot, validator: [u8; 20]) -> Vec<u8> {
+pub(super) fn encode_rewards(snapshot: &DposSnapshot, validator: [u8; 20]) -> Vec<u8> {
     let mut row = rlp::RlpStream::new_list(2);
     row.append(
         &snapshot
@@ -1054,7 +1078,7 @@ fn encode_undelegation_v2(entry: &DposUndelegationV2Entry) -> Vec<u8> {
     row.out().to_vec()
 }
 
-fn create_iterable(
+pub(super) fn create_iterable(
     trace: &mut FinalChainNativeRawTrace<'_>,
     prefix: &[u8],
     before: &[Vec<u8>],
@@ -1163,7 +1187,7 @@ fn remove_iterable(
     )
 }
 
-fn validator_key(validator: [u8; 20]) -> ConcreteStorageKey {
+pub(super) fn validator_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &validator]))
 }
 
@@ -1171,7 +1195,7 @@ pub(super) fn validator_info_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 1], &validator]))
 }
 
-fn rewards_key(validator: [u8; 20]) -> ConcreteStorageKey {
+pub(super) fn rewards_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &validator]))
 }
 
@@ -1179,7 +1203,7 @@ pub(super) fn validator_owner_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 3], &validator]))
 }
 
-fn validator_vrf_key(validator: [u8; 20]) -> ConcreteStorageKey {
+pub(super) fn validator_vrf_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 4], &validator]))
 }
 
@@ -1187,7 +1211,7 @@ pub(super) fn delegation_key(validator: [u8; 20], delegator: [u8; 20]) -> Concre
     ConcreteStorageKey(concrete_storage_key(&[&[2, 0], &validator, &delegator]))
 }
 
-fn reward_node_key(validator: [u8; 20], block: u64) -> ConcreteStorageKey {
+pub(super) fn reward_node_key(validator: [u8; 20], block: u64) -> ConcreteStorageKey {
     let block = concrete_bigint_u64_bytes(block);
     ConcreteStorageKey(concrete_storage_key(&[&[1], &validator, &block]))
 }
@@ -1238,7 +1262,7 @@ pub(super) fn iterable_item_key(prefix: &[u8], position: u32) -> ConcreteStorage
     ]))
 }
 
-fn iterable_position_key(prefix: &[u8], item: &[u8]) -> ConcreteStorageKey {
+pub(super) fn iterable_position_key(prefix: &[u8], item: &[u8]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[prefix, &[2], item]))
 }
 

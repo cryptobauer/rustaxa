@@ -197,7 +197,7 @@ fn redelegate_full_new_matches_actual_ordered_effects_and_warm_failure() {
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn redelegate_full_new_all_cold_and_warm_authentication_failures_are_atomic() {
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -340,7 +340,7 @@ fn redelegate_full_new_rejects_unobserved_or_incomplete_membership_shapes() {
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -391,5 +391,5 @@ fn redelegate_full_new_destination_failure_discards_partial_local_serialization(
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }

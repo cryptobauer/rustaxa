@@ -6455,7 +6455,7 @@ pub fn restore_pbft_manager_runtime(
             (PbftManagerRuntimeStateCode::ValueProposal, 1, false, false)
         } else if fact.persisted_step < 4 {
             (PbftManagerRuntimeStateCode::Finish, 4, true, false)
-        } else if fact.persisted_step % 2 == 0 {
+        } else if fact.persisted_step.is_multiple_of(2) {
             (
                 PbftManagerRuntimeStateCode::Finish,
                 fact.persisted_step,
@@ -8419,7 +8419,6 @@ mod tests {
     use crate::transaction_service::TransactionServiceConfig;
     use ethereum_types::U256;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -8563,7 +8562,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be available")
             .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        )
     }
 
     fn finalization_sortition_services(
@@ -8962,7 +8964,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9016,7 +9018,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9068,7 +9070,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9136,7 +9138,7 @@ mod tests {
         drop(manager);
         drop(dag);
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9204,7 +9206,7 @@ mod tests {
 
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9245,7 +9247,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9288,7 +9290,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9365,7 +9367,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9436,7 +9438,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9497,7 +9499,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9556,7 +9558,7 @@ mod tests {
         drop(restarted);
         drop(restarted_manager);
         drop(restarted_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9612,7 +9614,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9717,7 +9719,7 @@ mod tests {
 
         drop(runtime);
         drop(manager);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9756,7 +9758,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -9817,7 +9819,7 @@ mod tests {
 
             drop(runtime);
             drop(manager);
-            let _ = fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 
@@ -9884,7 +9886,7 @@ mod tests {
 
             drop(runtime);
             drop(manager);
-            let _ = fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 
@@ -9945,7 +9947,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10030,7 +10032,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10079,7 +10081,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10164,7 +10166,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10202,7 +10204,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10242,7 +10244,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10294,7 +10296,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10335,7 +10337,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10398,7 +10400,7 @@ mod tests {
             drop(runtime);
             drop(manager);
             drop(dag);
-            let _ = fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 
@@ -10433,7 +10435,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10468,7 +10470,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10509,7 +10511,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10547,7 +10549,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10588,7 +10590,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10636,7 +10638,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10677,7 +10679,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10725,7 +10727,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10764,7 +10766,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -10806,7 +10808,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn fact(state: PbftManagerRuntimeStateCode) -> PbftManagerRuntimeTickFact {
@@ -11285,7 +11287,7 @@ mod tests {
         compact_block.append(&7u64);
         compact_block.append(&123u64);
         compact_block.append(&vec![0x44, 0x55]);
-        compact_block.append_list(&vec![H256::from_low_u64_be(2)]);
+        compact_block.append_list(&[H256::from_low_u64_be(2)]);
         compact_block.append(&vec![0x66; 65]);
         compact_block.append(&99u64);
 
@@ -11294,7 +11296,7 @@ mod tests {
         canonical_block.append(&7u64);
         canonical_block.append(&123u64);
         canonical_block.append(&vec![0x44, 0x55]);
-        canonical_block.append_list(&vec![H256::from_low_u64_be(2)]);
+        canonical_block.append_list(&[H256::from_low_u64_be(2)]);
         let empty_transactions: Vec<H256> = Vec::new();
         canonical_block.append_list(&empty_transactions);
         canonical_block.append(&vec![0x66; 65]);
@@ -12319,7 +12321,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12349,7 +12351,7 @@ mod tests {
             assert!(state.runtime_session.is_some());
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12406,7 +12408,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12436,7 +12438,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12465,7 +12467,7 @@ mod tests {
             assert_eq!(replay.period_lambda, Some(1_234));
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12484,7 +12486,7 @@ mod tests {
             assert_eq!(replay.period_lambda, None);
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12505,7 +12507,7 @@ mod tests {
             assert!(replay.found);
             assert!(replay.finalized_dag_hashes.is_empty());
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12524,7 +12526,7 @@ mod tests {
             assert_eq!(err.to_string(), "PBFT_MANAGER_STARTUP_INVALID_CURSOR");
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12561,7 +12563,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12649,7 +12651,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12688,7 +12690,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12733,7 +12735,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -12765,7 +12767,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use super::*;
 use std::cell::Cell;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Fault {
+pub(super) enum Fault {
     None,
     BeforeCommit,
     AfterCommit,
@@ -21,13 +21,13 @@ enum Fault {
     RewardAccount,
 }
 
-struct FaultAdapter<'a> {
-    inner: Adapter<'a>,
-    fault: Fault,
-    executions: Cell<usize>,
-    rewards: Cell<usize>,
-    commits: Cell<usize>,
-    original_projection_hash: Cell<Option<[u8; 32]>>,
+pub(super) struct FaultAdapter<'a> {
+    pub(super) inner: Adapter<'a>,
+    pub(super) fault: Fault,
+    pub(super) executions: Cell<usize>,
+    pub(super) rewards: Cell<usize>,
+    pub(super) commits: Cell<usize>,
+    pub(super) original_projection_hash: Cell<Option<[u8; 32]>>,
 }
 impl ConsensusExecutionPort for FaultAdapter<'_> {
     fn load_final_chain_committed_state(
@@ -393,7 +393,7 @@ fn hydrate_genesis(chain: &mut FinalChain, state_path: &Path, fixture: &Value) -
 
 /// Executes a genuine mixed period, optionally losing control at the named
 /// callback boundary. No expected root is passed into the execution result.
-fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Result<()> {
+pub(super) fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Result<()> {
     let period = &fixture["periods"][index];
     let number = number(&period["number"]);
     let state_path = root.join("state_db");
@@ -405,7 +405,9 @@ fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Resul
             .external_evm_pending_publication_raw()?
             .is_none()
     );
-    hydrate_genesis(&mut chain, &state_path, fixture)?;
+    if fixture["profile"] != "synthetic_mainnet_era" {
+        hydrate_genesis(&mut chain, &state_path, fixture)?;
+    }
     let prior = ConcreteStateLifecycle::inspect_existing(&state_path, identity)?;
     let concrete = ConcreteStateLifecycle::open(&state_path, identity, prior.committed)?;
     let adapter = FaultAdapter {
@@ -487,7 +489,16 @@ fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Resul
         ensure!(observed.committed.period.as_u64() == number);
         ensure!(observed.committed.state_root == fixed(&period["final"]["root"]));
         ensure!(observed.pending_marker_rlp.is_empty());
-        verify_physical_rows(&state_path, &period["final"]["rows"])?;
+        if fixture["profile"] == "synthetic_mainnet_era" {
+            super::mainnet_era::verify_committed_phase(
+                &state_path,
+                observed.committed,
+                fixture,
+                &period["final"],
+            )?;
+        } else {
+            verify_physical_rows(&state_path, &period["final"]["rows"])?;
+        }
     } else {
         ensure!(
             observed.committed == prior.committed
@@ -495,14 +506,29 @@ fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Resul
                 && observed.provenance_rlp == prior.provenance_rlp
         );
         ensure!(!observed.pending_marker_rlp.is_empty());
-        verify_physical_rows(&state_path, &fixture["periods"][index - 1]["final"]["rows"])?;
+        let previous = &fixture["periods"][index - 1]["final"];
+        if fixture["profile"] == "synthetic_mainnet_era" {
+            super::mainnet_era::verify_committed_phase(
+                &state_path,
+                observed.committed,
+                fixture,
+                previous,
+            )?;
+        } else {
+            verify_physical_rows(&state_path, &previous["rows"])?;
+        }
     }
     Ok(())
 }
 
 /// Reconciliation may publish the existing durable result or discard its marker;
 /// it has no execution/native/reward capability and is idempotent across repeats.
-fn recover_period(root: &Path, fixture: &Value, index: usize, committed: bool) -> Result<()> {
+pub(super) fn recover_period(
+    root: &Path,
+    fixture: &Value,
+    index: usize,
+    committed: bool,
+) -> Result<()> {
     let period = &fixture["periods"][index];
     let period_number = number(&period["number"]);
     let state_path = root.join("state_db");
@@ -564,11 +590,163 @@ fn recover_period(root: &Path, fixture: &Value, index: usize, committed: bool) -
     Ok(())
 }
 
+/// Repeats the full mainnet workload from an independently bootstrapped pair,
+/// interrupting the first distribution at an existing commit callback.
+///
+/// The caller owns bootstrap and the completed uninterrupted baseline. This
+/// runner accepts only the two existing commit faults, executes the real prefix
+/// through 25,706,899, and retains that committed reader across interruption,
+/// repeated recovery, retry (BeforeCommit only), and the remaining workload.
+/// RecoveryLeaf cannot execute transactions or rewards; run_period checks that
+/// the fault reached exactly one execution, rewards, and commit callback. The
+/// inner Adapter uses mainnet_era::compare_distribution_writes for the terminal
+/// native transcript. No expected root enters execution or publication.
+///
+/// Both inputs must be distinct existing synthetic pairs. The fresh pair must
+/// still be at the declared retained seed coordinate, with no pending marker.
+/// All headers, receipts, counters, final concrete identity/catalog/generation
+/// must equal the uninterrupted result. Database IDs remain pair-local.
+/// Artifacts are retained; this helper never creates or removes either pair.
+pub(super) fn verify_mainnet_recovery(
+    fixture: &Value,
+    baseline_root: &Path,
+    fresh_bootstrapped_root: &Path,
+    fault: Fault,
+) -> Result<()> {
+    ensure!(fixture["profile"] == "synthetic_mainnet_era");
+    ensure!(fixture["scenario"] == "mainnet_106");
+    ensure!(matches!(fault, Fault::BeforeCommit | Fault::AfterCommit));
+    ensure!(
+        std::fs::canonicalize(baseline_root)? != std::fs::canonicalize(fresh_bootstrapped_root)?,
+        "recovery pair must differ from the uninterrupted baseline"
+    );
+    let periods = fixture["periods"]
+        .as_array()
+        .context("complete mainnet recovery periods")?;
+    ensure!(
+        periods.len() == 111
+            && number(&periods[0]["number"]) == 25_706_890
+            && number(&periods[110]["number"]) == 25_707_000,
+        "mainnet recovery requires five warmup and all 106 workload periods"
+    );
+    ensure!(
+        periods.windows(2).all(|pair| {
+            number(&pair[0]["number"]).checked_add(1) == Some(number(&pair[1]["number"]))
+        }),
+        "mainnet recovery periods must be consecutive"
+    );
+    let distribution_index = periods
+        .iter()
+        .position(|period| number(&period["number"]) == 25_706_900)
+        .context("first mainnet distribution")?;
+    ensure!(distribution_index > 0);
+    let distributions = periods[distribution_index]["distributions"]
+        .as_array()
+        .context("actual first distribution invocations")?;
+    ensure!(
+        distributions.len() == 100
+            && distributions
+                .iter()
+                .enumerate()
+                .all(|(index, row)| { number(&row["period"]) == 25_706_801 + index as u64 }),
+        "recovery must interrupt the complete first 100-row distribution"
+    );
+    let expected = final_facts(baseline_root, fixture)?;
+    let application_path = fresh_bootstrapped_root.join("application");
+    let state_path = fresh_bootstrapped_root.join("state_db");
+    {
+        let (application, chain) = open_chain(&application_path, fixture)?;
+        let seed = ConcreteStateLifecycle::inspect_existing(
+            &state_path,
+            chain.concrete_chain_identity()?,
+        )?;
+        ensure!(
+            seed.committed.period.as_u64() == number(&fixture["seed"]["period"])
+                && seed.committed.state_root == fixed(&fixture["seed"]["root"])
+                && seed.pending_marker_rlp.is_empty()
+                && chain.last_block_number_typed()? == seed.committed.period
+                && application
+                    .final_chain()
+                    .external_evm_pending_publication_raw()?
+                    .is_none(),
+            "mainnet recovery requires a fresh, completely paired synthetic seed"
+        );
+    }
+    native_integration::run_segment(
+        fixture,
+        &periods[..distribution_index],
+        &application_path,
+        &state_path,
+        false,
+    )?;
+    let prior_period = &periods[distribution_index - 1];
+    let prior_identity = ConcreteStateIdentity {
+        period: number(&prior_period["number"]).into(),
+        state_root: fixed(&prior_period["final"]["root"]),
+    };
+    let mut known = BTreeSet::new();
+    for key in fixture["history_rows"][4]
+        .as_object()
+        .context("complete mainnet physical storage history inventory")?
+        .keys()
+    {
+        let raw = hex::decode(key)?;
+        ensure!(raw.len() == 40, "mainnet physical history key width");
+        if u64::from_be_bytes(raw[32..].try_into()?) <= prior_identity.period.as_u64() {
+            known.insert(raw[..32].try_into()?);
+        }
+    }
+    let retained = native_integration::api::CompleteReader {
+        inner: ConcreteStateReader::open_historical_read_only(
+            &state_path,
+            prior_identity,
+            prior_identity,
+        )?,
+        known,
+    };
+    verify_final_reader(&retained, &prior_period["final"])?;
+    run_period(fresh_bootstrapped_root, fixture, distribution_index, fault)?;
+    verify_final_reader(&retained, &prior_period["final"])?;
+    // recover_period already repeats reconciliation with an execution-free
+    // leaf and verifies unchanged descriptors, receipts and execution counters.
+    recover_period(
+        fresh_bootstrapped_root,
+        fixture,
+        distribution_index,
+        fault == Fault::AfterCommit,
+    )?;
+    verify_final_reader(&retained, &prior_period["final"])?;
+    if fault == Fault::BeforeCommit {
+        run_period(
+            fresh_bootstrapped_root,
+            fixture,
+            distribution_index,
+            Fault::None,
+        )?;
+    }
+    // Reopen and reconcile the now-published distribution again, including
+    // the internally repeated no-op reconciliation. No second execution occurs.
+    recover_period(fresh_bootstrapped_root, fixture, distribution_index, true)?;
+    native_integration::run_segment(
+        fixture,
+        &periods[distribution_index + 1..],
+        &application_path,
+        &state_path,
+        false,
+    )?;
+    verify_final_reader(&retained, &prior_period["final"])?;
+    ensure!(
+        final_facts(fresh_bootstrapped_root, fixture)? == expected,
+        "{fault:?}: recovered mainnet workload differs from uninterrupted output"
+    );
+    Ok(())
+}
+
 /// Consensus-visible bytes and deterministic concrete facts can be compared
 /// across independently created pairs. Database IDs/provenance are compared
 /// exactly within each recovery run, since exclusive creation assigns new IDs.
 #[derive(Debug, Eq, PartialEq)]
-struct FinalFacts {
+pub(super) struct FinalFacts {
     stored_headers: Vec<Vec<u8>>,
     public_headers: Vec<Vec<u8>>,
     receipts: Vec<Vec<u8>>,
@@ -578,7 +756,7 @@ struct FinalFacts {
     catalog: Vec<u8>,
     generation: u64,
 }
-fn final_facts(root: &Path, fixture: &Value) -> Result<FinalFacts> {
+pub(super) fn final_facts(root: &Path, fixture: &Value) -> Result<FinalFacts> {
     let (application, chain) = open_chain(&root.join("application"), fixture)?;
     let observed = ConcreteStateLifecycle::inspect_existing(
         root.join("state_db"),
@@ -633,12 +811,22 @@ fn uninterrupted_facts(fixture: &Value, label: &str) -> Result<FinalFacts> {
         "rustaxa-mixed-{label}-baseline-{}",
         std::process::id()
     ));
+    let mut scratch = era_retention::register(&root, fixture)?;
     initialize_pair(&root, fixture)?;
+    era_retention::created(&mut scratch)?;
     for index in 0..4 {
         run_period(&root, fixture, index, Fault::None)?;
     }
     let facts = final_facts(&root, fixture)?;
-    std::fs::remove_dir_all(root)?;
+    if scratch.is_some() {
+        era_retention::finish(
+            scratch,
+            serde_json::json!({"completed":"four period baseline with actual final facts","actual_facts":format!("{facts:?}")}),
+            false,
+        )?;
+    } else {
+        std::fs::remove_dir_all(root)?;
+    }
     Ok(facts)
 }
 
@@ -651,7 +839,9 @@ fn mixed_custody_commit_interruptions_recover_and_continue_exactly() -> Result<(
             "rustaxa-mixed-recovery-{}-{fault:?}",
             std::process::id()
         ));
+        let mut scratch = era_retention::register(&root, &fixture)?;
         initialize_pair(&root, &fixture)?;
+        era_retention::created(&mut scratch)?;
         run_period(&root, &fixture, 0, Fault::None)?;
         run_period(&root, &fixture, 1, fault)?;
         recover_period(&root, &fixture, 1, fault == Fault::AfterCommit)?;
@@ -664,7 +854,15 @@ fn mixed_custody_commit_interruptions_recover_and_continue_exactly() -> Result<(
             final_facts(&root, &fixture)? == uninterrupted,
             "recovered/retried mixed output differs from uninterrupted run"
         );
-        std::fs::remove_dir_all(root)?;
+        if scratch.is_some() {
+            era_retention::finish(
+                scratch,
+                serde_json::json!({"fault":format!("{fault:?}"),"completed":"actual rejection/recovery/retry and full final facts equal uninterrupted; all handles closed","actual_facts":format!("{:?}",final_facts(&root,&fixture)?)}),
+                false,
+            )?;
+        } else {
+            std::fs::remove_dir_all(root)?;
+        }
     }
     Ok(())
 }
@@ -688,7 +886,9 @@ fn mixed_invalid_reports_cannot_contaminate_retry_or_publication() -> Result<()>
             "rustaxa-mixed-rejection-{}-{fault:?}",
             std::process::id()
         ));
+        let mut scratch = era_retention::register(&root, &fixture)?;
         initialize_pair(&root, &fixture)?;
+        era_retention::created(&mut scratch)?;
         run_period(&root, &fixture, 0, Fault::None)?;
         let state_path = root.join("state_db");
         let (application, mut chain) = open_chain(&root.join("application"), &fixture)?;
@@ -801,7 +1001,15 @@ fn mixed_invalid_reports_cannot_contaminate_retry_or_publication() -> Result<()>
             final_facts(&root, &fixture)? == uninterrupted,
             "recovered/retried mixed output differs from uninterrupted run"
         );
-        std::fs::remove_dir_all(root)?;
+        if scratch.is_some() {
+            era_retention::finish(
+                scratch,
+                serde_json::json!({"fault":format!("{fault:?}"),"completed":"actual rejection/recovery/retry and full final facts equal uninterrupted; all handles closed","actual_facts":format!("{:?}",final_facts(&root,&fixture)?)}),
+                false,
+            )?;
+        } else {
+            std::fs::remove_dir_all(root)?;
+        }
     }
     Ok(())
 }

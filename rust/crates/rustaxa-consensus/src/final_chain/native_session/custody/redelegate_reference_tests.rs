@@ -157,7 +157,7 @@ fn redelegate_kernel_and_composed_serializers_match_actual_go_repeat() {
     );
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 fn kernel_chain(maximum: u64) -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
@@ -178,53 +178,58 @@ fn kernel_chain_profile(
     destination_delegator: [u8; 20],
     retained_source: Option<u8>,
 ) -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!(
-        "redelegate-composition-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let path = crate::closeout_test_scratch::new_path(
+        std::env::temp_dir().join(format!(
+            "redelegate-composition-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )),
+        true,
+    );
     let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
     let chain = FinalChain::new_with_rewards_config_and_ficus_activation(
         storage.clone(),
         1_000_000.into(),
         0,
-        Vec::new(),
-        [0x31, 0x32]
-            .into_iter()
-            .map(|validator| GenesisValidator {
-                address: address(validator),
-                vrf_key: [if validator == 0x31 { 0x44 } else { 0x55 }; 32],
-                total_stake: U256::from(if retained_source == Some(validator) {
-                    2000
-                } else {
-                    1000
-                })
-                .to_big_endian()
-                .to_vec(),
-                delegations: vec![(
-                    if validator == 0x31 {
-                        address(0xd1)
-                    } else {
-                        destination_delegator
-                    },
-                    U256::from(1000).to_big_endian().to_vec(),
-                )]
+        crate::FinalChainGenesisAllocation {
+            accounts: Vec::new(),
+            validators: [0x31, 0x32]
                 .into_iter()
-                .chain(
-                    (retained_source == Some(validator))
-                        .then_some((address(0xa1), U256::from(1000).to_big_endian().to_vec())),
-                )
+                .map(|validator| GenesisValidator {
+                    address: address(validator),
+                    vrf_key: [if validator == 0x31 { 0x44 } else { 0x55 }; 32],
+                    total_stake: U256::from(if retained_source == Some(validator) {
+                        2000
+                    } else {
+                        1000
+                    })
+                    .to_big_endian()
+                    .to_vec(),
+                    delegations: vec![(
+                        if validator == 0x31 {
+                            address(0xd1)
+                        } else {
+                            destination_delegator
+                        },
+                        U256::from(1000).to_big_endian().to_vec(),
+                    )]
+                    .into_iter()
+                    .chain(
+                        (retained_source == Some(validator))
+                            .then_some((address(0xa1), U256::from(1000).to_big_endian().to_vec())),
+                    )
+                    .collect(),
+                    metadata: GenesisValidatorMetadata {
+                        owner: address(0xa1),
+                        commission: 100,
+                        ..Default::default()
+                    },
+                })
                 .collect(),
-                metadata: GenesisValidatorMetadata {
-                    owner: address(0xa1),
-                    commission: 100,
-                    ..Default::default()
-                },
-            })
-            .collect(),
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: U256::from(100).into(),
             vote_eligibility_balance_step: U256::from(10).into(),
@@ -321,7 +326,7 @@ fn redelegate_kernel_normal_preflight_errors_match_go_without_advancement() {
         drop(session);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -516,7 +521,7 @@ fn redelegate_staged_pending_and_historical_match_actual_go_and_authenticate_eve
         );
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -588,7 +593,7 @@ fn redelegate_staged_normal_failures_authenticate_actual_go_cold_prefix_before_s
         drop(session);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -668,14 +673,15 @@ fn redelegate_staged_reader_and_all_authenticated_row_failures_abort_without_adv
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
 fn redelegate_staged_excluded_successes_have_no_effects_or_advancement() {
     let oracle = oracle();
     let (chain, storage, path) = kernel_chain(1_000_000);
-    for name in ["full_source"] {
+    {
+        let name = "full_source";
         let case = oracle["cases"]
             .as_array()
             .unwrap()
@@ -759,7 +765,7 @@ fn redelegate_staged_excluded_successes_have_no_effects_or_advancement() {
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -799,7 +805,7 @@ fn redelegate_staged_repeat_rejects_stale_or_corrupted_overlay_without_advanceme
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -841,7 +847,7 @@ fn redelegate_staged_inactive_or_pre_fix_success_scope_is_explicit() {
         drop(session);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -934,7 +940,7 @@ fn redelegate_selector_first_admission_and_abi_match_actual_go_frames() {
         drop(session);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 

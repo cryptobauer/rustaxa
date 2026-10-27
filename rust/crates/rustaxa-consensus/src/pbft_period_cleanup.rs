@@ -263,7 +263,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("{name}_{nonce}"));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         (storage, path)
     }
@@ -559,7 +562,7 @@ mod tests {
         );
         drop(restarted);
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -603,7 +606,7 @@ mod tests {
 
         drop(service);
         if let Some(path) = path {
-            let _ = std::fs::remove_dir_all(path);
+            let _ = crate::closeout_test_scratch::dispose(path);
         }
     }
 }

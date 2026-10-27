@@ -1974,12 +1974,15 @@ mod tests {
     use std::sync::Arc;
 
     fn test_storage(name: &str) -> (std::path::PathBuf, Arc<Storage>) {
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_consensus_query_api_{}_{}",
-            name,
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa_consensus_query_api_{}_{}",
+                name,
+                std::process::id()
+            )),
+            true,
+        );
+        let _ = crate::closeout_test_scratch::clear_before_open(&path);
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         (path, storage)
     }
@@ -2292,7 +2295,7 @@ mod tests {
         assert!(api.final_chain_dpos_total_supply(0).is_err());
 
         drop(api);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2490,7 +2493,7 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2505,7 +2508,7 @@ mod tests {
         assert!(!api.sortition_params_change_by_period(44).unwrap().found);
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2555,7 +2558,7 @@ mod tests {
         assert!(view.dag_blocks_order.is_empty());
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2584,7 +2587,7 @@ mod tests {
         assert_eq!(view.patch_version, 3);
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2641,7 +2644,7 @@ mod tests {
         assert!(!api.pillar_block_data_by_period(12).unwrap().found);
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2680,7 +2683,7 @@ mod tests {
         assert_eq!(level_views[0].block_rlp, block_rlp);
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2746,7 +2749,7 @@ mod tests {
         assert!(missing.transaction_rlp.is_empty());
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2847,7 +2850,7 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -2907,7 +2910,7 @@ mod tests {
         assert!(api.transaction_by_block_number_and_index(14, 0).is_err());
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3044,7 +3047,7 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3082,7 +3085,7 @@ mod tests {
         assert!(api.finalized_dag_blocks_by_period(8).unwrap().is_empty());
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     #[test]
@@ -3128,6 +3131,6 @@ mod tests {
         );
 
         drop(storage);
-        let _ = std::fs::remove_dir_all(path);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 }

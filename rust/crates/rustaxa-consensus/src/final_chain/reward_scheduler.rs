@@ -47,6 +47,11 @@ pub(crate) struct FinalChainRewardSchedulerBasis {
 }
 
 impl FinalChainRewardSchedulerBasis {
+    /// The source cleanup returns before reading storage in this case.
+    #[cfg(any(test, feature = "synthetic-fixtures"))]
+    pub(crate) fn skips_before_current(self) -> bool {
+        self.next_cleanup_block > self.period.as_u64()
+    }
     /// Produces a private successor after exact EndBlock reconstruction.
     pub(crate) const fn successor(
         self,
@@ -897,6 +902,24 @@ mod tests {
         let plan = reopened.plan_cleanup(&[[7; 20]], &jail_blocks);
         assert!(plan.ran);
         assert!(plan.retained_validators.is_empty());
+    }
+
+    #[test]
+    fn no_read_cleanup_requires_strictly_future_authenticated_timer() {
+        for timer in [3, 4, 5] {
+            let mut runtime = FinalChainRewardSchedulerRuntime::new(3.into());
+            make_live(&mut runtime, 11);
+            runtime.next_cleanup_block = timer;
+            let basis = runtime.basis(11, 3.into(), 4.into(), [6; 32]).unwrap();
+            assert_eq!(basis.skips_before_current(), timer == 5);
+            let changed = BTreeMap::from([([7; 20], 252_004)]);
+            let plan = basis.plan_cleanup(&[[7; 20]], &changed);
+            assert_eq!(plan.ran, timer != 5);
+            if timer == 5 {
+                assert_eq!(plan.successor.next_cleanup_block, timer);
+                assert_eq!(plan.retained_validators, vec![[7; 20]]);
+            }
+        }
     }
 
     #[test]

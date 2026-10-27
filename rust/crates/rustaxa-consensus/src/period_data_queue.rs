@@ -1293,7 +1293,7 @@ mod tests {
         dag_bundle: Option<&[u8]>,
     ) -> Vec<u8> {
         let mut period_data = RlpStream::new_list(4);
-        period_data.append_raw(&block, 1);
+        period_data.append_raw(block, 1);
         if let Some(previous_cert_bundle) = previous_cert_bundle {
             period_data.append_raw(previous_cert_bundle, 1);
         } else {
@@ -1719,7 +1719,7 @@ mod tests {
         max_size: u64,
         cert_votes: usize,
     ) -> bool {
-        let previous_cert_vote_rlps = if id % 2 == 0 {
+        let previous_cert_vote_rlps = if id.is_multiple_of(2) {
             vec![vec![id as u8, 0xc0]]
         } else {
             Vec::new()
@@ -1749,11 +1749,12 @@ mod tests {
                         transaction_nonce: [id as u8; 32],
                         sender: [id as u8; 20],
                     }],
-                    previous_cert_votes_present: id % 2 == 0,
-                    previous_cert_first_vote_has_weight: id % 3 == 0,
-                    pillar_votes_present: id % 5 == 0,
-                    extra_data_present: id % 7 == 0,
-                    extra_data_pillar_block_hash_present: id % 7 == 0 && id % 11 == 0,
+                    previous_cert_votes_present: id.is_multiple_of(2),
+                    previous_cert_first_vote_has_weight: id.is_multiple_of(3),
+                    pillar_votes_present: id.is_multiple_of(5),
+                    extra_data_present: id.is_multiple_of(7),
+                    extra_data_pillar_block_hash_present: id.is_multiple_of(7)
+                        && id.is_multiple_of(11),
                 },
                 max_pbft_size: max_size,
                 current_block_cert_vote_rlps,

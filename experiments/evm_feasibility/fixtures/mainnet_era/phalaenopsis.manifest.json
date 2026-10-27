@@ -1,0 +1,706 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "phalaenopsis",
+    "head": 6942998,
+    "first_retained": 6942994,
+    "periods": [
+      6942999,
+      6943000,
+      6943001,
+      6943002,
+      6943003,
+      6943004,
+      6943005
+    ],
+    "pending_periods": [
+      6942901,
+      6942902,
+      6942903,
+      6942904,
+      6942905,
+      6942906,
+      6942907,
+      6942908,
+      6942909,
+      6942910,
+      6942911,
+      6942912,
+      6942913,
+      6942914,
+      6942915,
+      6942916,
+      6942917,
+      6942918,
+      6942919,
+      6942920,
+      6942921,
+      6942922,
+      6942923,
+      6942924,
+      6942925,
+      6942926,
+      6942927,
+      6942928,
+      6942929,
+      6942930,
+      6942931,
+      6942932,
+      6942933,
+      6942934,
+      6942935,
+      6942936,
+      6942937,
+      6942938,
+      6942939,
+      6942940,
+      6942941,
+      6942942,
+      6942943,
+      6942944,
+      6942945,
+      6942946,
+      6942947,
+      6942948,
+      6942949,
+      6942950,
+      6942951,
+      6942952,
+      6942953,
+      6942954,
+      6942955,
+      6942956,
+      6942957,
+      6942958,
+      6942959,
+      6942960,
+      6942961,
+      6942962,
+      6942963,
+      6942964,
+      6942965,
+      6942966,
+      6942967,
+      6942968,
+      6942969,
+      6942970,
+      6942971,
+      6942972,
+      6942973,
+      6942974,
+      6942975,
+      6942976,
+      6942977,
+      6942978,
+      6942979,
+      6942980,
+      6942981,
+      6942982,
+      6942983,
+      6942984,
+      6942985,
+      6942986,
+      6942987,
+      6942988,
+      6942989,
+      6942990,
+      6942991,
+      6942992,
+      6942993,
+      6942994,
+      6942995,
+      6942996,
+      6942997,
+      6942998
+    ],
+    "donor": {
+      "name": "phalaenopsis_commission_donor",
+      "head": 6942798,
+      "first_retained": 6942794,
+      "periods": [
+        6942799,
+        6942800,
+        6942801
+      ],
+      "pending_periods": [
+        6942701,
+        6942702,
+        6942703,
+        6942704,
+        6942705,
+        6942706,
+        6942707,
+        6942708,
+        6942709,
+        6942710,
+        6942711,
+        6942712,
+        6942713,
+        6942714,
+        6942715,
+        6942716,
+        6942717,
+        6942718,
+        6942719,
+        6942720,
+        6942721,
+        6942722,
+        6942723,
+        6942724,
+        6942725,
+        6942726,
+        6942727,
+        6942728,
+        6942729,
+        6942730,
+        6942731,
+        6942732,
+        6942733,
+        6942734,
+        6942735,
+        6942736,
+        6942737,
+        6942738,
+        6942739,
+        6942740,
+        6942741,
+        6942742,
+        6942743,
+        6942744,
+        6942745,
+        6942746,
+        6942747,
+        6942748,
+        6942749,
+        6942750,
+        6942751,
+        6942752,
+        6942753,
+        6942754,
+        6942755,
+        6942756,
+        6942757,
+        6942758,
+        6942759,
+        6942760,
+        6942761,
+        6942762,
+        6942763,
+        6942764,
+        6942765,
+        6942766,
+        6942767,
+        6942768,
+        6942769,
+        6942770,
+        6942771,
+        6942772,
+        6942773,
+        6942774,
+        6942775,
+        6942776,
+        6942777,
+        6942778,
+        6942779,
+        6942780,
+        6942781,
+        6942782,
+        6942783,
+        6942784,
+        6942785,
+        6942786,
+        6942787,
+        6942788,
+        6942789,
+        6942790,
+        6942791,
+        6942792,
+        6942793,
+        6942794,
+        6942795,
+        6942796,
+        6942797,
+        6942798
+      ],
+      "seed_actions_only": true,
+      "no_warmup_delegation": true,
+      "actions": [
+        {
+          "period": 6942801,
+          "who": 0,
+          "name": "full_rewarded_owner_withdrawal",
+          "method": "undelegate",
+          "validator": 0,
+          "amount": "1000000000000000000000000"
+        }
+      ]
+    },
+    "actions": [
+      {
+        "period": 6942999,
+        "who": 0,
+        "name": "create_transfer_parent_revert",
+        "method": "create",
+        "input": "366000600037600060003660003460fe620493e0f15060006000fd"
+      },
+      {
+        "period": 6942999,
+        "who": 0,
+        "name": "zero_stake_owner_commission",
+        "method": "commission",
+        "validator": 0
+      },
+      {
+        "period": 6942999,
+        "who": 4,
+        "name": "exact_payable_transfer",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "44df8e70",
+        "value": "7"
+      },
+      {
+        "period": 6942999,
+        "who": 4,
+        "name": "transfer_extra_byte",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "44df8e7000",
+        "value": "7"
+      },
+      {
+        "period": 6942999,
+        "who": 4,
+        "name": "transfer_parent_revert",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 1,
+        "input": "44df8e70",
+        "value": "7"
+      },
+      {
+        "period": 6943000,
+        "who": 0,
+        "name": "zero_stake_owner_commission",
+        "method": "commission",
+        "validator": 0
+      },
+      {
+        "period": 6943000,
+        "who": 4,
+        "name": "exact_payable_transfer",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "44df8e70",
+        "value": "7"
+      },
+      {
+        "period": 6943000,
+        "who": 4,
+        "name": "transfer_extra_byte",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "44df8e7000",
+        "value": "7"
+      },
+      {
+        "period": 6943000,
+        "who": 4,
+        "name": "transfer_parent_revert",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 1,
+        "input": "44df8e70",
+        "value": "7"
+      },
+      {
+        "period": 6943001,
+        "who": 0,
+        "name": "zero_stake_owner_commission",
+        "method": "commission",
+        "validator": 0
+      },
+      {
+        "period": 6943001,
+        "who": 4,
+        "name": "exact_payable_transfer",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "44df8e70",
+        "value": "7"
+      },
+      {
+        "period": 6943001,
+        "who": 4,
+        "name": "transfer_extra_byte",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "44df8e7000",
+        "value": "7"
+      },
+      {
+        "period": 6943001,
+        "who": 4,
+        "name": "transfer_parent_revert",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 1,
+        "input": "44df8e70",
+        "value": "7"
+      }
+    ],
+    "no_warmup_delegation": true,
+    "required_activation_periods": [
+      6942999,
+      6943000,
+      6943001
+    ],
+    "api_heads": [
+      6942999,
+      6943000,
+      6943001,
+      6943004,
+      6943005
+    ],
+    "api_ordinary_nonce": 1
+  },
+  "scheduler_manifest_sha256": "cbb3adfad0b18277d7806b44901c7da8cba571c9696ef2b4695a352c31d36b37",
+  "support": {
+    "mainnet_era_reference.py": "a93456d2334dad3225729d44694b3c63c03680e9e7b63677ba5ecced28ee7d9f",
+    "mainnet_era_profile.py": "44aaf3bd52beed3c0b60c8f42bd8fa490a6f7f3bf62c26c874c51266949194d7",
+    "mainnet_era_historical_actions.py": "a9f9296151fa5e97fcceebcfe5ce82926289a34185d329476422365b8ecd76ad",
+    "mainnet_era_reference.go": "9ad0242c04b57def9563ea5d737363850d5eb47764c9d9bca28d98350d92877f",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7"
+  },
+  "streams": {
+    "public": {
+      "file": "be0ecbfcd30e9eb993bfeed08300ad53d5c73fbb48db782cf06dd4719fc08826.json.gz",
+      "sha256": "be0ecbfcd30e9eb993bfeed08300ad53d5c73fbb48db782cf06dd4719fc08826",
+      "bytes": 5038323,
+      "gzip_sha256": "d336933ccf8e2e835a1d15094ca488bb3abaa123111dd7da32e1c723ea0edc88",
+      "gzip_bytes": 208108,
+      "capture": null
+    },
+    "local": {
+      "file": "48579bea14997ca6abdd1d744c24037fcf588d7ac2463f05226e87d4c00642b4.json.gz",
+      "sha256": "48579bea14997ca6abdd1d744c24037fcf588d7ac2463f05226e87d4c00642b4",
+      "bytes": 5260802,
+      "gzip_sha256": "e7a1400c910422196d28e3d7647bf80bb51061952a79e22a08df7eba9b98dad4",
+      "gzip_bytes": 236922,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "file": "2438d8f53b8136e2c4429424c3cfacb086fbe4bc613442195d6aed1699f55d2b.json.gz",
+            "sha256": "2438d8f53b8136e2c4429424c3cfacb086fbe4bc613442195d6aed1699f55d2b",
+            "bytes": 1242893,
+            "gzip_sha256": "92af8dfe4f4bf26cdfc660241800520dd259495ff5e41bb140fda9699d76c78a",
+            "gzip_bytes": 116505,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-phalaenopsis-2gennhjr"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 6942995,
+            "end": 6943006
+          },
+          "stream": {
+            "file": "e0e41f0b71cdd3719958ff122e174b6d7b3ee8e88f4916491241e67e099ee723.json.gz",
+            "sha256": "e0e41f0b71cdd3719958ff122e174b6d7b3ee8e88f4916491241e67e099ee723",
+            "bytes": 676907,
+            "gzip_sha256": "baa7174930d0689d7f5fba6ee18ecfa6193d9a1b78d3a68848b653f2c45764bb",
+            "gzip_bytes": 54531,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-phalaenopsis-fepxbq9_"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "file": "e2a675e512d86cdd12e663e8eb6e59945fbddb22b69145d1167d90168519444d.json.gz",
+            "sha256": "e2a675e512d86cdd12e663e8eb6e59945fbddb22b69145d1167d90168519444d",
+            "bytes": 635097,
+            "gzip_sha256": "539936664638037b4ccf0a3b84d777c1d0d6b257078fd4aed8a6bb7950da1938",
+            "gzip_bytes": 16067,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-phalaenopsis-brrpa2l_"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "file": "682dc4e12336e142ffabcd2c4b78b0a92a7af4526012e584f4debea8ee98568b.json.gz",
+            "sha256": "682dc4e12336e142ffabcd2c4b78b0a92a7af4526012e584f4debea8ee98568b",
+            "bytes": 634510,
+            "gzip_sha256": "9c31c14fd5505d6b772cb9fcb92dbbd8433bb30ad4218df1ea1aec12cc3432bd",
+            "gzip_bytes": 16009,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-phalaenopsis-8pdewaje"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "file": "6c20e48526d0c79371e46346ed495a96cb425473d4cddc94787bb8c0d4a7691a.json.gz",
+            "sha256": "6c20e48526d0c79371e46346ed495a96cb425473d4cddc94787bb8c0d4a7691a",
+            "bytes": 634581,
+            "gzip_sha256": "199b43e666eb9acd73d7ce22e1dc2c7e58ba586f77c7d6c1a6bba77d308587f5",
+            "gzip_bytes": 16009,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-phalaenopsis-m1hfdwli"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "file": "f49f74381fcde388f3018724529069a988e15adb1c11f20fe84b31d8121d6165.json.gz",
+            "sha256": "f49f74381fcde388f3018724529069a988e15adb1c11f20fe84b31d8121d6165",
+            "bytes": 634581,
+            "gzip_sha256": "c8d4168ad45443a66dc0068f0885995ad7932c585296de9d46fa72328e56fa43",
+            "gzip_bytes": 16011,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-phalaenopsis-t0wlobrj"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "file": "18972d3b75224823af5f39ead1136b2c16c35f696ee7dde5a7ba2625674aaa44.json.gz",
+            "sha256": "18972d3b75224823af5f39ead1136b2c16c35f696ee7dde5a7ba2625674aaa44",
+            "bytes": 634581,
+            "gzip_sha256": "d365139193da9ac223fb87cf3c316f3eb070f832987bb9fd35950792c9fea6f2",
+            "gzip_bytes": 16006,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-phalaenopsis-xr_l2azr"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "file": "c9d0faf109cc5ef24e9878d6d93a5cd92d85b7d488c7ac3af2bef3e3cd8e8c52.json.gz",
+            "sha256": "c9d0faf109cc5ef24e9878d6d93a5cd92d85b7d488c7ac3af2bef3e3cd8e8c52",
+            "bytes": 1289757,
+            "gzip_sha256": "5fd189f96ed8a411b97e08c8c11e99c08c5f52e97fad521c25a1cd6b4e558662",
+            "gzip_bytes": 121015,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-phalaenopsis-dpz60wzi"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 6942995,
+            "end": 6943006
+          },
+          "stream": {
+            "file": "ba61e7a790744b46fb24792f8dd52898e344041a1a5d5bd8c299cb94e7684cd9.json.gz",
+            "sha256": "ba61e7a790744b46fb24792f8dd52898e344041a1a5d5bd8c299cb94e7684cd9",
+            "bytes": 754240,
+            "gzip_sha256": "bfd1aa6a3583db8778a0f142b8afb78a8fc3e63d2aaca46503c4306c577a1258",
+            "gzip_bytes": 77358,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-phalaenopsis-z6op5ehv"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "file": "9d85e9f6d1a3750589c88f37a7eaa43f2eef4445f39522b96ec6fc68c065cb3b.json.gz",
+            "sha256": "9d85e9f6d1a3750589c88f37a7eaa43f2eef4445f39522b96ec6fc68c065cb3b",
+            "bytes": 654752,
+            "gzip_sha256": "539949e84cae016f48f25133eb5e786d3075227241c077b75d4e5cb52b1a09f5",
+            "gzip_bytes": 16566,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-phalaenopsis-pousaph4"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "file": "c1290a0b62d581d325e0d98d73bd3469e1d74f9ab5978555cda4093d491ce149.json.gz",
+            "sha256": "c1290a0b62d581d325e0d98d73bd3469e1d74f9ab5978555cda4093d491ce149",
+            "bytes": 654165,
+            "gzip_sha256": "3fbce408fb8a2e211af661527e4ad977f18a2d9447ecfbebd64c3b6cffac4d07",
+            "gzip_bytes": 16527,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-phalaenopsis-la_reosa"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "file": "b10ecfe9392d98cacba5edcc06cb229a2d1b760489613110cfec9d991463088d.json.gz",
+            "sha256": "b10ecfe9392d98cacba5edcc06cb229a2d1b760489613110cfec9d991463088d",
+            "bytes": 654236,
+            "gzip_sha256": "08f68a8c8b245428a7a3ef0b812adddb4a428544543479089b519f71e2df54e8",
+            "gzip_bytes": 16526,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-phalaenopsis-buz9gac7"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "file": "60bed76f9473798aa22d78ca578f6c9af20203eed9dc45e31432211f30407525.json.gz",
+            "sha256": "60bed76f9473798aa22d78ca578f6c9af20203eed9dc45e31432211f30407525",
+            "bytes": 654236,
+            "gzip_sha256": "d39e855e39164a6185a3fd71525f5ad4315f4e8cc9b7b85efa2cd27fe9136c84",
+            "gzip_bytes": 16528,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-phalaenopsis-zboe93_b"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "file": "7d06a263c49c6ebf96562666a541830a7ca2ef14e6038975a2e8bfe8ec6828f2.json.gz",
+            "sha256": "7d06a263c49c6ebf96562666a541830a7ca2ef14e6038975a2e8bfe8ec6828f2",
+            "bytes": 654236,
+            "gzip_sha256": "7fa687eed8f43ff2f24b827cdbb19126682942f7e8ce26ae425ca2ca58e84e07",
+            "gzip_bytes": 16524,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-phalaenopsis-wdfmz7ll"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "9de6110dcc9816cb8436c1ac585497c59375aef085d18bfd8e8a7e2398fee1a6",
+    "streams": {
+      "public": "19866f4e296a7f126d353cb890b24e277fc7f15c5895bf08223964bdb3b8c9a5",
+      "local": "eb5cc26693daf861f08b7be038d243228d6112ebaf44e8104af8ba30aa96b8b5"
+    },
+    "forks": {}
+  }
+}

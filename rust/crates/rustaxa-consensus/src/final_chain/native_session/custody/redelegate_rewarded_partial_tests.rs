@@ -5,44 +5,49 @@ use ethereum_types::H160;
 use num_bigint::BigInt;
 
 fn reward_chain() -> (FinalChain, Arc<Storage>, std::path::PathBuf) {
-    let path = std::env::temp_dir().join(format!(
-        "redelegate-composition-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let path = crate::closeout_test_scratch::new_path(
+        std::env::temp_dir().join(format!(
+            "redelegate-composition-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )),
+        true,
+    );
     let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
     let chain = FinalChain::new_with_rewards_config_and_ficus_activation(
         storage.clone(),
         1_000_000.into(),
         0,
-        Vec::new(),
-        [0x31, 0x32]
-            .into_iter()
-            .map(|validator| GenesisValidator {
-                address: address(validator),
-                vrf_key: [match validator {
-                    0x31 => 0x44,
-                    0x32 => 0x55,
-                    _ => 0x66,
-                }; 32],
-                total_stake: U256::from(2000).to_big_endian().to_vec(),
-                delegations: vec![(address(0xa1), U256::from(1000).to_big_endian().to_vec())]
-                    .into_iter()
-                    .chain(Some((
-                        address(0xd1),
-                        U256::from(1000).to_big_endian().to_vec(),
-                    )))
-                    .collect(),
-                metadata: GenesisValidatorMetadata {
-                    owner: address(0xa1),
-                    commission: 100,
-                    ..Default::default()
-                },
-            })
-            .collect(),
+        crate::FinalChainGenesisAllocation {
+            accounts: Vec::new(),
+            validators: [0x31, 0x32]
+                .into_iter()
+                .map(|validator| GenesisValidator {
+                    address: address(validator),
+                    vrf_key: [match validator {
+                        0x31 => 0x44,
+                        0x32 => 0x55,
+                        _ => 0x66,
+                    }; 32],
+                    total_stake: U256::from(2000).to_big_endian().to_vec(),
+                    delegations: vec![(address(0xa1), U256::from(1000).to_big_endian().to_vec())]
+                        .into_iter()
+                        .chain(Some((
+                            address(0xd1),
+                            U256::from(1000).to_big_endian().to_vec(),
+                        )))
+                        .collect(),
+                    metadata: GenesisValidatorMetadata {
+                        owner: address(0xa1),
+                        commission: 100,
+                        ..Default::default()
+                    },
+                })
+                .collect(),
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: U256::from(100).into(),
             vote_eligibility_balance_step: U256::from(10).into(),
@@ -380,7 +385,7 @@ fn rewarded_partial_kernel_and_staged_vectors_match_actual_go() {
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 #[test]
 fn rewarded_partial_all_raw_and_account_faults_abort_and_fresh_retry_matches() {
@@ -454,7 +459,7 @@ fn rewarded_partial_all_raw_and_account_faults_abort_and_fresh_retry_matches() {
     );
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 #[test]
 fn rewarded_partial_normal_preflight_failure_never_reads_accounts() {
@@ -478,7 +483,7 @@ fn rewarded_partial_normal_preflight_failure_never_reads_accounts() {
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -633,7 +638,7 @@ fn rewarded_partial_excludes_unmeasured_shapes_without_accounts_or_state_advance
     }
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 /// A deliberately malformed working clone fails destination serialization
@@ -706,7 +711,7 @@ fn rewarded_partial_destination_codec_error_after_completed_payout_discards_scra
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 
 #[test]
@@ -770,7 +775,7 @@ fn rewarded_h1_faults_and_fresh_retries_discard_scratch() {
     drop(probe);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 #[test]
 fn rewarded_h1_requires_historical_origin_and_current_account_authority() {
@@ -820,7 +825,7 @@ fn rewarded_h1_requires_historical_origin_and_current_account_authority() {
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }
 #[test]
 fn rewarded_h1_late_destination_codec_error_discards_completed_payout_scratch() {
@@ -865,5 +870,5 @@ fn rewarded_h1_late_destination_codec_error_discards_completed_payout_scratch() 
     drop(session);
     drop(chain);
     drop(storage);
-    std::fs::remove_dir_all(path).unwrap();
+    crate::closeout_test_scratch::dispose(path).unwrap();
 }

@@ -5,9 +5,7 @@
 use super::*;
 use rustaxa_evm::simulation::simulate_with_native;
 
-#[allow(dead_code)]
-#[path = "../support/mixed_native.rs"]
-mod mixed_native;
+use super::mixed_native;
 
 const OWNER: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xa1,
@@ -269,7 +267,7 @@ fn metadata_frames_match_go_through_real_pending_session_and_journal() {
         }
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -343,6 +341,6 @@ fn metadata_historical_simulation_matches_frame_results_and_discards_every_probe
         drop(fresh);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }

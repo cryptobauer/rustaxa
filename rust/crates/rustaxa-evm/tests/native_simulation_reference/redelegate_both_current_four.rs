@@ -158,37 +158,39 @@ pub(super) fn history(path: &FixturePath, initialize: bool, public: &Value) -> F
         storage.clone(),
         500_000.into(),
         0,
-        vec![
-            GenesisAccount {
-                address: caller,
-                balance: rustaxa_types::FinalChainAccountBalance::new_account(balance),
-            },
-            GenesisAccount {
-                address: owner(public),
-                balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(1000)),
-            },
-        ],
-        [0x31, 0x32]
-            .into_iter()
-            .map(|last| GenesisValidator {
-                address: address(last),
-                vrf_key: [match last {
-                    0x31 => 0x44,
-                    0x32 => 0x55,
-                    _ => 0x66,
-                }; 32],
-                total_stake: U256::from(2000).to_big_endian().to_vec(),
-                delegations: vec![(owner(public), U256::from(1000).to_big_endian().to_vec())]
-                    .into_iter()
-                    .chain(Some((caller, U256::from(1000).to_big_endian().to_vec())))
-                    .collect(),
-                metadata: GenesisValidatorMetadata {
-                    owner: owner(public),
-                    commission: 100,
-                    ..Default::default()
+        rustaxa_consensus::FinalChainGenesisAllocation {
+            accounts: vec![
+                GenesisAccount {
+                    address: caller,
+                    balance: rustaxa_types::FinalChainAccountBalance::new_account(balance),
                 },
-            })
-            .collect(),
+                GenesisAccount {
+                    address: owner(public),
+                    balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(1000)),
+                },
+            ],
+            validators: [0x31, 0x32]
+                .into_iter()
+                .map(|last| GenesisValidator {
+                    address: address(last),
+                    vrf_key: [match last {
+                        0x31 => 0x44,
+                        0x32 => 0x55,
+                        _ => 0x66,
+                    }; 32],
+                    total_stake: U256::from(2000).to_big_endian().to_vec(),
+                    delegations: vec![(owner(public), U256::from(1000).to_big_endian().to_vec())]
+                        .into_iter()
+                        .chain(Some((caller, U256::from(1000).to_big_endian().to_vec())))
+                        .collect(),
+                    metadata: GenesisValidatorMetadata {
+                        owner: owner(public),
+                        commission: 100,
+                        ..Default::default()
+                    },
+                })
+                .collect(),
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: U256::from(100).into(),
             vote_eligibility_balance_step: U256::from(10).into(),

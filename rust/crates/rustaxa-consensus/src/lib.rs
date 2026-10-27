@@ -80,13 +80,14 @@ pub use consensus_application::{
 pub use consensus_application_runtime::{
     ConsensusApplicationRuntime, ConsensusEffectId, ConsensusExecutionPort,
     ConsensusObservationReport, ConsensusObservationRequest, ConsensusObserverPort,
-    ConsensusProcessPort, ConsensusRunExit, ConsensusRunReason, ConsensusSignReport,
-    ConsensusSignRequest, ConsensusSigningPort, ConsensusTransportPort, ConsensusTransportReport,
-    ConsensusTransportStatus, ConsensusVrfReport, ConsensusVrfRequest, ConsensusWaitOutcome,
-    ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateInput, DagGasEstimateReport,
-    DagGasEstimateRequest, DagGasEstimateResult, EvmFinalizationReport, EvmFinalizationRequest,
-    GossipDagBlockRequest, GossipPillarVoteRequest, GossipVoteBundleRequest, GossipVoteRequest,
-    PillarAnchorStateReport, PillarAnchorStateRequest, ReportMaliciousPeerRequest, SigningIdentity,
+    ConsensusProcessPort, ConsensusRunExit, ConsensusRunReason, ConsensusRuntimeServices,
+    ConsensusSignReport, ConsensusSignRequest, ConsensusSigningPort, ConsensusTransportPort,
+    ConsensusTransportReport, ConsensusTransportStatus, ConsensusVrfReport, ConsensusVrfRequest,
+    ConsensusWaitOutcome, ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateInput,
+    DagGasEstimateReport, DagGasEstimateRequest, DagGasEstimateResult, EvmFinalizationReport,
+    EvmFinalizationRequest, GossipDagBlockRequest, GossipPillarVoteRequest,
+    GossipVoteBundleRequest, GossipVoteRequest, PillarAnchorStateReport, PillarAnchorStateRequest,
+    ReportMaliciousPeerRequest, SigningIdentity,
 };
 pub use consensus_network_api::ConsensusNetworkApi;
 pub use consensus_pipeline::{
@@ -116,8 +117,10 @@ pub use dag_transaction_service::{
     PublicTransactionSubmissionReport, PublicTransactionSubmissionRequest,
     TransactionGossipAccount, TransactionGossipEntry, TransactionPoolStatus,
 };
-pub use final_chain::FinalChain;
+#[cfg(feature = "synthetic-fixtures")]
+pub use final_chain::FinalChainSyntheticDonor;
 pub use final_chain::native_session;
+pub use final_chain::{FinalChain, FinalChainGenesisAllocation};
 pub use final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED,
     FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED, FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED,
@@ -450,3 +453,7 @@ pub use dag::{
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     verify_precheck_from_storage,
 };
+
+#[cfg(test)]
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;

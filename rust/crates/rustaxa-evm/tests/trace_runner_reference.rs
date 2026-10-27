@@ -630,3 +630,6 @@ fn persisted_missing_sequence_dependencies_remain_unavailable() {
         assert_eq!(database.rows(), before);
     }
 }
+
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;

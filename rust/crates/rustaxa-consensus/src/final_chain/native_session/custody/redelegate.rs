@@ -45,6 +45,184 @@
 use super::*;
 
 impl FinalChainNativeSession<'_> {
+    /// Current-profile composition authenticates consumed graph and membership
+    /// rows, then reuses the same semantic kernel and ordered custody writers.
+    fn invoke_current_redelegate(
+        &mut self,
+        transaction: DposTransaction,
+        quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
+        mut trace: FinalChainNativeRawTrace<'_>,
+    ) -> Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        let DposTransaction::Redelegate {
+            delegator,
+            from,
+            to,
+            amount,
+        } = transaction
+        else {
+            return Err(FinalChainNativeSessionError::UnsupportedOperation);
+        };
+        let before = &self.dpos_state;
+        if from == to
+            || !self.final_chain.magnolia_active(self.pending_period)
+            || !self.final_chain.ficus_active_at(self.pending_period)
+            || !before.delegation_ledger_history_complete
+            || !before.redelegate_same_validator_history_complete
+            || !before.redelegate_same_validator_corruption.is_empty()
+        {
+            return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
+        }
+        validate_dpos_principal_ledger(before).map_err(map_kernel_error)?;
+        let members = before
+            .delegator_validators
+            .get(&delegator)
+            .cloned()
+            .unwrap_or_default();
+        let expected_members = before
+            .delegations
+            .iter()
+            .filter_map(|(validator, rows)| rows.contains_key(&delegator).then_some(*validator))
+            .collect::<Vec<_>>();
+        for validator in [from, to] {
+            self.authenticate_redelegate_validator(validator, &mut trace)?;
+            authenticate(
+                &mut trace,
+                rewards_key(validator),
+                ExpectedRaw::Exact(encode_rewards(before, validator)),
+                "current redelegation rewards",
+            )?;
+            authenticate_delegation(before, validator, delegator, &mut trace)?;
+            authenticate_reward_graph(before, validator, delegator, &mut trace, false)?;
+            authenticate_membership(
+                &before.validator_order,
+                &before.total_stakes.keys().copied().collect::<Vec<_>>(),
+                &[0, 5],
+                validator,
+                &mut trace,
+            )?;
+            if delegation(before, validator, delegator).is_some() {
+                authenticate_membership(
+                    &members,
+                    &expected_members,
+                    &delegator_validators_prefix(delegator),
+                    validator,
+                    &mut trace,
+                )?;
+            } else {
+                authenticate_new_membership(
+                    &members,
+                    &expected_members,
+                    &delegator_validators_prefix(delegator),
+                    validator,
+                    &mut trace,
+                )?;
+            }
+        }
+        let mut next = before.clone();
+        let mut accounts = StagedDposAccountPort::from_state(state);
+        let outcome = self
+            .final_chain
+            .apply_dpos_redelegate(
+                &mut next,
+                &mut accounts,
+                delegator,
+                from,
+                to,
+                amount,
+                self.pending_period,
+            )
+            .map_err(map_kernel_error)?;
+        if outcome.status_code != 1 {
+            return Err(domain("authenticated current redelegation failed"));
+        }
+        if next.total_stakes.contains_key(&from) {
+            let omit_checkpoint = next
+                .total_stakes
+                .get(&from)
+                .is_some_and(StoredDposTokenAmount::is_zero)
+                && next
+                    .commission_rewards
+                    .get(&from)
+                    .is_none_or(StoredDposTokenAmount::is_zero)
+                && dpos_undelegations_count_for_validator(&next, from) != 0;
+            self.serialize_principal_removal(
+                delegator,
+                from,
+                before,
+                &next,
+                &mut trace,
+                omit_checkpoint,
+            )?;
+        } else {
+            let mut nodes = NodeTrace::new(before)?;
+            let current = before
+                .reward_reference_graph
+                .current_block()
+                .map_err(domain)?;
+            if !nodes.contains(from, current) {
+                nodes.decrement_and_write(
+                    from,
+                    before
+                        .reward_reference_graph
+                        .read_validator_head(&from)
+                        .map_err(domain)?,
+                    &mut trace,
+                )?;
+            }
+            nodes.decrement_and_write(
+                from,
+                before
+                    .reward_reference_graph
+                    .read_cursor(&from, &delegator)
+                    .map_err(domain)?,
+                &mut trace,
+            )?;
+            checked_put(
+                &mut trace,
+                delegation_key(from, delegator),
+                ExpectedRaw::Exact(encode_delegation(before, from, delegator)?),
+                Vec::new(),
+                "removed source delegation",
+            )?;
+            remove_iterable(
+                &mut trace,
+                &delegator_validators_prefix(delegator),
+                &members.iter().map(|a| a.to_vec()).collect::<Vec<_>>(),
+                &from,
+            )?;
+            self.serialize_deleted_validator_rows(from, before, &mut trace)?;
+            trace.put(
+                DPOS_CONTRACT_ADDRESS,
+                reward_node_key(from, current),
+                Vec::new(),
+            )?;
+        }
+        let mut intermediate = members;
+        if delegation(&next, from, delegator).is_none() {
+            let index = intermediate
+                .iter()
+                .position(|v| *v == from)
+                .ok_or_else(|| domain("source membership missing"))?;
+            intermediate.swap_remove(index);
+        }
+        self.serialize_delegate_with_membership(
+            delegator,
+            to,
+            before,
+            &next,
+            Some(&intermediate),
+            &mut trace,
+        )?;
+        self.dpos_state = next;
+        Ok(redelegate_result_with_accounts(
+            outcome,
+            quote,
+            trace.finish(),
+            accounts.into_mutations(),
+        ))
+    }
+
     /// Quotes a recognized redelegation selector before Go-compatible ABI unpack.
     /// Funding, historical depth and nonpayability precede argument errors. This
     /// method performs no storage reads; invocation authenticates business facts.
@@ -167,6 +345,22 @@ impl FinalChainNativeSession<'_> {
                 quote,
                 Vec::new(),
             ));
+        }
+
+        if self.final_chain.aspen_part_two_active(self.pending_period)
+            && self.final_chain.cacti_active(self.pending_period)
+        {
+            return self.invoke_current_redelegate(
+                DposTransaction::Redelegate {
+                    delegator,
+                    from,
+                    to,
+                    amount,
+                },
+                quote,
+                state,
+                trace,
+            );
         }
 
         // The measured reward-bearing partial has its own finite authority
@@ -741,6 +935,16 @@ fn authenticate_reward_scope(
     delegator: [u8; 20],
     trace: &mut FinalChainNativeRawTrace<'_>,
 ) -> Result<(), FinalChainNativeSessionError> {
+    authenticate_reward_graph(snapshot, validator, delegator, trace, true)
+}
+
+fn authenticate_reward_graph(
+    snapshot: &DposSnapshot,
+    validator: [u8; 20],
+    delegator: [u8; 20],
+    trace: &mut FinalChainNativeRawTrace<'_>,
+    zero_only: bool,
+) -> Result<(), FinalChainNativeSessionError> {
     let graph = &snapshot.reward_reference_graph;
     let current = graph.current_block().map_err(domain)?;
     let head = graph.read_validator_head(&validator).map_err(domain)?;
@@ -806,28 +1010,29 @@ fn authenticate_reward_scope(
                     "redelegation reward node count is insufficient".to_owned(),
                 ));
             }
-            if node.reward_per_stake != DposRewardIndex::zero() {
+            if zero_only && node.reward_per_stake != DposRewardIndex::zero() {
                 return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
             }
         }
     }
-    if snapshot
-        .delegator_rewards
-        .get(&validator)
-        .is_some_and(|value| !value.is_zero())
-        || snapshot
-            .commission_rewards
+    if zero_only
+        && (snapshot
+            .delegator_rewards
             .get(&validator)
             .is_some_and(|value| !value.is_zero())
-        || snapshot
-            .validator_reward_per_stake
-            .get(&validator)
-            .is_some_and(|value| value.index != DposRewardIndex::zero())
-        || snapshot
-            .delegation_reward_cursors
-            .get(&validator)
-            .and_then(|rows| rows.get(&delegator))
-            .is_some_and(|value| value.index != DposRewardIndex::zero())
+            || snapshot
+                .commission_rewards
+                .get(&validator)
+                .is_some_and(|value| !value.is_zero())
+            || snapshot
+                .validator_reward_per_stake
+                .get(&validator)
+                .is_some_and(|value| value.index != DposRewardIndex::zero())
+            || snapshot
+                .delegation_reward_cursors
+                .get(&validator)
+                .and_then(|rows| rows.get(&delegator))
+                .is_some_and(|value| value.index != DposRewardIndex::zero()))
     {
         return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
     }

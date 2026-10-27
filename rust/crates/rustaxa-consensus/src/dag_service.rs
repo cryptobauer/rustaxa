@@ -2480,7 +2480,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be available")
             .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        )
     }
 
     fn signed_pbft_block(period: u64, pivot: H256) -> Vec<u8> {
@@ -2759,7 +2762,7 @@ mod tests {
         tx_hash: H256,
     ) -> Result<u64> {
         let vrf_key = proposer_vrf_key();
-        ensure_period_mapping_for_frontier(&runtime);
+        ensure_period_mapping_for_frontier(runtime);
         let session_id = runtime.begin_proposer_session(
             proposer_begin_input(vrf_key),
             proposer_transaction_observation(),
@@ -2865,7 +2868,7 @@ mod tests {
         assert_eq!(restarted.lock()?.state.anchor(), H256::repeat_byte(1));
         drop(restarted);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2891,7 +2894,7 @@ mod tests {
         assert_eq!(error.to_string(), DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED);
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2934,7 +2937,7 @@ mod tests {
         drop(runtime);
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2959,7 +2962,7 @@ mod tests {
                 .contains("DAG_RUNTIME_RESTORE_ANCHOR_BLOCK")
         );
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -2982,7 +2985,7 @@ mod tests {
 
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3008,7 +3011,7 @@ mod tests {
             "{error:#}"
         );
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3098,7 +3101,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3172,7 +3175,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3208,7 +3211,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3259,7 +3262,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3306,7 +3309,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3380,7 +3383,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3531,7 +3534,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3615,7 +3618,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3652,8 +3655,7 @@ mod tests {
                         signature: vec![0; 65],
                     },
                 )
-                .err()
-                .expect("malformed signature should fail");
+                .expect_err("malformed signature should fail");
             assert!(
                 malformed
                     .to_string()
@@ -3680,8 +3682,7 @@ mod tests {
                         signature: sign_dag_hash(0x45, signing.signing_hash.into()),
                     },
                 )
-                .err()
-                .expect("wrong-key signature should be rejected");
+                .expect_err("wrong-key signature should be rejected");
             assert!(
                 wrong_key
                     .to_string()
@@ -3730,7 +3731,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3818,7 +3819,7 @@ mod tests {
         }
         drop(service);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 }

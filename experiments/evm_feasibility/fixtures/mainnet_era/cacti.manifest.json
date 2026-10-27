@@ -1,0 +1,1132 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "cacti",
+    "head": 24350799,
+    "first_retained": 24350795,
+    "periods": [
+      24350800,
+      24350801,
+      24350802,
+      24350803,
+      24350804,
+      24350805,
+      24350806,
+      24350807,
+      24350808,
+      24350809,
+      24350810,
+      24350811,
+      24350812,
+      24350813,
+      24350814,
+      24350815,
+      24350816,
+      24350817,
+      24350818,
+      24350819,
+      24350820,
+      24350821,
+      24350822,
+      24350823,
+      24350824,
+      24350825,
+      24350826,
+      24350827,
+      24350828,
+      24350829,
+      24350830,
+      24350831,
+      24350832,
+      24350833,
+      24350834,
+      24350835,
+      24350836,
+      24350837,
+      24350838,
+      24350839,
+      24350840,
+      24350841,
+      24350842,
+      24350843,
+      24350844,
+      24350845,
+      24350846,
+      24350847,
+      24350848,
+      24350849,
+      24350850,
+      24350851,
+      24350852,
+      24350853,
+      24350854,
+      24350855,
+      24350856,
+      24350857,
+      24350858,
+      24350859,
+      24350860,
+      24350861,
+      24350862,
+      24350863,
+      24350864,
+      24350865,
+      24350866,
+      24350867,
+      24350868,
+      24350869,
+      24350870,
+      24350871,
+      24350872,
+      24350873,
+      24350874,
+      24350875,
+      24350876,
+      24350877,
+      24350878,
+      24350879,
+      24350880,
+      24350881,
+      24350882,
+      24350883,
+      24350884,
+      24350885,
+      24350886,
+      24350887,
+      24350888,
+      24350889,
+      24350890,
+      24350891,
+      24350892,
+      24350893,
+      24350894,
+      24350895,
+      24350896,
+      24350897,
+      24350898,
+      24350899,
+      24350900
+    ],
+    "pending_periods": [
+      24350701,
+      24350702,
+      24350703,
+      24350704,
+      24350705,
+      24350706,
+      24350707,
+      24350708,
+      24350709,
+      24350710,
+      24350711,
+      24350712,
+      24350713,
+      24350714,
+      24350715,
+      24350716,
+      24350717,
+      24350718,
+      24350719,
+      24350720,
+      24350721,
+      24350722,
+      24350723,
+      24350724,
+      24350725,
+      24350726,
+      24350727,
+      24350728,
+      24350729,
+      24350730,
+      24350731,
+      24350732,
+      24350733,
+      24350734,
+      24350735,
+      24350736,
+      24350737,
+      24350738,
+      24350739,
+      24350740,
+      24350741,
+      24350742,
+      24350743,
+      24350744,
+      24350745,
+      24350746,
+      24350747,
+      24350748,
+      24350749,
+      24350750,
+      24350751,
+      24350752,
+      24350753,
+      24350754,
+      24350755,
+      24350756,
+      24350757,
+      24350758,
+      24350759,
+      24350760,
+      24350761,
+      24350762,
+      24350763,
+      24350764,
+      24350765,
+      24350766,
+      24350767,
+      24350768,
+      24350769,
+      24350770,
+      24350771,
+      24350772,
+      24350773,
+      24350774,
+      24350775,
+      24350776,
+      24350777,
+      24350778,
+      24350779,
+      24350780,
+      24350781,
+      24350782,
+      24350783,
+      24350784,
+      24350785,
+      24350786,
+      24350787,
+      24350788,
+      24350789,
+      24350790,
+      24350791,
+      24350792,
+      24350793,
+      24350794,
+      24350795,
+      24350796,
+      24350797,
+      24350798,
+      24350799
+    ],
+    "donor": {
+      "name": "cacti_custody_donor",
+      "head": 24187339,
+      "first_retained": 24187335,
+      "periods": [
+        24187340,
+        24187341,
+        24187342,
+        24187343
+      ],
+      "pending_periods": [
+        24187301,
+        24187302,
+        24187303,
+        24187304,
+        24187305,
+        24187306,
+        24187307,
+        24187308,
+        24187309,
+        24187310,
+        24187311,
+        24187312,
+        24187313,
+        24187314,
+        24187315,
+        24187316,
+        24187317,
+        24187318,
+        24187319,
+        24187320,
+        24187321,
+        24187322,
+        24187323,
+        24187324,
+        24187325,
+        24187326,
+        24187327,
+        24187328,
+        24187329,
+        24187330,
+        24187331,
+        24187332,
+        24187333,
+        24187334,
+        24187335,
+        24187336,
+        24187337,
+        24187338,
+        24187339
+      ],
+      "seed_actions_only": true,
+      "no_warmup_delegation": true,
+      "actions": [
+        {
+          "period": 24187340,
+          "who": 4,
+          "name": "old_delegation",
+          "method": "delegate",
+          "validator": 0,
+          "value": "2000000000000000000000"
+        },
+        {
+          "period": 24187341,
+          "who": 0,
+          "name": "old_v1_queue",
+          "method": "undelegate",
+          "validator": 0,
+          "amount": "1000000000000000000000"
+        },
+        {
+          "period": 24187342,
+          "who": 0,
+          "name": "old_v2_queue",
+          "method": "undelegateV2",
+          "validator": 0,
+          "amount": "1000000000000000000000"
+        },
+        {
+          "period": 24187341,
+          "who": 4,
+          "name": "old_jail_proof",
+          "method": "slash",
+          "validator": 0,
+          "vote_period": 24187336
+        },
+        {
+          "period": 24187343,
+          "who": 4,
+          "name": "old_cacti_subject_jail",
+          "method": "slash",
+          "validator": 2,
+          "vote_period": 24187338
+        }
+      ]
+    },
+    "no_warmup_delegation": true,
+    "required_activation_periods": [
+      24350800,
+      24350801,
+      24350802
+    ],
+    "reward_followthrough_last": 24350900,
+    "api_heads": [
+      24350800,
+      24350801,
+      24350802,
+      24350805,
+      24350806,
+      24350900
+    ],
+    "api_ordinary_nonce": 3,
+    "api_validator": 2,
+    "ordinary_api_name": "ordinary_instruction_boundary",
+    "actions": [
+      {
+        "period": 24350800,
+        "who": 0,
+        "name": "create_legacy_transient",
+        "method": "create",
+        "input": "3615600c576000356000b4005b6000b360005260206000f3",
+        "created_nonce": 2,
+        "created_by_key": 0
+      },
+      {
+        "period": 24350800,
+        "who": 0,
+        "name": "create_cacti_transient",
+        "method": "create",
+        "input": "3615600c5760003560005d005b60005c60005260206000f3",
+        "created_nonce": 3,
+        "created_by_key": 0
+      },
+      {
+        "period": 24350800,
+        "who": 0,
+        "name": "create_registry_matrix",
+        "method": "create",
+        "input": "600060006101006180006000600b6000f16000523d6020526000600060016180006000600b620186a0f16040523d606052600060006101006180006000600b620186a0f16080523d60a0526000600060a06180006000600c6000f160c0523d60e0526000600060016180006000600c620186a0f1610100523d610120526000600060a06180006000600c620186a0f1610140523d610160526000600060a06180006000600d6000f1610180523d6101a0526000600060016180006000600d620186a0f16101c0523d6101e0526000600060a06180006000600d620186a0f1610200523d61022052600060006102006180006000600e6000f1610240523d610260526000600060016180006000600e620186a0f1610280523d6102a052600060006102006180006000600e620186a0f16102c0523d6102e052600060006101206180006000600f6000f1610300523d610320526000600060016180006000600f620186a0f1610340523d61036052600060006101206180006000600f620186a0f1610380523d6103a05260006000610120618000600060106000f16103c0523d6103e05260006000600161800060006010620186a0f1610400523d610420526000600061012061800060006010620186a0f1610440523d6104605260006000610180618000600060116000f1610480523d6104a05260006000600161800060006011620186a0f16104c0523d6104e0526000600061018061800060006011620186a0f1610500523d61052052600060006040618000600060126000f1610540523d6105605260006000600161800060006012620186a0f1610580523d6105a05260006000604061800060006012620186a0f16105c0523d6105e052600060006080618000600060136000f1610600523d6106205260006000600161800060006013620186a0f1610640523d6106605260006000608061800060006013620186a0f1610680523d6106a0526000600060d5618000600060096000f16106c0523d6106e05260006000600161800060006009620186a0f1610700523d610720526000600060d561800060006009620186a0f1610740523d610760526000600060a061800060006101006000f1610780523d6107a0526000600060016180006000610100620186a0f16107c0523d6107e0526000600060a06180006000610100620186a0f1610800523d61082052600060006000618000600061fa1c6000f1610840523d61086052600060006001618000600061fa1c620186a0f1610880523d6108a052600060006000618000600061fa1c620186a0f16108c0523d6108e05260006000610100618000600b6000fa610900523d61092052600060006001618000600b620186a0fa610940523d6109605260006000610100618000600b620186a0fa610980523d6109a0526000600060a0618000600c6000fa6109c0523d6109e052600060006001618000600c620186a0fa610a00523d610a20526000600060a0618000600c620186a0fa610a40523d610a60526000600060a0618000600d6000fa610a80523d610aa052600060006001618000600d620186a0fa610ac0523d610ae0526000600060a0618000600d620186a0fa610b00523d610b205260006000610200618000600e6000fa610b40523d610b6052600060006001618000600e620186a0fa610b80523d610ba05260006000610200618000600e620186a0fa610bc0523d610be05260006000610120618000600f6000fa610c00523d610c2052600060006001618000600f620186a0fa610c40523d610c605260006000610120618000600f620186a0fa610c80523d610ca0526000600061012061800060106000fa610cc0523d610ce0526000600060016180006010620186a0fa610d00523d610d2052600060006101206180006010620186a0fa610d40523d610d60526000600061018061800060116000fa610d80523d610da0526000600060016180006011620186a0fa610dc0523d610de052600060006101806180006011620186a0fa610e00523d610e205260006000604061800060126000fa610e40523d610e60526000600060016180006012620186a0fa610e80523d610ea0526000600060406180006012620186a0fa610ec0523d610ee05260006000608061800060136000fa610f00523d610f20526000600060016180006013620186a0fa610f40523d610f60526000600060806180006013620186a0fa610f80523d610fa0526000600060d561800060096000fa610fc0523d610fe0526000600060016180006009620186a0fa611000523d611020526000600060d56180006009620186a0fa611040523d611060526000600060a06180006101006000fa611080523d6110a052600060006001618000610100620186a0fa6110c0523d6110e0526000600060a0618000610100620186a0fa611100523d6111205260006000600061800061fa1c6000fa611140523d6111605260006000600161800061fa1c620186a0fa611180523d6111a05260006000600061800061fa1c620186a0fa6111c0523d6111e05260006000610100618000600b6000f4611200523d61122052600060006001618000600b620186a0f4611240523d6112605260006000610100618000600b620186a0f4611280523d6112a0526000600060a0618000600c6000f46112c0523d6112e052600060006001618000600c620186a0f4611300523d611320526000600060a0618000600c620186a0f4611340523d611360526000600060a0618000600d6000f4611380523d6113a052600060006001618000600d620186a0f46113c0523d6113e0526000600060a0618000600d620186a0f4611400523d6114205260006000610200618000600e6000f4611440523d61146052600060006001618000600e620186a0f4611480523d6114a05260006000610200618000600e620186a0f46114c0523d6114e05260006000610120618000600f6000f4611500523d61152052600060006001618000600f620186a0f4611540523d6115605260006000610120618000600f620186a0f4611580523d6115a0526000600061012061800060106000f46115c0523d6115e0526000600060016180006010620186a0f4611600523d61162052600060006101206180006010620186a0f4611640523d611660526000600061018061800060116000f4611680523d6116a0526000600060016180006011620186a0f46116c0523d6116e052600060006101806180006011620186a0f4611700523d6117205260006000604061800060126000f4611740523d611760526000600060016180006012620186a0f4611780523d6117a0526000600060406180006012620186a0f46117c0523d6117e05260006000608061800060136000f4611800523d611820526000600060016180006013620186a0f4611840523d611860526000600060806180006013620186a0f4611880523d6118a0526000600060d561800060096000f46118c0523d6118e0526000600060016180006009620186a0f4611900523d611920526000600060d56180006009620186a0f4611940523d611960526000600060a06180006101006000f4611980523d6119a052600060006001618000610100620186a0f46119c0523d6119e0526000600060a0618000610100620186a0f4611a00523d611a205260006000600061800061fa1c6000f4611a40523d611a605260006000600161800061fa1c620186a0f4611a80523d611aa05260006000600061800061fa1c620186a0f4611ac0523d611ae052611b006000f3",
+        "gas": 2000000,
+        "created_nonce": 4,
+        "created_by_key": 0
+      },
+      {
+        "period": 24350800,
+        "who": 0,
+        "name": "create_reverting_transient_child",
+        "method": "create",
+        "input": "600960005260006000602060006000732bea3833344507da3019f46dd77a67b34738bc67620186a0f15060006000fd",
+        "created_nonce": 5,
+        "created_by_key": 0
+      },
+      {
+        "period": 24350800,
+        "who": 0,
+        "name": "create_transient_rollback_probe",
+        "method": "create",
+        "input": "6000600060006000600073ea8d94123f55efced3c47c6b94e3a2773388910162030d40f15060206000600060006000732bea3833344507da3019f46dd77a67b34738bc67620186a0f15060206000f3",
+        "created_nonce": 6,
+        "created_by_key": 0
+      },
+      {
+        "period": 24350800,
+        "who": 0,
+        "name": "mature_old_v1",
+        "method": "confirm",
+        "validator": 0
+      },
+      {
+        "period": 24350800,
+        "who": 0,
+        "name": "locked_old_v2",
+        "method": "confirmV2",
+        "validator": 0,
+        "id": 1
+      },
+      {
+        "period": 24350801,
+        "who": 0,
+        "name": "mature_old_v2",
+        "method": "confirmV2",
+        "validator": 0,
+        "id": 1
+      },
+      {
+        "period": 24350800,
+        "who": 4,
+        "name": "cornus_lock_creation",
+        "method": "undelegateV2",
+        "validator": 0,
+        "amount": "1000000000000000000000"
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "cacti_lock_creation",
+        "method": "undelegateV2",
+        "validator": 0,
+        "amount": "1000000000000000000000"
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "cacti_lock_not_mature",
+        "method": "confirmV2",
+        "validator": 0,
+        "id": 2
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "cancel_cacti_lock",
+        "method": "cancelV2",
+        "validator": 0,
+        "id": 2
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "cancel_old_lock",
+        "method": "cancelV2",
+        "validator": 0,
+        "id": 1
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "new_cacti_jail",
+        "method": "slash",
+        "validator": 2,
+        "vote_period": 24350796
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "duplicate_cacti_jail",
+        "method": "slash",
+        "validator": 2,
+        "vote_period": 24350796
+      },
+      {
+        "period": 24350800,
+        "who": 4,
+        "name": "legacy_transient_write",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 2,
+        "input": "0000000000000000000000000000000000000000000000000000000000000009"
+      },
+      {
+        "period": 24350800,
+        "who": 4,
+        "name": "legacy_transient_reset",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 2
+      },
+      {
+        "period": 24350800,
+        "who": 4,
+        "name": "cacti_transient_write",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 3,
+        "input": "0000000000000000000000000000000000000000000000000000000000000009"
+      },
+      {
+        "period": 24350800,
+        "who": 4,
+        "name": "cacti_transient_reset",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 3
+      },
+      {
+        "period": 24350800,
+        "who": 4,
+        "name": "registry_frame_matrix",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 4,
+        "gas": 10000000
+      },
+      {
+        "period": 24350800,
+        "who": 4,
+        "name": "transient_parent_rollback",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 6,
+        "gas": 500000
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "legacy_transient_write",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 2,
+        "input": "0000000000000000000000000000000000000000000000000000000000000009"
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "legacy_transient_reset",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 2
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "cacti_transient_write",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 3,
+        "input": "0000000000000000000000000000000000000000000000000000000000000009"
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "cacti_transient_reset",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 3
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "registry_frame_matrix",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 4,
+        "gas": 10000000
+      },
+      {
+        "period": 24350801,
+        "who": 4,
+        "name": "transient_parent_rollback",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 6,
+        "gas": 500000
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "legacy_transient_write",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 2,
+        "input": "0000000000000000000000000000000000000000000000000000000000000009"
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "legacy_transient_reset",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 2
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "cacti_transient_write",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 3,
+        "input": "0000000000000000000000000000000000000000000000000000000000000009"
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "cacti_transient_reset",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 3
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "registry_frame_matrix",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 4,
+        "gas": 10000000
+      },
+      {
+        "period": 24350802,
+        "who": 4,
+        "name": "transient_parent_rollback",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 6,
+        "gas": 500000
+      }
+    ]
+  },
+  "scheduler_manifest_sha256": "9cb6b078b1cadc5ad8b8005280f76e598b1590c6f94795b037fd9b06fea4e681",
+  "support": {
+    "mainnet_era_reference.py": "77f074df930a30378343b6d979f9a1e24a300d4f475e985a623f19b2af6c042c",
+    "mainnet_era_profile.py": "a3f0f921c8f1bf64ecf2a6affd0874f3d4d4ef5d50dc201597c4fa8e1292a8cf",
+    "mainnet_era_reference.go": "e87714f3515106fa1c35df1f4a174e9473c19140a44964a3063a98646b9218aa",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7"
+  },
+  "streams": {
+    "public": {
+      "file": "f49aa3ded519c2fb17acbb192803f6fd2d57ff455205883704ac27584cbd6226.json.gz",
+      "sha256": "f49aa3ded519c2fb17acbb192803f6fd2d57ff455205883704ac27584cbd6226",
+      "bytes": 14977779,
+      "gzip_sha256": "5986ec098bd8144f9118e6c4fd4e848507417b820f39d865f5b23b6282785dd5",
+      "gzip_bytes": 1790601,
+      "capture": null
+    },
+    "local": {
+      "file": "22324b5db1dc9d8af6934e68cc3a1a73067a94bd6a067045c76715846cd08a26.json.gz",
+      "sha256": "22324b5db1dc9d8af6934e68cc3a1a73067a94bd6a067045c76715846cd08a26",
+      "bytes": 15610435,
+      "gzip_sha256": "a73d7e7bb8e89408c1fd7453d459ef2952d4c9c5611b17c45a5749fb5cdef68b",
+      "gzip_bytes": 1848633,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "file": "ba494324c3e89c3bcfa5da50d1230961b02f431973b592b67ab3cd4b7712772c.json.gz",
+            "sha256": "ba494324c3e89c3bcfa5da50d1230961b02f431973b592b67ab3cd4b7712772c",
+            "bytes": 2796945,
+            "gzip_sha256": "946bcfc4c1ff7efa74d4955ab7a441b91d7b50892936f74c74ad99434ea40b59",
+            "gzip_bytes": 495243,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-ivlvsz5s"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350796,
+            "end": 24350816
+          },
+          "stream": {
+            "file": "ca1058027a08a79942a3f06b504cbdd21f2d8aedcfad0561cc1d41db9c82d0e2.json.gz",
+            "sha256": "ca1058027a08a79942a3f06b504cbdd21f2d8aedcfad0561cc1d41db9c82d0e2",
+            "bytes": 1946718,
+            "gzip_sha256": "807790f84289e21304b58033935aebc3c1aa4342d44c646c072d27731fe7cb9d",
+            "gzip_bytes": 276463,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-blkkhk6q"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350816,
+            "end": 24350836
+          },
+          "stream": {
+            "file": "ed3ed1008072c0df69122632ad32c07c15dc61fa3034c59d88b37aa078d82152.json.gz",
+            "sha256": "ed3ed1008072c0df69122632ad32c07c15dc61fa3034c59d88b37aa078d82152",
+            "bytes": 1078746,
+            "gzip_sha256": "c6e9e2e6d10d84cec191e0c106f83ec143360c2de541b6fd983d0f2a02348cd0",
+            "gzip_bytes": 211556,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-tn4_r60b"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350836,
+            "end": 24350856
+          },
+          "stream": {
+            "file": "7b6159bd3e65f7c26ad3c5c8fc107528422a673f17996a4924863f5f434600e2.json.gz",
+            "sha256": "7b6159bd3e65f7c26ad3c5c8fc107528422a673f17996a4924863f5f434600e2",
+            "bytes": 1078746,
+            "gzip_sha256": "1785449432b9de00b3913a72fe1347d83a959e05ec4d0c3d19bc42747bbf9d00",
+            "gzip_bytes": 211566,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-xpqyb4ms"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350856,
+            "end": 24350876
+          },
+          "stream": {
+            "file": "3906112ad19a2977f1ebecbcc8a330b830d475d982cceb7ae4deb80d6d1e9ced.json.gz",
+            "sha256": "3906112ad19a2977f1ebecbcc8a330b830d475d982cceb7ae4deb80d6d1e9ced",
+            "bytes": 1078746,
+            "gzip_sha256": "1502f602308a8c43550a6629fbb31e992f5e4d413a9f026029d5b9a983e88f2b",
+            "gzip_bytes": 211562,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-_wyc0gfb"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350876,
+            "end": 24350896
+          },
+          "stream": {
+            "file": "29c0b3a05f6aef9ad829615bfb66bafd1d4a9f542dbb9246c8b9cc421813c153.json.gz",
+            "sha256": "29c0b3a05f6aef9ad829615bfb66bafd1d4a9f542dbb9246c8b9cc421813c153",
+            "bytes": 1078746,
+            "gzip_sha256": "73eb7f8d8dcd045a2d8bfcedcbd4acf8f958974b2297ebc36b0568f995a0bdac",
+            "gzip_bytes": 211561,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-uyj17iqt"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350896,
+            "end": 24350901
+          },
+          "stream": {
+            "file": "23a72141eb1ff63cfdf29241119354ff5494631384ea1e247ff39551e0d11fb1.json.gz",
+            "sha256": "23a72141eb1ff63cfdf29241119354ff5494631384ea1e247ff39551e0d11fb1",
+            "bytes": 726459,
+            "gzip_sha256": "3ddfa04d90280ae8adf7c73910488d3d79dd978f642f0da9a899c7116069c240",
+            "gzip_bytes": 89022,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-lwhxxq5j"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "file": "d3d0abc48ac088d618e01fff6d22fbbda326d5e8dfba9c6dcc773a7f64466420.json.gz",
+            "sha256": "d3d0abc48ac088d618e01fff6d22fbbda326d5e8dfba9c6dcc773a7f64466420",
+            "bytes": 930601,
+            "gzip_sha256": "d0a1a3a60aec2161c47d2b81ce2a98e20f09428899990c402dca553607457a08",
+            "gzip_bytes": 28314,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-vjucr_9f"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "file": "8cbba4769e22901cd023195fe60e3fb8b8d3e87cff61c3c70916fb431a593a55.json.gz",
+            "sha256": "8cbba4769e22901cd023195fe60e3fb8b8d3e87cff61c3c70916fb431a593a55",
+            "bytes": 929420,
+            "gzip_sha256": "f880ddff161af4bd7d85d4aa6453847ead2159e6305636fc58ecb6fee2f14203",
+            "gzip_bytes": 28067,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-6kv2yzpa"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "file": "2eb2a4e0c00c6ef45c0710aeb0e49341659689f54f2211005e98799ef58333f0.json.gz",
+            "sha256": "2eb2a4e0c00c6ef45c0710aeb0e49341659689f54f2211005e98799ef58333f0",
+            "bytes": 925902,
+            "gzip_sha256": "282588759ef47277b6e37e6b16052af217f06eacbbd784e7a18ea348b0be310c",
+            "gzip_bytes": 28686,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-sd1qps_7"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "file": "78a8800f3d0a334bf78f1c491ba533e94d414149e7da9b3464fcc9e28a8b9e9b.json.gz",
+            "sha256": "78a8800f3d0a334bf78f1c491ba533e94d414149e7da9b3464fcc9e28a8b9e9b",
+            "bytes": 925902,
+            "gzip_sha256": "01e1cf9bb16e3a946e8cfc857af70e9bb92a64d824f970abf688015fc743434e",
+            "gzip_bytes": 28677,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-xjbl4jeg"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "file": "f122c5f450c3b34efd9866d2dbb382727bb4402a75811cd8084dede684c7d9c4.json.gz",
+            "sha256": "f122c5f450c3b34efd9866d2dbb382727bb4402a75811cd8084dede684c7d9c4",
+            "bytes": 925902,
+            "gzip_sha256": "01967ebb55e51d82aa8c4552b589efd45daafee7d404473145a629b609fd70f7",
+            "gzip_bytes": 28674,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-1504erjf"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 35,
+            "end": 42
+          },
+          "stream": {
+            "file": "151318909d1016e1689e900410dd7cd1463eefe95e8cc155709441b93a25f342.json.gz",
+            "sha256": "151318909d1016e1689e900410dd7cd1463eefe95e8cc155709441b93a25f342",
+            "bytes": 925902,
+            "gzip_sha256": "02d4c80586f88177c9d3376d1863d70f25f70dd5d32d1b016a6594865f73b2e3",
+            "gzip_bytes": 28672,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-public-cacti-bfj5bz88"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "file": "7e09fbdd484473a3734392696d452fd51f733c95b745c79f4b4b714367cdf456.json.gz",
+            "sha256": "7e09fbdd484473a3734392696d452fd51f733c95b745c79f4b4b714367cdf456",
+            "bytes": 2964383,
+            "gzip_sha256": "babff104fc88d58f6d1c00340dcd0ee304c6969390639b5c65fc925d0c0198be",
+            "gzip_bytes": 507923,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-c1luyy98"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350796,
+            "end": 24350816
+          },
+          "stream": {
+            "file": "ba602d4e2a8c1a6c1fd44e8f3ef5d83adce2216543da88ba7c1b3bb2f4f83f3c.json.gz",
+            "sha256": "ba602d4e2a8c1a6c1fd44e8f3ef5d83adce2216543da88ba7c1b3bb2f4f83f3c",
+            "bytes": 2162860,
+            "gzip_sha256": "493f343a2a8b027ec44db2412d0d0662e43e2603e65945bccd158f9cb5cbeeea",
+            "gzip_bytes": 300933,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-5nba1u3l"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350816,
+            "end": 24350836
+          },
+          "stream": {
+            "file": "6590dd0afab330ce65cc79bf58c45a6c6de6acf9d4ab2f23e2b1ddfdddb480e4.json.gz",
+            "sha256": "6590dd0afab330ce65cc79bf58c45a6c6de6acf9d4ab2f23e2b1ddfdddb480e4",
+            "bytes": 1126825,
+            "gzip_sha256": "79d51f274b5ff3f27d498a0f6f10dd85b2ff694fb4001e9f31827afd0472da65",
+            "gzip_bytes": 215340,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-78uioudt"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350836,
+            "end": 24350856
+          },
+          "stream": {
+            "file": "3d1976853220036965d9197fc0c00ebd50fbf8a62ccb565e4cf18917665f1106.json.gz",
+            "sha256": "3d1976853220036965d9197fc0c00ebd50fbf8a62ccb565e4cf18917665f1106",
+            "bytes": 1126825,
+            "gzip_sha256": "9ac2b7a51bfc13b013a76d476b7de69cf792a87f9c7bc506a2bb38607adca9d0",
+            "gzip_bytes": 215345,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-gvzuk7x0"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350856,
+            "end": 24350876
+          },
+          "stream": {
+            "file": "64f8b613fd20378adce5c117e12d40de4f0e9a85dd78a24299bebfba097caf5e.json.gz",
+            "sha256": "64f8b613fd20378adce5c117e12d40de4f0e9a85dd78a24299bebfba097caf5e",
+            "bytes": 1126825,
+            "gzip_sha256": "fe7f2677be87f964bd0fdc9226958343654ad5acb64670220730382bea439243",
+            "gzip_bytes": 215346,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-z0lzjhc7"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350876,
+            "end": 24350896
+          },
+          "stream": {
+            "file": "73dd271e8b3585cadb1e341cb2a5f54df4fa6ff4458b326e1949c75873a70ce9.json.gz",
+            "sha256": "73dd271e8b3585cadb1e341cb2a5f54df4fa6ff4458b326e1949c75873a70ce9",
+            "bytes": 1126825,
+            "gzip_sha256": "ff62b94825f2a52a91fd87d0c22a6d51f0e24428ad4cf12eba82f5e14e35fc9f",
+            "gzip_bytes": 215342,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-3zx61ezo"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 24350896,
+            "end": 24350901
+          },
+          "stream": {
+            "file": "41d59462fc85ed0d884853e87e90b212f1f00d785d6ff4a72cb99784e70de048.json.gz",
+            "sha256": "41d59462fc85ed0d884853e87e90b212f1f00d785d6ff4a72cb99784e70de048",
+            "bytes": 783212,
+            "gzip_sha256": "ab17e8ca443a727aa751fa4bd4acd2ad0e56a4b5c22aa3c744fb4a5b182c11c7",
+            "gzip_bytes": 94904,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-rk0m31d1"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "file": "e8208fa67c54f31cf909592f4097db8fee2117dc204d8d3d8e7c91148556d5c4.json.gz",
+            "sha256": "e8208fa67c54f31cf909592f4097db8fee2117dc204d8d3d8e7c91148556d5c4",
+            "bytes": 930600,
+            "gzip_sha256": "b4453337cf9aaabd140d2abbe65f0ee48c44bf9c8e95dae4479f962227d2d24c",
+            "gzip_bytes": 28311,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-vo_a_i3c"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "file": "7e77c9c88d45ff7ad28c0963933489887a877162f178387bffa6a97bc82c8c61.json.gz",
+            "sha256": "7e77c9c88d45ff7ad28c0963933489887a877162f178387bffa6a97bc82c8c61",
+            "bytes": 929419,
+            "gzip_sha256": "9478d6c3bd6e11ed8851774857847b608e85eb07d8cde7f08015d55066f98036",
+            "gzip_bytes": 28063,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-cjlkys3g"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "file": "9a079ce8770b14266a0f82f74b4696ee7d7bf83d40965ec625dae3e1ba4540ff.json.gz",
+            "sha256": "9a079ce8770b14266a0f82f74b4696ee7d7bf83d40965ec625dae3e1ba4540ff",
+            "bytes": 925901,
+            "gzip_sha256": "7b6788b675328a66b28f9058a318b142cdb59544a7477507f2a02dc06197d5ed",
+            "gzip_bytes": 28682,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-md495hr8"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "file": "6d7bf08c337ee30a67ae4a34f8e10db76840887e56133c49e64fa7b0c3c502df.json.gz",
+            "sha256": "6d7bf08c337ee30a67ae4a34f8e10db76840887e56133c49e64fa7b0c3c502df",
+            "bytes": 925901,
+            "gzip_sha256": "814561313ee94e9c904fbcb7bbbd382c4737c8ad993001e5b73f0696486d46b9",
+            "gzip_bytes": 28673,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-ouacgm5c"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "file": "1bde31bf297c81aff88ccb9bfb0069f258aec56a23231c25df94880304325101.json.gz",
+            "sha256": "1bde31bf297c81aff88ccb9bfb0069f258aec56a23231c25df94880304325101",
+            "bytes": 925901,
+            "gzip_sha256": "0b6f8bd79a5fd836afccf8f62c8676cd0f7007aeaf2c113ffeba291be635506c",
+            "gzip_bytes": 28669,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-5ervgoqd"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 35,
+            "end": 42
+          },
+          "stream": {
+            "file": "9bb3f198abcb0cc165cc7768398bea9f75fd505504dec79553091a1fbe3f97e3.json.gz",
+            "sha256": "9bb3f198abcb0cc165cc7768398bea9f75fd505504dec79553091a1fbe3f97e3",
+            "bytes": 925901,
+            "gzip_sha256": "b7f53f9e93a8a4559769c3557a941108fe55897921490118d3f47d1d7212c2c3",
+            "gzip_bytes": 28668,
+            "capture": "/home/fry/artifacts/mainnet-era-20261026-01a179de/era-local-cacti-ur58tg5p"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "9de6110dcc9816cb8436c1ac585497c59375aef085d18bfd8e8a7e2398fee1a6",
+    "streams": {
+      "public": "669452c5ba1db2740bddeb2d9fe42c7c78f2c2018563fff3ec3b4fe4a702611c",
+      "local": "9ac5508b71914b1bacb3204d52d92073f6fba776a41d881c58b01036ac8a16d6"
+    },
+    "forks": {}
+  },
+  "cpp_estimates": {
+    "file": "138c236f27d27126b1def76ca68529e8d5ecfded94e91de4c3c97aea62212dbf.cpp-estimates.json",
+    "sha256": "138c236f27d27126b1def76ca68529e8d5ecfded94e91de4c3c97aea62212dbf",
+    "bytes": 25668
+  }
+}

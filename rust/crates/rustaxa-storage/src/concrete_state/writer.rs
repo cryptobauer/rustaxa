@@ -449,6 +449,15 @@ impl ConcreteStateWriter {
         self.prepare_inner(FinalChainBlockNumber::GENESIS, mutations, true)
     }
 
+    #[cfg(feature = "synthetic-fixtures")]
+    pub(super) fn prepare_synthetic_initial_state(
+        &self,
+        period: FinalChainBlockNumber,
+        mutations: ConcreteStateMutationBatch,
+    ) -> Result<PreparedConcreteState, ConcreteReadError> {
+        self.prepare_inner(period, mutations, true)
+    }
+
     fn prepare_inner(
         &self,
         next_period: FinalChainBlockNumber,
@@ -1349,12 +1358,14 @@ mod tests {
                 NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
             ));
             let mut options = Options::default();
+            crate::closeout_test_scratch::register(&path);
             options.create_if_missing(true);
             options.create_missing_column_families(true);
             let descriptors = REQUIRED_COLUMNS
                 .iter()
                 .map(|name| ColumnFamilyDescriptor::new(*name, Options::default()));
             let db = DB::open_cf_descriptors(&options, &path, descriptors).unwrap();
+            crate::closeout_test_scratch::created(&path);
             let genesis = ConcreteStateIdentity {
                 period: FinalChainBlockNumber::GENESIS,
                 state_root: empty_trie_root(),
@@ -1367,7 +1378,9 @@ mod tests {
 
     impl Drop for TestDb {
         fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.path).unwrap();
+            if !crate::closeout_test_scratch::preserve(&self.path) {
+                std::fs::remove_dir_all(&self.path).unwrap();
+            }
         }
     }
 

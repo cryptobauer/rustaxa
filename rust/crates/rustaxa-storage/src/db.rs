@@ -814,8 +814,13 @@ mod tests {
 
     fn storage_at(name: &str) -> (std::path::PathBuf, Storage) {
         let path = unique_temp_dir(name);
-        let _ = fs::remove_dir_all(&path);
+        if std::env::var_os("RUSTAXA_ERA_LAUNCH_MANIFEST").is_some() {
+            crate::closeout_test_scratch::register(&path);
+        } else {
+            let _ = fs::remove_dir_all(&path);
+        }
         let storage = Storage::new(Config::new(path.clone())).expect("storage should initialize");
+        crate::closeout_test_scratch::created(&path);
         (path, storage)
     }
 
@@ -867,7 +872,9 @@ mod tests {
             Some(u64_le(123).to_vec())
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        if !crate::closeout_test_scratch::preserve(&path) {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 
     #[test]
@@ -884,7 +891,9 @@ mod tests {
         assert_eq!(storage.extra_reward_votes_reset_generation(), 0);
         drop(guard);
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        if !crate::closeout_test_scratch::preserve(&path) {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 
     #[test]
@@ -903,7 +912,9 @@ mod tests {
             None
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        if !crate::closeout_test_scratch::preserve(&path) {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 
     #[test]
@@ -929,7 +940,9 @@ mod tests {
             None
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        if !crate::closeout_test_scratch::preserve(&path) {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 
     #[test]
@@ -1094,7 +1107,9 @@ mod tests {
             Some(b"not rlp".to_vec())
         );
         drop(reopened);
-        let _ = fs::remove_dir_all(path);
+        if !crate::closeout_test_scratch::preserve(&path) {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 
     #[test]
@@ -1117,7 +1132,9 @@ mod tests {
             Some(b"malformed period data".to_vec())
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        if !crate::closeout_test_scratch::preserve(&path) {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 
     #[test]
@@ -1199,6 +1216,8 @@ mod tests {
                 .changed
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        if !crate::closeout_test_scratch::preserve(&path) {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 }

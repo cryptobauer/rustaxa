@@ -620,11 +620,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_consensus_pbft_leader_{name}_{}_{}",
-            std::process::id(),
-            nonce
-        ));
+        let path = crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa_consensus_pbft_leader_{name}_{}_{}",
+                std::process::id(),
+                nonce
+            )),
+            true,
+        );
         let storage = Arc::new(Storage::new(Config::new(path)).unwrap());
         let service = PbftService::restore(
             storage.clone(),

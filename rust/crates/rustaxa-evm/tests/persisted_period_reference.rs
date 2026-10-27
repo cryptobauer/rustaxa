@@ -1072,7 +1072,9 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
             "rustaxa-evm-s4-recovery-{}-{interruption:?}",
             std::process::id()
         ));
+        crate::closeout_test_scratch::register(&path);
         std::fs::create_dir(&path)?;
+        crate::closeout_test_scratch::created(&path);
         let application_path = path.join("application");
         let concrete_path = path.join("state_db");
         let (application, chain) = open_chain(&application_path, &fixture)?;
@@ -1354,7 +1356,7 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
                 "continuation root"
             );
         }
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
     }
     Ok(())
 }
@@ -1404,7 +1406,9 @@ fn run_signed_periods(ordered: bool) -> Result<()> {
         "rustaxa-evm-s4-period-{ordered}-{}",
         std::process::id()
     ));
+    crate::closeout_test_scratch::register(&path);
     std::fs::create_dir(&path)?;
+    crate::closeout_test_scratch::created(&path);
     let application_path = path.join("application");
     let concrete_path = path.join("state_db");
     let mut expected_identity = None;
@@ -1561,6 +1565,9 @@ fn run_signed_periods(ordered: bool) -> Result<()> {
             }
         }
     }
-    std::fs::remove_dir_all(path)?;
+    crate::closeout_test_scratch::dispose(path)?;
     Ok(())
 }
+
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;

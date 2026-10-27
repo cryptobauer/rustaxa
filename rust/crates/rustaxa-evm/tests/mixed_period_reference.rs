@@ -76,6 +76,22 @@ use std::{
 use mixed_genesis::{fresh_concrete, open_chain};
 use mixed_native::MixedNativeExecutionPort;
 
+#[path = "support/era_retention.rs"]
+mod era_retention;
+#[path = "support/mainnet_era.rs"]
+mod mainnet_era;
+
+fn fixture_execution_profile(period: &Value) -> TaraxaProfile {
+    use rustaxa_evm::profile::TaraxaPhase;
+    TaraxaProfile::for_phase(if period["rules"]["cacti"] == true {
+        TaraxaPhase::Cacti
+    } else if period["rules"]["ficus"] == true {
+        TaraxaPhase::Ficus
+    } else {
+        TaraxaPhase::Californicum
+    })
+}
+
 fn bytes(value: &Value) -> Vec<u8> {
     hex::decode(value.as_str().expect("fixture hex string")).unwrap()
 }
@@ -194,18 +210,36 @@ impl BlockHashRead for ChainHashes<'_> {
             .map_err(|_| BlockHashReadError::Corrupt("block hash width".into()))
     }
 }
-/// Complete post-Ficus, pre-Cacti native registry used by the Go workload.
-struct AllNatives;
+/// Fixture classifier selects the same stateless registry as its driver.
+struct AllNatives(TaraxaProfile);
 impl NativeAddressClassifier for AllNatives {
     fn is_native_address(&self, _: FinalChainBlockNumber, address: [u8; 20]) -> bool {
-        address[..19] == [0; 19] && matches!(address[19], 1..=9 | 0xee | 0xfe)
+        use rustaxa_evm::bls::{BlsPrecompile, BlsRegistry};
+        (address[..19] == [0; 19]
+            && (matches!(address[19], 1..=8 | 0xee | 0xfe) || (self.0.ficus() && address[19] == 9)))
+            || (self.0.ficus()
+                && BlsPrecompile::at_address(
+                    if self.0.cacti() {
+                        BlsRegistry::Cacti
+                    } else {
+                        BlsRegistry::Ficus
+                    },
+                    address,
+                )
+                .is_some())
+            || (self.0.cacti()
+                && matches!(
+                    address,
+                    rustaxa_evm::p256::P256_VERIFY_ADDRESS
+                        | rustaxa_evm::falcon::FALCON_VERIFY_ADDRESS
+                ))
     }
 }
 /// Consensus-owned subset; stateless addresses are handled directly by the driver.
 struct ConsensusNatives;
 impl NativeAddressClassifier for ConsensusNatives {
     fn is_native_address(&self, _: FinalChainBlockNumber, address: [u8; 20]) -> bool {
-        address[..19] == [0; 19] && address[19] == 0xfe
+        address[..19] == [0; 19] && matches!(address[19], 0xee | 0xfe)
     }
 }
 struct Staged {
@@ -264,10 +298,6 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainSystemTransactionFactsRequest,
     ) -> Result<FinalChainSystemTransactionPlanFact> {
-        ensure!(
-            !request.is_pillar_block_period,
-            "fixture cannot finalize a bridge epoch"
-        );
         let concrete = self.concrete.borrow();
         let account = concrete
             .as_ref()
@@ -281,7 +311,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         Ok(FinalChainSystemTransactionPlanFact {
             request_id: request.request_id,
             period: request.period,
-            is_pillar_block_period: false,
+            is_pillar_block_period: request.is_pillar_block_period,
             bridge_contract_address: request.bridge_contract_address,
             bridge_contract_found: false,
             bridge_contract_has_code: false,
@@ -356,33 +386,37 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 author: request.block_author,
                 timestamp: request.timestamp,
                 gas_limit: request.block_gas_limit,
-                chain_id: 841,
+                chain_id: number(&expected["chain_id"]),
                 difficulty: BigUint::default(),
             };
             let result = match decoded.kind {
                 ExecutionTransactionKind::Call => execute_top_level_call_with_native(
                     &mut journal,
                     &ChainHashes(self.chain),
-                    &AllNatives,
+                    &AllNatives(fixture_execution_profile(self.fixture)),
                     &ConsensusNatives,
                     &mut native,
                     &mut sequence,
                     &block,
                     &decoded,
-                    EnvelopeRules { cornus: true },
-                    TaraxaProfile::new(false),
+                    EnvelopeRules {
+                        cornus: self.fixture["rules"]["cornus"].as_bool().unwrap_or(true),
+                    },
+                    fixture_execution_profile(self.fixture),
                 )?,
                 ExecutionTransactionKind::Create => execute_top_level_create_with_native(
                     &mut journal,
                     &ChainHashes(self.chain),
-                    &AllNatives,
+                    &AllNatives(fixture_execution_profile(self.fixture)),
                     &ConsensusNatives,
                     &mut native,
                     &mut sequence,
                     &block,
                     &decoded,
-                    EnvelopeRules { cornus: true },
-                    TaraxaProfile::new(false),
+                    EnvelopeRules {
+                        cornus: self.fixture["rules"]["cornus"].as_bool().unwrap_or(true),
+                    },
+                    fixture_execution_profile(self.fixture),
                 )?,
                 other => bail!("fixture unsupported transaction kind: {other:?}"),
             };
@@ -392,11 +426,18 @@ impl ConsensusExecutionPort for Adapter<'_> {
             let expected_error = string(&expected["execution_error"]);
             ensure!(
                 code_error(&result.status) == expected_error,
-                "Go execution status"
+                "Go execution status for {}: actual {:?}, expected {}",
+                string(&expected["name"]),
+                code_error(&result.status),
+                expected_error
             );
             ensure!(
                 result.output == bytes(&expected["output"]),
-                "Go execution output"
+                "Go execution output for {} input {}: actual {}, expected {}",
+                string(&expected["name"]),
+                hex::encode(&decoded.input),
+                hex::encode(&result.output),
+                string(&expected["output"])
             );
             ensure!(
                 result.attempted_contract_address.unwrap_or([0; 20])
@@ -427,7 +468,14 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 call_contexts.len() == settled.native_invocations.len(),
                 "native context/observation count"
             );
-            compare_raw_trace(&call_contexts, &expected["ordered_raw_writes"])?;
+            compare_raw_trace(&call_contexts, &expected["ordered_raw_writes"]).with_context(
+                || {
+                    format!(
+                        "transaction {} native raw writes",
+                        string(&expected["name"])
+                    )
+                },
+            )?;
             for context in &call_contexts {
                 for mutation in &context.raw_mutations {
                     raw_catalog.insert(ConcreteStorageSlot {
@@ -592,7 +640,14 @@ impl ConsensusExecutionPort for Adapter<'_> {
             results.push(report);
         }
 
-        let prepared = prepared.context("fixture period has no transaction preparation")?;
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let next = concrete.apply_observer_phase(ConcreteObserverPhaseDelta::default())?;
+                identity = next.identity();
+                next
+            }
+        };
         let projection = FinalChainConcreteStateProjection {
             identity: marker.identity,
             generation: marker.generation,
@@ -704,11 +759,27 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 == decimal_u256(&self.fixture["reward_output"]["minted_reward"]),
             "Go minted reward"
         );
-        compare_reward_raw_trace(
-            &reward_context,
-            &self.fixture["ordered_raw_writes"]["rewards"],
-            &self.fixture["ordered_raw_writes"]["end_block"],
-        )?;
+        if self.fixture.get("distributions").is_some() {
+            mainnet_era::compare_distribution_writes(&reward_context, self.fixture)?;
+        } else if self.fixture["reward_input"]["validators"]
+            .as_array()
+            .context("reward validators")?
+            .len()
+            > 1
+        {
+            native_integration::compare_reward_map(
+                &reward_context,
+                &self.fixture["ordered_raw_writes"]["rewards"],
+                &self.fixture["ordered_raw_writes"]["end_block"],
+                &self.fixture["reward_input"],
+            )?;
+        } else {
+            compare_reward_raw_trace(
+                &reward_context,
+                &self.fixture["ordered_raw_writes"]["rewards"],
+                &self.fixture["ordered_raw_writes"]["end_block"],
+            )?;
+        }
 
         let mut changed = BTreeSet::new();
         let mut accounts = Vec::new();
@@ -779,6 +850,12 @@ impl ConsensusExecutionPort for Adapter<'_> {
             .flat_map(|effect| effect.accounts.iter().map(|entry| entry.address))
             .collect::<BTreeSet<_>>();
         account_identities.extend(changed);
+        // The actual local Go RecordConcreteRewardsProjection hook records
+        // DPoS even for a non-distribution period with an unchanged root. Its
+        // touched-account catalog is distinct from changed account rows.
+        account_identities.insert([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
+        ]);
         let expected_accounts =
             catalog_account_identities(&self.fixture["period_catalog_identities"]["accounts"])?;
         ensure!(
@@ -1171,6 +1248,9 @@ fn code_error(status: &CodeExecutionStatus) -> String {
         CodeExecutionStatus::Success => String::new(),
         CodeExecutionStatus::Failure(CodeExecutionError::Revert) => "execution reverted".into(),
         CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas) => "out of gas".into(),
+        CodeExecutionStatus::Failure(CodeExecutionError::InvalidOpcode(opcode)) => {
+            format!("invalid opcode 0x{opcode:02x}")
+        }
         CodeExecutionStatus::Failure(CodeExecutionError::Native(error)) => error.error.clone(),
         CodeExecutionStatus::Failure(other) => format!("{other:?}"),
     }
@@ -1261,8 +1341,14 @@ fn compare_raw_mutations<'a>(
         actual.len() == expected.len(),
         "transaction raw trace count"
     );
-    for (actual, expected) in actual.into_iter().zip(expected) {
-        compare_raw_mutation(actual, expected)?;
+    for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+        compare_raw_mutation(actual, expected).with_context(|| {
+            format!(
+                "raw occurrence {index}: actual key {}, expected key {}",
+                hex::encode(actual.key.0),
+                string(&expected["key"])
+            )
+        })?;
     }
     Ok(())
 }
@@ -1340,6 +1426,10 @@ fn fixed_or_zero<const N: usize>(value: &Value) -> [u8; N] {
 }
 
 fn pbft(period: u64) -> Vec<u8> {
+    pbft_with_key(period, &[9; 32])
+}
+
+fn pbft_with_key(period: u64, private_key: &[u8; 32]) -> Vec<u8> {
     fn fields(out: &mut RlpStream, period: u64) {
         for value in 10..14 {
             out.append(&H256::from_low_u64_be(value));
@@ -1349,7 +1439,7 @@ fn pbft(period: u64) -> Vec<u8> {
     }
     let mut unsigned = RlpStream::new_list(7);
     fields(&mut unsigned, period);
-    let key = SigningKey::from_slice(&[9; 32]).expect("fixture signing key");
+    let key = SigningKey::from_slice(private_key).expect("fixture signing key");
     let (signature, recovery) = key
         .sign_prehash_recoverable(&keccak256(unsigned.out()).0)
         .expect("fixture PBFT signature");
@@ -1444,12 +1534,23 @@ fn request(root: &Value, period: &Value) -> Result<FinalChainExecutionRequest> {
         })
         .collect();
     Ok(FinalChainExecutionRequest {
-        pbft_block_rlp: pbft(number(&period["number"])),
+        pbft_block_rlp: if matches!(
+            root["profile"].as_str(),
+            Some("synthetic_current" | "synthetic_mainnet_era")
+        ) {
+            pbft_with_key(number(&period["number"]), &[10; 32])
+        } else {
+            pbft(number(&period["number"]))
+        },
         transactions,
         finalized_dag_blocks: dag,
-        blocks_per_year: number(&root["configuration"]["dpos"]["blocks_per_year"])
-            .try_into()
-            .context("blocks per year fits u32")?,
+        blocks_per_year: number(if root["profile"] == "synthetic_mainnet_era" {
+            &period["reward_input"]["blocks_per_year"]
+        } else {
+            &root["configuration"]["dpos"]["blocks_per_year"]
+        })
+        .try_into()
+        .context("blocks per year fits u32")?,
         cert_votes,
         block_gas_limit: number(&root["configuration"]["block_gas_limit"]).into(),
         mode: FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
@@ -1503,7 +1604,7 @@ fn verify_physical_rows(path: &Path, expected: &Value) -> Result<()> {
     Ok(())
 }
 
-fn verify_final_reader(reader: &ConcreteStateReader, final_state: &Value) -> Result<()> {
+fn verify_final_reader(reader: &dyn ConcreteStateRead, final_state: &Value) -> Result<()> {
     let view = FixtureView {
         prior: FixturePrior::Committed(reader),
         identity: ConcreteStateRead::identity(reader),
@@ -1607,6 +1708,22 @@ fn historical_reader(
     fixture: &Value,
     period: usize,
 ) -> Result<ConcreteStateReader> {
+    if fixture["profile"] == "synthetic_mainnet_era" {
+        let state = fixture["periods"]
+            .as_array()
+            .context("periods")?
+            .iter()
+            .find(|row| number(&row["number"]) == period as u64)
+            .context("retained fixture period")?;
+        return Ok(ConcreteStateReader::open_historical_read_only(
+            path,
+            committed,
+            ConcreteStateIdentity {
+                period: FinalChainBlockNumber::new(period as u64),
+                state_root: fixed(&state["final"]["root"]),
+            },
+        )?);
+    }
     ConcreteStateReader::open_historical_read_only(
         path,
         committed,
@@ -1623,6 +1740,9 @@ fn verify_historical_reads(
     committed: ConcreteStateIdentity,
     fixture: &Value,
 ) -> Result<()> {
+    if fixture["profile"] == "synthetic_current" {
+        return native_integration::verify_retained(path, committed, fixture);
+    }
     let head = committed.period.as_u64();
     let expected = &fixture["historical_reads"];
     let period_one = historical_reader(path, committed, fixture, 1)?;
@@ -1828,7 +1948,15 @@ fn run_period(
     drop(genesis_reader);
     let concrete = ConcreteStateLifecycle::open(concrete_path, chain_identity, observed.committed)?;
     ensure!(chain.last_block_number_typed()? == period_number);
-    let validator = fixed(&period["planner_facts"]["certificate_votes"][0]["validator"]);
+    let validator = if period["planner_facts"]["certificate_votes"]
+        .as_array()
+        .context("certificate votes")?
+        .is_empty()
+    {
+        fixed(&period["reward_input"]["block_author"])
+    } else {
+        fixed(&period["planner_facts"]["certificate_votes"][0]["validator"])
+    };
     ensure!(
         chain.dpos_eligible_vote_count(period_number, validator)?
             == number(&period["planner_facts"]["validator_eligible_vote_count"]),
@@ -1882,7 +2010,9 @@ fn four_mixed_periods_commit_and_reopen_exactly() -> Result<()> {
 
     let root =
         std::env::temp_dir().join(format!("rustaxa-evm-mixed-periods-{}", std::process::id()));
+    let mut scratch = era_retention::register(&root, &fixture)?;
     std::fs::create_dir(&root)?;
+    era_retention::created(&mut scratch)?;
     let application_path = root.join("application");
     let concrete_path = root.join("state_db");
     let mut chain_identity = None;
@@ -1896,9 +2026,27 @@ fn four_mixed_periods_commit_and_reopen_exactly() -> Result<()> {
             chain_identity,
         )?);
     }
-    std::fs::remove_dir_all(root)?;
+    if scratch.is_some() {
+        era_retention::finish(
+            scratch,
+            era_retention::final_evidence(
+                &root,
+                &fixture,
+                "four mixed periods,all assertions,physical reopen/native/history/receipts; owners closed",
+            )?,
+            false,
+        )?;
+    } else {
+        std::fs::remove_dir_all(root)?;
+    }
     Ok(())
 }
 
 #[path = "support/mixed_recovery.rs"]
 mod mixed_recovery;
+
+#[path = "support/native_integration.rs"]
+mod native_integration;
+
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;

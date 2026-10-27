@@ -111,6 +111,15 @@ Use `make cpp-intersection-list` before applying a carry-back patch and verify i
 
 ## Agent capacity and quota management
 
+For the owner-approved orchestrated current-era and Cacti closeout only, follow
+`doc/evm_research/n6_retained_commission_task_policy.md`. Its explicit task rules
+replace mandatory Luna startup/reserved-slot use, the default allowance grant,
+and manual development actor/read/unit/retention banks for that task. They retain
+independent review, user-selected allowance, command evidence, finite process
+limits and all parity/data/runtime checks. All fixed40 contracts and ledgers
+remain binding and unchanged. This exception has no effect without owner approval.
+
+
 - For bounded EVM slices, follow [`doc/codex_slice_workflow.md`](doc/codex_slice_workflow.md) for startup telemetry, direct implementation, review and measurement.
 - Use the active run prompt and slice workflow for the quota budget. Record fresh allowance at startup and preserve that baseline across resume. At the run limit, stop new work/delegation and save a resumable checkpoint. Finish only in-flight atomic work and minimal closeout. Resolve unknown telemetry before continuing implementation.
 - Reserve one available agent slot for Luna’s bounded tasks.
@@ -120,6 +129,8 @@ Use `make cpp-intersection-list` before applying a carry-back patch and verify i
   Preserve historical routing evidence rather than rewriting it as if a new model performed prior work.
 - On fresh team startup, launch and confirm Luna’s bounded worker before filling the remaining agent slots.
 - Reuse existing agents for related work. Close completed threads when supported; do not assume a finished task releases its slot.
+- Distinguish a changed semantic family from a fixed manifest instance under an accepted common contract. Use independent Sol review for settled instance deltas and exact commands; use Astra for the shared authority contract and named changed assumptions. Preserve every required command, proof and acceptance check. See `doc/codex_slice_workflow.md`.
+- Retain full failure logs as immutable artifacts; use bounded summaries and exact path/size/hash references in routine handoffs. Existing contracts that require embedded bodies stay in force until an independently reviewed successor explicitly replaces that representation. Do not grow review prose recursively or weaken proof/read bounds to make metadata fit.
 - Before spawning, check capacity and explicitly select the assigned model. Confirm successful startup before reporting that work was delegated.
 - Distinguish thread-capacity errors from model/account usage limits. Do not repeatedly retry an unchanged failure.
 - If Luna cannot start, record the blocker. Do not silently substitute Sol or Astra for quota reasons.

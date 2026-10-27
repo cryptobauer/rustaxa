@@ -2419,7 +2419,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be available")
             .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        )
     }
 
     fn service_config() -> DagTransactionServiceConfig {
@@ -2946,7 +2949,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3004,7 +3007,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3035,7 +3038,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3095,7 +3098,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3112,7 +3115,7 @@ mod tests {
         }
 
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3131,7 +3134,7 @@ mod tests {
                 .expect("transaction configuration must fail first");
         assert!(transaction_error.to_string().contains("percentile"));
         drop(transaction_storage);
-        std::fs::remove_dir_all(transaction_path)?;
+        crate::closeout_test_scratch::dispose(transaction_path)?;
 
         let dag_path = unique_temp_dir("rustaxa_consensus_dag_transaction_order_dag");
         let dag_storage = Arc::new(Storage::new(Config::new(dag_path.clone()))?);
@@ -3143,7 +3146,7 @@ mod tests {
             .expect("DAG configuration must fail before sortition");
         assert!(dag_error.to_string().contains("nonzero genesis"));
         drop(dag_storage);
-        std::fs::remove_dir_all(dag_path)?;
+        crate::closeout_test_scratch::dispose(dag_path)?;
 
         let sortition_path = unique_temp_dir("rustaxa_consensus_dag_transaction_order_sortition");
         let sortition_storage = Arc::new(Storage::new(Config::new(sortition_path.clone()))?);
@@ -3159,7 +3162,7 @@ mod tests {
                 .contains("SORTITION_STORAGE_CREATE_RUNTIME")
         );
         drop(sortition_storage);
-        std::fs::remove_dir_all(sortition_path)?;
+        crate::closeout_test_scratch::dispose(sortition_path)?;
         Ok(())
     }
 
@@ -3197,7 +3200,7 @@ mod tests {
         assert_eq!(restored.lock_dag()?.persistence_counters()?.dag_blocks, 1);
         drop(restored);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3298,7 +3301,7 @@ mod tests {
         );
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3368,7 +3371,7 @@ mod tests {
         assert!(root.abort_add_block(second.cursor_id)?);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3383,7 +3386,7 @@ mod tests {
             1,
             std::slice::from_ref(&omitted_transaction_hash),
         );
-        let canonical_hash = H256::from(keccak256(&canonical_block_rlp));
+        let canonical_hash = keccak256(&canonical_block_rlp);
         let object_hash = H256::repeat_byte(0xBE);
         let preparation = root.prepare_add_block(DagAddBlockPrepareRequest {
             expected_hash: object_hash,
@@ -3412,7 +3415,7 @@ mod tests {
         );
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3470,7 +3473,7 @@ mod tests {
         );
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3544,7 +3547,7 @@ mod tests {
         assert_eq!(root.lock_transaction()?.sidecar.transaction_count(), 2);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3598,7 +3601,7 @@ mod tests {
         assert!(storage.transaction().rlp(envelope.hash)?.is_none());
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3631,7 +3634,7 @@ mod tests {
         })?;
 
         let initial_step = root.next_verify_block_session()?;
-        assert_eq!(initial_step.complete, false);
+        assert!(!initial_step.complete);
         let plan = root.prepare_verify_block_transactions()?;
         assert!(plan.transactions.is_empty());
         assert_eq!(
@@ -3676,7 +3679,7 @@ mod tests {
                 proposal_period: plan.proposal_period,
                 account_nonce_facts: Vec::new(),
             })?;
-        assert_eq!(resolved.complete, false);
+        assert!(!resolved.complete);
         assert_eq!(resolved.action, 2);
 
         let wrong_stage = root
@@ -3690,7 +3693,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3777,7 +3780,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3839,7 +3842,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3923,7 +3926,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -3974,7 +3977,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4003,11 +4006,11 @@ mod tests {
         assert!(step.complete);
         assert_eq!(step.status, 2);
         let query = root.next_verify_block_session()?;
-        assert_eq!(query.complete, true);
+        assert!(query.complete);
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4044,7 +4047,7 @@ mod tests {
         assert_eq!(restored.lock_dag()?.state.vertex_count(), 1);
         drop(restored);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4092,7 +4095,7 @@ mod tests {
         assert!(root.abort_add_block(cursors[0])?);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4175,7 +4178,7 @@ mod tests {
         assert!(root.abort_proposer_pack(42)?);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4309,7 +4312,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4361,7 +4364,7 @@ mod tests {
         );
         drop(finalize_root);
         drop(finalize_storage);
-        std::fs::remove_dir_all(finalize_path)?;
+        crate::closeout_test_scratch::dispose(finalize_path)?;
 
         let abort_path = unique_temp_dir("rustaxa_consensus_pack_abort_dag_poison");
         let abort_storage = Arc::new(Storage::new(Config::new(abort_path.clone()))?);
@@ -4396,7 +4399,7 @@ mod tests {
         );
         drop(abort_root);
         drop(abort_storage);
-        std::fs::remove_dir_all(abort_path)?;
+        crate::closeout_test_scratch::dispose(abort_path)?;
 
         let compatibility_path = unique_temp_dir("rustaxa_consensus_pack_compatibility_dag_poison");
         let compatibility_storage =
@@ -4433,7 +4436,7 @@ mod tests {
         }
         drop(compatibility_root);
         drop(compatibility_storage);
-        std::fs::remove_dir_all(compatibility_path)?;
+        crate::closeout_test_scratch::dispose(compatibility_path)?;
         Ok(())
     }
 
@@ -4511,7 +4514,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4590,7 +4593,7 @@ mod tests {
         );
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4636,7 +4639,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4672,7 +4675,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4715,7 +4718,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4746,7 +4749,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4796,7 +4799,7 @@ mod tests {
         drop(final_chain);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4849,7 +4852,7 @@ mod tests {
         drop(final_chain);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4932,7 +4935,7 @@ mod tests {
         drop(final_chain);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -4997,7 +5000,7 @@ mod tests {
         drop(final_chain);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -5019,7 +5022,7 @@ mod tests {
 
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 
@@ -5092,7 +5095,7 @@ mod tests {
         drop(final_chain);
         drop(root);
         drop(storage);
-        std::fs::remove_dir_all(path)?;
+        crate::closeout_test_scratch::dispose(path)?;
         Ok(())
     }
 }

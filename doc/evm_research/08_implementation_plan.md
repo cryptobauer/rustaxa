@@ -162,6 +162,12 @@ remain separate. The new milestone's acceptance conditions cannot be waived by s
 
 ## Agent and model assignments
 
+For the owner-approved orchestrated current-era and Cacti closeout only, the
+[task policy](n6_retained_commission_task_policy.md) replaces conflicting startup, allowance and
+development-bookkeeping steps below. Independent review and all parity,
+validation, source-data and runtime protections remain required. Fixed40
+contracts are unchanged. No exception applies without owner approval.
+
 Current routing was revalidated on 2026-09-30; see the
 [model and environment validation](n6_model_setup_validation.md). Launch and
 confirm Luna first, then add at most two implementation workers and an independent
@@ -169,12 +175,13 @@ reviewer when their scopes can proceed independently. Follow the
 [slice workflow](../codex_slice_workflow.md) for startup quota, safe edits,
 first-run evidence and the three-slice scorecard. For a serial bounded slice,
 the Sol lead implements directly. Do not spawn another Sol lead for the same
-scope. Use independent Sol-medium review for settled fixture-only work; request
+scope. Use independent Sol-medium review for settled implementation and fixed
+manifest instances under accepted contracts; request
 Astra when authority or difficult semantics remain unresolved.
 
 | Role | Model / reasoning | Assignment |
 | --- | --- | --- |
-| Coordination / integration lead | Bounded synthetic follow-ups: `gpt-6.1-sol`, medium | Implement serial slices directly; own integration, validation and evidence; delegate unresolved authority or high-risk contract decisions to Astra |
+| Coordination / integration lead | Bounded work under reviewed contracts: `gpt-6.1-sol`, medium | Implement serial slices directly; own integration, validation and evidence; delegate unresolved authority or high-risk contract decisions to Astra |
 | Execution or state implementation | `gpt-6.1-sol`, medium by default; high for ambiguous or high-risk work | Rust implementation under reviewed contracts, reference fixtures, compatible reads and bounded reconstruction |
 | Contract authority / difficult semantics | `gpt-6-astra`, medium by default; high for ambiguous or high-risk work | Historical policy, trie/crypto invariants, oracle design, adoption and recovery/publication decisions |
 | Independent reviewer | Separate `gpt-6-astra` or `gpt-6.1-sol`, medium by default; high for ambiguous or high-risk review | Compare original reference behavior, implementation and required evidence; never approve own implementation |
@@ -199,6 +206,14 @@ reason for escalation in the handoff. Apart from the prospective lead pilot,
 model assignments, reviewer independence and validation gates remain unchanged.
 This is the task owner's routing policy,
 not a benchmark establishing medium/high equivalence.
+
+For repeated N4 VRF instances, the October13 shared-engine trial is prospective:
+Astra reviews the common sealed authority contract; independent Sol reviews settled
+implementation, manifest deltas, exact commands and replay/final acceptance. A voter
+change inside that contract alone does not require another Astra authority thread.
+Changed semantic assumptions or bounds still do. Existing per-voter reviews remain
+historical evidence; do not rewrite their routing or omit required checks. See
+[the trial plan](n4_next_10point_plan.md).
 
 Use a configurable `default` or `worker` role with an explicit model and
 reasoning effort. The current named reviewer/architect roles pin 5.6 Sol, and

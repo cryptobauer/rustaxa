@@ -217,7 +217,7 @@ fn redelegate_full_source_pending_and_historical_match_both_actual_removal_shape
             assert!(!session.aborted);
             drop(chain);
             drop(storage);
-            std::fs::remove_dir_all(path).unwrap();
+            crate::closeout_test_scratch::dispose(path).unwrap();
         }
     }
 }
@@ -271,7 +271,7 @@ fn redelegate_full_source_all_authentication_and_reader_failures_do_not_advance(
         drop(successful);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }
 
@@ -316,6 +316,6 @@ fn redelegate_full_source_rejects_validator_deletion_and_inconsistent_new_destin
         drop(session);
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }

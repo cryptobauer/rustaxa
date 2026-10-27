@@ -3332,9 +3332,18 @@ enum TransactionPacketDecodeError {
     TooLarge,
 }
 
+struct EgressObjectIdentity {
+    object_kind: u8,
+    object_hash: [u8; 32],
+    period: u64,
+}
+
+type DecodedTransactionPacket = (Vec<Vec<u8>>, Vec<[u8; 32]>);
+type DecodedDagSyncPacket = (u64, u64, Vec<Vec<u8>>, Vec<Vec<u8>>);
+
 fn decode_transaction_packet(
     packet_rlp: &[u8],
-) -> std::result::Result<(Vec<Vec<u8>>, Vec<[u8; 32]>), TransactionPacketDecodeError> {
+) -> std::result::Result<DecodedTransactionPacket, TransactionPacketDecodeError> {
     let packet = Rlp::new(packet_rlp);
     if packet.item_count().ok() != Some(2) {
         return Err(TransactionPacketDecodeError::Malformed);
@@ -3437,7 +3446,7 @@ fn decode_dag_block_packet(packet_rlp: &[u8]) -> Option<(Vec<Vec<u8>>, Vec<u8>)>
     Some((transactions, block))
 }
 
-fn decode_dag_sync_packet(packet_rlp: &[u8]) -> Option<(u64, u64, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+fn decode_dag_sync_packet(packet_rlp: &[u8]) -> Option<DecodedDagSyncPacket> {
     let packet = Rlp::new(packet_rlp);
     if packet.item_count().ok()? != 4 {
         return None;
@@ -5811,9 +5820,11 @@ impl ConsensusNetworkApi {
                         peer.peer_id,
                         NETWORK_PACKET_KIND_PBFT_VOTE,
                         packet,
-                        NETWORK_OBJECT_KIND_PBFT_VOTE,
-                        vote_hash,
-                        period,
+                        EgressObjectIdentity {
+                            object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                            object_hash: vote_hash,
+                            period,
+                        },
                     );
                     self.enqueue_egress_known_mark(
                         &effect_owner,
@@ -5870,9 +5881,11 @@ impl ConsensusNetworkApi {
                             peer.peer_id,
                             NETWORK_PACKET_KIND_PBFT_VOTES_BUNDLE,
                             packet.out().to_vec(),
-                            NETWORK_OBJECT_KIND_PBFT_VOTE,
-                            [0; 32],
-                            period,
+                            EgressObjectIdentity {
+                                object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                                object_hash: [0; 32],
+                                period,
+                            },
                         );
                         for vote in chunk {
                             self.enqueue_egress_known_mark(
@@ -5907,9 +5920,11 @@ impl ConsensusNetworkApi {
                         peer.peer_id,
                         NETWORK_PACKET_KIND_PILLAR_VOTE,
                         packet.clone(),
-                        NETWORK_OBJECT_KIND_PILLAR_VOTE,
-                        vote_hash,
-                        period,
+                        EgressObjectIdentity {
+                            object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
+                            object_hash: vote_hash,
+                            period,
+                        },
                     );
                     self.enqueue_egress_known_mark(
                         &effect_owner,
@@ -5949,9 +5964,11 @@ impl ConsensusNetworkApi {
                         peer.peer_id,
                         NETWORK_PACKET_KIND_DAG_BLOCK,
                         packet.out().to_vec(),
-                        NETWORK_OBJECT_KIND_DAG_BLOCK,
-                        block_hash,
-                        0,
+                        EgressObjectIdentity {
+                            object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
+                            object_hash: block_hash,
+                            period: 0,
+                        },
                     );
                     self.enqueue_egress_known_mark(
                         &effect_owner,
@@ -6062,10 +6079,14 @@ impl ConsensusNetworkApi {
         peer_id: [u8; 64],
         packet_kind: u32,
         payload_bytes: Vec<u8>,
-        object_kind: u8,
-        object_hash: [u8; 32],
-        period: u64,
+        object: EgressObjectIdentity,
     ) -> u64 {
+        let EgressObjectIdentity {
+            object_kind,
+            object_hash,
+            period,
+        } = object;
+
         self.enqueue_effect(NetworkEffect {
             effect_id: 0,
             source_payload_id: pending.source_payload_id,

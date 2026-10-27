@@ -16,18 +16,20 @@ fn with_info_chain_profile(name: &str, cacti: bool, test: impl FnOnce(&FinalChai
         storage.clone(),
         1_000_000.into(),
         0,
-        Vec::new(),
-        vec![GenesisValidator {
-            address: VALIDATOR,
-            vrf_key: [0; 32],
-            total_stake: U256::from(10_000).to_big_endian().to_vec(),
-            delegations: vec![(VALIDATOR, U256::from(10_000).to_big_endian().to_vec())],
-            metadata: GenesisValidatorMetadata {
-                owner: INFO_OWNER,
-                commission: 100,
-                ..Default::default()
-            },
-        }],
+        crate::FinalChainGenesisAllocation {
+            accounts: Vec::new(),
+            validators: vec![GenesisValidator {
+                address: VALIDATOR,
+                vrf_key: [0; 32],
+                total_stake: U256::from(10_000).to_big_endian().to_vec(),
+                delegations: vec![(VALIDATOR, U256::from(10_000).to_big_endian().to_vec())],
+                metadata: GenesisValidatorMetadata {
+                    owner: INFO_OWNER,
+                    commission: 100,
+                    ..Default::default()
+                },
+            }],
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: U256::from(1_000).into(),
             vote_eligibility_balance_step: U256::from(1_000).into(),
@@ -56,7 +58,7 @@ fn with_info_chain_profile(name: &str, cacti: bool, test: impl FnOnce(&FinalChai
     test(&chain);
     drop(chain);
     drop(storage);
-    let _ = std::fs::remove_dir_all(path);
+    let _ = crate::closeout_test_scratch::dispose(path);
 }
 
 const INFO_ORACLE: &str = include_str!(concat!(

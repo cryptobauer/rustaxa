@@ -80,10 +80,13 @@ fn temp_db_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system time follows the Unix epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "rustaxa-consensus-mixed-genesis-{}-{nanos}",
-        std::process::id()
-    ))
+    crate::closeout_test_scratch::new_path(
+        std::env::temp_dir().join(format!(
+            "rustaxa-consensus-mixed-genesis-{}-{nanos}",
+            std::process::id()
+        )),
+        true,
+    )
 }
 
 fn account_balance(value: U256) -> FinalChainAccountBalance {
@@ -562,5 +565,5 @@ fn go_genesis_catalog_and_reward_facts_match_rust_native_semantics() {
 
     drop(final_chain);
     drop(storage);
-    std::fs::remove_dir_all(path).expect("remove temporary DB");
+    crate::closeout_test_scratch::dispose(path).expect("remove temporary DB");
 }

@@ -260,7 +260,6 @@ mod tests {
     use ethereum_types::H256;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -376,7 +375,7 @@ mod tests {
             assert_eq!(oracle.bid(), U256::from(5));
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -397,7 +396,7 @@ mod tests {
             assert_eq!(oracle.bid(), U256::from(7));
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -419,7 +418,7 @@ mod tests {
             assert!(err.contains("missing finalized transactions for block 3"));
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = crate::closeout_test_scratch::dispose(temp_dir);
     }
 
     #[test]
@@ -455,7 +454,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time should be available")
             .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::closeout_test_scratch::new_path(
+            std::env::temp_dir().join(format!("{name}_{nonce}")),
+            true,
+        )
     }
 
     fn seed_last_finalized_block(storage: &Storage, block: u64) -> Result<()> {

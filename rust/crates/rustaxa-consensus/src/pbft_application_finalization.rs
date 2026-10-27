@@ -209,7 +209,7 @@ fn process_pillar_after_finalization(
     } else {
         ficus_activation
     };
-    finalized_period >= first_pillar_period && finalized_period % pillar_interval == 0
+    finalized_period >= first_pillar_period && finalized_period.is_multiple_of(pillar_interval)
 }
 
 fn pillar_anchor_state_period(finalized_period: u64, delegation_delay: u64) -> Result<u64> {
@@ -986,6 +986,18 @@ pub fn report_pbft_application_finalization_pillar_signature(
     ))
 }
 
+/// Result of one exact pillar-vote gossip effect.
+/// Values pass unchanged to the existing finalization acknowledgement checks;
+/// a failed result preserves its status and diagnostic before the next action.
+pub struct PbftApplicationPillarGossipReport {
+    /// Whether the requested gossip operation succeeded.
+    pub succeeded: bool,
+    /// Existing external-effect status, including its failure classification.
+    pub status: u8,
+    /// Exact external diagnostic; no normalization occurs in this value.
+    pub error_code: String,
+}
+
 /// Acknowledges exact pillar-vote gossip before requesting the next signature
 /// or reporting completed native pillar post-processing.
 pub fn report_pbft_application_finalization_pillar_gossip(
@@ -994,10 +1006,14 @@ pub fn report_pbft_application_finalization_pillar_gossip(
     final_chain: &FinalChain,
     request: &PbftApplicationFinalizationRequest,
     mut gossip: PbftApplicationPillarGossipRequest,
-    succeeded: bool,
-    status: u8,
-    error_code: String,
+    report: PbftApplicationPillarGossipReport,
 ) -> Result<PbftApplicationFinalizationStep> {
+    let PbftApplicationPillarGossipReport {
+        succeeded,
+        status,
+        error_code,
+    } = report;
+
     pbft.ensure_finalization_action(
         gossip.cursor,
         PbftFinalizationRuntimeAction::ProcessPillarBlock,
@@ -1037,52 +1053,6 @@ pub fn report_pbft_application_finalization_pillar_gossip(
         None,
         boundary,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pillar_postprocess_uses_ficus_pillar_period_not_pbft_payload_period() {
-        assert!(!process_pillar_after_finalization(u64::MAX, 10, 20));
-        assert!(!process_pillar_after_finalization(11, 10, 11));
-        assert!(!process_pillar_after_finalization(11, 10, 19));
-        assert!(process_pillar_after_finalization(11, 10, 20));
-        assert!(process_pillar_after_finalization(0, 10, 10));
-    }
-
-    #[test]
-    fn pillar_anchor_state_period_applies_checked_delegation_delay() {
-        assert_eq!(pillar_anchor_state_period(20, 3).unwrap(), 17);
-        assert!(pillar_anchor_state_period(3, 3).is_err());
-        assert!(pillar_anchor_state_period(2, 3).is_err());
-    }
-
-    #[test]
-    fn account_facts_accept_exact_pre_finalization_head() {
-        assert!(account_facts_match_pre_finalization_head(1, 0));
-        assert!(account_facts_match_pre_finalization_head(2, 1));
-
-        assert!(!account_facts_match_pre_finalization_head(0, 0));
-        assert!(!account_facts_match_pre_finalization_head(1, 1));
-        assert!(!account_facts_match_pre_finalization_head(2, 0));
-        assert!(!account_facts_match_pre_finalization_head(2, 2));
-    }
-
-    #[test]
-    fn account_facts_request_retains_evm_finalization_context() {
-        let previous_cert_vote_rlps = vec![vec![0x11, 0x22], vec![0x33, 0x44]];
-        let request = PbftApplicationAccountFactsRequest {
-            cursor: 4,
-            addresses: vec![[7; 20]],
-            blocks_per_year: 1_234_567,
-            previous_cert_vote_rlps: previous_cert_vote_rlps.clone(),
-        };
-
-        assert_eq!(request.blocks_per_year, 1_234_567);
-        assert_eq!(request.previous_cert_vote_rlps, previous_cert_vote_rlps);
-    }
 }
 
 fn encode_finalized_dag_bundle(blocks: &[crate::dag::DagSyncBlockRlp]) -> Result<Vec<u8>> {
@@ -1227,4 +1197,50 @@ pub fn prepare_certified_pbft_application_finalization(
     };
     let prepared = prepare_pbft_application_finalization(pbft, dag, final_chain, request.clone())?;
     Ok((request, prepared))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pillar_postprocess_uses_ficus_pillar_period_not_pbft_payload_period() {
+        assert!(!process_pillar_after_finalization(u64::MAX, 10, 20));
+        assert!(!process_pillar_after_finalization(11, 10, 11));
+        assert!(!process_pillar_after_finalization(11, 10, 19));
+        assert!(process_pillar_after_finalization(11, 10, 20));
+        assert!(process_pillar_after_finalization(0, 10, 10));
+    }
+
+    #[test]
+    fn pillar_anchor_state_period_applies_checked_delegation_delay() {
+        assert_eq!(pillar_anchor_state_period(20, 3).unwrap(), 17);
+        assert!(pillar_anchor_state_period(3, 3).is_err());
+        assert!(pillar_anchor_state_period(2, 3).is_err());
+    }
+
+    #[test]
+    fn account_facts_accept_exact_pre_finalization_head() {
+        assert!(account_facts_match_pre_finalization_head(1, 0));
+        assert!(account_facts_match_pre_finalization_head(2, 1));
+
+        assert!(!account_facts_match_pre_finalization_head(0, 0));
+        assert!(!account_facts_match_pre_finalization_head(1, 1));
+        assert!(!account_facts_match_pre_finalization_head(2, 0));
+        assert!(!account_facts_match_pre_finalization_head(2, 2));
+    }
+
+    #[test]
+    fn account_facts_request_retains_evm_finalization_context() {
+        let previous_cert_vote_rlps = vec![vec![0x11, 0x22], vec![0x33, 0x44]];
+        let request = PbftApplicationAccountFactsRequest {
+            cursor: 4,
+            addresses: vec![[7; 20]],
+            blocks_per_year: 1_234_567,
+            previous_cert_vote_rlps: previous_cert_vote_rlps.clone(),
+        };
+
+        assert_eq!(request.blocks_per_year, 1_234_567);
+        assert_eq!(request.previous_cert_vote_rlps, previous_cert_vote_rlps);
+    }
 }

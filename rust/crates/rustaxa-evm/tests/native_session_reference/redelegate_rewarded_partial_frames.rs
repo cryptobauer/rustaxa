@@ -1,6 +1,7 @@
 //! Actual positive-reward partial frames with public finalized P1 FinalChain
 //! hydration and an independent physical Go P1 read lane. No EVM publication,
 //! signed historical simulation or root parity is claimed.
+use super::mixed_native;
 use super::*;
 use ethereum_types::{H160, H256};
 use k256::ecdsa::SigningKey;
@@ -8,9 +9,6 @@ use rlp::RlpStream;
 use rustaxa_consensus::RewardCertVoteFact;
 use rustaxa_storage::Column;
 use rustaxa_types::GenesisAccount;
-#[allow(dead_code)]
-#[path = "../support/mixed_native.rs"]
-mod mixed_native;
 fn addr(last: u8) -> [u8; 20] {
     let mut a = [0; 20];
     a[19] = last;
@@ -238,7 +236,7 @@ fn chain(storage: Arc<Storage>, row: &Value, initialize: bool) -> FinalChain {
         storage.clone(),
         1_000_000.into(),
         0,
-        // FinalChain account input is post-genesis custody, unlike Go configuration.
+        rustaxa_consensus::FinalChainGenesisAllocation { accounts: // FinalChain account input is post-genesis custody, unlike Go configuration.
         vec![
             GenesisAccount {
                 address: addr(0xd1),
@@ -252,8 +250,7 @@ fn chain(storage: Arc<Storage>, row: &Value, initialize: bool) -> FinalChain {
                     ethereum_types::U256::from(1000),
                 ),
             },
-        ],
-        [0x31, 0x32]
+        ], validators: [0x31, 0x32]
             .into_iter()
             .map(|last| GenesisValidator {
                 address: addr(last),
@@ -279,7 +276,7 @@ fn chain(storage: Arc<Storage>, row: &Value, initialize: bool) -> FinalChain {
                     ..Default::default()
                 },
             })
-            .collect(),
+            .collect() },
         GenesisDposConfig {
             eligibility_balance_threshold: ethereum_types::U256::from(100).into(),
             vote_eligibility_balance_step: ethereum_types::U256::from(10).into(),
@@ -573,6 +570,6 @@ fn rewarded_partial_public_p1_frames_match_actual_go_account_and_raw_rollback() 
         }
         drop(chain);
         drop(storage);
-        std::fs::remove_dir_all(path).unwrap();
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 }

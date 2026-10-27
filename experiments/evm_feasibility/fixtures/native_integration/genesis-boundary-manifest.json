@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "source_sha256": "c90ba24a39221a3949342ad848531f264b425981f595b4a4cb4030b987c33eba",
+  "source_file": "/home/fry/artifacts/native-integration-20261026-01a178cc/genesis-yield-boundary.go",
+  "stream": {
+    "file": "849ee2dd82d6dea2769a71da7776fa2f48676799f9d05c02ff034cc7937b366e.json",
+    "sha256": "849ee2dd82d6dea2769a71da7776fa2f48676799f9d05c02ff034cc7937b366e",
+    "bytes": 539
+  },
+  "provenance": {
+    "public": {
+      "revision": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+      "command": "/home/fry/artifacts/native-integration-20261026-01a178cc/native-oracle-f8qznq4h/command.json",
+      "command_sha256": "c433aefa6291af72c29c4be9f0594b64ecb4da1d8a6d953827931fcfdcd56746"
+    },
+    "local": {
+      "revision": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+      "command": "/home/fry/artifacts/native-integration-20261026-01a178cc/native-oracle-bahu4rb3/command.json",
+      "command_sha256": "d02eb83fcf21cc76b34cada3225e5ca9bb94a652b43666f5a11c2da7bab133a4"
+    }
+  }
+}

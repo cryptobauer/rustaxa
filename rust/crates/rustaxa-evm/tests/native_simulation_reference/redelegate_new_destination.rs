@@ -14,35 +14,37 @@ pub(super) fn history(path: &FixturePath, initialize: bool) -> FinalChain {
         storage.clone(),
         500_000.into(),
         0,
-        vec![
-            GenesisAccount {
-                address: address(0xaa),
-                balance: rustaxa_types::FinalChainAccountBalance::new_account(balance),
-            },
-            GenesisAccount {
-                address: address(0xbb),
-                balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(
-                    1_000_000,
-                )),
-            },
-        ],
-        [0x31, 0x32]
-            .into_iter()
-            .map(|last| GenesisValidator {
-                address: address(last),
-                vrf_key: [if last == 0x31 { 0x44 } else { 0x55 }; 32],
-                total_stake: U256::from(1000).to_big_endian().to_vec(),
-                delegations: vec![(
-                    address(if last == 0x31 { 0xaa } else { 0xbb }),
-                    U256::from(1000).to_big_endian().to_vec(),
-                )],
-                metadata: GenesisValidatorMetadata {
-                    owner: address(0xaa),
-                    commission: 100,
-                    ..Default::default()
+        rustaxa_consensus::FinalChainGenesisAllocation {
+            accounts: vec![
+                GenesisAccount {
+                    address: address(0xaa),
+                    balance: rustaxa_types::FinalChainAccountBalance::new_account(balance),
                 },
-            })
-            .collect(),
+                GenesisAccount {
+                    address: address(0xbb),
+                    balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(
+                        1_000_000,
+                    )),
+                },
+            ],
+            validators: [0x31, 0x32]
+                .into_iter()
+                .map(|last| GenesisValidator {
+                    address: address(last),
+                    vrf_key: [if last == 0x31 { 0x44 } else { 0x55 }; 32],
+                    total_stake: U256::from(1000).to_big_endian().to_vec(),
+                    delegations: vec![(
+                        address(if last == 0x31 { 0xaa } else { 0xbb }),
+                        U256::from(1000).to_big_endian().to_vec(),
+                    )],
+                    metadata: GenesisValidatorMetadata {
+                        owner: address(0xaa),
+                        commission: 100,
+                        ..Default::default()
+                    },
+                })
+                .collect(),
+        },
         GenesisDposConfig {
             eligibility_balance_threshold: U256::from(100).into(),
             vote_eligibility_balance_step: U256::from(10).into(),
