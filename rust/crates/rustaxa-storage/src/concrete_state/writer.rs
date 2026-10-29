@@ -23,7 +23,8 @@ use super::codec::{
     keccak256, storage_prefix_for_path, storage_trie_path, storage_version_prefix, versioned_key,
 };
 use super::physical_node::{
-    PathProof, PhysicalTrieStore, SelectedVersion, TrieSchema, verify_path,
+    InventoryLimits, PathProof, PhysicalTrieStore, SelectedVersion, TrieSchema,
+    inventory_account_trie, inventory_touched_storage_trie, verify_path,
 };
 use super::trie_writer::{IncrementalTrie, TrieWriteStore};
 
@@ -155,6 +156,7 @@ pub struct PreparedConcreteState {
     writer_id: u64,
     sequence: u64,
     changed_accounts: Vec<([u8; 20], ConcreteRead<ConcreteAccountRecord>)>,
+    storage_owners: BTreeSet<[u8; 20]>,
     pub(super) rows: BTreeMap<RowKey, Vec<u8>>,
 }
 
@@ -600,6 +602,9 @@ impl ConcreteStateWriter {
         }
 
         let storage_touched = storage_changes.keys().copied().collect::<BTreeSet<_>>();
+        let mut storage_owners =
+            base.map_or_else(BTreeSet::new, |prepared| prepared.storage_owners.clone());
+        storage_owners.extend(storage_touched.iter().copied());
         let touched_accounts = account_changes
             .keys()
             .copied()
@@ -764,6 +769,7 @@ impl ConcreteStateWriter {
             writer_id: self.writer_id,
             sequence,
             changed_accounts: Vec::new(),
+            storage_owners,
             rows,
         };
         for address in changed_account_addresses {
@@ -784,6 +790,158 @@ impl ConcreteStateWriter {
         }
         self.sequence.set(sequence);
         Ok(prepared)
+    }
+
+    pub(super) fn retain_final_trie_nodes(
+        &self,
+        prepared: &mut PreparedConcreteState,
+        limits: super::reader::ConcreteStorageInventoryLimits,
+    ) -> Result<(), super::reader::ConcreteStorageInventoryError> {
+        use super::reader::ConcreteStorageInventoryError as Error;
+        self.validate_prepared(prepared).map_err(Error::Read)?;
+        let account_store = PreparedTrieStore {
+            writer: self,
+            prepared: Some(prepared),
+            identity: prepared.next,
+            node_column: "2",
+            value_column: "3",
+            address: None,
+        };
+        let accounts = inventory_account_trie(
+            &account_store,
+            prepared.next.state_root,
+            |path| path,
+            InventoryLimits {
+                max_nodes: limits.max_nodes,
+                max_leaves: limits.max_leaves,
+                max_value_bytes: limits.max_value_bytes,
+            },
+        )
+        .map_err(super::reader::map_inventory_error)?;
+        let mut nodes = accounts.nodes_visited;
+        let mut leaves = accounts.entries.len() as u64;
+        let mut bytes = accounts.value_bytes;
+        let mut storage_nodes = BTreeSet::new();
+        for address in &prepared.storage_owners {
+            let account_path = account_version_prefix(*address);
+            let root = match accounts
+                .entries
+                .binary_search_by_key(&account_path, |(path, _)| *path)
+            {
+                Ok(index) => {
+                    decode_physical_account(&accounts.entries[index].1)
+                        .map_err(Error::Read)?
+                        .account
+                        .storage_root
+                }
+                Err(_) => None,
+            };
+            let Some(root) = root else {
+                continue;
+            };
+            let store = PreparedTrieStore {
+                writer: self,
+                prepared: Some(prepared),
+                identity: prepared.next,
+                node_column: "4",
+                value_column: "5",
+                address: Some(*address),
+            };
+            let remaining = InventoryLimits {
+                max_nodes: limits.max_nodes - nodes,
+                max_leaves: limits.max_leaves - leaves,
+                max_value_bytes: limits.max_value_bytes - bytes,
+            };
+            let inventory = inventory_touched_storage_trie(
+                &store,
+                root,
+                |path| storage_prefix_for_path(*address, path),
+                remaining,
+            )
+            .map_err(|error| match super::reader::map_inventory_error(error) {
+                Error::LimitExceeded {
+                    resource, required, ..
+                } => {
+                    use super::reader::ConcreteStorageInventoryResource as Resource;
+                    let (limit, used) = match resource {
+                        Resource::Nodes => (limits.max_nodes, nodes),
+                        Resource::Leaves => (limits.max_leaves, leaves),
+                        Resource::ValueBytes => (limits.max_value_bytes, bytes),
+                    };
+                    Error::LimitExceeded {
+                        resource,
+                        limit,
+                        required: used.saturating_add(required),
+                    }
+                }
+                other => other,
+            })?;
+            nodes += inventory.nodes_visited;
+            leaves += inventory.entries.len() as u64;
+            bytes += inventory.value_bytes;
+            storage_nodes.extend(inventory.hashed_nodes);
+        }
+        prepared.rows.retain(|row, _| {
+            let nodes = match row.column {
+                "2" => &accounts.hashed_nodes,
+                "4" => &storage_nodes,
+                _ => return true,
+            };
+            <[u8; 32]>::try_from(row.key.as_slice()).is_ok_and(|key| nodes.contains(&key))
+        });
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_account_and_storage_node_counts(
+        &self,
+        prepared: &PreparedConcreteState,
+        address: [u8; 20],
+    ) -> (u64, u64) {
+        let limits = InventoryLimits {
+            max_nodes: 100_000,
+            max_leaves: 100_000,
+            max_value_bytes: 10_000_000,
+        };
+        let accounts = inventory_account_trie(
+            &PreparedTrieStore {
+                writer: self,
+                prepared: Some(prepared),
+                identity: prepared.next,
+                node_column: "2",
+                value_column: "3",
+                address: None,
+            },
+            prepared.next.state_root,
+            |path| path,
+            limits,
+        )
+        .unwrap();
+        let path = account_version_prefix(address);
+        let index = accounts
+            .entries
+            .binary_search_by_key(&path, |(path, _)| *path)
+            .unwrap();
+        let root = decode_physical_account(&accounts.entries[index].1)
+            .unwrap()
+            .account
+            .storage_root
+            .unwrap();
+        let storage = inventory_touched_storage_trie(
+            &PreparedTrieStore {
+                writer: self,
+                prepared: Some(prepared),
+                identity: prepared.next,
+                node_column: "4",
+                value_column: "5",
+                address: Some(address),
+            },
+            root,
+            |path| storage_prefix_for_path(address, path),
+            limits,
+        )
+        .unwrap();
+        (accounts.nodes_visited, storage.nodes_visited)
     }
 
     /// Persists CF1-CF5 content and version rows for `prepared`, without moving

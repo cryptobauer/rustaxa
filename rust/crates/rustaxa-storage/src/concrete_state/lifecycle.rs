@@ -567,6 +567,34 @@ impl ConcreteStateLifecycle {
         self.commit_prepared(prepared, approval)
     }
 
+    /// Publish only authenticated final account and touched-storage trie nodes from the overlay.
+    /// The caller supplies finite ceilings; failure occurs before database writes.
+    pub fn commit_observer_final_trie_nodes(
+        mut self,
+        output: ConcreteObserverPhaseOutput,
+        approval: ConcreteCommitApproval,
+        limits: super::reader::ConcreteStorageInventoryLimits,
+    ) -> Result<ConcreteLifecycleObservation, super::reader::ConcreteStorageInventoryError> {
+        use super::reader::ConcreteStorageInventoryError as Error;
+        self.ensure_usable().map_err(Error::Read)?;
+        let mut prepared = self
+            .observer_prepared
+            .take()
+            .ok_or_else(|| Error::Read(corrupt("no ordered observer phase is prepared")))?;
+        let (writer_id, sequence) = self.writer.prepared_token(&prepared).map_err(Error::Read)?;
+        if output.writer_id != writer_id
+            || output.sequence != sequence
+            || output.identity != prepared.next_identity()
+        {
+            return Err(Error::Read(corrupt(
+                "ordered observer phase output is stale or foreign",
+            )));
+        }
+        self.writer.retain_final_trie_nodes(&mut prepared, limits)?;
+        self.commit_prepared(prepared, approval)
+            .map_err(Error::Read)
+    }
+
     fn commit_prepared(
         self,
         prepared: PreparedConcreteState,
@@ -1724,6 +1752,576 @@ mod tests {
             catalog_rlp,
             projection_hash,
             catalog_hash,
+        }
+    }
+
+    #[test]
+    fn public_final_account_nodes_keep_reachable_overlay_and_fail_before_write() {
+        use super::super::reader::{ConcreteStorageInventoryError, ConcreteStorageInventoryLimits};
+        let path = TestPath::new();
+        let chain_id = [0x72; 32];
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain_id,
+            ConcreteStateMutationBatch {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address: address(1),
+                    record: account(0, 10),
+                }],
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let prior = owner.observation().unwrap();
+        let (marker, marker_rlp) = marker(&prior, 0x73);
+        owner.stage_execution(&marker_rlp).unwrap();
+        let first = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: (2..32)
+                    .map(|i| ConcreteAccountMutation::Upsert {
+                        address: address(i),
+                        record: account(0, u64::from(i)),
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .unwrap();
+        let first_rows = owner.observer_prepared.as_ref().unwrap().rows.clone();
+        assert!(matches!(
+            rustaxa_types::concrete_state::execution::ConcreteExecutionRead::account(
+                &owner.prepared_view(&first).unwrap(),
+                address(2)
+            )
+            .unwrap(),
+            ConcreteRead::Present(_)
+        ));
+        let final_output = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address: address(1),
+                    record: account(1, 11),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        let before = owner.observer_prepared.as_ref().unwrap().rows.clone();
+        let limits = ConcreteStorageInventoryLimits {
+            max_nodes: 10_000,
+            max_leaves: 1_000,
+            max_value_bytes: 1_000_000,
+        };
+        let mut prepared = owner.observer_prepared.take().unwrap();
+        let too_small = ConcreteStorageInventoryLimits {
+            max_nodes: 0,
+            ..limits
+        };
+        assert!(matches!(
+            owner
+                .writer
+                .retain_final_trie_nodes(&mut prepared, too_small),
+            Err(ConcreteStorageInventoryError::LimitExceeded { .. })
+        ));
+        assert_eq!(prepared.rows, before);
+        let root_key = RowKey {
+            column: "2",
+            key: final_output.identity().state_root.to_vec(),
+        };
+        let original_root = prepared.rows.remove(&root_key).unwrap();
+        assert!(
+            owner
+                .writer
+                .retain_final_trie_nodes(&mut prepared, limits)
+                .is_err()
+        );
+        prepared.rows.insert(root_key.clone(), vec![0xff]);
+        assert!(
+            owner
+                .writer
+                .retain_final_trie_nodes(&mut prepared, limits)
+                .is_err()
+        );
+        prepared.rows.insert(root_key, original_root);
+        owner
+            .writer
+            .retain_final_trie_nodes(&mut prepared, limits)
+            .unwrap();
+        assert!(first_rows.iter().any(|(key, value)| key.column == "2"
+            && key.key != first.identity().state_root
+            && prepared.rows.get(key) == Some(value)));
+        assert!(
+            before
+                .iter()
+                .any(|(key, _)| key.column == "2" && !prepared.rows.contains_key(key))
+        );
+        assert!(
+            before
+                .iter()
+                .filter(|(key, _)| key.column != "2")
+                .all(|(key, value)| prepared.rows.get(key) == Some(value))
+        );
+        owner.observer_prepared = Some(prepared);
+        let final_identity = final_output.identity();
+        let committed = owner
+            .commit_observer_final_trie_nodes(
+                final_output,
+                approval(&marker, &marker_rlp, final_identity, &[]),
+                limits,
+            )
+            .unwrap();
+        assert_eq!(committed.pending_marker_rlp, Vec::<u8>::new());
+        let reopened =
+            ConcreteStateLifecycle::open(&path.0, chain_id, committed.committed).unwrap();
+        assert!(matches!(
+            reopened.prior_reader().account(address(2)).unwrap(),
+            ConcreteRead::Present(_)
+        ));
+        drop(reopened);
+        let prior_reader = super::super::reader::ConcreteStateReader::open_historical_read_only(
+            &path.0,
+            committed.committed,
+            prior.committed,
+        )
+        .unwrap();
+        assert!(matches!(
+            prior_reader.account(address(1)).unwrap(),
+            ConcreteRead::Present(_)
+        ));
+    }
+
+    #[test]
+    fn public_final_account_limit_failure_retains_marker_and_allows_retry() {
+        use super::super::reader::{ConcreteStorageInventoryError, ConcreteStorageInventoryLimits};
+        let path = TestPath::new();
+        let chain = [0x81; 32];
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let prior = owner.observation().unwrap();
+        let (marker, marker_rlp) = marker(&prior, 0x82);
+        owner.stage_execution(&marker_rlp).unwrap();
+        let delta = ConcreteObserverPhaseDelta {
+            accounts: vec![ConcreteAccountMutation::Upsert {
+                address: address(9),
+                record: account(0, 7),
+            }],
+            ..Default::default()
+        };
+        let output = owner.apply_observer_phase(delta.clone()).unwrap();
+        let final_identity = output.identity();
+        let limits = ConcreteStorageInventoryLimits {
+            max_nodes: 0,
+            max_leaves: 100,
+            max_value_bytes: 10_000,
+        };
+        assert!(matches!(
+            owner.commit_observer_final_trie_nodes(
+                output,
+                approval(&marker, &marker_rlp, final_identity, &[]),
+                limits
+            ),
+            Err(ConcreteStorageInventoryError::LimitExceeded { .. })
+        ));
+        let after = ConcreteStateLifecycle::inspect_existing(&path.0, chain).unwrap();
+        assert_eq!(after.committed, prior.committed);
+        assert_eq!(after.pending_marker_rlp, marker_rlp);
+        let mut retry = ConcreteStateLifecycle::open(&path.0, chain, prior.committed).unwrap();
+        let output = retry.apply_observer_phase(delta).unwrap();
+        assert_eq!(output.identity(), final_identity);
+        let limits = ConcreteStorageInventoryLimits {
+            max_nodes: 100,
+            ..limits
+        };
+        let committed = retry
+            .commit_observer_final_trie_nodes(
+                output,
+                approval(&marker, &marker_rlp, final_identity, &[]),
+                limits,
+            )
+            .unwrap();
+        assert!(committed.pending_marker_rlp.is_empty());
+    }
+
+    #[test]
+    fn public_final_account_empty_root_and_stale_output() {
+        use super::super::reader::ConcreteStorageInventoryLimits;
+        let limits = ConcreteStorageInventoryLimits {
+            max_nodes: 0,
+            max_leaves: 0,
+            max_value_bytes: 0,
+        };
+        let path = TestPath::new();
+        let chain = [0x83; 32];
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let prior = owner.observation().unwrap();
+        let (marker, marker_rlp) = marker(&prior, 0x84);
+        owner.stage_execution(&marker_rlp).unwrap();
+        let stale = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let latest = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let final_identity = latest.identity();
+        assert!(
+            owner
+                .commit_observer_final_trie_nodes(
+                    stale,
+                    approval(&marker, &marker_rlp, final_identity, &[]),
+                    limits
+                )
+                .is_err()
+        );
+        let mut retry = ConcreteStateLifecycle::open(&path.0, chain, prior.committed).unwrap();
+        let output = retry
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let committed = retry
+            .commit_observer_final_trie_nodes(
+                output,
+                approval(&marker, &marker_rlp, final_identity, &[]),
+                limits,
+            )
+            .unwrap();
+        assert!(committed.pending_marker_rlp.is_empty());
+    }
+
+    #[test]
+    fn public_final_storage_children_and_code_survive_reopen() {
+        use super::super::reader::ConcreteStorageInventoryLimits;
+        let path = TestPath::new();
+        let chain = [0x90; 32];
+        let owner_address = address(3);
+        let code = vec![0x60, 0x01, 0x00];
+        let code_hash = super::super::codec::keccak256(&code);
+        let mut record = account(0, 9);
+        record.account.code_hash = Some(code_hash);
+        record.account.code_size = code.len() as u64;
+        let mut rlp = RlpStream::new_list(5);
+        rlp.append(&0_u64);
+        rlp.append(&9_u64);
+        rlp.append_empty_data();
+        rlp.append(&code_hash.as_slice());
+        rlp.append(&(code.len() as u64));
+        record.physical_rlp = rlp.out().to_vec();
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address: owner_address,
+                    record,
+                }],
+                code: vec![super::super::writer::ConcreteCodeInsertion {
+                    code_hash,
+                    code: code.clone(),
+                }],
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let prior = owner.observation().unwrap();
+        let (marker, marker_rlp) = marker(&prior, 0x91);
+        owner.stage_execution(&marker_rlp).unwrap();
+        let first = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                storage: (1..32)
+                    .map(|i| ConcreteStorageMutation {
+                        address: owner_address,
+                        key: storage_key(i),
+                        value: Some(vec![i]),
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .unwrap();
+        let first_rows = owner.observer_prepared.as_ref().unwrap().rows.clone();
+        let output = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                storage: vec![ConcreteStorageMutation {
+                    address: owner_address,
+                    key: storage_key(1),
+                    value: Some(vec![77]),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        let identity = output.identity();
+        let limits = ConcreteStorageInventoryLimits {
+            max_nodes: 10_000,
+            max_leaves: 1_000,
+            max_value_bytes: 1_000_000,
+        };
+        let mut prepared = owner.observer_prepared.take().unwrap();
+        let original = prepared.rows.clone();
+        let one_node = ConcreteStorageInventoryLimits {
+            max_nodes: 1,
+            ..limits
+        };
+        assert!(matches!(
+            owner
+                .writer
+                .retain_final_trie_nodes(&mut prepared, one_node),
+            Err(super::super::reader::ConcreteStorageInventoryError::LimitExceeded { .. })
+        ));
+        assert_eq!(prepared.rows, original);
+        owner
+            .writer
+            .retain_final_trie_nodes(&mut prepared, limits)
+            .unwrap();
+        let root = match owner
+            .writer
+            .prepared_account(&prepared, owner_address)
+            .unwrap()
+        {
+            ConcreteRead::Present(record) => record.account.storage_root.unwrap(),
+            _ => panic!("missing account"),
+        };
+        let child = prepared
+            .rows
+            .keys()
+            .find(|key| key.column == "4" && key.key != root)
+            .unwrap()
+            .clone();
+        assert!(first_rows.get(&child) == prepared.rows.get(&child));
+        assert!(
+            original
+                .iter()
+                .any(|(key, _)| key.column == "4" && !prepared.rows.contains_key(key))
+        );
+        prepared.rows = original.clone();
+        let child_value = prepared.rows.remove(&child).unwrap();
+        assert!(
+            owner
+                .writer
+                .retain_final_trie_nodes(&mut prepared, limits)
+                .is_err()
+        );
+        prepared.rows.insert(child.clone(), vec![0xff]);
+        assert!(
+            owner
+                .writer
+                .retain_final_trie_nodes(&mut prepared, limits)
+                .is_err()
+        );
+        let mut wrong_branch = RlpStream::new_list(16);
+        for _ in 0..16 {
+            wrong_branch.append_empty_data();
+        }
+        prepared
+            .rows
+            .insert(child.clone(), wrong_branch.out().to_vec());
+        let wrong_rows = prepared.rows.clone();
+        assert!(
+            matches!(owner.writer.retain_final_trie_nodes(&mut prepared, limits),
+            Err(super::super::reader::ConcreteStorageInventoryError::Read(ConcreteReadError::Corrupt(message)))
+                if message.contains("physical trie child hash mismatch"))
+        );
+        assert_eq!(prepared.rows, wrong_rows);
+        assert_eq!(owner.observation().unwrap().pending_marker_rlp, marker_rlp);
+        prepared.rows.insert(child, child_value);
+        owner.observer_prepared = Some(prepared);
+        let catalog = (1..32)
+            .map(|i| ConcreteStorageSlot {
+                address: owner_address,
+                key: storage_key(i).0,
+            })
+            .collect::<Vec<_>>();
+        let committed = owner
+            .commit_observer_final_trie_nodes(
+                output,
+                approval(&marker, &marker_rlp, identity, &catalog),
+                limits,
+            )
+            .unwrap();
+        let reopened = ConcreteStateLifecycle::open(&path.0, chain, committed.committed).unwrap();
+        assert_eq!(
+            reopened
+                .prior_reader()
+                .storage(owner_address, storage_key(1))
+                .unwrap(),
+            ConcreteRead::Present(vec![77])
+        );
+        assert_eq!(
+            reopened
+                .prior_reader()
+                .storage(owner_address, storage_key(2))
+                .unwrap(),
+            ConcreteRead::Present(vec![2])
+        );
+        assert_eq!(
+            reopened.prior_reader().code(code_hash).unwrap(),
+            ConcreteRead::Present(code)
+        );
+        assert_ne!(first.identity(), identity);
+    }
+
+    #[test]
+    fn public_final_storage_tracks_earlier_deleted_and_recreated_owners_with_shared_budget() {
+        use super::super::reader::{
+            ConcreteStorageInventoryError, ConcreteStorageInventoryLimits,
+            ConcreteStorageInventoryResource,
+        };
+        let path = TestPath::new();
+        let chain = [0xa1; 32];
+        let owners = [address(1), address(2), address(3), address(4)];
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch {
+                accounts: owners
+                    .iter()
+                    .map(|address| ConcreteAccountMutation::Upsert {
+                        address: *address,
+                        record: account(0, 10),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let prior = owner.observation().unwrap();
+        let (marker, marker_rlp) = marker(&prior, 0xa2);
+        owner.stage_execution(&marker_rlp).unwrap();
+        let first = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                storage: owners
+                    .iter()
+                    .enumerate()
+                    .map(|(i, address)| ConcreteStorageMutation {
+                        address: *address,
+                        key: storage_key(1),
+                        value: Some(vec![(i + 1) as u8]),
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            matches!(rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+            &owner.prepared_view(&first).unwrap(), owners[0], storage_key(1)).unwrap(), ConcreteRead::Present(value) if value == vec![1])
+        );
+        owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![
+                    ConcreteAccountMutation::Delete { address: owners[2] },
+                    ConcreteAccountMutation::Delete { address: owners[3] },
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+        let output = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address: owners[3],
+                    record: account(1, 20),
+                }],
+                storage: vec![ConcreteStorageMutation {
+                    address: owners[3],
+                    key: storage_key(2),
+                    value: Some(vec![44]),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        let identity = output.identity();
+        let mut prepared = owner.observer_prepared.take().unwrap();
+        let original = prepared.rows.clone();
+        let (account_nodes, first_storage_nodes) = owner
+            .writer
+            .test_account_and_storage_node_counts(&prepared, owners[0]);
+        let (same_account_nodes, second_storage_nodes) = owner
+            .writer
+            .test_account_and_storage_node_counts(&prepared, owners[1]);
+        assert_eq!(account_nodes, same_account_nodes);
+        assert!(first_storage_nodes > 0 && second_storage_nodes > 0);
+        let cap = account_nodes.checked_add(first_storage_nodes).unwrap();
+        let limits = ConcreteStorageInventoryLimits {
+            max_nodes: cap,
+            max_leaves: 1_000,
+            max_value_bytes: 1_000_000,
+        };
+        assert_eq!(
+            owner.writer.retain_final_trie_nodes(&mut prepared, limits),
+            Err(ConcreteStorageInventoryError::LimitExceeded {
+                resource: ConcreteStorageInventoryResource::Nodes,
+                limit: cap,
+                required: cap + 1
+            })
+        );
+        assert_eq!(prepared.rows, original);
+        owner.observer_prepared = Some(prepared);
+        let catalog = owners
+            .iter()
+            .map(|address| ConcreteStorageSlot {
+                address: *address,
+                key: storage_key(1).0,
+            })
+            .chain(std::iter::once(ConcreteStorageSlot {
+                address: owners[3],
+                key: storage_key(2).0,
+            }))
+            .collect::<Vec<_>>();
+        let limits = ConcreteStorageInventoryLimits {
+            max_nodes: 10_000,
+            ..limits
+        };
+        let committed = owner
+            .commit_observer_final_trie_nodes(
+                output,
+                approval(&marker, &marker_rlp, identity, &catalog),
+                limits,
+            )
+            .unwrap();
+        let reopened = ConcreteStateLifecycle::open(&path.0, chain, committed.committed).unwrap();
+        for (index, address) in owners[..2].iter().enumerate() {
+            assert_eq!(
+                reopened
+                    .prior_reader()
+                    .storage(*address, storage_key(1))
+                    .unwrap(),
+                ConcreteRead::Present(vec![(index + 1) as u8])
+            );
+        }
+        assert!(matches!(
+            reopened.prior_reader().account(owners[2]).unwrap(),
+            ConcreteRead::Tombstone
+        ));
+        assert!(matches!(
+            reopened.prior_reader().account(owners[3]).unwrap(),
+            ConcreteRead::Present(_)
+        ));
+        assert_eq!(
+            reopened
+                .prior_reader()
+                .storage(owners[3], storage_key(2))
+                .unwrap(),
+            ConcreteRead::Present(vec![44])
+        );
+        drop(reopened);
+        let historical = super::super::reader::ConcreteStateReader::open_historical_read_only(
+            &path.0,
+            committed.committed,
+            prior.committed,
+        )
+        .unwrap();
+        for address in owners {
+            assert!(matches!(
+                historical.account(address).unwrap(),
+                ConcreteRead::Present(_)
+            ));
         }
     }
 

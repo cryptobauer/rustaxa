@@ -419,7 +419,7 @@ fn storage_inventory<S: PhysicalTrieStore>(
     }))
 }
 
-fn map_inventory_error(error: InventoryError) -> ConcreteStorageInventoryError {
+pub(super) fn map_inventory_error(error: InventoryError) -> ConcreteStorageInventoryError {
     match error {
         InventoryError::Read(error) => ConcreteStorageInventoryError::Read(error),
         InventoryError::LimitExceeded {
