@@ -1,6 +1,6 @@
 # Next round preparation: 10-point quota budget
 
-Prepared after [the October 3 audit](token_usage_audit_01a0ff3b.md).
+Prepared after [the October 3 audit](doc/evm_research/history/session_reports/token_usage_audit_01a0ff3b.md).
 Branch base: `049ec5e73`. Preparation changes remain uncommitted. No new EVM
 implementation or audited-session resume is part of this preparation.
 

@@ -6,16 +6,17 @@ use crate::{
     artifact_admission as admission, interval_history, native_witness as native,
     parent_input_handoff, parent_reward_fields as fields, paths, vrf_witness as first,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use rustaxa_storage::{
-    ConcreteDiagnosticPlan, ConcreteDiagnosticTuple, ConcreteVrfPlan, ConcreteVrfResidual7f82Plan,
-    ConcreteVrfResidual49f8Plan, ConcreteVrfResidualPlan, ConcreteVrfVoterPlan,
-    ConcreteWitnessLimits, ConcreteWitnessLogical, ConcreteWitnessPhysical,
-    capture_vrf_residual_7f82_run, capture_vrf_residual_49f8_run, capture_vrf_residual_run,
-    capture_vrf_voter_run, replay_vrf_bundle, replay_vrf_residual_7f82_bundle,
-    replay_vrf_residual_49f8_bundle, replay_vrf_residual_bundle, replay_vrf_voter_bundle,
+    capture_vrf_residual_49f8_run, capture_vrf_residual_7f82_run, capture_vrf_residual_e946_run,
+    capture_vrf_residual_run, capture_vrf_voter_run, replay_vrf_bundle,
+    replay_vrf_residual_49f8_bundle, replay_vrf_residual_7f82_bundle, replay_vrf_residual_bundle,
+    replay_vrf_residual_e946_bundle, replay_vrf_voter_bundle, ConcreteDiagnosticPlan,
+    ConcreteDiagnosticTuple, ConcreteVrfPlan, ConcreteVrfResidual49f8Plan,
+    ConcreteVrfResidual7f82Plan, ConcreteVrfResidualE946Plan, ConcreteVrfResidualPlan,
+    ConcreteVrfVoterPlan, ConcreteWitnessLimits, ConcreteWitnessLogical, ConcreteWitnessPhysical,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -47,7 +48,37 @@ pub(crate) enum Profile {
     ResidualA8a2,
     ResidualFbb3,
     Residual7f82,
+    ResidualE946,
 }
+// Sealed selected40 descriptor; omissions supply no state or history fact.
+const E946_VOTER: &str = "e94679197f925cb953920594ec7ec4c66fc8763b";
+const E946_PROFILE: &str = "n4_residual_vrf_e94679197f925cb953920594ec7ec4c66fc8763b_v1";
+
+// The fixed40 role68 artifact envelope is stricter than the unchanged native
+// engine ceilings. Check publication separately so no oversized RCV6 artifact
+// or accepted prefix exists. The consumed physical-attempt marker is unchanged.
+const E946_ROLE68_CAP: usize = 1_048_576;
+
+/// Return the full typed fixed40 output-admission failure before publication.
+/// Other profiles retain their original native bundle envelope. This predicate
+/// inspects only the exact byte length; it does not alter any witness or proof.
+fn e946_role68_failure(profile: Profile, observed_bytes: u64) -> Option<Value> {
+    (profile == Profile::ResidualE946 && observed_bytes > E946_ROLE68_CAP as u64).then(|| {
+        json!({"phase":"Fixed40RoleEnvelope",
+            "reason":"bundle exceeds fixed40 role68 envelope",
+            "observed_bytes":observed_bytes,"limit_bytes":E946_ROLE68_CAP})
+    })
+}
+
+const E946_KEY: &str = "8b1ace38daea48c3738d2841802efffca8b51e3c108416b1625370dec2f5a4d4";
+const E946_PRIOR: &str = "31905ba6089466e9b8aabd880d54b4a80f4d38ba9e9db942a4f64aa68f9caeb5";
+const E946_PRIOR_SHA: &str = "410f7db2f48e67a646991cc3a5ac4f145cf8c5744f8694760fd34d3eabb40999";
+const E946_INDICES: [usize; 40] = [
+    110, 170, 284, 335, 392, 452, 512, 629, 686, 740, 797, 857, 968, 1025, 1082, 1142, 1202, 1262,
+    1373, 1478, 1538, 1595, 1652, 1766, 1823, 1880, 1934, 1988, 2048, 2105, 2162, 2222, 2276, 2336,
+    2393, 2450, 2507, 2567, 2675, 2735,
+];
+const E946_BINDINGS: &str = r#"[{"root":"d2318bfb745c9198ca3e995119569c3ef85e95659dc45ade939398b8f3a23383","refs":[{"period":25706902,"vote_hash_hex":"e9e3da425978ee41185f315c92fb347ceed8868c5a6517300edcb34e62698a6d"}]},{"root":"d2318bfb745c9198ca3e995119569c3ef85e95659dc45ade939398b8f3a23383","refs":[{"period":25706903,"vote_hash_hex":"840521c404b141878df30fa44ab785811d81a3028a5a1928dc9638eeee48995c"}]},{"root":"8c7fdbb2b39c01255ead8379e312bc79508558e1d1bd0a4dbe2a570a48fbf08b","refs":[{"period":25706905,"vote_hash_hex":"3c16ffb8f25ba474c53856f6a1adf2f826661561dad9f33ff44a86e97cb7213a"}]},{"root":"a5fe6be45511742ec6a5b7c508a447507cb34dcfa321beedc81d5ad5e4aa0f8b","refs":[{"period":25706906,"vote_hash_hex":"483e7a9e488726248c9adc760aa5d05abe3bfa9e145d86777585c71cafb082e8"}]},{"root":"1b8815f01250eeeec908fd7d9093322f21909ae6ee234c9151109f063de9fc38","refs":[{"period":25706907,"vote_hash_hex":"0e7c92e09f058c149c600b099a62361f86332f54ad040156f4082baa785d08ba"}]},{"root":"4d39f544cd1555e667884f1cc078410e7a1baf143a487db8174ddc862a525ebc","refs":[{"period":25706908,"vote_hash_hex":"801892998859febdde38a3858f6c81293c48b03b3c2e3c79956b198e9391fcc6"}]},{"root":"4d39f544cd1555e667884f1cc078410e7a1baf143a487db8174ddc862a525ebc","refs":[{"period":25706909,"vote_hash_hex":"7a474dfea7e3ecc78f40b0136c4ea0254ba1b79c76bd04f2fb1fd994547627a9"}]},{"root":"48240ffcddb5897ff34093c83b3ec9a9460d47290ba211fefae036fd83a107c2","refs":[{"period":25706911,"vote_hash_hex":"cf91e22c7873c0e1243a114b5f0bad0184d574d8a568ff21e2cbf163979fdb29"}]},{"root":"e70dd5ea2193dc4f38ab3d1ae8e8faad7988a0579716d15f79058649973d7964","refs":[{"period":25706912,"vote_hash_hex":"b2fb7c80da9f3d5bcc6fbb2fb8d321201833818ef3e413157d59f632836e1856"}]},{"root":"e8f84241116c5f485fa97046d7ed79f8776f3705bf586b3bb17b81b008a1e9a4","refs":[{"period":25706913,"vote_hash_hex":"71f9b3441a273bc2016448fc24bc6cd51e898f2d5dc8ad889a26bc3ab61d8fb3"}]},{"root":"8f0c15bca3c202dad12c44f060e074748572ade6a1dba6dfea967b4d47b2a808","refs":[{"period":25706914,"vote_hash_hex":"eca319d760288070f9cc7681c0737fd98336d06e75033080f5de295f9b129382"}]},{"root":"5986c863eaab74a42da8642f740f7296d6f326443f4bb883a59c65675c31c56a","refs":[{"period":25706915,"vote_hash_hex":"cb8f21c4e9d6b6365e551cdbdbeb46cfe55366d51cb701f0040b47e56e4f564c"}]},{"root":"6389f33e77403f0f92fd654c208b18355f2da19895e08498f9f0aebc61da2075","refs":[{"period":25706917,"vote_hash_hex":"2645dd1489cd102e67ff92c48c8653bd11b77aaf0922479d0d282d55f6494db6"}]},{"root":"3ce52115126f3ff130560bbf477f389159ad89eb7cc543abe1eda1ba38e74366","refs":[{"period":25706918,"vote_hash_hex":"0154f05d7a4d240d2c05fb55e46ed9470398ccccdb872436e7385fa0f8c6ef7d"}]},{"root":"97f12663ea38b8ab1e88572ec16cb992a969529c83b0c5d7e7f19dbec317844c","refs":[{"period":25706919,"vote_hash_hex":"bb387fbc02ee8c131270b8fef19e56ddafc92283cb41723433d57a77005491c7"}]},{"root":"76f9d6edc45e54c2f705c93b57a9ddc8025240c2678258767a4618477446c59d","refs":[{"period":25706920,"vote_hash_hex":"b608d584899f611583473d2ab7cae0abb57935858361d839b8ee5644ed221578"}]},{"root":"0e07b0ab3b770ce3b679796efded272782c82750280a0bd4bcf5697e13233dcc","refs":[{"period":25706921,"vote_hash_hex":"290cf86eb2f480041ac421a00c545a558a1faaac6ff68da8b2d5e2150a3de3fb"}]},{"root":"0e07b0ab3b770ce3b679796efded272782c82750280a0bd4bcf5697e13233dcc","refs":[{"period":25706922,"vote_hash_hex":"aaa94244606cab5edcc06722eb79f9b3bb19ec9a5af0831f615af13907b8ace4"}]},{"root":"131bcb5151b5e52bbace2653d3a44edf700db6b6337e82a04d70c6a1695ce803","refs":[{"period":25706924,"vote_hash_hex":"2fee1c4bdb722e16151e97e5fe02b56a81edde7ad6737e952b4758c9b8a9ef77"}]},{"root":"715127dfc215df7d43d63b58cd58a4446edb425bf2e23502932e293ef021d4fa","refs":[{"period":25706926,"vote_hash_hex":"9546852a2e9292a9e7f0e1bf60911d5303e05cd036a0c0c6a93113059241d749"}]},{"root":"04c3266846de8285c05f021bc6fa8730c4ddecd4db10b82c4f9007c8e821d282","refs":[{"period":25706927,"vote_hash_hex":"ce081752d884ed580d2b9d2114cf1236671e9197eedd589262d81cd028e1e13c"}]},{"root":"827e4d2929e8871824a36220b4a59bd75f33f0d2da55294a9ff128c4697671d2","refs":[{"period":25706928,"vote_hash_hex":"5ad1cf0712d2f22eca4bbcff87c4e70a1512ac345cafeb0ad438100cf7e9264a"}]},{"root":"112aed825cb2f31d530671bc75a28d90d89c7e3021f6cd11617c6c5924697c34","refs":[{"period":25706929,"vote_hash_hex":"4496778faab042778d52ec36786a27619fab896adf05c2e29f2a7b3a4ec1d18f"}]},{"root":"60b89dcf9e9ecbb1c038b381d144fabda53064e6b46a002d9deeece69dad3697","refs":[{"period":25706931,"vote_hash_hex":"48a86111203bcf5fe7bb824e4f521ede90d42631ee2afff45e96b0ac46a390a8"}]},{"root":"f4c00f1fe89e446c63aa25d8fd80d138fb0eedfba6bb1ce51b63cd2ef2d0dd56","refs":[{"period":25706932,"vote_hash_hex":"97a8adeb49388e0d0f3620bd26ee0291de9382ff0b48e77bf2019482d2dee9ba"}]},{"root":"9109390dc21e981e3ef34a44fb06359ccff8d9f5da9785ad769d4c451c629853","refs":[{"period":25706933,"vote_hash_hex":"2fc1bc31c3f2574650593b5805bdc63e650caaa8d37c4c2cb671c7896d3dc6bf"}]},{"root":"1d9242c2aa421de9d4e5ef8126ab5ecf1ba49f53a72ef19f3243463bb21bc486","refs":[{"period":25706934,"vote_hash_hex":"23c3bb73c0465022ffd3fecb0521f68d4e35ede63ceef3196086e2b4f3701620"}]},{"root":"ece3968a30c0b8dedd5792e99d88c426bcff348385f281035eafb80b5f000315","refs":[{"period":25706935,"vote_hash_hex":"7fd800021225d82c4ecf26de60c2a978d1bfb4cabe4e9307c0f53ddc707d94ef"}]},{"root":"64a4a559c1911b6d98e270d7c17805db3deaf3f4961f9773c3f98ccd136dd139","refs":[{"period":25706936,"vote_hash_hex":"35998cd230a5fac499e1370bb83d00445ebbe6c123d562d67f2494752bbfc169"}]},{"root":"b918017816a1b0ebc4dd3e43bbbb6e0490b9e5c94d33aed4d0cd84359b840145","refs":[{"period":25706937,"vote_hash_hex":"36a09325b72323184a766fa82f15635481e66dcdd5ba54f7b5cb40252006c0b4"}]},{"root":"b918017816a1b0ebc4dd3e43bbbb6e0490b9e5c94d33aed4d0cd84359b840145","refs":[{"period":25706938,"vote_hash_hex":"09b1c41997c8e3f4c74d30692a9f2a3aa635321bdac99dade0b4104e746f0783"}]},{"root":"54a7068396b9d331e9bf9d3815ae26a96517e2af3596f7d4cf6a004ed5652252","refs":[{"period":25706939,"vote_hash_hex":"e792211181c70161f6a20efb3dc750fbd449906e4d5a95c9d524365340ca9e40"}]},{"root":"3fedb74070694d46637ea9fb65e70060f9ce8ae264a033dc1404872e0ab339ac","refs":[{"period":25706940,"vote_hash_hex":"701f696aeda1d2c7b80a66a9d4bec85303c0d96caf06d7468b642f42574e9a05"}]},{"root":"51fdb8fa9573a32977862bddf804d4d211ef4a46c242a284d697033c85e1d0c7","refs":[{"period":25706941,"vote_hash_hex":"15f5bab1b0aef73dbf55ed1bd5663137a6388e06031d231809ee2051cbd71f36"}]},{"root":"bd6bbc5b4725ee321e43c2ba367adc95deda48f05780a9ec859635ec9d39e8b5","refs":[{"period":25706942,"vote_hash_hex":"898e9f38c849e9e54ee7f085273031f4e8c865af0afec90b0ee60984eb0fab2c"}]},{"root":"bd6bbc5b4725ee321e43c2ba367adc95deda48f05780a9ec859635ec9d39e8b5","refs":[{"period":25706943,"vote_hash_hex":"5046573c08dc84d05a44a32274ad607a60fb509a45482a227ee37d75dde68f37"}]},{"root":"b5cee51b7dc57bc68bd2cd5144daefcfca83686170bf226cf2297795371a2f83","refs":[{"period":25706944,"vote_hash_hex":"852e9d409239afbce043e1379db5785dc54af9ab1f66f1f652c5e50c0bcc8bb2"}]},{"root":"10561ec6a95842ceea4b5bbca7879ab192850eca7e62b91fa586e734876cd4d9","refs":[{"period":25706945,"vote_hash_hex":"45541a1d82ac721c6d00da29ebb6cc0408870482891f1bee56f8dad3fd346b9e"}]},{"root":"10561ec6a95842ceea4b5bbca7879ab192850eca7e62b91fa586e734876cd4d9","refs":[{"period":25706947,"vote_hash_hex":"b9a220f3241c161d58e0b0bd1590b1c27ffb209f39d435facaf0dcbf821a9950"}]},{"root":"4a31ec5fbb426cd88c29ed42b7428aae41951bb9ca4a617073df5a9e3312a624","refs":[{"period":25706948,"vote_hash_hex":"e4d875a8aa0a504ffd295d6b30bfdf8012f28834ea64d1b2d115390bf08bfb08"}]}]"#;
 // Sealed next42 descriptor: fixed original indices, roots and vote references.
 const V7_VOTER: &str = "7f821a7f63c0e7251e332b9b7c08da0b757124b5";
 const V7_PROFILE: &str = "n4_residual_vrf_7f821a7f63c0e7251e332b9b7c08da0b757124b5_v1";
@@ -211,11 +242,14 @@ impl Profile {
                 | Self::ResidualA8a2
                 | Self::ResidualFbb3
                 | Self::Residual7f82
+                | Self::ResidualE946
         )
     }
 
     fn voter(self) -> &'static str {
-        if self == Self::Residual7f82 {
+        if self == Self::ResidualE946 {
+            E946_VOTER
+        } else if self == Self::Residual7f82 {
             V7_VOTER
         } else if self == Self::ResidualFirst {
             RESIDUAL_VOTER
@@ -234,7 +268,9 @@ impl Profile {
         }
     }
     fn name(self) -> &'static str {
-        if self == Self::Residual7f82 {
+        if self == Self::ResidualE946 {
+            E946_PROFILE
+        } else if self == Self::Residual7f82 {
             V7_PROFILE
         } else if self == Self::ResidualFirst {
             RESIDUAL_PROFILE
@@ -253,7 +289,9 @@ impl Profile {
         }
     }
     fn prior_index(self) -> usize {
-        if self == Self::Residual7f82 {
+        if self == Self::ResidualE946 {
+            17
+        } else if self == Self::Residual7f82 {
             9
         } else if self == Self::ResidualFirst {
             0
@@ -274,6 +312,7 @@ impl Profile {
     fn payloads(self) -> usize {
         match self {
             Self::Residual7f82 => 42,
+            Self::ResidualE946 => 40,
             Self::Residual49f8 | Self::ResidualA8a2 | Self::ResidualFbb3 => 45,
             Self::ResidualFirst | Self::ResidualB92a | Self::ResidualE50b => 46,
             _ => 47,
@@ -282,6 +321,7 @@ impl Profile {
     /// Describe only a completed full replay using this sealed payload count.
     fn replay_status(self) -> &'static str {
         match self.payloads() {
+            40 => "all_forty_residual_vrf_inputs_authenticated",
             42 => "all_forty_two_residual_vrf_inputs_authenticated",
             45 => "all_forty_five_residual_vrf_inputs_authenticated",
             46 => "all_forty_six_residual_vrf_inputs_authenticated",
@@ -370,6 +410,7 @@ fn select_residual(profile: Profile, rows: &Value) -> Result<Value> {
         Profile::ResidualA8a2 => (&A8A_INDICES, 24),
         Profile::ResidualFbb3 => (&FBB_INDICES, 30),
         Profile::Residual7f82 => (&V7_INDICES, 5),
+        Profile::ResidualE946 => (&E946_INDICES, 3),
         _ => anyhow::bail!("residual profile required"),
     };
     let bindings: Value = serde_json::from_str(match profile {
@@ -378,6 +419,7 @@ fn select_residual(profile: Profile, rows: &Value) -> Result<Value> {
         Profile::ResidualA8a2 => A8A_BINDINGS,
         Profile::ResidualFbb3 => FBB_BINDINGS,
         Profile::Residual7f82 => V7_BINDINGS,
+        Profile::ResidualE946 => E946_BINDINGS,
         _ => B92A_BINDINGS,
     })?;
     let mut out = Vec::with_capacity(profile.payloads());
@@ -400,6 +442,17 @@ fn select_residual(profile: Profile, rows: &Value) -> Result<Value> {
         let delayed_index = if profile == Profile::Residual7f82 {
             let mut index = i + 1;
             for omitted in [5, 11, 23, 24, 34] {
+                if index >= omitted {
+                    index += 1;
+                }
+            }
+            index
+        } else {
+            delayed_index
+        };
+        let delayed_index = if profile == Profile::ResidualE946 {
+            let mut index = i + 1;
+            for omitted in [3, 9, 15, 22, 24, 29, 45] {
                 if index >= omitted {
                     index += 1;
                 }
@@ -432,6 +485,7 @@ fn select_residual(profile: Profile, rows: &Value) -> Result<Value> {
                 | Profile::ResidualA8a2
                 | Profile::ResidualFbb3
                 | Profile::Residual7f82
+                | Profile::ResidualE946
         ) {
             ensure!(
                 row["source_references"] == bindings[i]["refs"],
@@ -480,6 +534,12 @@ pub(crate) fn prior(profile: Profile, bytes: &[u8], plan: &ConcreteVrfPlan) -> R
     }
     if profile == Profile::Residual49f8 {
         f49_prior_binding(value)?;
+    }
+    if profile == Profile::ResidualE946 {
+        ensure!(
+            hex::encode(value) == E946_PRIOR && admission::sha(value) == E946_PRIOR_SHA,
+            "fixed e946 prior binding"
+        );
     }
     if profile == Profile::Residual7f82 {
         ensure!(
@@ -551,6 +611,17 @@ fn v7_tuple_binding(index: usize, tuple: ConcreteDiagnosticTuple) -> Result<()> 
             && hex::encode(tuple.key.0) == V7_KEY
             && hex::encode(tuple.address) == "00000000000000000000000000000000000000fe",
         "fixed 7f82 tuple binding"
+    );
+    Ok(())
+}
+fn e946_tuple_binding(index: usize, tuple: ConcreteDiagnosticTuple) -> Result<()> {
+    let bindings: Value = serde_json::from_str(E946_BINDINGS)?;
+    ensure!(
+        index < 40
+            && hex::encode(tuple.identity.state_root) == bindings[index]["root"]
+            && hex::encode(tuple.key.0) == E946_KEY
+            && hex::encode(tuple.address) == "00000000000000000000000000000000000000fe",
+        "fixed e946 tuple binding"
     );
     Ok(())
 }
@@ -638,6 +709,14 @@ impl PlanView for ConcreteVrfResidual7f82Plan {
         self.tuples()
     }
 }
+impl PlanView for ConcreteVrfResidualE946Plan {
+    fn context(&self) -> &ConcreteDiagnosticPlan {
+        self.context()
+    }
+    fn tuples(&self) -> &[ConcreteDiagnosticTuple] {
+        self.tuples()
+    }
+}
 impl PlanView for ConcreteVrfResidual49f8Plan {
     fn context(&self) -> &ConcreteDiagnosticPlan {
         self.context()
@@ -651,6 +730,7 @@ enum WindowPlan {
     Residual(ConcreteVrfResidualPlan),
     Residual49f8(ConcreteVrfResidual49f8Plan),
     Residual7f82(ConcreteVrfResidual7f82Plan),
+    ResidualE946(ConcreteVrfResidualE946Plan),
 }
 impl PlanView for WindowPlan {
     fn context(&self) -> &ConcreteDiagnosticPlan {
@@ -659,6 +739,7 @@ impl PlanView for WindowPlan {
             Self::Residual(p) => p.context(),
             Self::Residual49f8(p) => p.context(),
             Self::Residual7f82(p) => p.context(),
+            Self::ResidualE946(p) => p.context(),
         }
     }
     fn tuples(&self) -> &[ConcreteDiagnosticTuple] {
@@ -667,6 +748,7 @@ impl PlanView for WindowPlan {
             Self::Residual(p) => p.tuples(),
             Self::Residual49f8(p) => p.tuples(),
             Self::Residual7f82(p) => p.tuples(),
+            Self::ResidualE946(p) => p.tuples(),
         }
     }
 }
@@ -676,6 +758,12 @@ fn window_authority(profile: Profile) -> Result<(WindowPlan, Value, Value)> {
             Ok(ConcreteVrfResidual7f82Plan::new(first)?)
         })?;
         return Ok((WindowPlan::Residual7f82(p), s, a));
+    }
+    if profile == Profile::ResidualE946 {
+        let (p, s, a) = authority_with(profile, |first, _| {
+            Ok(ConcreteVrfResidualE946Plan::new(first)?)
+        })?;
+        return Ok((WindowPlan::ResidualE946(p), s, a));
     }
     if matches!(
         profile,
@@ -769,6 +857,7 @@ fn authority_with<T: PlanView>(
                     Profile::ResidualA8a2 => Some(A8A_KEY),
                     Profile::ResidualFbb3 => Some(FBB_KEY),
                     Profile::Residual7f82 => Some(V7_KEY),
+                    Profile::ResidualE946 => Some(E946_KEY),
                     _ => None,
                 };
                 if let Some(key) = fixed_key {
@@ -791,6 +880,9 @@ fn authority_with<T: PlanView>(
                         hex::encode(tuple.address) == "00000000000000000000000000000000000000fe",
                         "b92a fixed address"
                     );
+                }
+                if profile == Profile::ResidualE946 {
+                    e946_tuple_binding(i, tuple)?;
                 }
                 if profile == Profile::Residual7f82 {
                     v7_tuple_binding(i, tuple)?;
@@ -897,6 +989,10 @@ pub(crate) fn base(profile: Profile, selected: Value, authority: Value) -> Resul
             pin!("bin/live_vrf_residual_7f82.rs"),
             pin!("bin/replay_vrf_residual_7f82.rs"),
         ],
+        Profile::ResidualE946 => [
+            pin!("bin/live_vrf_residual_e946.rs"),
+            pin!("bin/replay_vrf_residual_e946.rs"),
+        ],
         Profile::ResidualFbb3 => [
             pin!("bin/live_vrf_residual_fbb3.rs"),
             pin!("bin/replay_vrf_residual_fbb3.rs"),
@@ -944,6 +1040,35 @@ fn stopped(report: &mut Value, failure: &rustaxa_storage::ConcreteDiagnosticFail
     report["actual"] = f["actual"].clone();
     report["values"] = Value::Null;
 }
+/// Publish a completed native capture only after both output envelopes pass.
+/// The caller supplies the complete authenticated report and actual native
+/// usage. An E946 envelope failure retains that usage and publishes only the
+/// full stopped report. It creates neither a bundle nor an accepted prefix.
+fn publish_window_capture(
+    profile: Profile,
+    bundle: &[u8],
+    actual: Value,
+    bundle_output: &Path,
+    report_output: &Path,
+    mut report: Value,
+) -> Result<()> {
+    ensure!(bundle.len() <= native::BUNDLE_CAP, "window bundle cap");
+    if let Some(failure) = e946_role68_failure(profile, bundle.len() as u64) {
+        report["status"] = json!("stopped");
+        report["failure"] = failure;
+        report["actual"] = actual;
+        report["values"] = Value::Null;
+        publish(report_output, &report)?;
+        anyhow::bail!("fixed40 bundle envelope stopped; no bundle or prefix")
+    }
+    report["status"] = json!("captured_requires_offline_replay");
+    report["actual"] = actual;
+    report["bundle"] =
+        json!({"path":bundle_output,"bytes":bundle.len(),"sha256":admission::sha(bundle)});
+    let encoded = interval_history::encode_bounded(&report, REPORT_CAP)?;
+    admission::publish_exclusive(bundle_output, bundle)?;
+    admission::publish_exclusive(report_output, &encoded)
+}
 /// Preflight repeats raw-seven authentication and prior proof without DB path
 /// inspection. It publishes the complete fixed request/source/bound profile.
 pub(crate) fn preflight(profile: Profile, output: &Path) -> Result<()> {
@@ -953,14 +1078,13 @@ pub(crate) fn preflight(profile: Profile, output: &Path) -> Result<()> {
     report["status"] = json!("authority_inputs_authenticated_no_database_open");
     report["head"] = native::identity_json(plan.context().head);
     report["parent"] = native::identity_json(plan.context().parent);
-    report["delayed"] = json!(
-        plan.context()
-            .delayed
-            .iter()
-            .copied()
-            .map(native::identity_json)
-            .collect::<Vec<_>>()
-    );
+    report["delayed"] = json!(plan
+        .context()
+        .delayed
+        .iter()
+        .copied()
+        .map(native::identity_json)
+        .collect::<Vec<_>>());
     report["genesis_hash_hex"] = json!(hex::encode(plan.context().genesis_hash));
     report["head_header_sha256"] = json!(hex::encode(plan.context().head_header_sha256));
     publish(&output, &report)
@@ -993,6 +1117,12 @@ pub(crate) fn capture(profile: Profile, bundle_output: &Path, report_output: &Pa
             p,
             ConcreteWitnessLimits::default(),
         ),
+        WindowPlan::ResidualE946(p) => capture_vrf_residual_e946_run(
+            &paths.application,
+            &paths.state,
+            p,
+            ConcreteWitnessLimits::default(),
+        ),
         WindowPlan::Residual49f8(p) => capture_vrf_residual_49f8_run(
             &paths.application,
             &paths.state,
@@ -1006,15 +1136,14 @@ pub(crate) fn capture(profile: Profile, bundle_output: &Path, report_output: &Pa
             publish(&reports.output, &report)?;
             anyhow::bail!("window capture stopped; no prefix")
         }
-        Ok(c) => {
-            ensure!(c.bundle.len() <= native::BUNDLE_CAP, "window bundle cap");
-            report["status"] = json!("captured_requires_offline_replay");
-            report["actual"] = native::usage(c.usage);
-            report["bundle"] = json!({"path":paths.output,"bytes":c.bundle.len(),"sha256":admission::sha(&c.bundle)});
-            let encoded = interval_history::encode_bounded(&report, REPORT_CAP)?;
-            admission::publish_exclusive(&paths.output, &c.bundle)?;
-            admission::publish_exclusive(&reports.output, &encoded)
-        }
+        Ok(c) => publish_window_capture(
+            profile,
+            &c.bundle,
+            native::usage(c.usage),
+            &paths.output,
+            &reports.output,
+            report,
+        ),
     }
 }
 /// Offline replay repeats raw-seven authority, consumes every proof and returns
@@ -1023,13 +1152,30 @@ pub(crate) fn replay(profile: Profile, bundle_input: &Path, report_output: &Path
     let output = native::output_path(report_output)?;
     let input = fs::canonicalize(bundle_input)?;
     admission::outside_db(&input)?;
+    let input_metadata = fs::metadata(&input)?;
     ensure!(
-        fs::metadata(&input)?.is_file() && input != output,
+        input_metadata.is_file() && input != output,
         "window bundle input"
     );
+    let input_bytes = input_metadata.len();
     let (plan, selected, authority) = window_authority(profile)?;
     let mut report = base(profile, selected, authority)?;
-    let bytes = admission::read_capped(fs::File::open(&input)?, native::BUNDLE_CAP)?;
+    if let Some(failure) = e946_role68_failure(profile, input_bytes) {
+        report["status"] = json!("stopped");
+        report["failure"] = failure;
+        // No replay input bytes or witness operations have been admitted.
+        // The complete prior/raw authority usage remains in report.authority.
+        report["actual"] = native::usage(Default::default());
+        report["values"] = Value::Null;
+        publish(&output, &report)?;
+        anyhow::bail!("fixed40 replay envelope stopped before input read; no prefix")
+    }
+    let input_cap = if profile == Profile::ResidualE946 {
+        E946_ROLE68_CAP
+    } else {
+        native::BUNDLE_CAP
+    };
+    let bytes = admission::read_capped(fs::File::open(&input)?, input_cap)?;
     let result = match &plan {
         WindowPlan::Complete(p) => {
             replay_vrf_voter_bundle(&bytes, p, ConcreteWitnessLimits::default())
@@ -1041,6 +1187,10 @@ pub(crate) fn replay(profile: Profile, bundle_input: &Path, report_output: &Path
         }
         WindowPlan::Residual7f82(p) => {
             replay_vrf_residual_7f82_bundle(&bytes, p, ConcreteWitnessLimits::default())
+                .map(|v| replay_values(v.logical, v.physical).map(|values| (values, v.usage)))
+        }
+        WindowPlan::ResidualE946(p) => {
+            replay_vrf_residual_e946_bundle(&bytes, p, ConcreteWitnessLimits::default())
                 .map(|v| replay_values(v.logical, v.physical).map(|values| (values, v.usage)))
         }
         WindowPlan::Residual49f8(p) => {
@@ -1341,6 +1491,77 @@ mod tests {
             pin["sha256"].as_str().unwrap()
         );
     }
+    /// Fixed versioned fixture outputs. These are offline test reports; capture
+    /// outputs continue to use their original one-use exclusive publication.
+    fn saved_report_root() -> &'static Path {
+        Path::new("/home/fry/artifacts/vrf40-admission-01a14b66-20261018/saved-v5")
+    }
+
+    /// Publish a newly computed full fixture report, or authenticate byte-exact
+    /// reuse of an existing regular report. A differing report is never replaced.
+    /// This does not skip replay, semantic comparison or any assertion.
+    fn retain_or_check_saved(output: &Path, raw: &[u8]) -> Result<()> {
+        ensure!(raw.len() <= 65536, "saved fixture report cap");
+        match fs::symlink_metadata(output) {
+            Ok(metadata) => {
+                ensure!(metadata.is_file(), "saved fixture must be a regular file");
+                let previous =
+                    admission::evidence(output, output, &admission::sha(raw), raw.len(), 65536)?;
+                ensure!(previous == raw, "saved fixture full-byte drift");
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                admission::publish_exclusive(output, raw)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn retain_saved_report(profile: Profile, raw: &[u8]) {
+        assert!((profile as usize) < 17);
+        let root = saved_report_root();
+        fs::create_dir_all(root).unwrap();
+        let output = root.join(format!("shared-profile-{}.json", profile as usize));
+        retain_or_check_saved(&output, raw).unwrap();
+    }
+
+    #[test]
+    fn saved_report_reuse_requires_identical_complete_bytes() {
+        let cargo = include_bytes!("../Cargo.toml");
+        let exact =
+            json!({"path":"../Cargo.toml","bytes":cargo.len(),"sha256":admission::sha(cargo)});
+        residual_source_successor(&exact, &exact).unwrap();
+        for (field, value) in [
+            ("path", json!("../other.toml")),
+            ("bytes", json!(0)),
+            ("sha256", json!("00")),
+        ] {
+            let mut bad = exact.clone();
+            bad[field] = value;
+            assert!(residual_source_successor(&exact, &bad).is_err());
+        }
+        let root = std::env::temp_dir().join(format!(
+            "fixed40-saved-reuse-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let output = root.join("report.json");
+        let raw = b"{\"all_fields_retained\":true}";
+        retain_or_check_saved(&output, raw).unwrap();
+        retain_or_check_saved(&output, raw).unwrap();
+        assert!(retain_or_check_saved(&output, b"changed").is_err());
+        assert_eq!(fs::read(&output).unwrap(), raw);
+        let link = root.join("link.json");
+        std::os::unix::fs::symlink(&output, &link).unwrap();
+        assert!(retain_or_check_saved(&link, raw).is_err());
+        fs::remove_file(link).unwrap();
+        fs::remove_file(output).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
     #[test]
     fn six_saved_windows_have_complete_equivalent_reports() {
         let cases = [
@@ -1435,10 +1656,8 @@ mod tests {
             let input = Path::new(old["bundle"]["path"].as_str().unwrap());
             let output = scratch.join(format!("{}.json", profile as usize));
             replay(profile, input, &output).unwrap();
-            let mut new = admission::parse_unique(
-                &admission::read_capped(fs::File::open(&output).unwrap(), REPORT_CAP).unwrap(),
-            )
-            .unwrap();
+            let raw = admission::read_capped(fs::File::open(&output).unwrap(), REPORT_CAP).unwrap();
+            let mut new = admission::parse_unique(&raw).unwrap();
             let exe = &new["authority"]["six_input_owner"]["executable"];
             assert_eq!(
                 exe["path"],
@@ -1458,9 +1677,12 @@ mod tests {
                 let a = a.as_array_mut().unwrap();
                 let b = b.as_array_mut().unwrap();
                 assert_eq!(a.len(), b.len());
-                for (before, after) in a.iter_mut().zip(b.iter()) {
+                for (position, (before, after)) in a.iter_mut().zip(b.iter()).enumerate() {
                     let path = before["path"].as_str().unwrap();
-                    let expected = if path == "lib.rs" && profile != Profile::Seventh {
+                    let expected = if path == "../Cargo.toml" {
+                        assert_eq!((parent, key, position), ("authority", "sources", 14));
+                        Some(("../Cargo.toml", include_bytes!("../Cargo.toml").as_slice()))
+                    } else if path == "lib.rs" && profile != Profile::Seventh {
                         Some(("lib.rs", include_bytes!("lib.rs").as_slice()))
                     } else if path == adapter {
                         Some((
@@ -1484,6 +1706,7 @@ mod tests {
             assert_eq!(old, new, "complete report for {profile:?}");
             assert_eq!(new["values"].as_array().unwrap().len(), 47);
             assert_eq!(new["qualification"]["vrf_family_qualified"], true);
+            retain_saved_report(profile, &raw);
         }
         fs::remove_dir_all(scratch).unwrap();
     }
@@ -1547,13 +1770,11 @@ mod tests {
         let report = base(Profile::ResidualFirst, selected, summary).unwrap();
         assert_eq!(report["bounds"]["proofs_exact"], 97);
         assert_eq!(report["bounds"]["payload_tuples_exact"], 46);
-        assert!(
-            report["qualification"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|v| v == false)
-        );
+        assert!(report["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
         let (context, _, _) = parent_input_handoff::load_authenticated_voter_authority().unwrap();
         let (first, _) = first::selection(context, &rows).unwrap();
         let mut bad = canonical_prior().unwrap();
@@ -1619,22 +1840,20 @@ mod tests {
         for index in [0, canonical.len() / 2, canonical.len() - 1] {
             let mut bad = canonical.clone();
             bad[index] ^= 1;
-            assert!(
-                after_prior(
-                    Profile::ResidualB92a,
-                    first::selection(
-                        parent_input_handoff::load_authenticated_voter_authority()
-                            .unwrap()
-                            .0,
-                        &rows
-                    )
-                    .unwrap()
-                    .0,
-                    &bad,
-                    |_, _| -> Result<()> { panic!("bad prior reached b92a constructor") }
+            assert!(after_prior(
+                Profile::ResidualB92a,
+                first::selection(
+                    parent_input_handoff::load_authenticated_voter_authority()
+                        .unwrap()
+                        .0,
+                    &rows
                 )
-                .is_err()
-            );
+                .unwrap()
+                .0,
+                &bad,
+                |_, _| -> Result<()> { panic!("bad prior reached b92a constructor") }
+            )
+            .is_err());
         }
         let (plan, selected, summary) = window_authority(Profile::ResidualB92a).unwrap();
         assert_eq!(plan.context().delayed.len(), 48);
@@ -1653,13 +1872,11 @@ mod tests {
         let report = base(Profile::ResidualB92a, selected, summary).unwrap();
         assert_eq!(report["bounds"]["proofs_exact"], 97);
         assert_eq!(report["bounds"]["payload_tuples_exact"], 46);
-        assert!(
-            report["qualification"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|v| v == false)
-        );
+        assert!(report["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
         let bytes = admission::evidence(
             Path::new(FIRST_RESIDUAL_BUNDLE),
             Path::new(FIRST_RESIDUAL_BUNDLE),
@@ -1739,22 +1956,20 @@ mod tests {
         for index in [0, canonical.len() / 2, canonical.len() - 1] {
             let mut bad = canonical.clone();
             bad[index] ^= 1;
-            assert!(
-                after_prior(
-                    Profile::ResidualE50b,
-                    first::selection(
-                        parent_input_handoff::load_authenticated_voter_authority()
-                            .unwrap()
-                            .0,
-                        &rows
-                    )
-                    .unwrap()
-                    .0,
-                    &bad,
-                    |_, _| -> Result<()> { panic!("bad prior reached e50b constructor") }
+            assert!(after_prior(
+                Profile::ResidualE50b,
+                first::selection(
+                    parent_input_handoff::load_authenticated_voter_authority()
+                        .unwrap()
+                        .0,
+                    &rows
                 )
-                .is_err()
-            );
+                .unwrap()
+                .0,
+                &bad,
+                |_, _| -> Result<()> { panic!("bad prior reached e50b constructor") }
+            )
+            .is_err());
         }
         let (plan, selected, summary) = window_authority(Profile::ResidualE50b).unwrap();
         assert_eq!(plan.context().delayed.len(), 48);
@@ -1787,23 +2002,19 @@ mod tests {
         let mut wrong_member = member.clone();
         wrong_member[0] ^= 1;
         assert!(e50b_prior_binding(&wrong_member).is_err());
-        assert!(
-            accepted_prior_value(
-                &ConcreteWitnessLogical::Member(member),
-                &ConcreteWitnessPhysical::Present(wrong_member)
-            )
-            .is_err()
-        );
+        assert!(accepted_prior_value(
+            &ConcreteWitnessLogical::Member(member),
+            &ConcreteWitnessPhysical::Present(wrong_member)
+        )
+        .is_err());
         let report = base(Profile::ResidualE50b, selected, summary).unwrap();
         assert_eq!(report["bounds"]["proofs_exact"], 97);
         assert_eq!(report["bounds"]["payload_tuples_exact"], 46);
-        assert!(
-            report["qualification"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|v| v == false)
-        );
+        assert!(report["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
         let bytes = admission::evidence(
             Path::new(FIRST_RESIDUAL_BUNDLE),
             Path::new(FIRST_RESIDUAL_BUNDLE),
@@ -1872,15 +2083,13 @@ mod tests {
         let canonical = canonical_prior().unwrap();
         let mut bad = canonical.clone();
         bad[canonical.len() / 2] ^= 1;
-        assert!(
-            after_prior(
-                Profile::ResidualA8a2,
-                first_plan,
-                &bad,
-                |_, _| -> Result<()> { panic!("bad prior reached a8a2 constructor") }
-            )
-            .is_err()
-        );
+        assert!(after_prior(
+            Profile::ResidualA8a2,
+            first_plan,
+            &bad,
+            |_, _| -> Result<()> { panic!("bad prior reached a8a2 constructor") }
+        )
+        .is_err());
         let (plan, selected, summary) = window_authority(Profile::ResidualA8a2).unwrap();
         assert_eq!(summary["prior_first_d"]["selected"]["proof_index"], 62);
         assert_eq!(summary["prior_first_d"]["selected"]["value_hex"], A8A_PRIOR);
@@ -1897,13 +2106,11 @@ mod tests {
         let report = base(Profile::ResidualA8a2, selected, summary).unwrap();
         assert_eq!(report["bounds"]["proofs_exact"], 96);
         assert_eq!(report["bounds"]["payload_tuples_exact"], 45);
-        assert!(
-            report["qualification"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|v| v == false)
-        );
+        assert!(report["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
     }
     #[test]
     fn fbb3_fixed_selection_prior_and_full_barrier() {
@@ -1951,15 +2158,13 @@ mod tests {
         let canonical = canonical_prior().unwrap();
         let mut bad = canonical.clone();
         bad[canonical.len() / 2] ^= 1;
-        assert!(
-            after_prior(
-                Profile::ResidualFbb3,
-                first_plan,
-                &bad,
-                |_, _| -> Result<()> { panic!("bad prior reached fbb3 constructor") }
-            )
-            .is_err()
-        );
+        assert!(after_prior(
+            Profile::ResidualFbb3,
+            first_plan,
+            &bad,
+            |_, _| -> Result<()> { panic!("bad prior reached fbb3 constructor") }
+        )
+        .is_err());
         let (plan, selected, summary) = window_authority(Profile::ResidualFbb3).unwrap();
         assert_eq!(summary["prior_first_d"]["selected"]["proof_index"], 70);
         assert_eq!(summary["prior_first_d"]["selected"]["value_hex"], FBB_PRIOR);
@@ -1976,13 +2181,11 @@ mod tests {
         let report = base(Profile::ResidualFbb3, selected, summary).unwrap();
         assert_eq!(report["bounds"]["proofs_exact"], 96);
         assert_eq!(report["bounds"]["payload_tuples_exact"], 45);
-        assert!(
-            report["qualification"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|v| v == false)
-        );
+        assert!(report["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
     }
     #[test]
     fn f49_fixed_selection_prior_and_full_barrier() {
@@ -2041,22 +2244,20 @@ mod tests {
         for index in [0, canonical.len() / 2, canonical.len() - 1] {
             let mut bad = canonical.clone();
             bad[index] ^= 1;
-            assert!(
-                after_prior(
-                    Profile::Residual49f8,
-                    first::selection(
-                        parent_input_handoff::load_authenticated_voter_authority()
-                            .unwrap()
-                            .0,
-                        &rows
-                    )
-                    .unwrap()
-                    .0,
-                    &bad,
-                    |_, _| -> Result<()> { panic!("bad prior reached49f8 constructor") }
+            assert!(after_prior(
+                Profile::Residual49f8,
+                first::selection(
+                    parent_input_handoff::load_authenticated_voter_authority()
+                        .unwrap()
+                        .0,
+                    &rows
                 )
-                .is_err()
-            );
+                .unwrap()
+                .0,
+                &bad,
+                |_, _| -> Result<()> { panic!("bad prior reached49f8 constructor") }
+            )
+            .is_err());
         }
         let (plan, selected, summary) = window_authority(Profile::Residual49f8).unwrap();
         assert_eq!(plan.context().delayed.len(), 48);
@@ -2089,23 +2290,19 @@ mod tests {
         let mut wrong_member = member.clone();
         wrong_member[0] ^= 1;
         assert!(f49_prior_binding(&wrong_member).is_err());
-        assert!(
-            accepted_prior_value(
-                &ConcreteWitnessLogical::Member(member),
-                &ConcreteWitnessPhysical::Present(wrong_member)
-            )
-            .is_err()
-        );
+        assert!(accepted_prior_value(
+            &ConcreteWitnessLogical::Member(member),
+            &ConcreteWitnessPhysical::Present(wrong_member)
+        )
+        .is_err());
         let report = base(Profile::Residual49f8, selected, summary).unwrap();
         assert_eq!(report["bounds"]["proofs_exact"], 96);
         assert_eq!(report["bounds"]["payload_tuples_exact"], 45);
-        assert!(
-            report["qualification"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|v| v == false)
-        );
+        assert!(report["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
         let bytes = admission::evidence(
             Path::new(FIRST_RESIDUAL_BUNDLE),
             Path::new(FIRST_RESIDUAL_BUNDLE),
@@ -2136,6 +2333,7 @@ mod tests {
     fn residual_source_successor(before: &Value, after: &Value) -> Result<Value> {
         let path = before["path"].as_str().context("source pin path")?;
         let expected = match path {
+            "../Cargo.toml" => Some(include_bytes!("../Cargo.toml").as_slice()),
             "vrf_shared_window.rs" => Some(include_bytes!("vrf_shared_window.rs").as_slice()),
             "../../../../rust/crates/rustaxa-storage/src/lib.rs"
             | "../../../../rust/crates/rustaxa-storage/src/concrete_state/mod.rs"
@@ -2208,10 +2406,8 @@ mod tests {
             &scratch,
         )
         .unwrap();
-        let new = admission::parse_unique(
-            &admission::read_capped(fs::File::open(&scratch).unwrap(), REPORT_CAP).unwrap(),
-        )
-        .unwrap();
+        let raw = admission::read_capped(fs::File::open(&scratch).unwrap(), REPORT_CAP).unwrap();
+        let new = admission::parse_unique(&raw).unwrap();
         let exe = &new["authority"]["six_input_owner"]["executable"];
         assert_eq!(
             exe["path"],
@@ -2237,6 +2433,7 @@ mod tests {
         }
         assert_eq!(old, new);
         assert_eq!(new["values"].as_array().unwrap().len(), 46);
+        retain_saved_report(Profile::ResidualFirst, &raw);
         fs::remove_file(scratch).unwrap();
     }
     #[test]
@@ -2271,10 +2468,8 @@ mod tests {
             &scratch,
         )
         .unwrap();
-        let new = admission::parse_unique(
-            &admission::read_capped(fs::File::open(&scratch).unwrap(), REPORT_CAP).unwrap(),
-        )
-        .unwrap();
+        let raw = admission::read_capped(fs::File::open(&scratch).unwrap(), REPORT_CAP).unwrap();
+        let new = admission::parse_unique(&raw).unwrap();
         let exe = &new["authority"]["six_input_owner"]["executable"];
         assert_eq!(
             exe["path"],
@@ -2300,6 +2495,7 @@ mod tests {
         }
         assert_eq!(old, new);
         assert_eq!(new["values"].as_array().unwrap().len(), 46);
+        retain_saved_report(Profile::ResidualB92a, &raw);
         fs::remove_file(scratch).unwrap();
     }
     #[test]
@@ -2342,6 +2538,102 @@ mod tests {
             45,
         );
     }
+    #[test]
+    fn native_and_first_d_saved_reports_are_completely_equal() {
+        let root = saved_report_root();
+        fs::create_dir_all(root).unwrap();
+        let staging = root.join(format!(
+            "native-stage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&staging).unwrap();
+        for (is_native, name, before, bytes, sha, fields) in [
+            (
+                true,
+                "native-current-replay-v2.json",
+                "/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/compatibility/native-current.json",
+                10945,
+                "4c4c045bb090749c8c83acab2fd851999473dfa1b2820ab496cc1fbc0730ae06",
+                &[
+                    "/source_profile/compiled/0",
+                    "/source_profile/compiled/10",
+                    "/source_profile/compiled/11",
+                    "/source_profile/compiled/12",
+                    "/source_profile/executable",
+                    "/source_profile/compiled/8",
+                ][..],
+            ),
+            (
+                false,
+                "first-d-current-replay-v2.json",
+                "/home/fry/artifacts/vrf-run-01a141ba-20261015/fbb45/compatibility/first-d-current.json",
+                32813,
+                "b1c09f0c1bacfad76764f40df66b71b8a9f5e8c97eac79c4151f6b87dc68b765",
+                &[
+                    "/authority/executable",
+                    "/authority/sources/2",
+                    "/authority/sources/16",
+                    "/authority/sources/17",
+                    "/authority/sources/18",
+                    "/vrf_sources/0",
+                    "/vrf_sources/3",
+                    "/vrf_sources/4",
+                    "/vrf_sources/5",
+                    "/authority/sources/14",
+                ][..],
+            ),
+        ] {
+            let input = Path::new(before);
+            let mut old = admission::parse_unique(
+                &admission::evidence(input, input, sha, bytes, REPORT_CAP).unwrap(),
+            )
+            .unwrap();
+            verify_pin(&old["bundle"]);
+            let output = staging.join(name);
+            let bundle = Path::new(old["bundle"]["path"].as_str().unwrap());
+            if is_native {
+                crate::native_witness::replay(bundle, &output).unwrap();
+            } else {
+                first::replay(bundle, &output).unwrap();
+            }
+            let raw = admission::read_capped(fs::File::open(&output).unwrap(), REPORT_CAP).unwrap();
+            let new = admission::parse_unique(&raw).unwrap();
+            for field in fields {
+                let before = old.pointer(field).unwrap();
+                let after = new.pointer(field).unwrap();
+                let successor = if field.ends_with("/executable") {
+                    assert_eq!(
+                        after["path"],
+                        json!(fs::canonicalize(std::env::current_exe().unwrap()).unwrap())
+                    );
+                    verify_pin(after);
+                    after.clone()
+                } else {
+                    residual_source_successor(before, after).unwrap()
+                };
+                *old.pointer_mut(field).unwrap() = successor;
+            }
+            assert_eq!(old, new, "complete saved report: {name}");
+            retain_or_check_saved(&root.join(name), &raw).unwrap();
+            // The complete identical body is retained at the versioned path.
+            fs::remove_file(&output).unwrap();
+        }
+        fs::remove_dir(&staging).unwrap();
+    }
+    #[test]
+    fn seventh_residual_saved_bundle_report_is_completely_equal() {
+        assert_saved_residual_equal(
+            Profile::Residual7f82,
+            "/home/fry/artifacts/vrf-round3-01a141ba-20261016/next42/next42-replay.json",
+            "2a0a86f5fb1b2f2e67637a4750a5df156270c5b28937edb663fc85a64cd8efa4",
+            54733,
+            42,
+        );
+    }
     fn assert_saved_residual_equal(
         profile: Profile,
         path: &str,
@@ -2370,10 +2662,8 @@ mod tests {
             &scratch,
         )
         .unwrap();
-        let new = admission::parse_unique(
-            &admission::read_capped(fs::File::open(&scratch).unwrap(), REPORT_CAP).unwrap(),
-        )
-        .unwrap();
+        let raw = admission::read_capped(fs::File::open(&scratch).unwrap(), REPORT_CAP).unwrap();
+        let new = admission::parse_unique(&raw).unwrap();
         let exe = &new["authority"]["six_input_owner"]["executable"];
         assert_eq!(
             exe["path"],
@@ -2399,6 +2689,7 @@ mod tests {
         }
         assert_eq!(old, new);
         assert_eq!(new["values"].as_array().unwrap().len(), payloads);
+        retain_saved_report(profile, &raw);
         fs::remove_file(scratch).unwrap();
     }
     #[test]
@@ -2607,15 +2898,13 @@ mod tests {
         let canonical = canonical_prior().unwrap();
         let mut bad = canonical.clone();
         bad[canonical.len() / 2] ^= 1;
-        assert!(
-            after_prior(
-                Profile::Residual7f82,
-                first_plan,
-                &bad,
-                |_, _| -> Result<()> { panic!("bad prior reached 7f82 constructor") }
-            )
-            .is_err()
-        );
+        assert!(after_prior(
+            Profile::Residual7f82,
+            first_plan,
+            &bad,
+            |_, _| -> Result<()> { panic!("bad prior reached 7f82 constructor") }
+        )
+        .is_err());
         let (plan, selected, summary) = window_authority(Profile::Residual7f82).unwrap();
         assert_eq!(summary["prior_first_d"]["selected"]["proof_index"], 60);
         assert_eq!(summary["prior_first_d"]["selected"]["value_hex"], V7_PRIOR);
@@ -2632,12 +2921,195 @@ mod tests {
         let report = base(Profile::Residual7f82, selected, summary).unwrap();
         assert_eq!(report["bounds"]["proofs_exact"], 93);
         assert_eq!(report["bounds"]["payload_tuples_exact"], 42);
-        assert!(
-            report["qualification"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|v| v == false)
-        );
+        assert!(report["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
     }
+    #[test]
+    fn e946_role68_envelope_preserves_native_caps_and_exact_boundary() {
+        assert!(cfg!(debug_assertions));
+        assert!(std::panic::catch_unwind(|| std::hint::black_box(u8::MAX) + 1).is_err());
+        assert_eq!(native::BUNDLE_CAP, 134_217_728);
+        assert!(e946_role68_failure(Profile::ResidualE946, 0).is_none());
+        assert!(e946_role68_failure(Profile::ResidualE946, E946_ROLE68_CAP as u64).is_none());
+        let failure =
+            e946_role68_failure(Profile::ResidualE946, E946_ROLE68_CAP as u64 + 1).unwrap();
+        assert_eq!(failure["phase"], "Fixed40RoleEnvelope");
+        assert_eq!(failure["limit_bytes"], E946_ROLE68_CAP);
+        assert_eq!(failure["observed_bytes"], E946_ROLE68_CAP as u64 + 1);
+        assert_eq!(
+            e946_role68_failure(Profile::ResidualE946, u64::MAX).unwrap()["observed_bytes"],
+            u64::MAX
+        );
+        assert!(e946_role68_failure(Profile::Eighth, native::BUNDLE_CAP as u64).is_none());
+    }
+
+    fn e946_role68_fixture(name: &str) -> std::path::PathBuf {
+        let parent = std::env::var_os("F40_BOUNDARY_TEST_ARTIFACTS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "/home/fry/artifacts/vrf40-rust-boundary-tests".into());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = parent.join(format!("{name}-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn e946_role68_capture_envelope_publishes_no_bundle_or_prefix() -> Result<()> {
+        let profile = Profile::ResidualE946;
+        let (_, selected, authority) = window_authority(profile)?;
+        let report = base(profile, selected, authority)?;
+        let original_authority = report["authority"].clone();
+        let actual = native::usage(Default::default());
+        let root = e946_role68_fixture("capture-publication-boundary");
+        let bundle = root.join("synthetic-oversized-input-not-a-witness.rcv6");
+        let output = root.join("stopped-report.json");
+        let bytes = vec![0; E946_ROLE68_CAP + 1];
+        let failure =
+            publish_window_capture(profile, &bytes, actual.clone(), &bundle, &output, report)
+                .unwrap_err();
+        assert!(failure.to_string().contains("no bundle or prefix"));
+        assert!(!bundle.exists());
+        let stopped: Value = serde_json::from_slice(&fs::read(output)?)?;
+        assert_eq!(stopped["status"], "stopped");
+        assert_eq!(stopped["failure"]["observed_bytes"], E946_ROLE68_CAP + 1);
+        assert_eq!(stopped["authority"], original_authority);
+        assert_eq!(stopped["actual"], actual);
+        assert!(stopped["values"].is_null());
+        assert!(stopped.get("bundle").is_none());
+        assert!(stopped["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
+        Ok(())
+    }
+
+    #[test]
+    fn e946_role68_replay_rejects_oversized_input_before_witness_read() -> Result<()> {
+        let root = e946_role68_fixture("replay-input-boundary");
+        let input = root.join("synthetic-oversized-input-not-a-witness.rcv6");
+        let output = root.join("stopped-report.json");
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&input)?;
+        file.set_len(E946_ROLE68_CAP as u64 + 1)?;
+        file.sync_all()?;
+        drop(file);
+        let failure = replay(Profile::ResidualE946, &input, &output).unwrap_err();
+        assert!(failure.to_string().contains("before input read; no prefix"));
+        let stopped: Value = serde_json::from_slice(&fs::read(output)?)?;
+        assert_eq!(stopped["status"], "stopped");
+        assert_eq!(stopped["failure"]["phase"], "Fixed40RoleEnvelope");
+        assert_eq!(stopped["failure"]["observed_bytes"], E946_ROLE68_CAP + 1);
+        assert_eq!(stopped["actual"], native::usage(Default::default()));
+        assert!(stopped["values"].is_null());
+        assert!(stopped.get("bundle").is_none());
+        assert!(stopped["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
+        Ok(())
+    }
+
+    #[test]
+    fn e946_fixed_selection_prior_and_full_barrier() {
+        assert_eq!(
+            Profile::ResidualE946.replay_status(),
+            "all_forty_residual_vrf_inputs_authenticated"
+        );
+        let (context, rows, _) =
+            parent_input_handoff::load_authenticated_voter_authority().unwrap();
+        let selected = select(Profile::ResidualE946, &rows).unwrap();
+        assert_eq!(selected.as_array().unwrap().len(), 40);
+        for (i, index) in E946_INDICES.iter().enumerate() {
+            assert_eq!(selected[i]["parent_manifest_index"], *index);
+            assert_ne!(selected[i]["source_row"]["delayed_period"], FIRST + 3);
+            assert_ne!(selected[i]["source_row"]["delayed_period"], FIRST + 45);
+        }
+        for (field, value) in [
+            ("voter_hex", json!(F49_VOTER)),
+            ("semantic_key", json!("other")),
+            ("delayed_period", json!(FIRST + 3)),
+            ("qualified", json!(true)),
+            ("proof", json!({})),
+            ("value", json!("00")),
+            ("source_references", json!([])),
+            (
+                "source_references",
+                json!([{"period":FIRST+8,"vote_hash_hex":"00"}]),
+            ),
+        ] {
+            let mut bad = rows.clone();
+            bad[E946_INDICES[0]][field] = value;
+            assert!(select(Profile::ResidualE946, &bad).is_err(), "{field}");
+        }
+        let mut swapped = rows.clone();
+        swapped
+            .as_array_mut()
+            .unwrap()
+            .swap(E946_INDICES[0], E946_INDICES[1]);
+        assert!(select(Profile::ResidualE946, &swapped).is_err());
+        let mut duplicate = rows.clone();
+        duplicate[E946_INDICES[1]] = duplicate[E946_INDICES[0]].clone();
+        assert!(select(Profile::ResidualE946, &duplicate).is_err());
+        assert!(authority(Profile::ResidualE946).is_err());
+        let first_plan = first::selection(context, &rows).unwrap().0;
+        let canonical = canonical_prior().unwrap();
+        let mut bad = canonical.clone();
+        bad[canonical.len() / 2] ^= 1;
+        assert!(after_prior(
+            Profile::ResidualE946,
+            first_plan,
+            &bad,
+            |_, _| -> Result<()> { panic!("bad prior reached e946 constructor") }
+        )
+        .is_err());
+        let (plan, selected, summary) = window_authority(Profile::ResidualE946).unwrap();
+        assert_eq!(summary["prior_first_d"]["selected"]["proof_index"], 68);
+        assert_eq!(
+            summary["prior_first_d"]["selected"]["value_hex"],
+            E946_PRIOR
+        );
+        for (i, tuple) in plan.tuples().iter().enumerate() {
+            e946_tuple_binding(i, *tuple).unwrap();
+        }
+        let mut wrong = plan.tuples()[0];
+        wrong.key.0[0] ^= 1;
+        assert!(e946_tuple_binding(0, wrong).is_err());
+        let mut wrong = plan.tuples()[0];
+        wrong.identity.state_root[0] ^= 1;
+        assert!(e946_tuple_binding(0, wrong).is_err());
+        assert!(e946_tuple_binding(40, plan.tuples()[0]).is_err());
+        let report = base(Profile::ResidualE946, selected, summary).unwrap();
+        assert_eq!(report["bounds"]["proofs_exact"], 91);
+        assert_eq!(report["bounds"]["payload_tuples_exact"], 40);
+        assert!(report["qualification"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == false));
+    }
+}
+
+/// Authenticate selected40 raw authority and the fresh 71-proof prior without a DB open.
+pub fn residual_e946_preflight(output: &Path) -> Result<()> {
+    preflight(Profile::ResidualE946, output)
+}
+
+/// Capture selected40 as RCV6, with all 51 constructor proofs and 40 payload proofs.
+pub fn residual_e946_capture(bundle: &Path, report: &Path) -> Result<()> {
+    capture(Profile::ResidualE946, bundle, report)
+}
+
+/// Replay selected40 RCV6 and the fresh 71-proof prior with exact EOF and fixed bounds.
+pub fn residual_e946_replay(bundle: &Path, report: &Path) -> Result<()> {
+    replay(Profile::ResidualE946, bundle, report)
 }

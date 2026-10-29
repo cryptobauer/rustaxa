@@ -340,8 +340,8 @@ pub(super) fn verify_pre_reward_negatives(
         let result = execute_top_level_call_with_native(
             &mut journal,
             &ChainHashes(&chain),
-            &AllNatives(profile_at(period, fixture)),
-            &ConsensusNatives,
+            &AllNatives(profile_at(period, fixture), &chain),
+            &ConsensusNatives(&chain),
             &mut port,
             &mut sequence,
             &block(period, fixture),
@@ -501,8 +501,8 @@ fn pre_reward_call(
     let execution = execute_top_level_call_with_native(
         &mut journal,
         &ChainHashes(chain),
-        &AllNatives(profile_at(period, fixture)),
-        &ConsensusNatives,
+        &AllNatives(profile_at(period, fixture), chain),
+        &ConsensusNatives(chain),
         &mut port,
         &mut sequence,
         &block(period, fixture),
@@ -668,8 +668,8 @@ fn verify_cases(
             let result = simulate_with_native(
                 &reader,
                 &ChainHashes(&chain),
-                &AllNatives(profile_at(head, fixture)),
-                &ConsensusNatives,
+                &AllNatives(profile_at(head, fixture), &chain),
+                &ConsensusNatives(&chain),
                 |identity| {
                     Ok(Port {
                         inner: mixed_native::SimulationNativeExecutionPort::new(
@@ -754,8 +754,8 @@ fn verify_cases(
             let result = run_structured_trace_with_native(
                 &trace_reader,
                 &ChainHashes(&chain),
-                &AllNatives(profile_at(trace_period, fixture)),
-                &ConsensusNatives,
+                &AllNatives(profile_at(trace_period, fixture), &chain),
+                &ConsensusNatives(&chain),
                 |identity, execution| {
                     Ok(Port {
                         inner: mixed_native::SimulationNativeExecutionPort::new(

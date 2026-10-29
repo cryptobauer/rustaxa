@@ -291,8 +291,8 @@ pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Re
             let result = simulate_with_native(
                 &reader,
                 &ChainHashes(&chain),
-                &AllNatives(TaraxaProfile::new(false)),
-                &ConsensusNatives,
+                &AllNatives(TaraxaProfile::new(false), &chain),
+                &ConsensusNatives(&chain),
                 |identity| {
                     assert_eq!(identity, selected);
                     Ok(Port {
@@ -381,8 +381,8 @@ pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Re
             let result = run_structured_trace_with_native(
                 &reader,
                 &ChainHashes(&chain),
-                &AllNatives(TaraxaProfile::new(false)),
-                &ConsensusNatives,
+                &AllNatives(TaraxaProfile::new(false), &chain),
+                &ConsensusNatives(&chain),
                 |identity, execution| {
                     assert_eq!(identity, selected);
                     Ok(Port {
@@ -451,8 +451,8 @@ pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Re
         let result = run_structured_trace_with_native(
             &reader,
             &ChainHashes(&chain),
-            &AllNatives(TaraxaProfile::new(false)),
-            &ConsensusNatives,
+            &AllNatives(TaraxaProfile::new(false), &chain),
+            &ConsensusNatives(&chain),
             |identity, execution| {
                 assert_eq!(identity, selected);
                 Ok(Port {
@@ -531,8 +531,8 @@ pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Re
                     ExecutionTransactionKind::Call => execute_top_level_call_with_native(
                         &mut journal,
                         &ChainHashes(&chain),
-                        &AllNatives(TaraxaProfile::new(false)),
-                        &ConsensusNatives,
+                        &AllNatives(TaraxaProfile::new(false), &chain),
+                        &ConsensusNatives(&chain),
                         &mut port,
                         &mut sequence,
                         &block(head + 1, fixture),
@@ -543,8 +543,8 @@ pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Re
                     ExecutionTransactionKind::Create => execute_top_level_create_with_native(
                         &mut journal,
                         &ChainHashes(&chain),
-                        &AllNatives(TaraxaProfile::new(false)),
-                        &ConsensusNatives,
+                        &AllNatives(TaraxaProfile::new(false), &chain),
+                        &ConsensusNatives(&chain),
                         &mut port,
                         &mut sequence,
                         &block(head + 1, fixture),

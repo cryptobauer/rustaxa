@@ -54,11 +54,242 @@ pub(super) struct PreparedCurrentClaimAll {
     count_read: ConcreteRead<Vec<u8>>,
 }
 
+/// Exact legacy page and raw count bound to the enclosing prepared request.
+#[derive(Clone)]
+pub(super) struct PreparedLegacyClaimAll {
+    caller: [u8; 20],
+    validators: Vec<[u8; 20]>,
+    count_key: ConcreteStorageKey,
+    count_read: ConcreteRead<Vec<u8>>,
+    start: usize,
+    end: usize,
+}
+
 fn scope<T>() -> Result<T, FinalChainNativeSessionError> {
     Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
 }
 
 impl FinalChainNativeSession<'_> {
+    /// Bounded post-Magnolia old-selector route. Its inputs and membership are
+    /// deliberately narrower than the general uint32 ABI.
+    pub(super) fn prepare_legacy_claim_all(
+        &mut self,
+        request: &FinalChainNativeRequest,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        let boundary = self
+            .final_chain
+            .rewards_config
+            .fix_claim_all_block_num
+            .as_u64();
+        let period = request.period.as_u64();
+        if boundary.checked_sub(1).is_none_or(|p| period < p)
+            || boundary.checked_add(1).is_none_or(|p| period > p)
+            || !self.final_chain.magnolia_active(request.period)
+            || request.period >= self.final_chain.dpos_cornus_period
+            || request.kind != FinalChainNativeCallKind::Call
+            || request.is_static
+            || !matches!(
+                self.origin,
+                NativeSessionOrigin::PendingPeriod
+                    | NativeSessionOrigin::HistoricalSimulation
+                    | NativeSessionOrigin::CurrentHistoricalTrace
+            )
+        {
+            return scope();
+        }
+        let batch = if request.input.len() == 4 {
+            None
+        } else if request.input.len() == 36
+            && request.input[4..35].iter().all(|b| *b == 0)
+            && request.input[35] <= 1
+        {
+            Some(request.input[35] as usize)
+        } else {
+            return scope();
+        };
+        let zero = request.value.value() == &BigUint::default();
+        let one = request.value.value() == &BigUint::from(1u8);
+        if !(request.depth == 0
+            && ((batch == Some(0) && (zero || one))
+                || (batch == Some(1) && zero)
+                || (batch.is_none() && zero))
+            || request.depth == 1 && batch == Some(0) && zero)
+        {
+            return scope();
+        }
+        let quote_zero = FinalChainNativeGasQuote {
+            invocation: request.id,
+            required_gas: FinalChainGas::ZERO,
+        };
+        if period >= boundary || batch.is_none() {
+            let error = if period >= boundary {
+                "no method with id: 0x09b72e00"
+            } else {
+                "abi: cannot marshal in to go type: length insufficient 0 require 32"
+            };
+            self.prepared = Some(PreparedCall {
+                request: request.clone(),
+                quote: quote_zero,
+                kind: PreparedKind::AbiFailure(error.into()),
+            });
+            return Ok(quote_zero);
+        }
+        if !self.dpos_state.has_complete_validator_shapes()
+            || !self.dpos_state.delegation_ledger_history_complete
+            || !self.dpos_state.redelegate_same_validator_history_complete
+        {
+            return scope();
+        }
+        validate_dpos_principal_ledger(&self.dpos_state).map_err(map_kernel_error)?;
+        let validators = self
+            .dpos_state
+            .delegator_validators
+            .get(&request.caller)
+            .cloned()
+            .unwrap_or_default();
+        if !matches!(validators.len(), 0 | 2)
+            || (request.depth == 0 && validators.len() != 2)
+            || (request.depth == 1 && !validators.is_empty())
+            || validators.iter().copied().collect::<BTreeSet<_>>().len() != validators.len()
+        {
+            return scope();
+        }
+        let count_key = iterable_count_key(&delegator_validators_prefix(request.caller));
+        let count_read = state.raw_storage(DPOS_CONTRACT_ADDRESS, &count_key)?;
+        let count = validators.len() as u32;
+        let count_matches = match &count_read {
+            ConcreteRead::Present(bytes) => {
+                bytes == &count.to_le_bytes() || (count == 0 && bytes.is_empty())
+            }
+            ConcreteRead::Absent | ConcreteRead::Tombstone => count == 0,
+        };
+        if !count_matches {
+            return Err(FinalChainNativeSessionError::RawIntegrity(
+                "legacy claim-all count".into(),
+            ));
+        }
+        let start = batch
+            .unwrap()
+            .checked_mul(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT)
+            .ok_or_else(|| {
+                FinalChainNativeSessionError::Domain("legacy claim-all page overflow".into())
+            })?;
+        let end = start
+            .checked_add(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT)
+            .ok_or_else(|| {
+                FinalChainNativeSessionError::Domain("legacy claim-all page overflow".into())
+            })?;
+        let selected = end.min(validators.len()).saturating_sub(start);
+        let gas = 45_000u64 * (selected.max(1) as u64);
+        if request.supplied_gas.as_u64() <= gas + 1 {
+            return scope();
+        }
+        let quote = FinalChainNativeGasQuote {
+            invocation: request.id,
+            required_gas: gas.into(),
+        };
+        self.prepared = Some(PreparedCall {
+            request: request.clone(),
+            quote,
+            kind: PreparedKind::LegacyClaimAll(PreparedLegacyClaimAll {
+                caller: request.caller,
+                validators,
+                count_key,
+                count_read,
+                start,
+                end,
+            }),
+        });
+        Ok(quote)
+    }
+
+    pub(super) fn invoke_legacy_claim_all(
+        &mut self,
+        prepared: PreparedLegacyClaimAll,
+        quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        if state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.count_key)? != prepared.count_read
+            || self
+                .dpos_state
+                .delegator_validators
+                .get(&prepared.caller)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                != prepared.validators.as_slice()
+        {
+            return Err(FinalChainNativeSessionError::RawIntegrity(
+                "legacy claim-all bound count/order".into(),
+            ));
+        }
+        let prefix = delegator_validators_prefix(prepared.caller);
+        for (index, validator) in prepared.validators.iter().enumerate() {
+            if state.raw_storage(
+                DPOS_CONTRACT_ADDRESS,
+                &iterable_item_key(&prefix, index as u32 + 1),
+            )? != ConcreteRead::Present(validator.to_vec())
+            {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "legacy claim-all ordered item".into(),
+                ));
+            }
+        }
+        let mut next = self.dpos_state.clone();
+        let mut accounts = StagedDposAccountPort::from_state(state);
+        let mut trace = FinalChainNativeRawTrace::new(state);
+        let mut logs = Vec::new();
+        for validator in prepared
+            .validators
+            .iter()
+            .skip(prepared.start)
+            .take(prepared.end.saturating_sub(prepared.start))
+        {
+            let before = next.clone();
+            let outcome = self
+                .final_chain
+                .apply_dpos_delegator_reward_claim_for_contract(
+                    &mut next,
+                    &mut accounts,
+                    *validator,
+                    prepared.caller,
+                )
+                .map_err(map_kernel_error)?;
+            if outcome.status_code != 1 || !outcome.code_retval.is_empty() {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "legacy claim-all semantic membership".into(),
+                ));
+            }
+            self.serialize_delegator_claim(
+                prepared.caller,
+                *validator,
+                &before,
+                &next,
+                &mut trace,
+            )?;
+            logs.extend(outcome.logs.into_iter().map(|log| FinalChainCallLog {
+                address: log.address,
+                topics: log.topics,
+                data: log.data,
+            }));
+        }
+        let is_end = prepared.start >= prepared.validators.len()
+            || prepared.end >= prepared.validators.len();
+        let mut output = vec![0; 32];
+        output[31] = u8::from(is_end);
+        self.dpos_state = next;
+        Ok(FinalChainNativeInvocationResult::Completed(
+            FinalChainNativeOutcome {
+                status: FinalChainNativeStatus::Success,
+                gas_used: quote.required_gas,
+                output,
+                account_mutations: accounts.into_mutations(),
+                raw_mutations: trace.finish(),
+                logs,
+            },
+        ))
+    }
+
     /// Binds the measured direct, first-in-session noarg request and count quote.
     /// Origin/period is exactly historical1, pending2 or qualified trace1/P0,
     /// with no cross-pair admission. Reads only the exact present count;

@@ -59,6 +59,17 @@ def historical_fifth_reference_fixture(test,contract,virtual):
         mapping[item['path']]=Path(previous['path'])
     if len(mapping)!=5:
         raise ValueError('historical fifth exact instruction count')
+    # This later preparation preserves the exact original instruction9 body.
+    # Current instruction edits must not retarget the historical reference.
+    predecessor = dict(
+        path='/home/fry/artifacts/vrf-contract-preparation-20261017/predecessors/doc/evm_research/n4_evidence_record_successor.md',
+        bytes=4446, sha256='00f7c7d32e283acd5fc535c94e634b377f7211897d765ef86e75717ef02cbe4e')
+    logical = str(guard.REPO/'doc/evm_research/n4_evidence_record_successor.md')
+    matches = [r for r in refs if r['role']=='authorized-instruction-9' and r['path']==logical]
+    if len(matches)!=1 or {k:matches[0][k] for k in ('path','bytes','sha256')} != dict(predecessor,path=logical):
+        raise ValueError('historical fifth exact instruction9 tuple')
+    guard.pin_file(predecessor['path'],predecessor,guard.METADATA_CAP)
+    mapping[logical] = Path(predecessor['path'])
     virtual.update(mapping)
     def install(module):
         original=module.canonical_path
@@ -1747,8 +1758,13 @@ class SeventhHistoryControls(Fixture):
         spec=guard.read_json(guard.NEXT42_RUN/'instance-spec.json',65536)
         authority=guard.expand_sixth_inventory(guard.read_json(fixed['contract']['path'],131072),guard.NEXT42_PROFILE)
         rows=json.loads(guard._next42_project_authority(authority)[0])
+        # The persisted instance is now complete. Construct the pending state
+        # explicitly rather than depending on an earlier on-disk lifecycle phase.
+        row=rows[0][344]
+        spec['evidence'][344-93]=dict(status='FIT_PENDING',slot=344,group=row[0],index=row[1],
+            path=row[2],schema_id=row[7],cap_bytes=row[5],reserved_bytes=row[5])
         with self.assertRaisesRegex(ValueError,'next42 pending role binding'):
-            guard._next42_pin_at(spec,rows[0][344],344,{},False)
+            guard._next42_pin_at(spec,row,344,{},False)
 
 
 class SeventhReservationControls(Fixture):

@@ -45,6 +45,61 @@
 use super::*;
 
 impl FinalChainNativeSession<'_> {
+    /// A partial caller/source transfer with an already-current source node
+    /// cannot enter Go's Ficus-only zero-source persistence branch. This
+    /// historical admission reuses the fully authenticated staged path; it
+    /// neither substitutes queue cardinality nor changes reward-node counts.
+    pub(super) fn historical_positive_source_redelegate(
+        &self,
+        delegator: [u8; 20],
+        from: [u8; 20],
+        to: [u8; 20],
+        amount: U256,
+    ) -> Result<bool, FinalChainNativeSessionError> {
+        let before = &self.dpos_state;
+        if self.final_chain.cacti_active(self.pending_period)
+            || !self.final_chain.aspen_part_two_active(self.pending_period)
+            || !self.final_chain.magnolia_active(self.pending_period)
+            || self.pending_period <= self.final_chain.rewards_config.fix_redelegate_block_num
+            || from == to
+            || amount.is_zero()
+            || !before.delegation_ledger_history_complete
+            || !before.redelegate_same_validator_history_complete
+            || !before.redelegate_same_validator_corruption.is_empty()
+            || delegation(before, from, delegator).is_none_or(|principal| principal <= amount)
+            || before
+                .total_stakes
+                .get(&from)
+                .is_none_or(|stake| stake.as_u256() <= amount)
+            || before
+                .total_stakes
+                .get(&to)
+                .is_none_or(StoredDposTokenAmount::is_zero)
+            || before
+                .delegator_rewards
+                .get(&from)
+                .is_some_and(|pool| !pool.is_zero())
+        {
+            return Ok(false);
+        }
+        let graph = &before.reward_reference_graph;
+        let current = graph.current_block().map_err(domain)?;
+        if current != self.pending_period.as_u64()
+            || graph.read_validator_head(&from).map_err(domain)? != current
+            || graph.read_cursor(&from, &delegator).map_err(domain)? != current
+        {
+            return Ok(false);
+        }
+        Ok(graph
+            .load_node(&NodeKey {
+                validator: from,
+                block: current,
+            })
+            .map_err(domain)?
+            .count
+            >= 2)
+    }
+
     /// Current-profile composition authenticates consumed graph and membership
     /// rows, then reuses the same semantic kernel and ordered custody writers.
     fn invoke_current_redelegate(
@@ -66,7 +121,13 @@ impl FinalChainNativeSession<'_> {
         let before = &self.dpos_state;
         if from == to
             || !self.final_chain.magnolia_active(self.pending_period)
-            || !self.final_chain.ficus_active_at(self.pending_period)
+            || (!self.final_chain.ficus_active_at(self.pending_period)
+                && !self.historical_positive_source_redelegate(
+                    delegator,
+                    from,
+                    to,
+                    u256_from_big_endian(&amount),
+                )?)
             || !before.delegation_ledger_history_complete
             || !before.redelegate_same_validator_history_complete
             || !before.redelegate_same_validator_corruption.is_empty()
@@ -348,7 +409,8 @@ impl FinalChainNativeSession<'_> {
         }
 
         if self.final_chain.aspen_part_two_active(self.pending_period)
-            && self.final_chain.cacti_active(self.pending_period)
+            && (self.final_chain.cacti_active(self.pending_period)
+                || self.historical_positive_source_redelegate(delegator, from, to, amount_value)?)
         {
             return self.invoke_current_redelegate(
                 DposTransaction::Redelegate {

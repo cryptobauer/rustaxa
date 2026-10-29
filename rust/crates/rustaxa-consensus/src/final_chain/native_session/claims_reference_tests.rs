@@ -3,8 +3,9 @@
 //! The tests execute Rust reward distribution before the claims, compare every
 //! claim status, log, and ordered irreversible raw write, and apply the staged
 //! ordinary-account effects to an exact full-width journal model. They do not
-//! grant publication/reopen authority, and zero-stake commission remains an
-//! explicitly rejected boundary until an actual Go witness is added.
+//! grant publication/reopen authority. Retained zero-stake commission has its
+//! separate Go-backed corpus; inconsistent live delegation references remain
+//! an integrity failure.
 
 use super::*;
 use ethereum_types::{H160, U256};
@@ -722,7 +723,7 @@ fn claims_preserve_full_width_balances_and_type_account_read_failures() {
 }
 
 #[test]
-fn zero_stake_commission_remains_explicitly_unsupported() {
+fn zero_stake_commission_rejects_inconsistent_live_delegation_references() {
     with_reference_chain("zero-stake", |chain| {
         let mut session = chain
             .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
@@ -732,13 +733,25 @@ fn zero_stake_commission_remains_explicitly_unsupported() {
             .total_stakes
             .insert(VALIDATOR, StoredDposTokenAmount::default());
         let state = ReferenceState::from_snapshot(&session.dpos_state);
+        let before = session.dpos_state.clone();
+        let rows_before = state.rows.borrow().clone();
+        let accounts_before = state.accounts.borrow().clone();
         let fixture = fixture();
         let expected = &scenario(&fixture, "commission_accrued")["transactions"][1];
         let request = fixture_request(1, 0, 0, expected);
         let quote = session.prepare(&request, &state).unwrap();
         assert_eq!(
             session.invoke(&request, quote, &state),
-            Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+            Err(FinalChainNativeSessionError::Domain(
+                "DPoS validator deletion found live delegation references".to_owned()
+            ))
+        );
+        assert_eq!(session.dpos_state, before);
+        assert_eq!(*state.rows.borrow(), rows_before);
+        assert_eq!(*state.accounts.borrow(), accounts_before);
+        assert_eq!(
+            session.prepare(&request, &state),
+            Err(FinalChainNativeSessionError::Aborted)
         );
     });
 }

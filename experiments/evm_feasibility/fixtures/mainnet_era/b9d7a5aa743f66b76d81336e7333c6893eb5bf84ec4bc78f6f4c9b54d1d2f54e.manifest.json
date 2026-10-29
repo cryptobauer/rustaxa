@@ -1,0 +1,448 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "soleirolia",
+    "head": 17379998,
+    "first_retained": 17379994,
+    "periods": [
+      17379999,
+      17380000,
+      17380001
+    ],
+    "pending_periods": [
+      17379901,
+      17379902,
+      17379903,
+      17379904,
+      17379905,
+      17379906,
+      17379907,
+      17379908,
+      17379909,
+      17379910,
+      17379911,
+      17379912,
+      17379913,
+      17379914,
+      17379915,
+      17379916,
+      17379917,
+      17379918,
+      17379919,
+      17379920,
+      17379921,
+      17379922,
+      17379923,
+      17379924,
+      17379925,
+      17379926,
+      17379927,
+      17379928,
+      17379929,
+      17379930,
+      17379931,
+      17379932,
+      17379933,
+      17379934,
+      17379935,
+      17379936,
+      17379937,
+      17379938,
+      17379939,
+      17379940,
+      17379941,
+      17379942,
+      17379943,
+      17379944,
+      17379945,
+      17379946,
+      17379947,
+      17379948,
+      17379949,
+      17379950,
+      17379951,
+      17379952,
+      17379953,
+      17379954,
+      17379955,
+      17379956,
+      17379957,
+      17379958,
+      17379959,
+      17379960,
+      17379961,
+      17379962,
+      17379963,
+      17379964,
+      17379965,
+      17379966,
+      17379967,
+      17379968,
+      17379969,
+      17379970,
+      17379971,
+      17379972,
+      17379973,
+      17379974,
+      17379975,
+      17379976,
+      17379977,
+      17379978,
+      17379979,
+      17379980,
+      17379981,
+      17379982,
+      17379983,
+      17379984,
+      17379985,
+      17379986,
+      17379987,
+      17379988,
+      17379989,
+      17379990,
+      17379991,
+      17379992,
+      17379993,
+      17379994,
+      17379995,
+      17379996,
+      17379997,
+      17379998
+    ],
+    "actions": [
+      {
+        "period": 17379999,
+        "who": 4,
+        "name": "soleirolia_fee_before",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 17380000,
+        "who": 4,
+        "name": "soleirolia_fee_activation",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 31500000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 17380001,
+        "who": 4,
+        "name": "soleirolia_fee_after",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      }
+    ]
+  },
+  "scheduler_manifest_sha256": "cbb3adfad0b18277d7806b44901c7da8cba571c9696ef2b4695a352c31d36b37",
+  "support": {
+    "mainnet_era_reference.py": "25593818ab0d157886674dd6f55e82bc3146dc8cf2b6bcda044c4e2ccbdc3533",
+    "mainnet_era_profile.py": "44aaf3bd52beed3c0b60c8f42bd8fa490a6f7f3bf62c26c874c51266949194d7",
+    "mainnet_era_historical_actions.py": "7ba729bd0b554af67bbe9d8c609de7f0da8b489ab4bb93bb80f14dcdefe96bda",
+    "mainnet_era_reference.go": "d41b7af624677db55897fc44d1a574b4fd475d5b958bb4d4fb53023a73d0fb7a",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference.py": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149",
+    "native_integration_reference.go": "e3189439d62dc65d245b89e5eabd1ced2b774409400c3e4540a1f4756a59a43f",
+    "native_integration_reference.py": "f280aab0db3d4ca7756e6f7501380a5a6fe4c8d0d747fa4031375c3cc822f0dd",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637"
+  },
+  "streams": {
+    "public": {
+      "file": "1ba45ee3207703d43e3aae5eada5133e61c3d48ee648ef59f8ee43fd09370d40.json.gz",
+      "sha256": "1ba45ee3207703d43e3aae5eada5133e61c3d48ee648ef59f8ee43fd09370d40",
+      "bytes": 3949852,
+      "gzip_sha256": "ae423bb6368e06c9b3e668a42ff5f5862484c7cd781df7a70fb79dc04d7ac61c",
+      "gzip_bytes": 330408,
+      "capture": null
+    },
+    "local": {
+      "file": "d77b562df956158a3c91da5ae915f5168fefe53a54d252257543a93b71a5c0e8.json.gz",
+      "sha256": "d77b562df956158a3c91da5ae915f5168fefe53a54d252257543a93b71a5c0e8",
+      "bytes": 3989498,
+      "gzip_sha256": "d5e5fd0fdb47bcad6db8af2c572a51bb8e3c3e3763b3239f4282667c777aa23b",
+      "gzip_bytes": 337320,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 1320385,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-soleirolia-nu27esar",
+            "file": "003a30ef2d3fd98a99bb3f0918dcf4ff3a25b887de255d6026556ab8ccd79b1c.json.gz",
+            "gzip_bytes": 231599,
+            "gzip_sha256": "ea1e034ec5188122d0b143da355adebdb3414f85eaf078cf939c52808717d7b4",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "003a30ef2d3fd98a99bb3f0918dcf4ff3a25b887de255d6026556ab8ccd79b1c"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 17379995,
+            "end": 17380002
+          },
+          "stream": {
+            "bytes": 715091,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-soleirolia-ihwbr382",
+            "file": "84cbe67fdd8da9f8154ce5f47fb011645786b91329bb8fce647807caf1da44cd.json.gz",
+            "gzip_bytes": 76831,
+            "gzip_sha256": "32390d14c6b7d86b6ce450cc78a5c06d29e3fd842b3272fa4c220128e0ff5570",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "84cbe67fdd8da9f8154ce5f47fb011645786b91329bb8fce647807caf1da44cd"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 643825,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-soleirolia-mlbk47ud",
+            "file": "d6d26c37d7e574ef55d648fe22b92a82d83d840dfb43a9e816b070a635c56e81.json.gz",
+            "gzip_bytes": 14713,
+            "gzip_sha256": "619dab332446115fc0da4ae1499618ff96314aa180f913a1d38a462c43071f53",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "d6d26c37d7e574ef55d648fe22b92a82d83d840dfb43a9e816b070a635c56e81"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 648110,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-soleirolia-5ozgcnao",
+            "file": "5683ed224c3c2309b9791d3eeae7e22966df5c0f3af8aa9915dfcf4d3b06b04f.json.gz",
+            "gzip_bytes": 14805,
+            "gzip_sha256": "9e4e3b412d74691ed46bc15af1f4dcc5037fb157b0e4061b32b3e2fafc910ee9",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "5683ed224c3c2309b9791d3eeae7e22966df5c0f3af8aa9915dfcf4d3b06b04f"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 648111,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-soleirolia-ie5umans",
+            "file": "525460549c18f99c2775878d6c9616b2df3afb7b8c7af2828c6a246f2e1710f0.json.gz",
+            "gzip_bytes": 14805,
+            "gzip_sha256": "616ab6326615c7f1956ce6cabb4b6ff169e1b5bebba2915693d8de6833871b94",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "525460549c18f99c2775878d6c9616b2df3afb7b8c7af2828c6a246f2e1710f0"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 1331181,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-soleirolia-vrfpqch9",
+            "file": "91b7ce474978c5f3f9ba30caf02df6a120c5d6b2a7ab0315784032df88eadd4a.json.gz",
+            "gzip_bytes": 232722,
+            "gzip_sha256": "814773c5504aa5aeb31342811bd834377b65080a272ffeb77df1a7454eac34cc",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "91b7ce474978c5f3f9ba30caf02df6a120c5d6b2a7ab0315784032df88eadd4a"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 17379995,
+            "end": 17380002
+          },
+          "stream": {
+            "bytes": 743939,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-soleirolia-chuw1jte",
+            "file": "973bf2d86d1ad73b1b9ad1c6614292d9ed7a667db6685c15f10f1b3ca8d6a40e.json.gz",
+            "gzip_bytes": 78771,
+            "gzip_sha256": "4599f71fc58e5cc232a6e7ad8ba69bcb4ba4a1e123195988d555ac634bc2c300",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "973bf2d86d1ad73b1b9ad1c6614292d9ed7a667db6685c15f10f1b3ca8d6a40e"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 643824,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-soleirolia-8wn7e678",
+            "file": "7275f98917462481fe616a484c5e0b2b5cb96e89d1bde13dbfce2bd5af94db05.json.gz",
+            "gzip_bytes": 14706,
+            "gzip_sha256": "2b8d15fffc33cabb1bac3cbe42933e2e8c879b1940d0a9638815654d065a04d8",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "7275f98917462481fe616a484c5e0b2b5cb96e89d1bde13dbfce2bd5af94db05"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 648109,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-soleirolia-8xyc32qv",
+            "file": "4fc2c5cd981bd135910702b533286da865d5eba767914dc61880ab3036c4563b.json.gz",
+            "gzip_bytes": 14800,
+            "gzip_sha256": "ec4c7603e73c85fde6ba0c2a2edf5ce350c11431ea3a67c97fd548749dac0124",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "4fc2c5cd981bd135910702b533286da865d5eba767914dc61880ab3036c4563b"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 648110,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-soleirolia-7niw0yc2",
+            "file": "c7c63d0930040bcf0698aaadb79bf55f3f86bb6c4219f298186e1dc9e348c67a.json.gz",
+            "gzip_bytes": 14800,
+            "gzip_sha256": "8e8b9be67d40e64e6b8fab4c020a2dd872506038d31539e295a4dd378af23824",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "c7c63d0930040bcf0698aaadb79bf55f3f86bb6c4219f298186e1dc9e348c67a"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "b51faffca52afaa25c863a5459e5b817aa40d808966624c4d3179ecd8ef4aa8f",
+    "streams": {
+      "public": "7953ebb137f679ca0cedac4ee99da33f8aac753a4a89e54f5f66e714275602f7",
+      "local": "91239f0283f504ae44eb7818120e14717dbd0f0fa95fec470e2b95d3b5d7d208"
+    },
+    "forks": {}
+  }
+}

@@ -204,6 +204,20 @@ fn with_fork_chain(
     phalaenopsis_period: FinalChainBlockNumber,
     test: impl FnOnce(&FinalChain),
 ) {
+    with_counter_fork_chain(
+        test_name,
+        phalaenopsis_period,
+        FinalChainBlockNumber::GENESIS,
+        test,
+    );
+}
+
+fn with_counter_fork_chain(
+    test_name: &str,
+    phalaenopsis_period: FinalChainBlockNumber,
+    ficus_period: FinalChainBlockNumber,
+    test: impl FnOnce(&FinalChain),
+) {
     let path = temp_db_path(test_name);
     let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
     let rewards = FinalChainRewardsConfig {
@@ -253,7 +267,7 @@ fn with_fork_chain(
             ..Default::default()
         },
         rewards,
-        FinalChainBlockNumber::GENESIS,
+        ficus_period,
     )
     .unwrap();
     test(&chain);
@@ -546,6 +560,30 @@ struct Fault<'a> {
     mode: u8,
     identity: ConcreteStateIdentity,
 }
+
+struct KeyFault<'a> {
+    fault: Fault<'a>,
+    key: ConcreteStorageKey,
+}
+impl FinalChainNativeStateRead for KeyFault<'_> {
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        self.fault.state.account(address)
+    }
+    fn raw_storage(
+        &self,
+        address: [u8; 20],
+        key: &ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+        if address == DPOS_CONTRACT_ADDRESS && *key == self.key {
+            self.fault.raw_storage(address, key)
+        } else {
+            self.fault.state.raw_storage(address, key)
+        }
+    }
+}
 impl FinalChainNativeStateRead for Fault<'_> {
     fn account(
         &self,
@@ -571,73 +609,364 @@ impl FinalChainNativeStateRead for Fault<'_> {
 #[test]
 fn retained_commission_faults_preserve_precedence_and_local_rollback() {
     let public = corpus();
-    with_reference_chain("retained-commission-faults", |chain| {
-        for mode in 0..3 {
-            let (mut session, state) = seed(chain, &public);
-            let before = session.dpos_state.clone();
-            let rows = state.rows.borrow().clone();
-            let accounts = state.accounts.borrow().clone();
-            // Wrong owner wins before the consumed reward read.
-            let req = request(0, &public["cases"][0]);
-            let fault = Fault {
-                state: &state,
-                mode,
-                identity: ConcreteStateIdentity {
-                    period: 2.into(),
-                    state_root: hex_decode(public["state_before"]["root"].as_str().unwrap())
-                        .try_into()
-                        .unwrap(),
-                },
-            };
-            let quote = session.prepare(&req, &fault).unwrap();
-            assert!(matches!(
-                session.invoke(&req, quote, &fault).unwrap(),
-                FinalChainNativeInvocationResult::Completed(FinalChainNativeOutcome {
-                    status: FinalChainNativeStatus::ContractFailure { .. },
-                    ..
-                })
-            ));
-            let req = request(1, &public["cases"][1]);
-            let quote = session.prepare(&req, &fault).unwrap();
-            let error = session.invoke(&req, quote, &fault).unwrap_err();
-            if mode == 0 {
-                assert_eq!(
-                    error,
-                    FinalChainNativeSessionError::StateRead(FinalChainNativeStateReadError::State(
-                        ConcreteReadError::HistoryUnavailable(fault.identity)
-                    ))
-                );
-            } else {
+    for activation in [0_u64, 10] {
+        with_fork_chain("retained-commission-faults", activation.into(), |chain| {
+            for mode in 0..3 {
+                let (mut session, state) = seed(chain, &public);
+                let before = session.dpos_state.clone();
+                let rows = state.rows.borrow().clone();
+                let accounts = state.accounts.borrow().clone();
+                // Wrong owner wins before the consumed reward read.
+                let req = request(0, &public["cases"][0]);
+                let fault = Fault {
+                    state: &state,
+                    mode,
+                    identity: ConcreteStateIdentity {
+                        period: 2.into(),
+                        state_root: hex_decode(public["state_before"]["root"].as_str().unwrap())
+                            .try_into()
+                            .unwrap(),
+                    },
+                };
+                let quote = session.prepare(&req, &fault).unwrap();
                 assert!(matches!(
-                    error,
-                    FinalChainNativeSessionError::RawIntegrity(_)
+                    session.invoke(&req, quote, &fault).unwrap(),
+                    FinalChainNativeInvocationResult::Completed(FinalChainNativeOutcome {
+                        status: FinalChainNativeStatus::ContractFailure { .. },
+                        ..
+                    })
                 ));
+                let req = request(1, &public["cases"][1]);
+                let quote = session.prepare(&req, &fault).unwrap();
+                let error = session.invoke(&req, quote, &fault).unwrap_err();
+                if mode == 0 {
+                    assert_eq!(
+                        error,
+                        FinalChainNativeSessionError::StateRead(
+                            FinalChainNativeStateReadError::State(
+                                ConcreteReadError::HistoryUnavailable(fault.identity)
+                            )
+                        )
+                    );
+                } else {
+                    assert!(matches!(
+                        error,
+                        FinalChainNativeSessionError::RawIntegrity(_)
+                    ));
+                }
+                assert_eq!(session.dpos_state, before);
+                assert_eq!(*state.rows.borrow(), rows);
+                assert_eq!(*state.accounts.borrow(), accounts);
+                assert_eq!(
+                    session.prepare(&req, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                );
+                let (mut fresh, state) = seed(chain, &public);
+                let mut case = public["cases"][1].clone();
+                if activation > 3 {
+                    case["ordered_raw_writes"] = json!([]);
+                }
+                invoke(&mut fresh, &state, 0, &case);
             }
-            assert_eq!(session.dpos_state, before);
-            assert_eq!(*state.rows.borrow(), rows);
-            assert_eq!(*state.accounts.borrow(), accounts);
-            assert_eq!(
-                session.prepare(&req, &state),
-                Err(FinalChainNativeSessionError::Aborted)
-            );
-            let (mut fresh, state) = seed(chain, &public);
-            invoke(&mut fresh, &state, 0, &public["cases"][1]);
-        }
-    });
+        });
+    }
 }
 
 #[test]
-fn retained_commission_before_phalaenopsis_remains_unsupported() {
+fn retained_commission_before_phalaenopsis_repeats_pool_until_activation() {
     let public = corpus();
-    with_fork_chain("retained-pre-phalaenopsis", 10.into(), |chain| {
+    with_fork_chain("retained-pre-phalaenopsis", 4.into(), |chain| {
         let (mut session, state) = seed(chain, &public);
         let before = session.dpos_state.clone();
-        let req = request(0, &public["cases"][1]);
-        let quote = session.prepare(&req, &state).unwrap();
+        let raw_before = state.rows.borrow().clone();
+        let owner_before = state.balance(OWNER);
+        let contract_before = state.balance(DPOS_CONTRACT_ADDRESS);
+        let reward = BigInt::from(BigUint::from_bytes_be(&u256_to_big_endian(
+            before.commission_rewards[&VALIDATOR].amount().as_u256(),
+        )));
+        assert!(reward > BigInt::default());
+        let mut pre_case = public["cases"][1].clone();
+        pre_case["ordered_raw_writes"] = json!([]);
+        for sequence in 0..2 {
+            let outcome = invoke(&mut session, &state, sequence, &pre_case);
+            assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+            assert!(outcome.raw_mutations.is_empty());
+            state.apply_outcome(&outcome);
+            assert_eq!(session.dpos_state, before);
+            assert_eq!(*state.rows.borrow(), raw_before);
+            assert_eq!(
+                checked_undelegations_count(&session.dpos_state, VALIDATOR).unwrap(),
+                1
+            );
+        }
+        assert_eq!(state.balance(OWNER), owner_before + &reward * 2);
         assert_eq!(
-            session.invoke(&req, quote, &state),
-            Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+            state.balance(DPOS_CONTRACT_ADDRESS),
+            contract_before - &reward * 2
         );
-        assert_eq!(session.dpos_state, before);
+
+        session.pending_period = 4.into();
+        let mut req = request(2, &public["cases"][1]);
+        req.period = 4.into();
+        let quote = session.prepare(&req, &state).unwrap();
+        let FinalChainNativeInvocationResult::Completed(outcome) =
+            session.invoke(&req, quote, &state).unwrap()
+        else {
+            panic!("completed activation claim")
+        };
+        assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+        assert_eq!(outcome.raw_mutations.len(), 1);
+        assert!(matches!(
+            outcome.raw_mutations[0].operation,
+            FinalChainNativeRawOperation::Put(_)
+        ));
+        assert_eq!(
+            outcome.logs[0].data,
+            hex_decode(public["cases"][1]["logs"][0]["data"].as_str().unwrap())
+        );
+        state.apply_outcome(&outcome);
+        assert!(session.dpos_state.commission_rewards[&VALIDATOR].is_zero());
+        assert_eq!(
+            checked_undelegations_count(&session.dpos_state, VALIDATOR).unwrap(),
+            1
+        );
+
+        session.pending_period = 5.into();
+        req.period = 5.into();
+        req.id.sequence = 3;
+        let quote = session.prepare(&req, &state).unwrap();
+        let FinalChainNativeInvocationResult::Completed(outcome) =
+            session.invoke(&req, quote, &state).unwrap()
+        else {
+            panic!("completed post-activation claim")
+        };
+        assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+        assert_eq!(outcome.raw_mutations.len(), 1);
+        assert_eq!(outcome.logs[0].data, vec![0; 32]);
+        assert!(session.dpos_state.total_stakes.contains_key(&VALIDATOR));
+    });
+}
+
+fn mature_confirmation_request(sequence: u64, public: &Value) -> FinalChainNativeRequest {
+    let mut req = request(sequence, &public["cases"][1]);
+    req.period = 5.into();
+    req.caller = DELEGATOR;
+    req.input = DPOS_CONFIRM_UNDELEGATE_SELECTOR.to_vec();
+    req.input.extend_from_slice(&[0; 12]);
+    req.input.extend_from_slice(&VALIDATOR);
+    req
+}
+
+#[test]
+fn pre_ficus_confirmation_retains_authenticated_counter_and_commission_liveness() {
+    let public = corpus();
+    with_counter_fork_chain(
+        "pre-ficus-counter",
+        0.into(),
+        FinalChainBlockNumber::MAX,
+        |chain| {
+            let (mut session, state) = seed(chain, &public);
+            session.pending_period = 5.into();
+            let rows_before = state.rows.borrow().clone();
+            let req = mature_confirmation_request(0, &public);
+            let quote = session.prepare(&req, &state).unwrap();
+            let FinalChainNativeInvocationResult::Completed(out) =
+                session.invoke(&req, quote, &state).unwrap()
+            else {
+                panic!("completed confirmation")
+            };
+            assert_eq!(out.status, FinalChainNativeStatus::Success);
+            assert!(
+                session
+                    .dpos_state
+                    .undelegations
+                    .get(&DELEGATOR)
+                    .is_none_or(Vec::is_empty)
+            );
+            assert_eq!(
+                checked_undelegations_count(&session.dpos_state, VALIDATOR).unwrap(),
+                1
+            );
+            assert_eq!(
+                session
+                    .dpos_state
+                    .retained_undelegation_counts
+                    .get(&VALIDATOR),
+                Some(&StoredUndelegationCounter(1))
+            );
+            let key = custody::validator_key(VALIDATOR);
+            assert!(out.raw_mutations.iter().all(|m| m.key != key));
+            state.apply_outcome(&out);
+            assert_eq!(
+                state.rows.borrow().get(&(DPOS_CONTRACT_ADDRESS, key.0)),
+                rows_before.get(&(DPOS_CONTRACT_ADDRESS, key.0))
+            );
+            let canonical =
+                canonical_concrete_precompile_storage(&session.dpos_state, true).unwrap();
+            let ConcreteRead::Present(actual) =
+                state.rows.borrow()[&(DPOS_CONTRACT_ADDRESS, key.0)].clone()
+            else {
+                panic!("retained validator row")
+            };
+            assert!(canonical[&(DPOS_CONTRACT_ADDRESS, key.0)].contains(&actual));
+            let encoded = encode_dpos_snapshot_rlp(&session.dpos_state).unwrap();
+            assert_eq!(rlp::Rlp::new(&encoded).item_count().unwrap(), 26);
+            assert_eq!(
+                rlp::Rlp::new(&encoded)
+                    .at(24)
+                    .unwrap()
+                    .item_count()
+                    .unwrap(),
+                1
+            );
+            session.dpos_state = decode_dpos_snapshot_rlp(&encoded).unwrap();
+            // The retained count, rather than the now-empty queue, controls deletion.
+            let mut claim = request(1, &public["cases"][1]);
+            claim.period = 5.into();
+            let quote = session.prepare(&claim, &state).unwrap();
+            let FinalChainNativeInvocationResult::Completed(out) =
+                session.invoke(&claim, quote, &state).unwrap()
+            else {
+                panic!("completed commission claim")
+            };
+            assert_eq!(out.status, FinalChainNativeStatus::Success);
+            assert_eq!(
+                out.logs[0].data,
+                hex_decode(public["cases"][1]["logs"][0]["data"].as_str().unwrap())
+            );
+            assert!(session.dpos_state.total_stakes.contains_key(&VALIDATOR));
+            assert_eq!(
+                checked_undelegations_count(&session.dpos_state, VALIDATOR).unwrap(),
+                1
+            );
+        },
+    );
+}
+
+#[test]
+fn pre_ficus_confirmation_raw_faults_abort_without_queue_or_account_changes() {
+    let public = corpus();
+    with_counter_fork_chain(
+        "pre-ficus-counter-faults",
+        0.into(),
+        FinalChainBlockNumber::MAX,
+        |chain| {
+            for (key, mode) in [
+                custody::validator_key(VALIDATOR),
+                custody::rewards_key(VALIDATOR),
+            ]
+            .into_iter()
+            .flat_map(|key| (0..3).map(move |mode| (key, mode)))
+            {
+                let (mut session, state) = seed(chain, &public);
+                session.pending_period = 5.into();
+                let before = session.dpos_state.clone();
+                let rows = state.rows.borrow().clone();
+                let accounts = state.accounts.borrow().clone();
+                let fault = KeyFault {
+                    key,
+                    fault: Fault {
+                        state: &state,
+                        mode,
+                        identity: ConcreteStateIdentity {
+                            period: 2.into(),
+                            state_root: hex_decode(
+                                public["state_before"]["root"].as_str().unwrap(),
+                            )
+                            .try_into()
+                            .unwrap(),
+                        },
+                    },
+                };
+                let req = mature_confirmation_request(0, &public);
+                let quote = session.prepare(&req, &fault).unwrap();
+                let error = session.invoke(&req, quote, &fault).unwrap_err();
+                if mode == 0 {
+                    assert_eq!(
+                        error,
+                        FinalChainNativeSessionError::StateRead(
+                            FinalChainNativeStateReadError::State(
+                                ConcreteReadError::HistoryUnavailable(fault.fault.identity)
+                            )
+                        )
+                    );
+                } else {
+                    assert!(matches!(
+                        error,
+                        FinalChainNativeSessionError::RawIntegrity(_)
+                    ));
+                }
+                assert_eq!(session.dpos_state, before);
+                assert_eq!(*state.rows.borrow(), rows);
+                assert_eq!(*state.accounts.borrow(), accounts);
+                assert_eq!(session.next_sequence, 0);
+                assert_eq!(
+                    session.prepare(&req, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                );
+                drop(session);
+                let (mut retry, retry_state) = seed(chain, &public);
+                retry.pending_period = 5.into();
+                let quote = retry.prepare(&req, &retry_state).unwrap();
+                let FinalChainNativeInvocationResult::Completed(out) =
+                    retry.invoke(&req, quote, &retry_state).unwrap()
+                else {
+                    panic!("fresh confirmation retry must complete")
+                };
+                assert_eq!(out.status, FinalChainNativeStatus::Success);
+            }
+        },
+    );
+}
+
+#[test]
+fn retained_counter_zero_survives_cancel_then_confirm_and_codec_roundtrips() {
+    let public = corpus();
+    with_reference_chain("zero-counter-cancel-confirm", |chain| {
+        let (session, _) = seed(chain, &public);
+        let mut snapshot = session.dpos_state;
+        // A bounded arithmetic fixture represents an explicitly retained zero;
+        // it is not evidence that the pinned Go lifecycle generated this state.
+        let id = create_undelegation_v2(
+            &mut snapshot,
+            DELEGATOR,
+            VALIDATOR,
+            StoredDposTokenAmount::canonical_u256_after_mutation(U256::zero()),
+            5,
+        )
+        .unwrap();
+        set_persisted_undelegations_count(&mut snapshot, VALIDATOR, 0).unwrap();
+        let state = ReferenceState::from_snapshot(&snapshot);
+        let mut accounts = StagedDposAccountPort::from_state(&state);
+        let result = chain
+            .apply_dpos_cancel_undelegate_v2(&mut snapshot, &mut accounts, DELEGATOR, VALIDATOR, id)
+            .unwrap();
+        assert_eq!(result.status_code, 1);
+        assert_eq!(queue_undelegations_count(&snapshot, VALIDATOR), 1);
+        assert_eq!(
+            checked_undelegations_count(&snapshot, VALIDATOR).unwrap(),
+            0
+        );
+        snapshot = decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot).unwrap()).unwrap();
+        let result = chain
+            .apply_dpos_confirm_undelegate(
+                &mut snapshot,
+                &mut accounts,
+                DELEGATOR,
+                VALIDATOR,
+                5.into(),
+            )
+            .unwrap();
+        assert_eq!(result.status_code, 1);
+        assert_eq!(queue_undelegations_count(&snapshot, VALIDATOR), 0);
+        assert_eq!(
+            checked_undelegations_count(&snapshot, VALIDATOR).unwrap(),
+            0
+        );
+        assert!(snapshot.total_stakes.contains_key(&VALIDATOR));
+        assert_eq!(
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot).unwrap()).unwrap(),
+            snapshot
+        );
     });
 }

@@ -253,6 +253,121 @@ fn kernel_chain_profile(
 }
 
 #[test]
+fn historical_partial_redelegate_preserves_loaded_source_and_converts_destination_pool() {
+    let (mut chain, storage, path) = kernel_chain_destination(1_000_000, address(0xa1));
+    chain.rewards_config.aspen_part_two_period = FinalChainBlockNumber::GENESIS;
+    chain.rewards_config.cacti_period = FinalChainBlockNumber::MAX;
+    chain.ficus_activation_period = 10.into();
+    let caller = address(0xd1);
+    let from = address(0x31);
+    let to = address(0x32);
+    let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+    let raw = RawOnly(BTreeMap::new());
+    let mut accounts = StagedDposAccountPort::from_state(&raw);
+    // Go's earlier claim leaves head and caller cursor at this period, with
+    // two references to the same current source node. No reward is paid here.
+    chain
+        .apply_dpos_delegator_reward_claim(&mut session.dpos_state, &mut accounts, from, caller)
+        .unwrap();
+    let key = NodeKey {
+        validator: from,
+        block: 1,
+    };
+    assert_eq!(
+        session
+            .dpos_state
+            .reward_reference_graph
+            .load_node(&key)
+            .unwrap()
+            .count,
+        2
+    );
+    session.dpos_state.delegator_rewards.insert(
+        to,
+        StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(100)),
+    );
+    assert!(
+        session
+            .historical_positive_source_redelegate(caller, from, to, U256::from(300))
+            .unwrap()
+    );
+    let before = session.dpos_state.clone();
+    let mut after = before.clone();
+    let result = chain
+        .apply_dpos_redelegate(
+            &mut after,
+            &mut accounts,
+            caller,
+            from,
+            to,
+            U256::from(300).to_big_endian().to_vec(),
+            1.into(),
+        )
+        .unwrap();
+    assert_eq!(result.status_code, 1);
+    // A loaded Go state object survives the intermediate decrement: the final
+    // source count is 3, rather than a normalization back to 2.
+    assert_eq!(
+        after.reward_reference_graph.load_node(&key).unwrap().count,
+        3
+    );
+    assert!(
+        after
+            .delegator_rewards
+            .get(&to)
+            .is_none_or(StoredDposTokenAmount::is_zero)
+    );
+    assert!(
+        after
+            .reward_reference_graph
+            .load_node(&NodeKey {
+                validator: to,
+                block: 1
+            })
+            .unwrap()
+            .reward_per_stake
+            > DposRewardIndex::zero()
+    );
+    assert_eq!(delegation(&after, from, caller), Some(U256::from(700)));
+    assert_eq!(delegation(&after, to, caller), Some(U256::from(300)));
+    assert!(accounts.into_mutations().is_empty());
+
+    for (source, destination, amount) in [
+        (from, to, U256::zero()),
+        (from, to, U256::from(1000)),
+        (from, from, U256::from(300)),
+        (from, address(0xff), U256::from(300)),
+    ] {
+        assert!(
+            !session
+                .historical_positive_source_redelegate(caller, source, destination, amount)
+                .unwrap()
+        );
+    }
+    session.dpos_state = before.clone();
+    session.dpos_state.delegation_ledger_history_complete = false;
+    assert!(
+        !session
+            .historical_positive_source_redelegate(caller, from, to, U256::from(300))
+            .unwrap()
+    );
+    session.dpos_state = before;
+    session.dpos_state.delegator_rewards.insert(
+        from,
+        StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(1)),
+    );
+    assert!(
+        !session
+            .historical_positive_source_redelegate(caller, from, to, U256::from(300))
+            .unwrap()
+    );
+    drop(session);
+    drop(chain);
+    drop(storage);
+    crate::closeout_test_scratch::dispose(path).unwrap();
+}
+
+#[test]
 fn redelegate_kernel_normal_preflight_errors_match_go_without_advancement() {
     let public: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -979,3 +1094,259 @@ mod redelegate_both_current_four_tests;
 
 #[path = "redelegate_rewarded_partial_tests.rs"]
 mod redelegate_rewarded_partial_tests;
+
+fn historical_partial_snapshot(chain: &FinalChain) -> DposSnapshot {
+    let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+    let raw = RawOnly(BTreeMap::new());
+    let mut accounts = StagedDposAccountPort::from_state(&raw);
+    chain
+        .apply_dpos_delegator_reward_claim(
+            &mut session.dpos_state,
+            &mut accounts,
+            address(0x31),
+            address(0xd1),
+        )
+        .unwrap();
+    assert!(accounts.into_mutations().is_empty());
+    session.dpos_state.delegator_rewards.insert(
+        address(0x32),
+        StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(100)),
+    );
+    session.dpos_state.clone()
+}
+
+struct HistoricalAuthenticatedRaw {
+    rows: BTreeMap<([u8; 20], ConcreteStorageKey), Vec<u8>>,
+    reads: RefCell<Vec<([u8; 20], ConcreteStorageKey)>>,
+    fail_at: Option<usize>,
+}
+impl FinalChainNativeStateRead for HistoricalAuthenticatedRaw {
+    fn raw_storage(
+        &self,
+        contract: [u8; 20],
+        key: &ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+        assert!(contract == DPOS_CONTRACT_ADDRESS || contract == SLASHING_CONTRACT_ADDRESS);
+        self.reads.borrow_mut().push((contract, *key));
+        if self.fail_at == Some(self.reads.borrow().len()) {
+            return Err(FinalChainNativeStateReadError::Invariant(
+                "injected historical raw reader failure".into(),
+            ));
+        }
+        Ok(self
+            .rows
+            .get(&(contract, *key))
+            .cloned()
+            .map_or(ConcreteRead::Absent, ConcreteRead::Present))
+    }
+    fn account(
+        &self,
+        _: [u8; 20],
+    ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        panic!("zero-payout historical fixture must not read accounts")
+    }
+}
+
+fn historical_partial_raw(snapshot: &DposSnapshot) -> HistoricalAuthenticatedRaw {
+    HistoricalAuthenticatedRaw {
+        rows: canonical_concrete_precompile_storage(snapshot, true)
+            .unwrap()
+            .into_iter()
+            .map(|((contract, key), rows)| {
+                (
+                    (contract, ConcreteStorageKey(key)),
+                    rows.into_iter().next().expect("self-owned canonical row"),
+                )
+            })
+            .collect(),
+        reads: RefCell::new(Vec::new()),
+        fail_at: None,
+    }
+}
+
+#[test]
+fn historical_partial_redelegate_consumed_node_faults_abort_and_fresh_retry_succeeds() {
+    // Constructed ownership/integrity fixture, not Go business-error or gas evidence.
+    let (mut chain, storage, path) = kernel_chain_destination(1_000_000, address(0xa1));
+    chain.rewards_config.aspen_part_two_period = FinalChainBlockNumber::GENESIS;
+    chain.rewards_config.cacti_period = FinalChainBlockNumber::MAX;
+    chain.ficus_activation_period = 10.into();
+    let before = historical_partial_snapshot(&chain);
+    let mut request = staged_request(&oracle()["cases"][0], 0);
+    request.caller = address(0xd1);
+    request.input = DPOS_REDELEGATE_SELECTOR.to_vec();
+    for validator in [address(0x31), address(0x32)] {
+        request.input.extend_from_slice(&[0; 12]);
+        request.input.extend_from_slice(&validator);
+    }
+    request
+        .input
+        .extend_from_slice(&U256::from(300).to_big_endian());
+    let mut probe = chain.begin_native_session(1.into(), 0.into()).unwrap();
+    probe.dpos_state = before.clone();
+    let raw = historical_partial_raw(&before);
+    let quote = probe.prepare(&request, &raw).unwrap();
+    let successful = completed(probe.invoke(&request, quote, &raw).unwrap());
+    assert_eq!(successful.status, FinalChainNativeStatus::Success);
+    assert!(successful.account_mutations.is_empty());
+    let node_key = reward_node_key(address(0x31), 1);
+    let read_index = raw
+        .reads
+        .borrow()
+        .iter()
+        .position(|identity| *identity == (DPOS_CONTRACT_ADDRESS, node_key))
+        .expect("source current reward node consumed");
+    assert!(
+        read_index > 0,
+        "node read follows authenticated business rows"
+    );
+    let successful_snapshot = probe.dpos_state.clone();
+    drop(probe);
+    for unavailable in [false, true] {
+        let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+        session.dpos_state = before.clone();
+        let mut raw = historical_partial_raw(&before);
+        if unavailable {
+            raw.fail_at = Some(read_index + 1);
+        } else {
+            raw.rows
+                .insert((DPOS_CONTRACT_ADDRESS, node_key), vec![0xff]);
+        }
+        let rows_before = raw.rows.clone();
+        let quote = session.prepare(&request, &raw).unwrap();
+        let error = session.invoke(&request, quote, &raw).unwrap_err();
+        assert!(
+            if unavailable {
+                matches!(error, FinalChainNativeSessionError::StateRead(_))
+            } else {
+                matches!(error, FinalChainNativeSessionError::RawIntegrity(_))
+            },
+            "{error:?}"
+        );
+        assert_eq!(session.dpos_state, before);
+        assert_eq!(raw.rows, rows_before);
+        assert!(session.aborted && session.prepared.is_none());
+        assert_eq!(session.next_sequence, 0);
+        assert_eq!(
+            session.prepare(&request, &raw),
+            Err(FinalChainNativeSessionError::Aborted)
+        );
+        drop(session);
+        // The aborted session cannot publish writes; independent retry starts
+        // from the same immutable owned snapshot and untouched canonical rows.
+        let mut retry = chain.begin_native_session(1.into(), 0.into()).unwrap();
+        retry.dpos_state = before.clone();
+        let raw = historical_partial_raw(&before);
+        let quote = retry.prepare(&request, &raw).unwrap();
+        let outcome = completed(retry.invoke(&request, quote, &raw).unwrap());
+        assert_eq!(outcome, successful);
+        assert_eq!(retry.dpos_state, successful_snapshot);
+        assert!(outcome.account_mutations.is_empty());
+    }
+    drop(chain);
+    drop(storage);
+    crate::closeout_test_scratch::dispose(path).unwrap();
+}
+
+#[test]
+fn historical_partial_redelegate_rejects_missing_history_and_mismatched_graph_coordinates() {
+    let (mut chain, storage, path) = kernel_chain_destination(1_000_000, address(0xa1));
+    chain.rewards_config.aspen_part_two_period = FinalChainBlockNumber::GENESIS;
+    chain.rewards_config.cacti_period = FinalChainBlockNumber::MAX;
+    chain.ficus_activation_period = 10.into();
+    let before = historical_partial_snapshot(&chain);
+    for mode in 0..5 {
+        let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+        session.dpos_state = before.clone();
+        match mode {
+            0 => {
+                session
+                    .dpos_state
+                    .redelegate_same_validator_history_complete = false
+            }
+            1 => {
+                session
+                    .dpos_state
+                    .redelegate_same_validator_corruption
+                    .insert(address(0x31));
+            }
+            2 => session
+                .dpos_state
+                .reward_reference_graph
+                .next_block(2)
+                .unwrap(),
+            3 => session
+                .dpos_state
+                .reward_reference_graph
+                .overwrite_validator_head_stale(address(0x31), 0)
+                .unwrap(),
+            4 => {
+                session
+                    .dpos_state
+                    .reward_reference_graph
+                    .bootstrap_node(
+                        NodeKey {
+                            validator: address(0x31),
+                            block: 0,
+                        },
+                        Node {
+                            reward_per_stake: DposRewardIndex::zero(),
+                            count: 1,
+                        },
+                        false,
+                        &[address(0xd1)],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            !session
+                .historical_positive_source_redelegate(
+                    address(0xd1),
+                    address(0x31),
+                    address(0x32),
+                    U256::from(300)
+                )
+                .unwrap(),
+            "negative mode {mode}"
+        );
+    }
+    // A count below two with both head and cursor on one node is already
+    // invalid graph provenance; the strict graph codec rejects it before admission.
+    let encoded =
+        crate::dpos_reward_graph::encode_dpos_reward_graph(&before.reward_reference_graph).unwrap();
+    let graph = rlp::Rlp::new(&encoded);
+    let nodes = graph.at(1).unwrap();
+    let mut changed_nodes = rlp::RlpStream::new_list(nodes.item_count().unwrap());
+    let mut changed = false;
+    for node in nodes.iter() {
+        if node.val_at::<Vec<u8>>(0).unwrap() == address(0x31).to_vec()
+            && node.val_at::<u64>(1).unwrap() == 1
+        {
+            let mut row = rlp::RlpStream::new_list(4);
+            for field in 0..3 {
+                row.append_raw(node.at(field).unwrap().as_raw(), 1);
+            }
+            row.append(&1_u64);
+            changed_nodes.append_raw(&row.out(), 1);
+            changed = true;
+        } else {
+            changed_nodes.append_raw(node.as_raw(), 1);
+        }
+    }
+    assert!(changed);
+    let changed_nodes = changed_nodes.out();
+    let mut malformed = rlp::RlpStream::new_list(graph.item_count().unwrap());
+    for index in 0..graph.item_count().unwrap() {
+        if index == 1 {
+            malformed.append_raw(&changed_nodes, 1);
+        } else {
+            malformed.append_raw(graph.at(index).unwrap().as_raw(), 1);
+        }
+    }
+    assert!(crate::dpos_reward_graph::decode_dpos_reward_graph(&malformed.out()).is_err());
+    drop(chain);
+    drop(storage);
+    crate::closeout_test_scratch::dispose(path).unwrap();
+}

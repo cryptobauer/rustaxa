@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "scenario": "phalaenopsis",
+  "input_manifest_sha256": "9cb5a860392dc5c3291811608bf4e59e293a7c2dc31b7110507a241272946d2c",
+  "file": "2ae880ecb3c97e09ad287cfc8539969c7882a1be6056e9ed959ca4cdf705b951.cpp-estimates.json",
+  "sha256": "2ae880ecb3c97e09ad287cfc8539969c7882a1be6056e9ed959ca4cdf705b951",
+  "bytes": 21434
+}

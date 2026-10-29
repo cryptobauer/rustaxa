@@ -1,3 +1,5 @@
+> Current run: the owner-approved [Rust EVM cutover addendum](evm_research/n6_rust_cutover_task_policy.md) supersedes conflicting scope and process rules below for root run 01a17dec. Historical run records remain unchanged.
+
 # Bounded slice workflow
 
 For the owner-approved orchestrated current-era and Cacti closeout only, the
@@ -111,7 +113,7 @@ Account-wide use by other sessions also counts toward the observed drop. Rounded
 or delayed telemetry cannot ensure an exact stop. A weekly reset invalidates the
 saved window; checkpoint instead of creating a larger budget automatically.
 
-The [recent audit](../token_usage_audit_01a1470a.md) found poor accepted-result
+The [recent audit](evm_research/history/session_reports/token_usage_audit_01a1470a.md) found poor accepted-result
 throughput during repeated evidence-policy corrections. The next plan uses one
 complete operation/resource preflight, compact current checkpoints and source-backed
 fit before expensive gates. Reuse settled family contracts and exact scoped evidence;

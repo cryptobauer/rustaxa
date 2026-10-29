@@ -71,7 +71,7 @@ These results do not establish actual EndBlock execution or parity.
 
 The [synthetic lifecycle](n4_synthetic_native_transition.md) now executes at
 `214c87b58`, with passing required checks and independent review. Its
-[audit](../../token_usage_audit_01a0f7e8.md) records 9,178,448 tokens and 72.29021
+[audit](history/session_reports/token_usage_audit_01a0f7e8.md) records 9,178,448 tokens and 72.29021
 estimated credits. The [next executable prompt](../../next_executable_slice_prompt.md)
 hardens the Go write assertion and shared-input binding. Sol implements directly;
 Luna checks the bounded input map; an independent Sol reviewer checks frozen

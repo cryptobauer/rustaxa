@@ -760,7 +760,7 @@ pub struct PbftVerifiedVotesService {
 }
 
 /// Temporary task-neutral runtime guard returned by
-/// [`PbftVerifiedVotesService::lock`].
+/// `PbftVerifiedVotesService::lock`.
 ///
 /// This escape hatch supports adjacent PBFT workflows while their composition
 /// moves native. Dropping the guard releases the single verified-vote lock; it

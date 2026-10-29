@@ -381,6 +381,25 @@ pub(super) fn run_segment_fault(
     fresh: bool,
     fault: mixed_recovery::Fault,
 ) -> Result<()> {
+    run_segment_observing(
+        fixture,
+        periods,
+        application_path,
+        concrete_path,
+        fresh,
+        fault,
+        None,
+    )
+}
+pub(super) fn run_segment_observing(
+    fixture: &Value,
+    periods: &[Value],
+    application_path: &Path,
+    concrete_path: &Path,
+    fresh: bool,
+    fault: mixed_recovery::Fault,
+    ordinary: Option<OrdinaryObserver>,
+) -> Result<()> {
     let (application, mut chain) = open_chain(application_path, fixture)?;
     let identity = chain.concrete_chain_identity()?;
     let mut concrete = if fresh {
@@ -406,6 +425,16 @@ pub(super) fn run_segment_fault(
     };
     let mut epoch = StateApiEpoch::new();
     for (index, period) in periods.iter().enumerate() {
+        if let Some(observer) = &ordinary {
+            let observed = concrete.observation()?;
+            observer.borrow_mut().begin(
+                concrete_path,
+                observed.identity,
+                observed.committed,
+                number(&period["number"]),
+                observed.generation,
+            )?;
+        }
         let inner = Adapter {
             chain: &chain,
             application: &application,
@@ -414,7 +443,19 @@ pub(super) fn run_segment_fault(
             native: RefCell::new(None),
             native_context: RefCell::new(None),
             state_api_epoch: epoch,
+            ordinary_observer: ordinary.clone(),
             fixture: period,
+            account_node_publication: if fixture["oracle_lifecycle"] == "public_batched" {
+                AccountNodePublication::FinalPeriod {
+                    limits: rustaxa_storage::ConcreteStorageInventoryLimits {
+                        max_nodes: 1_000_000,
+                        max_leaves: 100_000,
+                        max_value_bytes: 32_000_000,
+                    },
+                }
+            } else {
+                AccountNodePublication::ObserverHistory
+            },
         };
         let adapter = mixed_recovery::FaultAdapter {
             inner,
@@ -435,6 +476,7 @@ pub(super) fn run_segment_fault(
                     &adapter.inner,
                 )?;
             }
+            mainnet_era::bind_legacy_scheduler_order(&chain, fixture, period)?;
             let request = request(fixture, period)?;
             chain.ensure_period_data(
                 FinalChainBlockNumber::new(number(&period["number"])),
@@ -487,6 +529,20 @@ pub(super) fn run_segment_fault(
                 "published canonical root"
             );
             ensure!(chain.last_block_number_typed()? == observed.committed.period);
+            ensure!(
+                application
+                    .final_chain()
+                    .external_evm_pending_publication_raw()?
+                    .is_none()
+            );
+            if let Some(observer) = &ordinary {
+                observer.borrow_mut().promote(
+                    concrete_path,
+                    observed.identity,
+                    observed.committed,
+                    observed.generation,
+                )?;
+            }
             let reader = ConcreteStateReader::open_read_only(concrete_path, observed.committed)?;
             verify_final_reader(&reader, &period["final"])?;
             drop(reader);

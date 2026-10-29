@@ -1,0 +1,496 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "cornus_v2_maturity",
+    "head": 15773567,
+    "first_retained": 15773563,
+    "periods": [
+      15773568,
+      15773569,
+      15773570,
+      15773571,
+      15773572,
+      15773573,
+      15773574
+    ],
+    "pending_periods": [
+      15773501,
+      15773502,
+      15773503,
+      15773504,
+      15773505,
+      15773506,
+      15773507,
+      15773508,
+      15773509,
+      15773510,
+      15773511,
+      15773512,
+      15773513,
+      15773514,
+      15773515,
+      15773516,
+      15773517,
+      15773518,
+      15773519,
+      15773520,
+      15773521,
+      15773522,
+      15773523,
+      15773524,
+      15773525,
+      15773526,
+      15773527,
+      15773528,
+      15773529,
+      15773530,
+      15773531,
+      15773532,
+      15773533,
+      15773534,
+      15773535,
+      15773536,
+      15773537,
+      15773538,
+      15773539,
+      15773540,
+      15773541,
+      15773542,
+      15773543,
+      15773544,
+      15773545,
+      15773546,
+      15773547,
+      15773548,
+      15773549,
+      15773550,
+      15773551,
+      15773552,
+      15773553,
+      15773554,
+      15773555,
+      15773556,
+      15773557,
+      15773558,
+      15773559,
+      15773560,
+      15773561,
+      15773562,
+      15773563,
+      15773564,
+      15773565,
+      15773566,
+      15773567
+    ],
+    "no_warmup_delegation": true,
+    "donor": {
+      "name": "cornus_live_v2_donor",
+      "head": 15610109,
+      "first_retained": 15610105,
+      "periods": [
+        15610110,
+        15610111
+      ],
+      "pending_periods": [
+        15610101,
+        15610102,
+        15610103,
+        15610104,
+        15610105,
+        15610106,
+        15610107,
+        15610108,
+        15610109
+      ],
+      "seed_actions_only": true,
+      "no_warmup_delegation": true,
+      "actions": [
+        {
+          "period": 15610110,
+          "who": 0,
+          "name": "real_post_cornus_v2_creation",
+          "method": "undelegateV2",
+          "validator": 0,
+          "amount": "1000000000000000000000"
+        },
+        {
+          "period": 15610111,
+          "who": 0,
+          "name": "create_maturity_ordinary_control",
+          "method": "create",
+          "input": "600160005560006000f3"
+        }
+      ]
+    },
+    "api_ordinary_nonce": 1,
+    "api_heads": [
+      15773568,
+      15773569,
+      15773570,
+      15773574
+    ],
+    "actions": [
+      {
+        "period": 15773568,
+        "who": 0,
+        "name": "real_v2_still_locked",
+        "method": "confirmV2",
+        "validator": 0,
+        "id": 1
+      },
+      {
+        "period": 15773569,
+        "who": 0,
+        "name": "real_v2_mature_confirmation",
+        "method": "confirmV2",
+        "validator": 0,
+        "id": 1
+      },
+      {
+        "period": 15773570,
+        "who": 0,
+        "name": "real_v2_duplicate_confirmation",
+        "method": "confirmV2",
+        "validator": 0,
+        "id": 1
+      }
+    ]
+  },
+  "scheduler_manifest_sha256": "963f8d5cbd5e8ee076b54459b50d782bb37bd2d18eb4533b4ccd0ef09e395330",
+  "support": {
+    "mainnet_era_reference.py": "25593818ab0d157886674dd6f55e82bc3146dc8cf2b6bcda044c4e2ccbdc3533",
+    "mainnet_era_profile.py": "44aaf3bd52beed3c0b60c8f42bd8fa490a6f7f3bf62c26c874c51266949194d7",
+    "mainnet_era_historical_actions.py": "a155e2a74a1d7bdfbc8f8d26e57af93110b6951d79441bc55e9a749fb5a17cbf",
+    "mainnet_era_reference.go": "78fea82361385054c5fac62c50cb43e6e360b43a4dfd2c220f2fa656a264adc1",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference.py": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149",
+    "native_integration_reference.go": "e3189439d62dc65d245b89e5eabd1ced2b774409400c3e4540a1f4756a59a43f",
+    "native_integration_reference.py": "f280aab0db3d4ca7756e6f7501380a5a6fe4c8d0d747fa4031375c3cc822f0dd",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637"
+  },
+  "streams": {
+    "public": {
+      "file": "2af4943195937b26b5536333306f7ddb3f6e1f9e7a9f0a6d12a175b3828e2d8f.json.gz",
+      "sha256": "2af4943195937b26b5536333306f7ddb3f6e1f9e7a9f0a6d12a175b3828e2d8f",
+      "bytes": 5556247,
+      "gzip_sha256": "98d168e89ed9e5d9e4c355124278d1e1781cdac4ffb510a5f045ab2cfa0dd489",
+      "gzip_bytes": 547786,
+      "capture": null
+    },
+    "local": {
+      "file": "4769cdb957947c04d100f7eaf605edb809de171107dbaf735c63a174d866e087.json.gz",
+      "sha256": "4769cdb957947c04d100f7eaf605edb809de171107dbaf735c63a174d866e087",
+      "bytes": 5608755,
+      "gzip_sha256": "0cf37e66c0dac1831292892ada0c6448ec8eacd7e6cfbe8c112c9462ae84042c",
+      "gzip_bytes": 554605,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 2407274,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus_v2_maturity-q43pa6il",
+            "file": "0a71c640089082368675cbe0052a64dbd4b92c0c74c436be5aee004bcb0909f4.json.gz",
+            "gzip_bytes": 442399,
+            "gzip_sha256": "7ba00ae37b8c335db05e759228d9e1c8bf1c2e272bae6e332b2bb1f30d42bf5a",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "0a71c640089082368675cbe0052a64dbd4b92c0c74c436be5aee004bcb0909f4"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 15773564,
+            "end": 15773575
+          },
+          "stream": {
+            "bytes": 483046,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus_v2_maturity-89g0fexl",
+            "file": "0bb072351218a34cda3491f626a5fc038e6d41c97c359cc9a9dafaf11b694a6b.json.gz",
+            "gzip_bytes": 72649,
+            "gzip_sha256": "94845b02737634f89d7ca85869309660b24fab4eeede4222aa4cfcb7652a7961",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "0bb072351218a34cda3491f626a5fc038e6d41c97c359cc9a9dafaf11b694a6b"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 679481,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus_v2_maturity-lmi5yd8x",
+            "file": "2486a6582e84c987e1ced673197f98515016dcb8111f0cf7ed1deb7894fd27f7.json.gz",
+            "gzip_bytes": 16000,
+            "gzip_sha256": "b5fc21ee08a3db1c0ed0337645a80bd156f5d0807e0fcd9fdb2c6b7387e7a731",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "2486a6582e84c987e1ced673197f98515016dcb8111f0cf7ed1deb7894fd27f7"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 675240,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus_v2_maturity-a1narvwi",
+            "file": "e9730ec5cc0aaa128060b694dbc33f28294f7870697bda2af9a0b3a90f1ad0b2.json.gz",
+            "gzip_bytes": 15871,
+            "gzip_sha256": "ed660e533135479a55321239b6f09808fc0ed10143c8bd67177c8fe459245dc0",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "e9730ec5cc0aaa128060b694dbc33f28294f7870697bda2af9a0b3a90f1ad0b2"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 675241,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus_v2_maturity-y7b42ore",
+            "file": "85f8c843836dad8cd3f8a18d8f3d786f3f3f9646d3e8776f6f82a071eb428e8e.json.gz",
+            "gzip_bytes": 15867,
+            "gzip_sha256": "daed43fe25052a96633079cd991db502b595ddca5f475146066fc065b3bb4c84",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "85f8c843836dad8cd3f8a18d8f3d786f3f3f9646d3e8776f6f82a071eb428e8e"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "bytes": 675241,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus_v2_maturity-gxaeyxh9",
+            "file": "19c455793193298530ad832cebc1358628e04a6784edc52fd8d0017a569cc05c.json.gz",
+            "gzip_bytes": 15863,
+            "gzip_sha256": "1403f21be96ca45c29f18614d0a6a9ee4327c5fc16dc1bfe8ae3aacdb3f42630",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "19c455793193298530ad832cebc1358628e04a6784edc52fd8d0017a569cc05c"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 2434922,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus_v2_maturity-acfas_l6",
+            "file": "030daccd311bc27867cab59b7d3bad7f3693f6b4b392e9b9dbacb3471614f878.json.gz",
+            "gzip_bytes": 445936,
+            "gzip_sha256": "b57114c6e60866e751c684497133b82cfaf4a848198a74ac12726702602a3ded",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "030daccd311bc27867cab59b7d3bad7f3693f6b4b392e9b9dbacb3471614f878"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 15773564,
+            "end": 15773575
+          },
+          "stream": {
+            "bytes": 507904,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus_v2_maturity-miqwn2xl",
+            "file": "62bff6131284d34bf838d9e26bfd34492129a86f5241d83a25b58e88ebacd5f4.json.gz",
+            "gzip_bytes": 74033,
+            "gzip_sha256": "ef86b61ed88e106152e0726393f048151046f60294cb01db9429575e63729e62",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "62bff6131284d34bf838d9e26bfd34492129a86f5241d83a25b58e88ebacd5f4"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 679480,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus_v2_maturity-kh0g6tgv",
+            "file": "ea40abb402b2ab4937a7dede320d1ec7d6b6c96ee7034b8bd9075b77c3d1ee7a.json.gz",
+            "gzip_bytes": 15994,
+            "gzip_sha256": "2e1b8b7ea56c3bb8093d5aaefb5d2f4cb542570b5906b29c1fe1365e6d973c28",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "ea40abb402b2ab4937a7dede320d1ec7d6b6c96ee7034b8bd9075b77c3d1ee7a"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 675239,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus_v2_maturity-0s7yy3lg",
+            "file": "a72ec64bdf4711f60dca7b87ca7ae6550d45ab703729027b6e0b07ba10305486.json.gz",
+            "gzip_bytes": 15867,
+            "gzip_sha256": "b0836d9feddc510ee2be841a18916b4884a0319a40dbb318300a8b2a99d1da39",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "a72ec64bdf4711f60dca7b87ca7ae6550d45ab703729027b6e0b07ba10305486"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 675240,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus_v2_maturity-dynsrnji",
+            "file": "a4e44dec56a8c710df0273e5921a1898ed4f89ec8fb76534391fb436f5213128.json.gz",
+            "gzip_bytes": 15863,
+            "gzip_sha256": "ba92c6296ca98b8b7565014fb8998d36a985efbea3b120f685ceca88461ac187",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "a4e44dec56a8c710df0273e5921a1898ed4f89ec8fb76534391fb436f5213128"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "bytes": 675240,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus_v2_maturity-awblkoca",
+            "file": "aca03d29457ae0598c2220cfd74c5a176800ef9ae938c4046acef077c9cef82b.json.gz",
+            "gzip_bytes": 15857,
+            "gzip_sha256": "f5d7d4fb41530a4ecab97e2d2f865a7c4cea2aef8919446d22824ea695ad9197",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "aca03d29457ae0598c2220cfd74c5a176800ef9ae938c4046acef077c9cef82b"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "b51faffca52afaa25c863a5459e5b817aa40d808966624c4d3179ecd8ef4aa8f",
+    "streams": {
+      "public": "ea36432ab6473132e278184b555b2bbe766cd13b629483251a9e9f9110f4d7d8",
+      "local": "c6e46c3c1d5f8b54b659de22d04c54e59675235af78d0e68178219260da75626"
+    },
+    "forks": {}
+  },
+  "cpp_estimates": {
+    "file": "77219c62139fd581ac72c0af33a2e423be618bcb0f6d411365b76ff10656e6eb.cpp-estimates.json",
+    "sha256": "77219c62139fd581ac72c0af33a2e423be618bcb0f6d411365b76ff10656e6eb",
+    "bytes": 17262
+  }
+}

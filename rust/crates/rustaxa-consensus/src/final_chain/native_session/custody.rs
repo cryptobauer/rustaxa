@@ -8,12 +8,11 @@
 //! [`FinalChainNativeSession::finish_rewards`]. V1/V2 confirmation
 //! rewrites a surviving validator only once the immutable FinalChain Ficus
 //! boundary is active, matching the reference's conditional storage call. The
-//! bounded pre-Ficus check covers that omitted operation only: the reference
-//! leaves a stale persisted undelegation count there, while Rust derives it
-//! from the live queue, so later-call and reopen parity remain outside scope.
-//! Snapshots with more than `u16::MAX` concurrent undelegations for one
-//! validator also remain outside this adapter: the existing Rust kernel rejects
-//! that invalid counter state instead of reproducing the reference's wrap.
+//! surviving pre-Ficus confirmation authenticates the consumed row while
+//! preserving its retained counter and row shape. CF1 records count divergence
+//! and complete authenticated shape provenance separately. Owned uint16
+//! insertion wraps; confirmation/cancellation decrement only when positive.
+//! Old snapshots without that provenance retain their prior bounded scope.
 
 use super::account::StagedDposAccountPort;
 use super::raw::FinalChainNativeRawTrace;
@@ -50,7 +49,10 @@ impl FinalChainNativeSession<'_> {
         if matches!(transaction, DposTransaction::Redelegate { .. }) {
             return self.invoke_redelegate(transaction, quote, state);
         }
-        if !self.final_chain.magnolia_active(self.pending_period) {
+        if !self.final_chain.magnolia_active(self.pending_period)
+            && !(matches!(&transaction, DposTransaction::Delegate { .. })
+                && self.dpos_state.has_complete_validator_shapes())
+        {
             return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
         }
 
@@ -419,6 +421,32 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        if before.total_stakes.contains_key(&validator) {
+            let observed = trace.current(DPOS_CONTRACT_ADDRESS, validator_key(validator))?;
+            if !ExpectedRaw::OneOf(self.validator_input_encodings(before, validator)?)
+                .matches(&observed)
+            {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    if after.total_stakes.contains_key(&validator) {
+                        "validator raw/domain facts disagree"
+                    } else {
+                        "deleted validator raw/domain facts disagree"
+                    }
+                    .into(),
+                ));
+            }
+            let rewards = trace.current(DPOS_CONTRACT_ADDRESS, rewards_key(validator))?;
+            if !ExpectedRaw::Exact(encode_rewards(before, validator)).matches(&rewards) {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    if after.total_stakes.contains_key(&validator) {
+                        "confirmation rewards raw/domain facts disagree"
+                    } else {
+                        "deleted validator rewards raw/domain facts disagree"
+                    }
+                    .into(),
+                ));
+            }
+        }
         self.serialize_remove_v1_queue(
             delegator,
             validator,
@@ -580,6 +608,32 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        if before.total_stakes.contains_key(&validator) {
+            let observed = trace.current(DPOS_CONTRACT_ADDRESS, validator_key(validator))?;
+            if !ExpectedRaw::OneOf(self.validator_input_encodings(before, validator)?)
+                .matches(&observed)
+            {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    if after.total_stakes.contains_key(&validator) {
+                        "validator raw/domain facts disagree"
+                    } else {
+                        "deleted validator raw/domain facts disagree"
+                    }
+                    .into(),
+                ));
+            }
+            let rewards = trace.current(DPOS_CONTRACT_ADDRESS, rewards_key(validator))?;
+            if !ExpectedRaw::Exact(encode_rewards(before, validator)).matches(&rewards) {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    if after.total_stakes.contains_key(&validator) {
+                        "confirmation rewards raw/domain facts disagree"
+                    } else {
+                        "deleted validator rewards raw/domain facts disagree"
+                    }
+                    .into(),
+                ));
+            }
+        }
         self.serialize_remove_v2_queue(
             V2QueueEntry {
                 delegator,
@@ -721,6 +775,12 @@ impl FinalChainNativeSession<'_> {
         snapshot: &DposSnapshot,
         validator: [u8; 20],
     ) -> std::result::Result<Vec<Vec<u8>>, FinalChainNativeSessionError> {
+        if matches!(
+            snapshot.validator_row_authority,
+            ValidatorRowAuthority::Complete(_)
+        ) {
+            return Ok(vec![self.encode_validator_row(snapshot, validator)?]);
+        }
         let (stake, commission, last_change, reward_head, undelegations_count) =
             self.validator_facts(snapshot, validator)?;
         let mut legacy = rlp::RlpStream::new_list(4);
@@ -731,7 +791,12 @@ impl FinalChainNativeSession<'_> {
             .append(&reward_head);
         let legacy = legacy.out().to_vec();
         let encoded = self.encode_validator_row(snapshot, validator)?;
-        if self.final_chain.magnolia_active(self.pending_period) && undelegations_count == 0 {
+        if self.final_chain.magnolia_active(self.pending_period)
+            && undelegations_count == 0
+            && !snapshot
+                .retained_undelegation_counts
+                .contains_key(&validator)
+        {
             Ok(vec![encoded, legacy])
         } else {
             Ok(vec![encoded])
@@ -759,7 +824,7 @@ pub(super) enum ExpectedRaw {
 }
 
 impl ExpectedRaw {
-    fn matches(&self, read: &ConcreteRead<Vec<u8>>) -> bool {
+    pub(super) fn matches(&self, read: &ConcreteRead<Vec<u8>>) -> bool {
         match self {
             Self::Exact(expected) => match read {
                 ConcreteRead::Present(value) => value == expected,

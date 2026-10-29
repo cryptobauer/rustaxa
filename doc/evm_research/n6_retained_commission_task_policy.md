@@ -1,3 +1,5 @@
+> Current run: the owner-approved [Rust EVM cutover addendum](n6_rust_cutover_task_policy.md) supersedes conflicting scope and process rules below for root run 01a17dec. Historical run records remain unchanged.
+
 # Proposed native-task process successor
 
 Status: proposal only. This text has no effect until the owner approves this exact

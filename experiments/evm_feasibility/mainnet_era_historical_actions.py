@@ -14,6 +14,33 @@ PRINCIPAL = str(10**24)  # eraConfig's actual synthetic owner delegation.
 DEPOSIT = str(10**21)  # Real mainnet minimum deposit; no shortened policy.
 
 
+def validate_constant_pending_domain(row, policy):
+    """Check the Go pending evaluator's rule and donor bounds before launch.
+
+    This checks declared coordinates only. Actual jail expiry, reader contents
+    and constant eligibility still require the unchanged Go runtime checks.
+    """
+    pending = [period for period in row['pending_periods']
+               if period <= row['first_retained']]
+    if not pending:
+        return None
+    delay = int(policy['dpos']['delegation_delay'])
+    low = max(0, pending[0]-1-delay)
+    high = pending[-1]-1
+    hf = policy['hardforks']
+    boundaries = [hf['fix_redelegate_block_num'], hf['magnolia_hf']['block_num'],
+                  hf['phalaenopsis_hf_block_num'], hf['fix_claim_all_block_num'],
+                  hf['aspen_hf']['block_num_part_one'], hf['aspen_hf']['block_num_part_two'],
+                  hf['ficus_hf']['block_num'], hf['cornus_hf']['block_num'],
+                  hf['cacti_hf']['block_num'],
+                  *map(int, hf['rewards_distribution_frequency'])]
+    if any(low < boundary <= high for boundary in boundaries):
+        raise ValueError('constant synthetic pending domain crosses a rule activation')
+    if row.get('donor') and row['donor']['periods'][-1] >= low:
+        raise ValueError('donor does not predate earliest pending reader coordinate')
+    return low, high
+
+
 def apply_historical_actions(windows, policy, frame_matrix):
     """Return scenarios with four source-backed signed workloads and donors.
 
@@ -69,6 +96,26 @@ def apply_historical_actions(windows, policy, frame_matrix):
                    required_activation_periods=[boundary-1, boundary, boundary+1],
                    api_heads=[boundary-1, boundary, boundary+1, boundary+4, boundary+5])
         return boundary
+
+    # Real signed ordinary transfers exercise each boundary's fee economics.
+    # Signer4 also makes the API requests. Their effective nonce and balances
+    # come from the independently captured state after these transactions.
+    # Keep the original warmup delegation and all declared window coordinates.
+    for family in ('magnolia', 'aspen_one', 'aspen_two', 'soleirolia'):
+        if family not in by_name:
+            continue
+        row = by_name[family]
+        if row.get('actions') or row.get('donor'):
+            raise ValueError('fee boundary actions must not replace existing work')
+        boundary = row['head'] + 2
+        row['actions'] = [action(period, 4, f'{family}_fee_{phase}', 'raw',
+                                 to='c48b812bb43401392c037381aca934f4069c0517',
+                                 input='', value='1',
+                                 gas=(31500000 if family == 'soleirolia' and period == boundary else 21000),
+                                 gas_price=1000000000)
+                          for period, phase in [(boundary-1, 'before'),
+                                                (boundary, 'activation'),
+                                                (boundary+1, 'after')]]
 
     # CALL forwards exact calldata and CALLVALUE to the real DPoS account; the
     # parent's revert tests ordinary frame rollback of value and native effects.
@@ -189,7 +236,9 @@ def apply_historical_actions(windows, policy, frame_matrix):
 
     # Confirmation coverage needs a separate same-era bounded donor, because a
     # V2 created at B cannot mature inside B±1. The real lock stays163459.
-    created = b+10
+    # Keep the first unfinished batch's p-1-delay reader after Cornus too.
+    # B+10 would reuse a constant logical seed across the B activation.
+    created = b+110
     source = donor('cornus_live_v2_donor', created, created+1, [
         action(created, 0, 'real_post_cornus_v2_creation', 'undelegateV2', validator=0, amount=DEPOSIT),
         action(created+1, 0, 'create_maturity_ordinary_control', 'create', input='600160005560006000f3')])
@@ -215,12 +264,13 @@ def apply_historical_actions(windows, policy, frame_matrix):
                   hf['aspen_hf']['block_num_part_one'], hf['aspen_hf']['block_num_part_two'],
                   hf['ficus_hf']['block_num'], hf['cornus_hf']['block_num'],
                   hf['soleirolia_hf']['block_num'], hf['cacti_hf']['block_num']]
-    new_names = set(required) | {'cornus_v2_maturity'} | {
+    new_names = set(required) | {'cornus_v2_maturity', 'aspen_one', 'aspen_two', 'soleirolia'} | {
         'phalaenopsis_commission_donor', 'claim_all_membership_donor',
         'ficus_reward_donor', 'ficus_custody_donor', 'cornus_old_v1_donor', 'cornus_live_v2_donor'}
     for row in result:
         if row['name'] not in new_names:
             continue
+        validate_constant_pending_domain(row, policy)
         for a in row['actions']:
             if a['period'] not in row['periods']:
                 raise ValueError('action outside its actual execution periods')
@@ -237,3 +287,23 @@ def apply_historical_actions(windows, policy, frame_matrix):
     if sum(len(row['actions']) for row in result if row['name'] in new_names) > 100:
         raise ValueError('historical action helper exceeds100 new logical transactions')
     return result
+
+
+def legacy_batch_correction_component(original):
+    """Synthetic additive component; no inferred poststate or Go outcome."""
+    if original['name'] != 'claim_all_correction':
+        raise ValueError('expected original claim-all correction input')
+    row = deepcopy(original)
+    row['name'] = 'claim_all_legacy_batch_correction'
+    actions = []
+    for action in row['actions']:
+        if action['name'] == 'full_claim_route':
+            continue
+        if action['name'] == 'full_claim_with_value':
+            action = dict(action, name='old_batch_zero_with_value', method='raw',
+                          to=DPOS, input='09b72e00' + '00'*32)
+        actions.append(action)
+    if len(actions) != 16 or len(row['donor']['actions']) != 4:
+        raise ValueError('unexpected component action shape')
+    row['actions'] = actions
+    return row

@@ -1632,3 +1632,8 @@ fn return_data_copy_matches_go_memory_bounds_gas_and_reference_panics() {
         assert_eq!(sequence.next_sequence(), 0);
     }
 }
+
+#[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
+pub mod closeout_test_scratch;
+#[path = "native_driver_reference/owner_registry.rs"]
+mod owner_registry;

@@ -29,3 +29,14 @@ triehash = "0.8.4"
 
 [dev-dependencies]
 k256 = { version = "0.13", features = ["ecdsa"] }
+
+# Keep all debug assertions and overflow checks while removing hash-loop debug cost.
+[profile.dev.package.sha2]
+opt-level = 3
+debug-assertions = true
+overflow-checks = true
+
+[profile.dev.package.tiny-keccak]
+opt-level = 3
+debug-assertions = true
+overflow-checks = true

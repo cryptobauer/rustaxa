@@ -1,3 +1,5 @@
+> Current run: the owner-approved [Rust EVM cutover addendum](n6_rust_cutover_task_policy.md) supersedes conflicting scope and process rules below for root run 01a17dec. Historical run records remain unchanged.
+
 # Milestone: existing-network execution and API parity
 
 Status: authorized implementation, in progress. Baseline `48dd3173b` on

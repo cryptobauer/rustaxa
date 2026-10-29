@@ -1,0 +1,448 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "aspen_two",
+    "head": 8571998,
+    "first_retained": 8571994,
+    "periods": [
+      8571999,
+      8572000,
+      8572001
+    ],
+    "pending_periods": [
+      8571901,
+      8571902,
+      8571903,
+      8571904,
+      8571905,
+      8571906,
+      8571907,
+      8571908,
+      8571909,
+      8571910,
+      8571911,
+      8571912,
+      8571913,
+      8571914,
+      8571915,
+      8571916,
+      8571917,
+      8571918,
+      8571919,
+      8571920,
+      8571921,
+      8571922,
+      8571923,
+      8571924,
+      8571925,
+      8571926,
+      8571927,
+      8571928,
+      8571929,
+      8571930,
+      8571931,
+      8571932,
+      8571933,
+      8571934,
+      8571935,
+      8571936,
+      8571937,
+      8571938,
+      8571939,
+      8571940,
+      8571941,
+      8571942,
+      8571943,
+      8571944,
+      8571945,
+      8571946,
+      8571947,
+      8571948,
+      8571949,
+      8571950,
+      8571951,
+      8571952,
+      8571953,
+      8571954,
+      8571955,
+      8571956,
+      8571957,
+      8571958,
+      8571959,
+      8571960,
+      8571961,
+      8571962,
+      8571963,
+      8571964,
+      8571965,
+      8571966,
+      8571967,
+      8571968,
+      8571969,
+      8571970,
+      8571971,
+      8571972,
+      8571973,
+      8571974,
+      8571975,
+      8571976,
+      8571977,
+      8571978,
+      8571979,
+      8571980,
+      8571981,
+      8571982,
+      8571983,
+      8571984,
+      8571985,
+      8571986,
+      8571987,
+      8571988,
+      8571989,
+      8571990,
+      8571991,
+      8571992,
+      8571993,
+      8571994,
+      8571995,
+      8571996,
+      8571997,
+      8571998
+    ],
+    "actions": [
+      {
+        "period": 8571999,
+        "who": 4,
+        "name": "aspen_two_fee_before",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 8572000,
+        "who": 4,
+        "name": "aspen_two_fee_activation",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 8572001,
+        "who": 4,
+        "name": "aspen_two_fee_after",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      }
+    ]
+  },
+  "scheduler_manifest_sha256": "cbb3adfad0b18277d7806b44901c7da8cba571c9696ef2b4695a352c31d36b37",
+  "support": {
+    "mainnet_era_reference.py": "25593818ab0d157886674dd6f55e82bc3146dc8cf2b6bcda044c4e2ccbdc3533",
+    "mainnet_era_profile.py": "44aaf3bd52beed3c0b60c8f42bd8fa490a6f7f3bf62c26c874c51266949194d7",
+    "mainnet_era_historical_actions.py": "fb1e9196bfd56689c4017ff3cb4167c5b47ab1528a772408491ad630f3bfb123",
+    "mainnet_era_reference.go": "d41b7af624677db55897fc44d1a574b4fd475d5b958bb4d4fb53023a73d0fb7a",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference.py": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149",
+    "native_integration_reference.go": "e3189439d62dc65d245b89e5eabd1ced2b774409400c3e4540a1f4756a59a43f",
+    "native_integration_reference.py": "f280aab0db3d4ca7756e6f7501380a5a6fe4c8d0d747fa4031375c3cc822f0dd",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637"
+  },
+  "streams": {
+    "public": {
+      "file": "c99c0997966ebd9e7a3414554c901fbe12a23b88093785fefbb5b5091291cd75.json.gz",
+      "sha256": "c99c0997966ebd9e7a3414554c901fbe12a23b88093785fefbb5b5091291cd75",
+      "bytes": 2920352,
+      "gzip_sha256": "a5b7562c1e4469a7a4d3100fe4ba6c5ddf21619bf18128f30cfa259b294223f8",
+      "gzip_bytes": 123099,
+      "capture": null
+    },
+    "local": {
+      "file": "c44fb4e5511a54a0419ed202fac15c0746873100c17131de033237e6972ee725.json.gz",
+      "sha256": "c44fb4e5511a54a0419ed202fac15c0746873100c17131de033237e6972ee725",
+      "bytes": 2963622,
+      "gzip_sha256": "e45faf6b3201dc2e7ca3a5a2781724101b4679a576aa5c64e74f2fa12a27ef33",
+      "gzip_bytes": 127794,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 352710,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_two-fhfup23u",
+            "file": "699492f53abd2ad4263ffef13316c6e50485ee24dd629db82dfaa4dee272dba4.json.gz",
+            "gzip_bytes": 45673,
+            "gzip_sha256": "adf568747c45aa24f90557d2b64f37f30ef5ff6f81d22f9926fa39990585c32f",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "699492f53abd2ad4263ffef13316c6e50485ee24dd629db82dfaa4dee272dba4"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 8571995,
+            "end": 8572002
+          },
+          "stream": {
+            "bytes": 655078,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_two-idda71gp",
+            "file": "6b3b7604bd0599c0d5d6f74506de29c4c999bb57b8701bb7f81006a75ed83183.json.gz",
+            "gzip_bytes": 57222,
+            "gzip_sha256": "0d88607e183b92c64d00ff1b31d8dd22d2059dffb5cb2d3d602cf7f1415cd780",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "6b3b7604bd0599c0d5d6f74506de29c4c999bb57b8701bb7f81006a75ed83183"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 642317,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_two-3pnw0rvf",
+            "file": "9c0f845da6583980cbb4a65258e82f9cb04896aa69271a5d101d05087133b309.json.gz",
+            "gzip_bytes": 14700,
+            "gzip_sha256": "9415cddfb85ddb26a8d68a4c252dea3bbb9fc8ec404887602564f00b8a0223ca",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "9c0f845da6583980cbb4a65258e82f9cb04896aa69271a5d101d05087133b309"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 647862,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_two-blyzo4bv",
+            "file": "f45ed14e0e55ae6ac871175a311e3a8ab34e9046ce53545df73d0cf43c62da1d.json.gz",
+            "gzip_bytes": 14800,
+            "gzip_sha256": "7532ac5530dcee8e403162911caa97d6dcac32516d30374ecd46d8e3e67983db",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "f45ed14e0e55ae6ac871175a311e3a8ab34e9046ce53545df73d0cf43c62da1d"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 647863,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_two-ki4mqf0o",
+            "file": "9ae7fd0e735633673cd761a802a8806feea4049bf57a01dab10d2f1d42dcfa7a.json.gz",
+            "gzip_bytes": 14799,
+            "gzip_sha256": "5d321a8fae76483baaf7e517c5ec5d18c971c6057af147bba3e7e8dbed287948",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "9ae7fd0e735633673cd761a802a8806feea4049bf57a01dab10d2f1d42dcfa7a"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 361612,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_two-e3hbp3zi",
+            "file": "d8a1885f4073ef278f6482b9875dc8d6cd45dc0afa617483d5928774abff30a0.json.gz",
+            "gzip_bytes": 47001,
+            "gzip_sha256": "592b64edf2f0e3cc63dca78ff9b9e1bd65e8e57fc80e38d6f9b16d8c07e1293d",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "d8a1885f4073ef278f6482b9875dc8d6cd45dc0afa617483d5928774abff30a0"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 8571995,
+            "end": 8572002
+          },
+          "stream": {
+            "bytes": 689444,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_two-jlo2ikad",
+            "file": "c3e1d21cf02bf3f750a9bbf1b774843070d7288063b49c0d9e2ae11ea80a10db.json.gz",
+            "gzip_bytes": 60535,
+            "gzip_sha256": "40144d3afbdd75d9c3de570d49a25b9235bcc79952a0bc6bf9aebe45dbe0a2a0",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "c3e1d21cf02bf3f750a9bbf1b774843070d7288063b49c0d9e2ae11ea80a10db"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 642316,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_two-vnn2eotc",
+            "file": "2c50e0d178948b484e60d1b95769fe98b004a700aeeb702497d0fced84c9bbc8.json.gz",
+            "gzip_bytes": 14696,
+            "gzip_sha256": "45d23f37aa496abfb7cbf0d917f45e884eb257bbfbc46c1920f8ea7165537f4c",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "2c50e0d178948b484e60d1b95769fe98b004a700aeeb702497d0fced84c9bbc8"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 647861,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_two-a7juklkh",
+            "file": "2eb6833a1613387e90cc2baeb8c6678dbb131495acb83e06a3000eb13ec686d0.json.gz",
+            "gzip_bytes": 14795,
+            "gzip_sha256": "d0ac550533c31312e78cf0ba6bd3f44df0c2258f7c8735b7c891b206e4320a1e",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "2eb6833a1613387e90cc2baeb8c6678dbb131495acb83e06a3000eb13ec686d0"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 647862,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_two-vgdkdt_0",
+            "file": "bf8618cc4df142096270027968b1ff51a56c6850ff988ccc21ed36230ad24261.json.gz",
+            "gzip_bytes": 14794,
+            "gzip_sha256": "3e38c759e39baa2975812fd965207055b3d4c725c8ad35cd0340f669de1489e4",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "bf8618cc4df142096270027968b1ff51a56c6850ff988ccc21ed36230ad24261"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "b51faffca52afaa25c863a5459e5b817aa40d808966624c4d3179ecd8ef4aa8f",
+    "streams": {
+      "public": "e5d312e8e20e3d94949cce2d1474b009852ef388506f5b3cddef86f52f586b9a",
+      "local": "11f15d2fb606e4b89b57295ddf8b3e04a83d2af7814fe064ea4e47414666bfca"
+    },
+    "forks": {}
+  }
+}

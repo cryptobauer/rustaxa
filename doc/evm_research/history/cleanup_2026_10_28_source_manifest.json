@@ -1,0 +1,324 @@
+{
+  "initial_base_commit": "1cd4743b1bed79b742e457ee39ae723672f25104",
+  "status": "source_active_with_known_failures_per_owner_request",
+  "files": [
+    {
+      "path": "experiments/evm_feasibility/mainnet_era_historical_actions.py",
+      "bytes": 17415,
+      "sha256": "1c41c2bc7ec96d417d54a739b45477f32d975f6c0cde140288561370db6a3f22",
+      "tracked": true
+    },
+    {
+      "path": "experiments/evm_feasibility/mainnet_era_profile.py",
+      "bytes": 15345,
+      "sha256": "fe93190a382cbd54ea061425b701b08294dddb4f0ff82a89bb073478f9b56b64",
+      "tracked": true
+    },
+    {
+      "path": "experiments/evm_feasibility/mainnet_era_reference.go",
+      "bytes": 36822,
+      "sha256": "c348edbb5043b340987eede730460d0a2713aa81a6eb8e08ca08fd74c7de1aa2",
+      "tracked": true
+    },
+    {
+      "path": "experiments/evm_feasibility/mainnet_era_reference.py",
+      "bytes": 41862,
+      "sha256": "25593818ab0d157886674dd6f55e82bc3146dc8cf2b6bcda044c4e2ccbdc3533",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain.rs",
+      "bytes": 1500092,
+      "sha256": "ab7262a15cf74a96511f9b4e2a27f5c8921faca0fe250563f0d0b687fb240ab9",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session.rs",
+      "bytes": 212459,
+      "sha256": "54b5948e83813b67dba325aa47108384721b73925943b24d2832c7d022a1b4d8",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/claim_all.rs",
+      "bytes": 39255,
+      "sha256": "a7eab6db816f79896ac7773cd34d110815eabb54e9dcffa6eaa0a21a7eaf19fa",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/claim_all_reference_tests.rs",
+      "bytes": 80142,
+      "sha256": "6ada4e6ce2cca392722202d3b444f2833bde730f64016eae2c65ea70bc86d1a8",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/claims.rs",
+      "bytes": 8879,
+      "sha256": "b8e996025731272ba612494aa80cb730981259ec52cb11ee550fc1f248980ad2",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/claims_reference_tests.rs",
+      "bytes": 30369,
+      "sha256": "03d786f70bb99bc51193c06bc84fd4099a594b59ee4f0c44833ec3b14ae01dbf",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/custody.rs",
+      "bytes": 46530,
+      "sha256": "b1a97248bb9d83f31db695cf5ab840429376854a74c1a13d44afc7f66510d9c7",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/custody/redelegate.rs",
+      "bytes": 59288,
+      "sha256": "4526cf02f51bf48dada1d1bdae07a0ecfc4dbd42980ad1a32f6a3dfb8ab65ed9",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/custody/redelegate_reference_tests.rs",
+      "bytes": 50718,
+      "sha256": "703317283aec135574c195db2a455e4bc4cf7ce08ec427419cf85980e8f8b707",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/retained_commission_reference_tests.rs",
+      "bytes": 36890,
+      "sha256": "6b3ce7383137247425e7ab6d6da8bdfaa09d07b7a8fc55aebc1589fab4643b96",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/rewards.rs",
+      "bytes": 122816,
+      "sha256": "ecb1cea0d88aa013f66f4a0d9fa9ac1a98433fd630cde7f4ab5dce8d5085d483",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/semantic_port.rs",
+      "bytes": 22027,
+      "sha256": "e1eb87f0e3f1dc0469ddc99f22ea21dc0a6f2f5a395e6969e7b89d9a3a7896a8",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/tests/commission_lifecycle_fault_support.rs",
+      "bytes": 3389,
+      "sha256": "19fd2ffc4f3623b6eed8078df001b666b7aedf380ac2f7d28cd4c6af9d71d426",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/tests/escrow_transfer_reference_tests.rs",
+      "bytes": 8251,
+      "sha256": "c139c45cbd39cbd353dd3a56ac543165eefa925b0aba5a2dd27f742133eb24c6",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/v1_custody_reference_tests.rs",
+      "bytes": 20724,
+      "sha256": "a197577b2bd5d9a4220c54956a26c11e2e6904a5fb13a3aa30687ce27faa38b7",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/synthetic_fixture.rs",
+      "bytes": 33248,
+      "sha256": "d5ad3e2bd286a1b73b3fe6d5dac0b8070a9992a0f34fdfb0ab0c15573a03cb5e",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/mixed_period_reference.rs",
+      "bytes": 104873,
+      "sha256": "eca5c20f8f1ef0877dd26d19db61b8c4f36eb41330fb8d77af5c271c688271cf",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/native_driver_reference.rs",
+      "bytes": 60074,
+      "sha256": "eb5959615b7e4adcdc20d0f5743b421b58c8953d91b3ca15676e4cdfd0c05780",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/native_session_reference.rs",
+      "bytes": 30640,
+      "sha256": "7abfc809720f6f26c4a31ba678e09e386af3097dad7075017b08ec5d4cfc2fcd",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/support/mainnet_era.rs",
+      "bytes": 100109,
+      "sha256": "ccaeddfd3230749718e4c6492efe920a40960242666488f0e436d9fce8515702",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/support/mainnet_era_api.rs",
+      "bytes": 31346,
+      "sha256": "29173600c8ee96355807c2113818c656334b8fbbfcc82050f93406ef04056c09",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/support/mixed_genesis.rs",
+      "bytes": 21631,
+      "sha256": "c1c4cf2ebe8c02fe3d622da1e6a526d1e56c452a8898993072ac3bb042dcb45c",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/support/mixed_recovery.rs",
+      "bytes": 52873,
+      "sha256": "39c2d551d906820f954045f472bd4ade23051ca4a99e0841d88cac2fde820e9a",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/support/native_integration.rs",
+      "bytes": 20825,
+      "sha256": "6d8aad398696cf3639647ef488e78b1f8c6559d0c365583f7c85238f16edc395",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/support/native_integration_api.rs",
+      "bytes": 36509,
+      "sha256": "42c7549e23e6e8d6849aa234737714e00ff34919ad333e6b9d646636210bff40",
+      "tracked": true
+    },
+    {
+      "path": "rust/crates/rustaxa-types/src/lib.rs",
+      "bytes": 1463,
+      "sha256": "0c939b4c5b02684bb6322488541216e51be8758ad750a3ff11f2f73620865533",
+      "tracked": true
+    },
+    {
+      "path": "experiments/evm_feasibility/mainnet_era_catalog_test.go",
+      "bytes": 33565,
+      "sha256": "25408a139051d6df6a26570f33edd39d6280054dd83ad3dd474c8345946e2343",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/test_mainnet_era_catalog_observer.py",
+      "bytes": 2823,
+      "sha256": "34f204f4f8bcfc57f492fa508d9cf75344d939ac3b4bc0325afb892da3466a8a",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/test_mainnet_era_historical_actions.py",
+      "bytes": 16707,
+      "sha256": "309e25fc16dcc97e847103ce9cc371aca5c56fa0d32123d4071d21b0c0765a96",
+      "tracked": false
+    },
+    {
+      "path": "rust/crates/rustaxa-consensus/src/final_chain/native_session/registry_reference_tests.rs",
+      "bytes": 3433,
+      "sha256": "de26c6f84d8b78234de2bce9586eeeb272b973f6991c55683f801be5e098d670",
+      "tracked": false
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/native_driver_reference/owner_registry.rs",
+      "bytes": 5886,
+      "sha256": "8d3efa4106b3bbe66854db7c440c952c21b2f3ccf42e4e5903ecf40eae21330c",
+      "tracked": false
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/support/ordinary_observer.rs",
+      "bytes": 15406,
+      "sha256": "8a381f6024ccc5d0b536a361bb415b8d7828004ba395c306204fc0347be1798c",
+      "tracked": false
+    },
+    {
+      "path": "rust/crates/rustaxa-evm/tests/support/zero_fee_checkpoint_component.rs",
+      "bytes": 20085,
+      "sha256": "3946a68afef83c1ec56e1b7711cfc01b1503a6baa1313bc1295db29f8aa1e5cc",
+      "tracked": false
+    },
+    {
+      "path": "rust/crates/rustaxa-types/src/native_code.rs",
+      "bytes": 501829,
+      "sha256": "50274fec66453179c67067f1fb7dc5c302be671a89faccff8a015a4aff58fb90",
+      "tracked": false
+    },
+    {
+      "path": "scripts/tests/test_mainnet_era_shard_receipts.py",
+      "bytes": 12866,
+      "sha256": "46d77351de5c5658348a8e36d41e606d38fb5888cae0d36bd184c0f00cfb3134",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/Cargo.toml",
+      "bytes": 1171,
+      "sha256": "b5c2dd05ac9f2ae601dbcfe285044f9e2ac68135c2bd69c1026044619712b4b9",
+      "tracked": true
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/src/vrf_shared_window.rs",
+      "bytes": 194895,
+      "sha256": "9657e85b362c4dda6a1969a07a92147ea3152dd42eb30b4f76058a53c51a7ae7",
+      "tracked": true
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/test_bounded_vrf.py",
+      "bytes": 139539,
+      "sha256": "ede0b0de38a936dd0ded16fa08737d50ebe4a20826d36acc931074bd54b4395e",
+      "tracked": true
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/src/bin/live_vrf_residual_e946.rs",
+      "bytes": 733,
+      "sha256": "73846acdc40e19c6fb6af6ce5383ebcd21ea02d209bdb759a53dfc2dba7f7f68",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/src/bin/replay_vrf_residual_e946.rs",
+      "bytes": 522,
+      "sha256": "032bc6dbcb2859df4e7a748a575e1bab41bd8a76f857e4301aa523714cbd1856",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/pa1_development.py",
+      "bytes": 34585,
+      "sha256": "047a2a45bf36d2c1597e3487929f2851813c65f4814a67fcaf2c3dddfe147379",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/pa1_evidence.py",
+      "bytes": 58347,
+      "sha256": "6a3e187a20b4b7a2d94b2f253b60d4d1e536bc892a9dec76d984ca22642b0781",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/pa1_fixed40.py",
+      "bytes": 261183,
+      "sha256": "e5d5d77086398175e09115c97470ebed83edf4ffd908d388f5b0245397142270",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/pa1_fixed40_constructors.py",
+      "bytes": 235443,
+      "sha256": "c8439813984510a634d97b3467663a41caec08fe512c18a0655ed482f8332fe6",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/pa1_fixed40_runtime.py",
+      "bytes": 86267,
+      "sha256": "fb3cd39f9d6a8ddb800a888ee64a8b3f44e37a143f973fa564567603c737ae9d",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/test_pa1_development.py",
+      "bytes": 18715,
+      "sha256": "f52915d28fb42673a4f38b3c7e19fe15034b9d8cdf4628d351d4f96ff4e78924",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/test_pa1_evidence.py",
+      "bytes": 35713,
+      "sha256": "496347a391c6ebde691a6704944a8aef400d209c659c4a33a2fe743a703a887c",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/test_pa1_fixed40.py",
+      "bytes": 342687,
+      "sha256": "251ba3ab7a5b567c774867c30af38048a85032d1f28173429f12c58f2cca39d8",
+      "tracked": false
+    },
+    {
+      "path": "experiments/evm_feasibility/snapshot_qualifier/tools/test_pa1_fixed40_runtime.py",
+      "bytes": 231553,
+      "sha256": "c675c2d0050858efa62653bc385e67808966c721c055da5c067e86c247607b4d",
+      "tracked": false
+    }
+  ]
+}

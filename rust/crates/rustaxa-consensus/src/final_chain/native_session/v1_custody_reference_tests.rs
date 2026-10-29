@@ -501,6 +501,33 @@ fn supported_v1_sessions_match_pinned_go_outcomes_and_raw_traces() {
             assert_confirm_accounts(&outcome, scenario);
             assert_snapshot(&session.dpos_state, &scenario["after_confirm_block"]);
             state.apply_raw(&outcome);
+            // The ordered writes above were compared against pinned Go.
+            // Preserve that actual retained row, not a queue-derived rewrite,
+            // through the CF1 codec before the next native invocation.
+            if session.dpos_state.total_stakes.contains_key(&VALIDATOR) {
+                let key = custody::validator_key(VALIDATOR);
+                let ConcreteRead::Present(bytes) =
+                    state.raw_storage(DPOS_CONTRACT_ADDRESS, &key).unwrap()
+                else {
+                    panic!("retained Go validator row")
+                };
+                let row = Rlp::new(&bytes);
+                let observed: u16 = if row.item_count().unwrap() == 2 {
+                    row.val_at(1).unwrap()
+                } else {
+                    0
+                };
+                assert_eq!(
+                    dpos_undelegations_count_for_validator(&session.dpos_state, VALIDATOR),
+                    observed
+                );
+            }
+            let encoded = encode_dpos_snapshot_rlp(&session.dpos_state).unwrap();
+            session.dpos_state = decode_dpos_snapshot_rlp(&encoded).unwrap();
+            assert_eq!(
+                encode_dpos_snapshot_rlp(&session.dpos_state).unwrap(),
+                encoded
+            );
 
             let missing = transaction(scenario, "missing_confirm");
             let request = fixture_request(unlock, 1, 1, scenario, missing);

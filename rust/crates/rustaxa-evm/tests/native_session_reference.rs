@@ -577,7 +577,9 @@ fn run_case(row: &Value, success_logs: &[ExecutionLog]) {
             ..Default::default()
         },
         FinalChainRewardsConfig {
-            magnolia_period: FinalChainBlockNumber::GENESIS,
+            // Go supplies a Legacy row directly, then runs Magnolia at period1.
+            // Own that initial shape at genesis and upgrade on the actual write.
+            magnolia_period: FinalChainBlockNumber::new(1),
             cornus_period: FinalChainBlockNumber::GENESIS,
             fix_redelegate_block_num: if row["pre_fix"].as_bool().unwrap() {
                 FinalChainBlockNumber::new(2)

@@ -107,8 +107,10 @@ class SuccessorRunSelection(unittest.TestCase):
         path=run/'config.json';bound.save(path,config);return path,config
     def setUp(self):
         self.previous=(bound.RUN,bound.RUN_CONFIG,bound.ACTIVE_RESOURCES)
+        self.previous_envelope=bound.ACTIVE_ENVELOPE
     def tearDown(self):
         bound.RUN,bound.RUN_CONFIG,bound.ACTIVE_RESOURCES=self.previous
+        bound.ACTIVE_ENVELOPE=self.previous_envelope
     def test_new_run_has_zero_prior_charge_and_exact_cap(self):
         path,config=self.prepare_config();bound.configure_run(path)
         self.assertEqual(bound.RUN,Path(config['run']))
@@ -126,6 +128,96 @@ class SuccessorRunSelection(unittest.TestCase):
     def test_config_outside_selected_run_rejected(self):
         path,config=self.prepare_config();outside=path.parent/'child';outside.mkdir();other=outside/'config.json';bound.save(other,config)
         with self.assertRaises(AssertionError):bound.configure_run(other)
+
+class CutoverEnvelope(SuccessorRunSelection):
+    def prepare_cutover(self):
+        path,config=self.prepare_config()
+        config.update(schema=2,authority=dict(bound.CUTOVER_AUTHORITY),
+                      retained_live_cap_bytes=68719476736,aggregate_child_seconds=43200,
+                      max_output_bytes=67108864,command_timeout_seconds=dict(bound.CUTOVER_TIMEOUTS))
+        path.write_text(json.dumps(config))
+        return path,config
+
+    def test_explicit_cutover_authority_and_limits(self):
+        path,_=self.prepare_cutover();bound.configure_run(path)
+        self.assertEqual(bound.resources()['retained_live_cap_bytes'],68719476736)
+        self.assertEqual(bound.resources()['prior_charged_bytes'],0)
+        self.assertEqual(bound.ACTIVE_ENVELOPE['aggregate_child_seconds'],43200)
+        for kind,limit in bound.CUTOVER_TIMEOUTS.items():
+            bound.command_limits(limit,kind)
+            with self.assertRaises(AssertionError):bound.command_limits(limit+0.01,kind)
+
+    def test_cutover_invalid_numeric_caps_and_limits_rejected_atomically(self):
+        invalid=[('retained_live_cap_bytes',value) for value in (True,68719476736.0,0,-1,float('nan'),float('inf'),68719476737)]
+        invalid += [('aggregate_child_seconds',True),('aggregate_child_seconds',43200.0),('aggregate_child_seconds',43201),('max_output_bytes',True),('max_output_bytes',67108865),('command_timeout_seconds',dict(bound.CUTOVER_TIMEOUTS,integration=3601)),('command_timeout_seconds',dict(bound.CUTOVER_TIMEOUTS,focused=600.0)),('schema',True),('schema',3)]
+        for key,value in invalid:
+            with self.subTest(key=key,value=value):
+                path,config=self.prepare_cutover();config[key]=value;path.write_text(json.dumps(config))
+                with self.assertRaises(AssertionError):bound.configure_run(path)
+                self.assertEqual((bound.RUN,bound.RUN_CONFIG,bound.ACTIVE_RESOURCES),self.previous)
+                self.assertEqual(bound.ACTIVE_ENVELOPE,self.previous_envelope)
+
+    def test_cutover_rejects_self_selected_authority_even_with_matching_hash(self):
+        path,config=self.prepare_cutover()
+        copy=path.parent/'copied-driver.txt';copy.write_bytes(Path(bound.CUTOVER_AUTHORITY['path']).read_bytes())
+        config['authority']['path']=str(copy);path.write_text(json.dumps(config))
+        with self.assertRaises(AssertionError):bound.configure_run(path)
+        path,config=self.prepare_cutover();config['authority']['sha256']='0'*64;path.write_text(json.dumps(config))
+        with self.assertRaises(AssertionError):bound.configure_run(path)
+
+    def test_cutover_optional_scheduler_is_exact_and_symlinks_are_rejected(self):
+        path,config=self.prepare_cutover()
+        scheduler=path.parent/'scheduler.json';scheduler.write_bytes(b'{"immutable_scheduler":true}\n')
+        config['scheduler_input']={'path':str(scheduler),'sha256':bound.sha(scheduler.read_bytes())}
+        path.write_text(json.dumps(config));bound.configure_run(path)
+        self.assertEqual(bound.ACTIVE_ENVELOPE['scheduler_input'],config['scheduler_input'])
+        for replacement in ('wrong-hash','symlink','relative'):
+            bad=dict(config);bad['scheduler_input']=dict(config['scheduler_input'])
+            if replacement=='wrong-hash':bad['scheduler_input']['sha256']='0'*64
+            elif replacement=='relative':bad['scheduler_input']['path']='scheduler.json'
+            else:
+                link=path.parent/'scheduler-link.json';link.symlink_to(scheduler);bad['scheduler_input']['path']=str(link)
+            path.write_text(json.dumps(bad))
+            with self.assertRaises(AssertionError):bound.configure_run(path)
+
+    def test_cutover_requires_kind_and_finite_timeout_before_root_creation(self):
+        path,_=self.prepare_cutover();bound.configure_run(path)
+        for timeout,kind in [(600,None),(600,'unknown'),(True,'focused'),(0,'focused'),(-1,'focused'),(float('nan'),'focused'),(float('inf'),'integration')]:
+            with self.subTest(timeout=timeout,kind=kind):
+                with self.assertRaises(AssertionError):bound.command_limits(timeout,kind)
+        with mock.patch.dict(os.environ,{'RUSTAXA_ERA_RUN_CONFIG':str(path)}),mock.patch.object(sys,'argv',['era_bound_command.py','--name','must-not-launch','--timeout','601','--command-kind','focused','--','unused']):
+            with self.assertRaises(AssertionError):bound.main()
+        self.assertFalse((bound.RUN/'transition-commands/must-not-launch').exists())
+
+    def test_schema_one_and_default_keep_1800_second_limit(self):
+        path,_=self.prepare_cutover();bound.configure_run(path)
+        old,_=self.prepare_config();bound.configure_run(old)
+        self.assertIsNone(bound.ACTIVE_ENVELOPE)
+        bound.command_limits(1800)
+        with self.assertRaises(AssertionError):bound.command_limits(1800.01)
+        with self.assertRaises(AssertionError):bound.command_limits(3600,'integration')
+        with mock.patch.object(bound,'RUN_CONFIG',None),mock.patch.object(bound,'ACTIVE_ENVELOPE',None):
+            bound.command_limits(1800)
+            with self.assertRaises(AssertionError):bound.command_limits(1801)
+
+    def test_peak_exact_fit_and_one_byte_overflow(self):
+        resource={'retained_live_cap_bytes':68719476736}
+        output=1024;reserve=64*1024*1024
+        current=resource['retained_live_cap_bytes']-reserve-output-16*1024*1024
+        bound.admit_peak(resource,current,reserve,output)
+        with self.assertRaises(AssertionError):bound.admit_peak(resource,current+1,reserve,output)
+        for invalid in (True,0,-1,67108865,float('nan'),float('inf')):
+            with self.assertRaises(AssertionError):bound.admit_peak(resource,0,0,invalid)
+
+    def test_capture_combines_stdout_and_stderr_and_retains_overflow(self):
+        directory=Path(os.environ['RUN_ARTIFACT_DIR'])/('cutover-overflow-'+uuid.uuid4().hex)
+        command=[sys.executable,'-c','import os; os.write(1,b"o"*700); os.write(2,b"e"*700)']
+        code,status=bound.capture(directory,command,timeout_seconds=5,max_output_bytes=1024)
+        self.assertEqual(code,125)
+        self.assertEqual(status['outcome'],'output_limit')
+        self.assertFalse(status['capture_complete'])
+        self.assertEqual((directory/'stdout').stat().st_size+(directory/'stderr').stat().st_size,1024)
+        self.assertTrue((directory/'status.json').is_file())
 
 class CargoTestBinaryBoundary(unittest.TestCase):
     def prepare(self):

@@ -14,6 +14,20 @@ pub fn malformed_raw_error(row: &Value, key: &[u8; 32]) -> String {
     let confirm_v1 = keccak("confirmUndelegate(address)");
     let confirm_v2 = keccak("confirmUndelegateV2(address,uint64)");
     let commission = keccak("claimCommissionRewards(address)");
+    if (input[..4] == confirm_v1[..4] || input[..4] == confirm_v2[..4])
+        && row["execution_error"] == ""
+        && !writes
+            .iter()
+            .any(|row| decode(row["key"].as_str().unwrap()) == key)
+    {
+        let validator: [u8; 20] = input[16..36].try_into().unwrap();
+        assert_eq!(
+            *key,
+            keccak([&[0, 2][..], &validator].concat()),
+            "unknown consumed-but-unwritten confirmation row",
+        );
+        return "confirmation rewards raw/domain facts disagree".to_owned();
+    }
     if input[..4] == confirm_v1[..4] || input[..4] == confirm_v2[..4] {
         let v2 = input[..4] == confirm_v2[..4];
         labels.push(if v2 {

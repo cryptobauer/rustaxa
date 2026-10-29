@@ -1,0 +1,858 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "mainnet_second_distribution_followthrough_recovery",
+    "head": 25706894,
+    "first_retained": 25706889,
+    "periods": [
+      25706895,
+      25706896,
+      25706897,
+      25706898,
+      25706899,
+      25706900,
+      25706901,
+      25706902,
+      25706903,
+      25706904,
+      25706905,
+      25706906,
+      25706907,
+      25706908,
+      25706909,
+      25706910,
+      25706911,
+      25706912,
+      25706913,
+      25706914,
+      25706915,
+      25706916,
+      25706917,
+      25706918,
+      25706919,
+      25706920,
+      25706921,
+      25706922,
+      25706923,
+      25706924,
+      25706925,
+      25706926,
+      25706927,
+      25706928,
+      25706929,
+      25706930,
+      25706931,
+      25706932,
+      25706933,
+      25706934,
+      25706935,
+      25706936,
+      25706937,
+      25706938,
+      25706939,
+      25706940,
+      25706941,
+      25706942,
+      25706943,
+      25706944,
+      25706945,
+      25706946,
+      25706947,
+      25706948,
+      25706949,
+      25706950,
+      25706951,
+      25706952,
+      25706953,
+      25706954,
+      25706955,
+      25706956,
+      25706957,
+      25706958,
+      25706959,
+      25706960,
+      25706961,
+      25706962,
+      25706963,
+      25706964,
+      25706965,
+      25706966,
+      25706967,
+      25706968,
+      25706969,
+      25706970,
+      25706971,
+      25706972,
+      25706973,
+      25706974,
+      25706975,
+      25706976,
+      25706977,
+      25706978,
+      25706979,
+      25706980,
+      25706981,
+      25706982,
+      25706983,
+      25706984,
+      25706985,
+      25706986,
+      25706987,
+      25706988,
+      25706989,
+      25706990,
+      25706991,
+      25706992,
+      25706993,
+      25706994,
+      25706995,
+      25706996,
+      25706997,
+      25706998,
+      25706999,
+      25707000,
+      25707001,
+      25707002,
+      25707003,
+      25707004,
+      25707005
+    ],
+    "pending_periods": [
+      25706801,
+      25706802,
+      25706803,
+      25706804,
+      25706805,
+      25706806,
+      25706807,
+      25706808,
+      25706809,
+      25706810,
+      25706811,
+      25706812,
+      25706813,
+      25706814,
+      25706815,
+      25706816,
+      25706817,
+      25706818,
+      25706819,
+      25706820,
+      25706821,
+      25706822,
+      25706823,
+      25706824,
+      25706825,
+      25706826,
+      25706827,
+      25706828,
+      25706829,
+      25706830,
+      25706831,
+      25706832,
+      25706833,
+      25706834,
+      25706835,
+      25706836,
+      25706837,
+      25706838,
+      25706839,
+      25706840,
+      25706841,
+      25706842,
+      25706843,
+      25706844,
+      25706845,
+      25706846,
+      25706847,
+      25706848,
+      25706849,
+      25706850,
+      25706851,
+      25706852,
+      25706853,
+      25706854,
+      25706855,
+      25706856,
+      25706857,
+      25706858,
+      25706859,
+      25706860,
+      25706861,
+      25706862,
+      25706863,
+      25706864,
+      25706865,
+      25706866,
+      25706867,
+      25706868,
+      25706869,
+      25706870,
+      25706871,
+      25706872,
+      25706873,
+      25706874,
+      25706875,
+      25706876,
+      25706877,
+      25706878,
+      25706879,
+      25706880,
+      25706881,
+      25706882,
+      25706883,
+      25706884,
+      25706885,
+      25706886,
+      25706887,
+      25706888,
+      25706889,
+      25706890,
+      25706891,
+      25706892,
+      25706893,
+      25706894
+    ],
+    "api_heads": [
+      25707000,
+      25707001,
+      25707002,
+      25707003,
+      25707004,
+      25707005
+    ],
+    "actions": [
+      {
+        "period": 25707000,
+        "who": 4,
+        "name": "second_distribution_transfer_25707000",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 25707001,
+        "who": 4,
+        "name": "second_distribution_transfer_25707001",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 25707002,
+        "who": 4,
+        "name": "second_distribution_transfer_25707002",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 25707003,
+        "who": 4,
+        "name": "second_distribution_transfer_25707003",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 25707004,
+        "who": 4,
+        "name": "second_distribution_transfer_25707004",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 25707005,
+        "who": 4,
+        "name": "second_distribution_transfer_25707005",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      }
+    ],
+    "reopen_after": [
+      25706905,
+      25706999,
+      25707000,
+      25707001,
+      25707002,
+      25707003,
+      25707004
+    ]
+  },
+  "scheduler_manifest_sha256": "6c1d9ad393d5746e4e44ef696070c7310dd10f770bc7ed82610be6157a1fd144",
+  "support": {
+    "mainnet_era_reference.py": "25593818ab0d157886674dd6f55e82bc3146dc8cf2b6bcda044c4e2ccbdc3533",
+    "mainnet_era_profile.py": "bfe75c8b32fcd05b5c4326128e86db325f101e1a8c2e6954766db8ec5a36489c",
+    "mainnet_era_historical_actions.py": "7ba729bd0b554af67bbe9d8c609de7f0da8b489ab4bb93bb80f14dcdefe96bda",
+    "mainnet_era_reference.go": "c348edbb5043b340987eede730460d0a2713aa81a6eb8e08ca08fd74c7de1aa2",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference.py": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149",
+    "native_integration_reference.go": "e3189439d62dc65d245b89e5eabd1ced2b774409400c3e4540a1f4756a59a43f",
+    "native_integration_reference.py": "f280aab0db3d4ca7756e6f7501380a5a6fe4c8d0d747fa4031375c3cc822f0dd",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637"
+  },
+  "streams": {
+    "public": {
+      "file": "0af4fb1430e8ea39864ef69319d1616d682acbac10dc9ff11dd24a60a4d42d6a.json.gz",
+      "sha256": "0af4fb1430e8ea39864ef69319d1616d682acbac10dc9ff11dd24a60a4d42d6a",
+      "bytes": 14872755,
+      "gzip_sha256": "3fd6e64c6e3d5ca72728e40039a20d83e747bc45e0c2502c5732e49287e2af64",
+      "gzip_bytes": 1808926,
+      "capture": null
+    },
+    "local": {
+      "file": "e8a70f33c8b114fa8ff4d136913d4c67ae2e1b10c6c3ec3eb9f20b7efb910108.json.gz",
+      "sha256": "e8a70f33c8b114fa8ff4d136913d4c67ae2e1b10c6c3ec3eb9f20b7efb910108",
+      "bytes": 15403240,
+      "gzip_sha256": "53a936bc5e1dfd5750eac180236cd60c7809b2e1622f97e9ef36f3193377bb48",
+      "gzip_bytes": 1863509,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 1459194,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-z0r4k7yz",
+            "file": "4da95e175d0eed984990ce9fa96efd7ded03db7f45879e1a31d0cff34396ecb9.json.gz",
+            "gzip_bytes": 258360,
+            "gzip_sha256": "1705affacb4fe0f8c71c84662f5d1ae6c0f817c4dd0772955d2f27aaad5ff185",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "4da95e175d0eed984990ce9fa96efd7ded03db7f45879e1a31d0cff34396ecb9"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706890,
+            "end": 25706910
+          },
+          "stream": {
+            "bytes": 1626409,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-cs_hq3gm",
+            "file": "b0e43d69a2888963d6612ad48f6f839bcf574262d49711473748709888e34c09.json.gz",
+            "gzip_bytes": 233691,
+            "gzip_sha256": "9f07f6553fd7918e0adc549de2fe036ea3a5f06b1784b553325ec4a39f4b67aa",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "b0e43d69a2888963d6612ad48f6f839bcf574262d49711473748709888e34c09"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706910,
+            "end": 25706930
+          },
+          "stream": {
+            "bytes": 1158127,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-nksgtzdr",
+            "file": "4ae41363cca556213ff6241743fd06c6833d3eb3d296f1d556c9f55697a4c263.json.gz",
+            "gzip_bytes": 237509,
+            "gzip_sha256": "950a7c0f1e08087f30a92eba7a64d5a67fcd9eb92e5d73bd5ff9959a31323513",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "4ae41363cca556213ff6241743fd06c6833d3eb3d296f1d556c9f55697a4c263"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706930,
+            "end": 25706950
+          },
+          "stream": {
+            "bytes": 1135037,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-z9jm9s77",
+            "file": "3d11fd79ea8e99ec63725d05dc11fa23e3ecb4a7124e420dac47935828bfc2cb.json.gz",
+            "gzip_bytes": 234141,
+            "gzip_sha256": "91f9b29a1914e93c6e6ff3249f6aab224d904d64c8b62ca5143e31c77d4e3e9d",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "3d11fd79ea8e99ec63725d05dc11fa23e3ecb4a7124e420dac47935828bfc2cb"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706950,
+            "end": 25706970
+          },
+          "stream": {
+            "bytes": 1155901,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-rkrat8id",
+            "file": "a08f98240cd406afb5cb431cb27850a3488444075d18805ecd98d6df8fe919e8.json.gz",
+            "gzip_bytes": 237870,
+            "gzip_sha256": "c63006948a4043abbacc362bcfe9370a52ab22c6190d4795eb4b1634192136af",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "a08f98240cd406afb5cb431cb27850a3488444075d18805ecd98d6df8fe919e8"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706970,
+            "end": 25706990
+          },
+          "stream": {
+            "bytes": 1147977,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-x7oqrsbv",
+            "file": "41cab8868f843dcbe4604ee5d7cde1f2cdeefaececff3c583e1f3ed53375963f.json.gz",
+            "gzip_bytes": 238652,
+            "gzip_sha256": "01df6b20d5d189325f651f69b1e81f5b291094b398d85206ecc27346e41ab4e2",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "41cab8868f843dcbe4604ee5d7cde1f2cdeefaececff3c583e1f3ed53375963f"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706990,
+            "end": 25707006
+          },
+          "stream": {
+            "bytes": 1288420,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-etzo7s35",
+            "file": "7036feadafcce913d4b4d162c4e6eb6e44cb2fae0b5131eab654c456f2b896c0.json.gz",
+            "gzip_bytes": 224986,
+            "gzip_sha256": "2fd9680f399d2576ab4ecdb87a9e703c246ed6feef8f328c7d28f0bd513943af",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "7036feadafcce913d4b4d162c4e6eb6e44cb2fae0b5131eab654c456f2b896c0"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 1050620,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-il75n8t5",
+            "file": "4bd6fda5c566ac51f8271e68a04fcc90ac1c7cb7070345f3af469c77958321b5.json.gz",
+            "gzip_bytes": 36563,
+            "gzip_sha256": "c893c5b1f317413cd760ee1a2a2bab1ea0f8e2300343b3e9b3462fb2384e9f31",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "4bd6fda5c566ac51f8271e68a04fcc90ac1c7cb7070345f3af469c77958321b5"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 1050621,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-j96f5_2w",
+            "file": "1388d6583b94a94101e65438efe6e6d24e8420f5cc924ab0c1fc377658c74a2d.json.gz",
+            "gzip_bytes": 36576,
+            "gzip_sha256": "abcdc1899be1065c98cc2f8626f7d8c0cfdcd5a04f35afaff18ce0260a76383f",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "1388d6583b94a94101e65438efe6e6d24e8420f5cc924ab0c1fc377658c74a2d"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 1050622,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-1bsn1717",
+            "file": "369c2700a7398f6fd801016a09313e71e4ed18ad43d42bda4954f2e4568e8af4.json.gz",
+            "gzip_bytes": 36604,
+            "gzip_sha256": "364218e1a8e28c988ae4d932ce6b862aa9d23445daf25553abeb6cce4becae2e",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "369c2700a7398f6fd801016a09313e71e4ed18ad43d42bda4954f2e4568e8af4"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "bytes": 1050622,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-h_5ei5ql",
+            "file": "6b1e2951e5e15c6939a56ab54575cf83c0900244e609b68e98a0a290bac7eaaf.json.gz",
+            "gzip_bytes": 36582,
+            "gzip_sha256": "2d53b7a207350ed39327ed32d4258e62b297d66d4ab0d87896cbee1ef9646976",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "6b1e2951e5e15c6939a56ab54575cf83c0900244e609b68e98a0a290bac7eaaf"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "bytes": 1050622,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-_syht8je",
+            "file": "0f460d295b5595a483f8386c687205087e79b0a3f68bb740dc4231752a2dd3cb.json.gz",
+            "gzip_bytes": 36580,
+            "gzip_sha256": "ece61bede53b88914c9eef3ecdaca0922f725e1080d3f489da9748b77e56b05b",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "0f460d295b5595a483f8386c687205087e79b0a3f68bb740dc4231752a2dd3cb"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 35,
+            "end": 42
+          },
+          "stream": {
+            "bytes": 1050622,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-mainnet_second_distribution_followthrough_recovery-jrb0grs4",
+            "file": "35c0f207c202238377a54cc032eb294374e8da9fe92ab511a48c2a221425d682.json.gz",
+            "gzip_bytes": 36578,
+            "gzip_sha256": "04187c651a8c42ee9ede78a2f7c3b2d55e2d27d0454adda525d0a23717cff0c7",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "35c0f207c202238377a54cc032eb294374e8da9fe92ab511a48c2a221425d682"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 1535880,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-8_szba0i",
+            "file": "e3db08ae3f56fc94eac90f4730fe5991f333068815200b299187e2aaea3e65da.json.gz",
+            "gzip_bytes": 269565,
+            "gzip_sha256": "650f98dd89f590e81bb1be805d9615582cbd0e19c6159fefd80136e3740ff5c1",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "e3db08ae3f56fc94eac90f4730fe5991f333068815200b299187e2aaea3e65da"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706890,
+            "end": 25706910
+          },
+          "stream": {
+            "bytes": 1900957,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-dd_wnxqe",
+            "file": "53846d392f4c30195e41c63509ad7248821ce41d1dbb91483419b24fe8f56dee.json.gz",
+            "gzip_bytes": 262233,
+            "gzip_sha256": "04bfe8735093cb09f81158006062403d692a3fd0a0bd24bb68be92481d852f18",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "53846d392f4c30195e41c63509ad7248821ce41d1dbb91483419b24fe8f56dee"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706910,
+            "end": 25706930
+          },
+          "stream": {
+            "bytes": 1185506,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-8qricy0o",
+            "file": "612d7c99e97250adeac436d1685d8feeec395d6af863787e9e796caa1cb600a7.json.gz",
+            "gzip_bytes": 239340,
+            "gzip_sha256": "be3a07181efa9b1d3108c08b13aa002a554b364cc407d1ad20512a2b061fcef8",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "612d7c99e97250adeac436d1685d8feeec395d6af863787e9e796caa1cb600a7"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706930,
+            "end": 25706950
+          },
+          "stream": {
+            "bytes": 1144596,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-x1ydkwwu",
+            "file": "c9cedfc5b097895863579bc94ccc257534698183956a63a00ea2bce284941292.json.gz",
+            "gzip_bytes": 234865,
+            "gzip_sha256": "bf31262a67cc9c9e91dc31947ecbc77e0c4827e65becd34e4cf27db94d2f354a",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "c9cedfc5b097895863579bc94ccc257534698183956a63a00ea2bce284941292"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706950,
+            "end": 25706970
+          },
+          "stream": {
+            "bytes": 1186624,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-ckyh5qd2",
+            "file": "869088b78271e47867ef766f2c011f878ba1f9b19889885d9bd632d66923b7e2.json.gz",
+            "gzip_bytes": 239236,
+            "gzip_sha256": "8605c3fbdffafc3373092db94d79ba981aabc0b9769038cea2be914158909481",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "869088b78271e47867ef766f2c011f878ba1f9b19889885d9bd632d66923b7e2"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706970,
+            "end": 25706990
+          },
+          "stream": {
+            "bytes": 1157536,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-jq1no1ry",
+            "file": "dd8da00ddab60182853064d66bc913f827c7270eaccedd95276a4ef0b6dba844.json.gz",
+            "gzip_bytes": 238786,
+            "gzip_sha256": "3c35b51221e58d0782dae46996c8437080957d32763d117f59e3b9b33bcb68c6",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "dd8da00ddab60182853064d66bc913f827c7270eaccedd95276a4ef0b6dba844"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 25706990,
+            "end": 25707006
+          },
+          "stream": {
+            "bytes": 1390444,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-e1hg89nw",
+            "file": "cd54a5603e70283bd16292da1b05ae1b25dee1763883621f6954249b20ddeefb.json.gz",
+            "gzip_bytes": 235664,
+            "gzip_sha256": "72cf0aa1958fcccb9b73a7d91f7d498bbed1bef620e8fa3584abe6282a3c49ef",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "cd54a5603e70283bd16292da1b05ae1b25dee1763883621f6954249b20ddeefb"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 1050619,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-zmqufrnu",
+            "file": "e01448ff51c0f3cec332692bb52e6741a4c877d39569d26774e5bc884a2aaaef.json.gz",
+            "gzip_bytes": 36556,
+            "gzip_sha256": "f647f34e7561949729dfac6999b70704a8f9dec3655612c59bae72dc2c32e1fa",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "e01448ff51c0f3cec332692bb52e6741a4c877d39569d26774e5bc884a2aaaef"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 1050620,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-sj7jj7oq",
+            "file": "a6dda4810eeead72377cac09a434ab795f9b3adb432c64327e4dc2b3b443009c.json.gz",
+            "gzip_bytes": 36569,
+            "gzip_sha256": "92d3f9bd1640dffe7393fcd5349748f204361ab9202415da1551ec4370154e06",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "a6dda4810eeead72377cac09a434ab795f9b3adb432c64327e4dc2b3b443009c"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 1050621,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-ash053hk",
+            "file": "494f49db9013d2cb3dc66559f8cfac11fceab4ed041ec851d30e06d6961601d9.json.gz",
+            "gzip_bytes": 36599,
+            "gzip_sha256": "0b3166b70f173b93df62642d9e9a65563d08910352babbc7e845f393f3349e85",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "494f49db9013d2cb3dc66559f8cfac11fceab4ed041ec851d30e06d6961601d9"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "bytes": 1050621,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-3m7fx9au",
+            "file": "f10d109ac074d39045d261c34ae19983a00a7823d50baa42c8ef9ebec25e5fc0.json.gz",
+            "gzip_bytes": 36577,
+            "gzip_sha256": "e58246814aba687e59629da78b263441c659bc3069720c0baa0687e2a578bf01",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "f10d109ac074d39045d261c34ae19983a00a7823d50baa42c8ef9ebec25e5fc0"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "bytes": 1050621,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-nsfwa_dn",
+            "file": "4caba81afcc939dcf03424353812429aa9ce78fe0689ede6a70d0678da5c48e2.json.gz",
+            "gzip_bytes": 36572,
+            "gzip_sha256": "f0a9a3f48f6bbc76902d4faa483730022a90c915b9f552f5531fcbaf59410d42",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "4caba81afcc939dcf03424353812429aa9ce78fe0689ede6a70d0678da5c48e2"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 35,
+            "end": 42
+          },
+          "stream": {
+            "bytes": 1050621,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-mainnet_second_distribution_followthrough_recovery-w6l_h8fd",
+            "file": "93f6d0f1a5be2f55c08d549212faedbdbc10f627ff92c0d3c382034ee4c5c831.json.gz",
+            "gzip_bytes": 36571,
+            "gzip_sha256": "89ab4a4d4320ff73b3db04bef7e1d52432b0172b78a3d407e7765fa15aca1152",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "93f6d0f1a5be2f55c08d549212faedbdbc10f627ff92c0d3c382034ee4c5c831"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "b51faffca52afaa25c863a5459e5b817aa40d808966624c4d3179ecd8ef4aa8f",
+    "streams": {
+      "public": "ffa1cefcdb06844540d03bc777df908811d77169dac79773d3788774e1d1b8d9",
+      "local": "6b22ab469fe34a441dbb3875031dacfce56700b3b70378d04d3200e4a9758212"
+    },
+    "forks": {}
+  }
+}

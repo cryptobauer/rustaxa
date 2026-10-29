@@ -1,0 +1,354 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "magnolia",
+    "head": 5729998,
+    "first_retained": 5729994,
+    "periods": [
+      5729999,
+      5730000,
+      5730001
+    ],
+    "pending_periods": [],
+    "actions": [
+      {
+        "period": 5729999,
+        "who": 4,
+        "name": "magnolia_fee_before",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 5730000,
+        "who": 4,
+        "name": "magnolia_fee_activation",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 5730001,
+        "who": 4,
+        "name": "magnolia_fee_after",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      }
+    ]
+  },
+  "scheduler_manifest_sha256": "cbb3adfad0b18277d7806b44901c7da8cba571c9696ef2b4695a352c31d36b37",
+  "support": {
+    "mainnet_era_reference.py": "25593818ab0d157886674dd6f55e82bc3146dc8cf2b6bcda044c4e2ccbdc3533",
+    "mainnet_era_profile.py": "44aaf3bd52beed3c0b60c8f42bd8fa490a6f7f3bf62c26c874c51266949194d7",
+    "mainnet_era_historical_actions.py": "40569e8f19b5c7a00daa5504472014f876155321b102d928b81e3b3c4ad9c675",
+    "mainnet_era_reference.go": "d41b7af624677db55897fc44d1a574b4fd475d5b958bb4d4fb53023a73d0fb7a",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference.py": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149",
+    "native_integration_reference.go": "e3189439d62dc65d245b89e5eabd1ced2b774409400c3e4540a1f4756a59a43f",
+    "native_integration_reference.py": "f280aab0db3d4ca7756e6f7501380a5a6fe4c8d0d747fa4031375c3cc822f0dd",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637"
+  },
+  "streams": {
+    "public": {
+      "file": "fde53ab9ead77bdf565904526ba3f7cc901f4984f780456b98189df4d3bbfd35.json.gz",
+      "sha256": "fde53ab9ead77bdf565904526ba3f7cc901f4984f780456b98189df4d3bbfd35",
+      "bytes": 2265348,
+      "gzip_sha256": "5785ff27a14123eb039340779837e1a0ecbb1ec54bee3fb12bb997b9421e1365",
+      "gzip_bytes": 97089,
+      "capture": null
+    },
+    "local": {
+      "file": "00dd5cd9996e4ba9b2efa395819fbfbc9611e3af3c991eb0ad212c2a75d26cb2.json.gz",
+      "sha256": "00dd5cd9996e4ba9b2efa395819fbfbc9611e3af3c991eb0ad212c2a75d26cb2",
+      "bytes": 2369696,
+      "gzip_sha256": "73d8f661c3dc0eebd99ac7c44cb3b9f150e92951a798dbd51442bcb4622eba0e",
+      "gzip_bytes": 104676,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 154051,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-magnolia-be1lylme",
+            "file": "6131be2e9c3a15de02ad17ed102c84940abc92a24956d860d8c503221155f887.json.gz",
+            "gzip_bytes": 35440,
+            "gzip_sha256": "d18f48c818618d23b6083cd58f1ae922fc1408e756569667ad0ca07f01ff8d3b",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "6131be2e9c3a15de02ad17ed102c84940abc92a24956d860d8c503221155f887"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 5729995,
+            "end": 5730002
+          },
+          "stream": {
+            "bytes": 262829,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-magnolia-7ic9i3nj",
+            "file": "1989580faea109705f83097541e21795099ea6c3f607b2fc464ad99eabeadb7f.json.gz",
+            "gzip_bytes": 40375,
+            "gzip_sha256": "4ae5fc368e76f886836a94534e27c8ec83ab260cfda814640d8b148d860879cb",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "1989580faea109705f83097541e21795099ea6c3f607b2fc464ad99eabeadb7f"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 621310,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-magnolia-ap0h4s0d",
+            "file": "f509ebaa947ceab99febc08a75c8fd8c4f5de488e0f4477f0d20704cf1c16707.json.gz",
+            "gzip_bytes": 14594,
+            "gzip_sha256": "e3550c6cc62b919a5f08c136a1da85a3fbc38637c6449b4d48d27d04bf2dca0c",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "f509ebaa947ceab99febc08a75c8fd8c4f5de488e0f4477f0d20704cf1c16707"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 626315,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-magnolia-7q6bl4o8",
+            "file": "125678fb1be63d1a6efc2c7dca6d12eb6d04b1ca3c4ca754ac32c4f36e93e0a8.json.gz",
+            "gzip_bytes": 14569,
+            "gzip_sha256": "7e6386641888d76d350454ea24e0f87405090f2b7988cccc2acfa2ffb5e2623a",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "125678fb1be63d1a6efc2c7dca6d12eb6d04b1ca3c4ca754ac32c4f36e93e0a8"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 626316,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-magnolia-85kd5i20",
+            "file": "713bba3d2ef55bcd4265b159c98567b55a6c10697b400a2897ed8a0636743153.json.gz",
+            "gzip_bytes": 14572,
+            "gzip_sha256": "90c4a5e58149c9e6b9c227e218ec8a1a8523e646faa0b6f558a2f68cf3017c6e",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "713bba3d2ef55bcd4265b159c98567b55a6c10697b400a2897ed8a0636743153"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 160007,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-magnolia-klp6ress",
+            "file": "c301f4cb832e606c06c9776d47bbe51c11581455d7fecb9345c61f16aad8316f.json.gz",
+            "gzip_bytes": 36203,
+            "gzip_sha256": "5001790b202b735a659c888224f533b17bde2a5f904e7e9d8e4dc7b409719e37",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "c301f4cb832e606c06c9776d47bbe51c11581455d7fecb9345c61f16aad8316f"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 5729995,
+            "end": 5730002
+          },
+          "stream": {
+            "bytes": 302251,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-magnolia-dw3ml4cy",
+            "file": "4de9cd4a63fa08338ffdd365db8d728cf4675aa1a98a00b2f970ef5bd1294d55.json.gz",
+            "gzip_bytes": 46751,
+            "gzip_sha256": "7858c60bdce91a28dd60514a30785ee091a593d5ddaee4ea1d0574039ca2f285",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "4de9cd4a63fa08338ffdd365db8d728cf4675aa1a98a00b2f970ef5bd1294d55"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 640965,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-magnolia-4jd_ea7p",
+            "file": "a6c74f1ea67216561527bd77e14dcc261a4a11e8ce6e4822071f8e112451e760.json.gz",
+            "gzip_bytes": 14959,
+            "gzip_sha256": "8a4d973a965573832bc413899969033865f80dfe418eccc5cd17ba20ed8e02f6",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "a6c74f1ea67216561527bd77e14dcc261a4a11e8ce6e4822071f8e112451e760"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 645970,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-magnolia-01dwnh7f",
+            "file": "69f4b118a1f44826ea66622f27020abca5c56358ca55c54f888c507103027342.json.gz",
+            "gzip_bytes": 14901,
+            "gzip_sha256": "4ba1a2c93e61be288092f17ab2fdd4c0d8d5ad2d52e772cfc4f3d7fcda8c6981",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "69f4b118a1f44826ea66622f27020abca5c56358ca55c54f888c507103027342"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 645971,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-magnolia-k1l_b3nq",
+            "file": "09cfa77635e455d65a9a5886d3fc5c29d90f7ed66208cee7e40aae65f3e576ce.json.gz",
+            "gzip_bytes": 14902,
+            "gzip_sha256": "6a201fb41fab0cba6ff6586243b7636ad35cb290dc9a41bf02fd5876def440e8",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "09cfa77635e455d65a9a5886d3fc5c29d90f7ed66208cee7e40aae65f3e576ce"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "b51faffca52afaa25c863a5459e5b817aa40d808966624c4d3179ecd8ef4aa8f",
+    "streams": {
+      "public": "a352a0752549146ff4b66a033b1aa3055422fafbfd21b8448ead50725723d199",
+      "local": "5631b48f0fcf5c1028e0673782c74915b3cebbd022f76b0dc1e60ac5a27a257b"
+    },
+    "forks": {}
+  },
+  "cpp_estimates": {
+    "file": "c3a34cd429c055e36a0b9d81b91373103406a868017279accec41bc15f512f2e.cpp-estimates.json",
+    "sha256": "c3a34cd429c055e36a0b9d81b91373103406a868017279accec41bc15f512f2e",
+    "bytes": 13066
+  }
+}

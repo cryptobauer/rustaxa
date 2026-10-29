@@ -1567,3 +1567,444 @@ fn nonpayable_claim_all_retains_selected_period_fork_guards() {
         }
     }
 }
+
+struct LegacySecondSerializationFault<'a> {
+    base: &'a ReferenceState,
+    key: ConcreteStorageKey,
+    first_key: ConcreteStorageKey,
+    first_hits: std::cell::Cell<usize>,
+    fault_hits: std::cell::Cell<usize>,
+}
+impl FinalChainNativeStateRead for LegacySecondSerializationFault<'_> {
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        self.base.account(address)
+    }
+    fn raw_storage(
+        &self,
+        address: [u8; 20],
+        key: &ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+        if address == DPOS_CONTRACT_ADDRESS && *key == self.first_key {
+            self.first_hits.set(self.first_hits.get() + 1);
+        }
+        if address == DPOS_CONTRACT_ADDRESS && *key == self.key {
+            assert!(
+                self.first_hits.get() > 0,
+                "first serializer read precedes second fault"
+            );
+            self.fault_hits.set(self.fault_hits.get() + 1);
+            return Err(FinalChainNativeStateReadError::Invariant(
+                "injected second serialization fault".into(),
+            ));
+        }
+        self.base.raw_storage(address, key)
+    }
+}
+
+#[test]
+fn legacy_batch_binds_request_count_order_and_retries_cleanly() {
+    with_claim_all_chain_config(
+        "legacy-bound",
+        |rewards, _| {
+            rewards.fix_claim_all_block_num = 3.into();
+            rewards.cornus_period = FinalChainBlockNumber::MAX;
+        },
+        |chain| {
+            let make_request = || {
+                let mut r = request();
+                r.input = DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec();
+                r.input.extend([0u8; 32]);
+                r.supplied_gas = 100_000.into();
+                r
+            };
+            for fault in 0..3 {
+                let mut s = session(chain);
+                let before = s.dpos_state.clone();
+                let state = ReferenceState::from_snapshot(&before);
+                let raw_before = state.rows.borrow().clone();
+                let accounts_before = state.accounts.borrow().clone();
+                let r = make_request();
+                let q = s.prepare(&r, &state).unwrap();
+                assert_eq!(q.required_gas.as_u64(), 90_000);
+                let mut wrong = r.clone();
+                wrong.input[35] = 1;
+                assert_eq!(
+                    s.invoke(&wrong, q, &state),
+                    Err(FinalChainNativeSessionError::QuoteMismatch)
+                );
+                let mut wrong_q = q;
+                wrong_q.required_gas = 90_001.into();
+                assert_eq!(
+                    s.invoke(&r, wrong_q, &state),
+                    Err(FinalChainNativeSessionError::QuoteMismatch)
+                );
+                let prefix = super::custody::delegator_validators_prefix(DELEGATOR);
+                let key = if fault == 0 {
+                    super::custody::iterable_count_key(&prefix)
+                } else {
+                    super::custody::iterable_item_key(&prefix, fault)
+                };
+                state.rows.borrow_mut().insert(
+                    (DPOS_CONTRACT_ADDRESS, key.0),
+                    ConcreteRead::Present(vec![0xff]),
+                );
+                assert!(s.invoke(&r, q, &state).is_err());
+                assert_eq!(s.dpos_state, before);
+                assert_eq!(*state.accounts.borrow(), accounts_before);
+                assert!(s.aborted);
+                *state.rows.borrow_mut() = raw_before.clone();
+                let mut retry = session(chain);
+                let q = retry.prepare(&r, &state).unwrap();
+                let FinalChainNativeInvocationResult::Completed(out) =
+                    retry.invoke(&r, q, &state).unwrap()
+                else {
+                    panic!("funded")
+                };
+                assert_eq!(out.status, FinalChainNativeStatus::Success);
+                assert_eq!(out.output.len(), 32);
+                assert_eq!(out.output[31], 1);
+                assert_eq!(*state.rows.borrow(), raw_before);
+            }
+            // Fail the second item serialization after the first item has run.
+            let mut failed = session(chain);
+            let before = failed.dpos_state.clone();
+            let state = ReferenceState::from_snapshot(&before);
+            let rows = state.rows.borrow().clone();
+            let accounts = state.accounts.borrow().clone();
+            let r = make_request();
+            let q = failed.prepare(&r, &state).unwrap();
+            let fault = LegacySecondSerializationFault {
+                base: &state,
+                key: super::custody::delegation_key(SECOND, DELEGATOR),
+                first_key: super::custody::delegation_key(VALIDATOR, DELEGATOR),
+                first_hits: std::cell::Cell::new(0),
+                fault_hits: std::cell::Cell::new(0),
+            };
+            assert_eq!(
+                failed.invoke(&r, q, &fault),
+                Err(FinalChainNativeSessionError::StateRead(
+                    FinalChainNativeStateReadError::Invariant(
+                        "injected second serialization fault".into()
+                    )
+                ))
+            );
+            assert!(fault.first_hits.get() > 0);
+            assert_eq!(fault.fault_hits.get(), 1);
+            assert!(failed.aborted && failed.prepared.is_none());
+            assert_eq!(
+                failed.invoke(&r, q, &state),
+                Err(FinalChainNativeSessionError::Aborted)
+            );
+            assert_eq!(failed.dpos_state, before);
+            assert_eq!(*state.rows.borrow(), rows);
+            assert_eq!(*state.accounts.borrow(), accounts);
+            let mut control = session(chain);
+            let control_state = ReferenceState::from_snapshot(&control.dpos_state);
+            let control_q = control.prepare(&r, &control_state).unwrap();
+            let expected = control.invoke(&r, control_q, &control_state).unwrap();
+            let mut retry = session(chain);
+            let retry_q = retry.prepare(&r, &state).unwrap();
+            let actual = retry.invoke(&r, retry_q, &state).unwrap();
+            assert_eq!(retry_q, control_q);
+            assert_eq!(actual, expected);
+            assert_eq!(retry.dpos_state, control.dpos_state);
+            assert_eq!(*state.rows.borrow(), *control_state.rows.borrow());
+            assert_eq!(*state.accounts.borrow(), *control_state.accounts.borrow());
+        },
+    );
+}
+
+#[test]
+fn legacy_batch_supported_shapes_and_retirement_precedence() {
+    with_claim_all_chain_config(
+        "legacy-shapes",
+        |rewards, _| {
+            rewards.fix_claim_all_block_num = 3.into();
+            rewards.cornus_period = FinalChainBlockNumber::MAX;
+        },
+        |chain| {
+            for (batch, depth, value) in [(0u8, 0, 0u8), (0, 0, 1), (1, 0, 0), (0, 1, 0)] {
+                let mut s = session(chain);
+                let state = ReferenceState::from_snapshot(&s.dpos_state);
+                let mut r = request();
+                r.depth = depth;
+                if depth == 1 {
+                    r.caller = [0x77; 20];
+                }
+                r.value = FinalChainNativeValue::new(BigUint::from(value));
+                r.input = DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec();
+                r.input.extend([0u8; 32]);
+                r.input[35] = batch;
+                r.supplied_gas = 100_000.into();
+                let q = s.prepare(&r, &state).unwrap();
+                assert_eq!(
+                    q.required_gas.as_u64(),
+                    if batch == 0 && depth == 0 {
+                        90_000
+                    } else {
+                        45_000
+                    }
+                );
+                let FinalChainNativeInvocationResult::Completed(out) =
+                    s.invoke(&r, q, &state).unwrap()
+                else {
+                    panic!("funded")
+                };
+                assert_eq!(out.status, FinalChainNativeStatus::Success);
+                assert_eq!(out.output, [vec![0u8; 31], vec![1]].concat());
+                if batch == 1 || depth == 1 {
+                    assert!(out.logs.is_empty() && out.raw_mutations.is_empty());
+                }
+            }
+            for period in [2u64, 3, 4] {
+                let mut s = session(chain);
+                s.pending_period = period.into();
+                let state = ReferenceState::from_snapshot(&s.dpos_state);
+                let mut r = request();
+                r.period = period.into();
+                r.input = DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec();
+                let q = s.prepare(&r, &state).unwrap();
+                assert_eq!(q.required_gas.as_u64(), 0);
+                let FinalChainNativeInvocationResult::Completed(out) =
+                    s.invoke(&r, q, &state).unwrap()
+                else {
+                    panic!("ABI")
+                };
+                let expected = if period < 3 {
+                    "abi: cannot marshal in to go type: length insufficient 0 require 32"
+                } else {
+                    "no method with id: 0x09b72e00"
+                };
+                assert_eq!(
+                    out.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: expected.into()
+                    }
+                );
+                assert!(out.raw_mutations.is_empty() && out.logs.is_empty());
+            }
+        },
+    );
+}
+
+fn with_legacy_members_chain(test_name: &str, members: usize, test: impl FnOnce(&FinalChain)) {
+    let path = temp_db_path(test_name);
+    let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+    let mut rewards = FinalChainRewardsConfig {
+        magnolia_period: FinalChainBlockNumber::GENESIS,
+        fix_claim_all_block_num: FinalChainBlockNumber::GENESIS,
+        fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+        dpos_blocks_per_year: 1,
+        dpos_delegation_locking_period: 2,
+        cornus_period: FinalChainBlockNumber::GENESIS,
+        cornus_delegation_locking_period: 3,
+        cacti_period: FinalChainBlockNumber::MAX,
+        cacti_delegation_locking_period: 2,
+        aspen_part_one_period: FinalChainBlockNumber::GENESIS,
+        aspen_part_two_period: FinalChainBlockNumber::MAX,
+        committee_size: 1,
+        rewards_distribution_frequency: vec![(FinalChainBlockNumber::GENESIS, 1)],
+        yield_percentage: 20,
+        max_block_author_reward_percent: 0,
+        dag_proposers_reward_percent: 0,
+        ..Default::default()
+    };
+    let ficus = FinalChainBlockNumber::GENESIS;
+    rewards.fix_claim_all_block_num = 3.into();
+    rewards.cornus_period = FinalChainBlockNumber::MAX;
+    let chain = FinalChain::new_with_rewards_config_and_ficus_activation(
+        storage.clone(),
+        1_000_000.into(),
+        0,
+        crate::FinalChainGenesisAllocation {
+            accounts: Vec::new(),
+            validators: [VALIDATOR, SECOND, [0x33; 20]]
+                .into_iter()
+                .take(members)
+                .map(|validator| GenesisValidator {
+                    address: validator,
+                    vrf_key: [0x44; 32],
+                    total_stake: U256::from(2_000_u64).to_big_endian().to_vec(),
+                    delegations: vec![
+                        (OWNER, U256::from(1000).to_big_endian().to_vec()),
+                        (DELEGATOR, U256::from(1000).to_big_endian().to_vec()),
+                    ],
+                    metadata: GenesisValidatorMetadata {
+                        owner: OWNER,
+                        commission: 100,
+                        ..Default::default()
+                    },
+                })
+                .collect(),
+        },
+        GenesisDposConfig {
+            eligibility_balance_threshold: U256::from(100_u64).into(),
+            vote_eligibility_balance_step: U256::from(10_u64).into(),
+            validator_maximum_stake: U256::from(1_000_000_u64).into(),
+            minimum_deposit: U256::one().into(),
+            delegation_delay: 1,
+            ..Default::default()
+        },
+        rewards,
+        ficus,
+    )
+    .unwrap();
+    test(&chain);
+    drop(chain);
+    drop(storage);
+    let _ = crate::closeout_test_scratch::dispose(path);
+}
+
+fn legacy_request() -> FinalChainNativeRequest {
+    let mut r = request();
+    r.input = DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec();
+    r.input.extend([0u8; 32]);
+    r.supplied_gas = 100_000.into();
+    r
+}
+
+fn assert_legacy_scope(
+    mut s: FinalChainNativeSession<'_>,
+    r: FinalChainNativeRequest,
+    state: &ReferenceState,
+) {
+    let before = s.dpos_state.clone();
+    let rows = state.rows.borrow().clone();
+    let accounts = state.accounts.borrow().clone();
+    assert_eq!(
+        s.prepare(&r, state),
+        Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+    );
+    assert!(s.prepared.is_none() && s.aborted);
+    assert_eq!(s.dpos_state, before);
+    assert_eq!(*state.rows.borrow(), rows);
+    assert_eq!(*state.accounts.borrow(), accounts);
+}
+
+#[test]
+fn legacy_capability_guards_reject_exactly() {
+    with_claim_all_chain_config(
+        "legacy-guards",
+        |rewards, _| {
+            rewards.fix_claim_all_block_num = 3.into();
+            rewards.cornus_period = FinalChainBlockNumber::MAX;
+        },
+        |chain| {
+            for kind in 0..15 {
+                let mut s = session(chain);
+                let mut r = legacy_request();
+                match kind {
+                    0 => {
+                        s.dpos_state.validator_row_authority =
+                            ValidatorRowAuthority::CompatibilityOnly
+                    }
+                    1 => {
+                        s.pending_period = 1.into();
+                        r.period = 1.into();
+                    }
+                    2 => {
+                        s.pending_period = 5.into();
+                        r.period = 5.into();
+                    }
+                    3 => r.caller = [0x77; 20],
+                    4 => r.depth = 1,
+                    5 => r.depth = 2,
+                    6 => r.value = FinalChainNativeValue::new(BigUint::from(2u8)),
+                    7 => r.input.push(0),
+                    8 => r.input[4] = 1,
+                    9 => r.input[35] = 2,
+                    10 => r.is_static = true,
+                    11 => r.kind = FinalChainNativeCallKind::StaticCall,
+                    12 => {
+                        r.input[35] = 1;
+                        r.value = FinalChainNativeValue::new(BigUint::from(1u8));
+                    }
+                    13 => {
+                        r.input.truncate(4);
+                        r.value = FinalChainNativeValue::new(BigUint::from(1u8));
+                    }
+                    _ => {
+                        r.input.pop();
+                    }
+                }
+                let state = ReferenceState::from_snapshot(&session(chain).dpos_state);
+                assert_legacy_scope(s, r, &state);
+            }
+            for (batch, depth, quote) in [(0u8, 0u16, 90_000u64), (1, 0, 45_000), (0, 1, 45_000)] {
+                for gas in [quote - 1, quote, quote + 1] {
+                    let s = session(chain);
+                    let state = ReferenceState::from_snapshot(&s.dpos_state);
+                    let mut r = legacy_request();
+                    r.input[35] = batch;
+                    r.depth = depth;
+                    if depth == 1 {
+                        r.caller = [0x77; 20];
+                    }
+                    r.supplied_gas = gas.into();
+                    assert_legacy_scope(s, r, &state);
+                }
+                let mut s = session(chain);
+                let state = ReferenceState::from_snapshot(&s.dpos_state);
+                let mut r = legacy_request();
+                r.input[35] = batch;
+                r.depth = depth;
+                if depth == 1 {
+                    r.caller = [0x77; 20];
+                }
+                r.supplied_gas = (quote + 2).into();
+                assert_eq!(s.prepare(&r, &state).unwrap().required_gas.as_u64(), quote);
+            }
+        },
+    );
+    for pre_magnolia in [true, false] {
+        with_claim_all_chain_config(
+            "legacy-era-guards",
+            |rewards, _| {
+                rewards.fix_claim_all_block_num = 3.into();
+                rewards.magnolia_period = if pre_magnolia { 3.into() } else { 0.into() };
+                rewards.cornus_period = if pre_magnolia {
+                    FinalChainBlockNumber::MAX
+                } else {
+                    2.into()
+                };
+            },
+            |chain| {
+                let s = session(chain);
+                let state = ReferenceState::from_snapshot(&s.dpos_state);
+                assert_legacy_scope(s, legacy_request(), &state);
+            },
+        );
+    }
+    for count in [1usize, 3] {
+        with_legacy_members_chain("legacy-cardinality", count, |chain| {
+            let s = session(chain);
+            assert!(s.dpos_state.has_complete_validator_shapes());
+            validate_dpos_principal_ledger(&s.dpos_state).unwrap();
+            assert_eq!(s.dpos_state.delegator_validators[&DELEGATOR].len(), count);
+            let state = ReferenceState::from_snapshot(&s.dpos_state);
+            let key = super::custody::iterable_count_key(
+                &super::custody::delegator_validators_prefix(DELEGATOR),
+            );
+            assert_eq!(
+                state.raw_storage(DPOS_CONTRACT_ADDRESS, &key).unwrap(),
+                ConcreteRead::Present((count as u32).to_le_bytes().to_vec())
+            );
+            let prefix = super::custody::delegator_validators_prefix(DELEGATOR);
+            for (index, validator) in s.dpos_state.delegator_validators[&DELEGATOR]
+                .iter()
+                .enumerate()
+            {
+                assert!(s.dpos_state.delegations[validator].contains_key(&DELEGATOR));
+                let item = super::custody::iterable_item_key(&prefix, index as u32 + 1);
+                assert_eq!(
+                    state.raw_storage(DPOS_CONTRACT_ADDRESS, &item).unwrap(),
+                    ConcreteRead::Present(validator.to_vec())
+                );
+            }
+            assert_legacy_scope(s, legacy_request(), &state);
+        });
+    }
+}

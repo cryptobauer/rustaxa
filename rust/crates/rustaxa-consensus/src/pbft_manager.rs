@@ -113,7 +113,7 @@ impl PbftRewardVoteResetStagePort for crate::pbft_vote_runtime::PbftVerifiedVote
 /// Native port for applying the finalized transaction set retained by PBFT finalization.
 ///
 /// The production implementation is
-/// [`crate::dag_transaction_service::DagTransactionService`]. The port accepts
+/// `crate::dag_transaction_service::DagTransactionService`. The port accepts
 /// only canonical period bytes plus narrow external account-nonce facts; it
 /// returns native mutation facts and never exposes queue/sidecar effects to C++.
 pub trait PbftFinalizedTransactionStatusPort {

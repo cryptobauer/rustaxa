@@ -1219,6 +1219,8 @@ type DposDelegatorValidators = BTreeMap<[u8; 20], Vec<[u8; 20]>>;
 type DposUndelegationsV2 = BTreeMap<[u8; 20], Vec<DposValidatorUndelegationsV2>>;
 type DposUndelegations = BTreeMap<[u8; 20], Vec<DposUndelegation>>;
 type ConcreteRawStorageMap = BTreeMap<([u8; 20], [u8; 32]), Vec<Vec<u8>>>;
+#[cfg(any(test, feature = "synthetic-fixtures"))]
+type AuthenticatedNativeRawCatalog = BTreeMap<([u8; 20], [u8; 32]), Option<Vec<u8>>>;
 
 /// FinalChain policy for the one historical reward-index regression transcript.
 ///
@@ -1453,6 +1455,21 @@ pub struct FinalChain {
 /// RPC tests: validator stake, vote counts, accumulated validator/delegator
 /// rewards, validator metadata, and VRF keys. Finalization appends block-keyed
 /// snapshots instead of answering historical queries from stale genesis data.
+/// Exact uint16 value retained by an authenticated native validator row.
+/// Queue membership is separate: pre-Ficus confirmation can omit its write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StoredUndelegationCounter(u16);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ValidatorRowShape {
+    LegacyV1,
+    Extended,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ValidatorRowAuthority {
+    CompatibilityOnly,
+    Complete(BTreeMap<[u8; 20], ValidatorRowShape>),
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposSnapshot {
     /// Total stake by validator address at this block.
@@ -1498,6 +1515,12 @@ struct DposSnapshot {
     undelegations_v2: DposUndelegationsV2,
     /// Pending V1 undelegations by delegator and validator.
     undelegations: DposUndelegations,
+    /// Persisted counter overrides created by owned native transitions.
+    /// Missing entries retain the established canonical queue-derived case;
+    /// they do not authorize reconstruction of unknown historical raw values.
+    /// Overrides survive CF1/reopen and are omitted when canonical again.
+    retained_undelegation_counts: BTreeMap<[u8; 20], StoredUndelegationCounter>,
+    validator_row_authority: ValidatorRowAuthority,
     /// Last assigned V2 undelegation ID by delegator.
     undelegation_v2_last_ids: BTreeMap<[u8; 20], u64>,
     /// Jail end block by validator address for Rust-executed slashing proofs.
@@ -1527,6 +1550,15 @@ struct DposSnapshot {
     redelegate_same_validator_corruption: BTreeSet<[u8; 20]>,
 }
 
+impl DposSnapshot {
+    fn has_complete_validator_shapes(&self) -> bool {
+        matches!(
+            self.validator_row_authority,
+            ValidatorRowAuthority::Complete(_)
+        ) && validate_validator_row_authority(self).is_ok()
+            && validate_retained_undelegation_counts(self).is_ok()
+    }
+}
 struct NativeRewardsStatsPlan {
     fee_rewards_by_validator: BTreeMap<[u8; 20], DposTokenAmount>,
     distribution_stats: Vec<RewardsBlockDistribution>,
@@ -1547,6 +1579,8 @@ struct FinalChainRewardsStatsRuntimeState {
 struct DposRewardDeltas {
     commission_rewards: BTreeMap<[u8; 20], DposTokenAmount>,
     delegator_rewards: BTreeMap<[u8; 20], DposTokenAmount>,
+    // Actual Go AddValidatorRewards calls rewrite both tuple fields, even zero.
+    reward_row_writes: BTreeSet<[u8; 20]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2052,6 +2086,36 @@ impl FinalChain {
         let dpos_phalaenopsis_period = rewards_config.phalaenopsis_period;
         let dpos_cacti_period = rewards_config.cacti_period;
         let dpos_cacti_delegation_locking_period = rewards_config.cacti_delegation_locking_period;
+        let existing_genesis_header = storage.final_chain().block_header_raw(0)?.is_some();
+        let existing_head = storage
+            .final_chain()
+            .meta_value(Self::DB_META_LAST_NUMBER)?
+            .is_some();
+        let existing_genesis_snapshot = storage.final_chain().dpos_snapshot_raw(0)?.is_some();
+        let owned_fresh_genesis = owned_genesis_initialization(
+            existing_genesis_header,
+            existing_head,
+            existing_genesis_snapshot,
+        )?;
+        let genesis_validator_row_authority = if !owned_fresh_genesis {
+            ValidatorRowAuthority::CompatibilityOnly
+        } else {
+            ValidatorRowAuthority::Complete(
+                genesis_dpos_total_stakes
+                    .keys()
+                    .map(|address| {
+                        (
+                            *address,
+                            if rewards_config.magnolia_period.is_genesis() {
+                                ValidatorRowShape::Extended
+                            } else {
+                                ValidatorRowShape::LegacyV1
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+        };
         let final_chain = FinalChain {
             storage,
             block_gas_limit,
@@ -2115,6 +2179,8 @@ impl FinalChain {
                     delegation_reward_cursors: genesis_dpos_delegation_reward_cursors,
                     validator_reward_per_stake: BTreeMap::new(),
                     aspen_supply_state: AspenSupplyState::default(),
+                    retained_undelegation_counts: BTreeMap::new(),
+                    validator_row_authority: genesis_validator_row_authority,
                     undelegations_v2: BTreeMap::new(),
                     undelegations: BTreeMap::new(),
                     undelegation_v2_last_ids: BTreeMap::new(),
@@ -4625,7 +4691,7 @@ impl FinalChain {
     /// beneficiary, while Magnolia and later periods route fees through DPoS
     /// commission rewards. A zero boundary means Magnolia behavior is active
     /// from genesis.
-    fn pre_magnolia_fee_reward_period(&self, block_number: FinalChainBlockNumber) -> bool {
+    pub fn pre_magnolia_fee_reward_period(&self, block_number: FinalChainBlockNumber) -> bool {
         !self.rewards_config.magnolia_period.is_genesis()
             && block_number < self.rewards_config.magnolia_period
     }
@@ -4744,6 +4810,15 @@ impl FinalChain {
             .map(StoredDposTokenAmount::amount);
 
         for stats in distribution_stats {
+            // Go visits existing stats validators even when the minted amount
+            // rounds to zero. The disabled-yield return above does not touch rows.
+            for validator in stats.validators_stats.keys() {
+                if snapshot.total_stakes.contains_key(validator)
+                    && snapshot.validator_metadata.contains_key(validator)
+                {
+                    plan.dpos_rewards.reward_row_writes.insert(*validator);
+                }
+            }
             let reward_context = self.minted_block_reward(
                 current_block_number,
                 stats,
@@ -5088,6 +5163,9 @@ impl FinalChain {
         let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
             return Ok(());
         };
+        if snapshot.total_stakes.contains_key(&validator) {
+            plan.dpos_rewards.reward_row_writes.insert(validator);
+        }
         let reward = reward.as_u256();
         let commission = percent_of_max_commission(reward, metadata.commission)?;
         let delegator_reward = reward
@@ -5275,6 +5353,13 @@ impl FinalChain {
         rewards: DposRewardDeltas,
         supply_after: AspenSupplyState,
     ) -> Result<(), anyhow::Error> {
+        for validator in &rewards.reward_row_writes {
+            anyhow::ensure!(
+                snapshot.total_stakes.contains_key(validator)
+                    && snapshot.validator_metadata.contains_key(validator),
+                "FINAL_CHAIN_DPOS_REWARD_ROW_WRITE_REQUIRES_LIVE_VALIDATOR"
+            );
+        }
         apply_reward_map(
             &mut snapshot.commission_rewards,
             rewards.commission_rewards,
@@ -5285,6 +5370,21 @@ impl FinalChain {
             rewards.delegator_rewards,
             "validator delegator reward overflow",
         )?;
+        for validator in rewards.reward_row_writes {
+            for pools in [
+                &mut snapshot.commission_rewards,
+                &mut snapshot.delegator_rewards,
+            ] {
+                let amount = pools
+                    .get(&validator)
+                    .map(StoredDposTokenAmount::amount)
+                    .unwrap_or_default();
+                pools.insert(
+                    validator,
+                    StoredDposTokenAmount::canonical_after_mutation(amount),
+                );
+            }
+        }
         snapshot.aspen_supply_state = supply_after;
         Ok(())
     }
@@ -5347,12 +5447,23 @@ impl FinalChain {
             self.block_gas_limit.as_u64(),
             self.genesis_timestamp,
         ))?;
-        self.storage.final_chain().write_block_header(
-            0,
-            full_header.hash()?,
-            stored_header_rlp.as_bytes(),
-            empty_receipts_rlp().as_slice(),
-        )
+        let snapshot = self
+            .dpos_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("genesis DPoS snapshot lock poisoned"))?
+            .get(&FinalChainBlockNumber::GENESIS)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("genesis DPoS snapshot missing"))?;
+        let snapshot = encode_dpos_snapshot_rlp(&snapshot)?;
+        self.storage
+            .final_chain()
+            .write_block_header_with_dpos_snapshot(
+                0,
+                full_header.hash()?,
+                stored_header_rlp.as_bytes(),
+                empty_receipts_rlp().as_slice(),
+                Some(&snapshot),
+            )
     }
 
     fn execute_native_transactions(
@@ -5371,6 +5482,22 @@ impl FinalChain {
             dpos_snapshot,
             true,
         )
+    }
+
+    /// The observed old-selector-only CALL fails unpack at B-1. Keep the
+    /// original bytes here because MalformedMutation retains only a selector.
+    fn bounded_legacy_claim_all_unpack_failure(
+        &self,
+        block_number: FinalChainBlockNumber,
+        transaction: &FinalizationTransaction,
+    ) -> Option<DposApplyOutcome> {
+        (transaction.receiver == Some(DPOS_CONTRACT_ADDRESS)
+            && transaction.data.as_slice() == DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR
+            && transaction.value.as_u256().is_zero()
+            && block_number.checked_next() == Some(self.rewards_config.fix_claim_all_block_num)
+            && self.magnolia_active(block_number)
+            && block_number < self.dpos_cornus_period)
+            .then(DposApplyOutcome::contract_failure)
     }
 
     /// Executes the complete legacy-compatible native envelope kernel from an
@@ -5675,7 +5802,11 @@ impl FinalChain {
 
                     contract_outcome = Some(match contract_tx {
                         NativeContractTransaction::Dpos(dpos_tx) => {
-                            if FinalChain::is_dpos_mutation_transaction(&dpos_tx) {
+                            if let Some(outcome) = self
+                                .bounded_legacy_claim_all_unpack_failure(block_number, transaction)
+                            {
+                                outcome
+                            } else if FinalChain::is_dpos_mutation_transaction(&dpos_tx) {
                                 self.apply_dpos_mutation_transaction(
                                     block_number,
                                     dpos_tx,
@@ -5885,6 +6016,27 @@ impl FinalChain {
         })
     }
 
+    /// Selects protocol code updates from this owner's effective fork configuration.
+    ///
+    /// `dpos_code_empty` describes the current account's code size, including an
+    /// absent account. FinalChain always owns its required DPoS configuration
+    /// and native registry, corresponding to Go's non-nil DPoS API constructor.
+    /// Registry presence is independent of Magnolia and account existence. A
+    /// nil-DPoS Go composition is not represented by this owner.
+    pub fn native_code_updates(
+        &self,
+        period: FinalChainBlockNumber,
+        dpos_code_empty: bool,
+    ) -> Vec<rustaxa_types::native_code::NativeCodeUpdate> {
+        rustaxa_types::native_code::code_updates(
+            period.as_u64(),
+            self.rewards_config.aspen_part_one_period.as_u64(),
+            self.dpos_cornus_period.as_u64(),
+            true,
+            dpos_code_empty,
+        )
+    }
+
     /// Independently replays a root-bound StateAPI projection into native
     /// DPoS/slashing state and an exact account snapshot.
     ///
@@ -5930,20 +6082,45 @@ impl FinalChain {
             })
             .transpose()?;
         let mut accounts = self.current_account_snapshot()?;
+        // Go applies these protocol-owned SetCode operations before the first
+        // transaction, including blocks with no transactions. Preserve every
+        // existing nonce, balance and storage root; GetAccount+SetCode creates
+        // a canonical zero account only when the target is absent.
+        let dpos_code_empty = accounts
+            .get(&DPOS_CONTRACT_ADDRESS)
+            .is_none_or(|account| account.code_size == 0);
+        for update in self.native_code_updates(block_number, dpos_code_empty) {
+            use tiny_keccak::{Hasher, Keccak};
+            let mut hash = Keccak::v256();
+            hash.update(update.code);
+            let mut code_hash = [0; 32];
+            hash.finalize(&mut code_hash);
+            let account = accounts.entry(update.address).or_insert_with(empty_account);
+            account.code_hash = code_hash;
+            account.code_size = u64::try_from(update.code.len())?;
+        }
+        let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head)?;
         let bounded_native_code = if native_context.is_some() {
             let account = accounts
                 .get(&DPOS_CONTRACT_ADDRESS)
                 .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_NATIVE_CONTEXT_ACCOUNT_MISSING"))?;
             anyhow::ensure!(
-                account.code_size > 0,
+                account.code_size > 0
+                    || (block_number < self.dpos_cornus_period
+                        && account.code_size == 0
+                        && account.code_hash == [0; 32]
+                        && (self.magnolia_active(block_number)
+                            || dpos_snapshot.has_complete_validator_shapes())),
                 "FINAL_CHAIN_NATIVE_CONTEXT_PREEXISTING_CODE_REQUIRED"
             );
+            // Historical DPoS dispatch is registry-owned: the pinned pre-Cornus
+            // account can have storage and funds without stored bytecode. Bind
+            // its canonical absent-code identity just as strictly as code.
             Some((account.code_hash, account.code_size))
         } else {
             None
         };
 
-        let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head)?;
         self.advance_reward_reference_graph_block(&mut dpos_snapshot, block_number)?;
         let mut dpos_gas_snapshot = dpos_snapshot.clone();
         let mut dpos_eligibility_read_snapshot = None;
@@ -6698,6 +6875,41 @@ impl FinalChain {
     /// PBFT/pillar DPoS reads nondeterministic.
     fn load_persisted_dpos_snapshots(&self) -> Result<(), anyhow::Error> {
         let last_block = self.last_block_number_typed()?;
+        if let Some(raw) = self.storage.final_chain().dpos_snapshot_raw(0)? {
+            let snapshot = decode_dpos_snapshot_rlp(&raw)?;
+            self.validate_aspen_supply_state(
+                FinalChainBlockNumber::GENESIS,
+                &snapshot.aspen_supply_state,
+            )?;
+            let mut snapshots = self
+                .dpos_snapshots
+                .lock()
+                .map_err(|_| anyhow::anyhow!("genesis DPoS snapshot lock poisoned"))?;
+            let mut expected = snapshots
+                .get(&FinalChainBlockNumber::GENESIS)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("genesis DPoS snapshot missing"))?;
+            // The persisted authority is never reconstructed from configuration.
+            // All scalar/principal/reward/queue identities must still be this
+            // owner's genesis; existing explicit counts cannot be repaired.
+            expected.validator_row_authority = snapshot.validator_row_authority.clone();
+            anyhow::ensure!(
+                expected == snapshot,
+                "FINAL_CHAIN_GENESIS_SNAPSHOT_IDENTITY_CONFLICT"
+            );
+            if let Some(raw) = self.storage.final_chain().account_snapshot_raw(0)? {
+                let accounts = decode_account_snapshot_rlp(&raw)?;
+                let expected = self
+                    .account_snapshots
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("genesis account snapshot lock poisoned"))?;
+                anyhow::ensure!(
+                    expected.get(&FinalChainBlockNumber::GENESIS) == Some(&accounts),
+                    "FINAL_CHAIN_GENESIS_ACCOUNT_IDENTITY_CONFLICT"
+                );
+            }
+            snapshots.insert(FinalChainBlockNumber::GENESIS, snapshot);
+        }
         if last_block.is_genesis() {
             return Ok(());
         }
@@ -7831,6 +8043,16 @@ impl FinalChain {
                 block: previous_cursor_block,
             })?
             .reward_per_stake;
+        let block = snapshot.reward_reference_graph.current_block()?;
+        let metadata_write = match snapshot
+            .reward_reference_graph
+            .load_node(&NodeKey { validator, block })
+        {
+            Ok(_) => false,
+            Err(DposRewardGraphError::MissingNode { .. }) => true,
+            Err(error) => return Err(error.into()),
+        };
+        let loaded_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
         let reward_cursor = self.checkpoint_validator_reward_per_stake(snapshot, validator)?;
         let reward_exact = match snapshot.reward_reference_graph.reward_from_cursor(
             &previous_cursor,
@@ -7872,6 +8094,9 @@ impl FinalChain {
             self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
         }
 
+        if metadata_write {
+            self.record_current_validator_metadata_write(snapshot, validator, loaded_count)?;
+        }
         if reward.is_zero() {
             return Ok(Vec::new());
         }
@@ -8066,9 +8291,18 @@ impl FinalChain {
             );
         }
 
-        snapshot
-            .commission_rewards
-            .insert(validator, StoredDposTokenAmount::default());
+        // Before Phalaenopsis the Go contract does not persist the cleared
+        // rewards row for a Magnolia validator retained by pending withdrawals.
+        // Its next claim therefore transfers the same pool again.
+        let retain_commission_pool = is_zero_stake
+            && self.magnolia_active(block_number)
+            && dpos_undelegations_count_for_validator(snapshot, validator) != 0
+            && block_number < self.dpos_phalaenopsis_period;
+        if !retain_commission_pool {
+            snapshot
+                .commission_rewards
+                .insert(validator, StoredDposTokenAmount::default());
+        }
         // The native contract invokes `SubBalance` and `AddBalance` even for a
         // zero commission pool. The account port preserves those lifecycle
         // operations for staged execution and the legacy map implementation.
@@ -8144,14 +8378,25 @@ impl FinalChain {
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let mut port =
             native_session::semantic_port::SnapshotCommissionPort::new(snapshot, validator);
-        native_session::semantic_port::apply_set_commission(
+        let outcome = native_session::semantic_port::apply_set_commission(
             &mut port,
             owner,
             commission,
             block_number,
             self.dpos_commission_change_frequency,
             self.dpos_commission_change_delta,
-        )
+        )?;
+        if outcome.status_code == 1 {
+            let persisted_count =
+                checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
+            record_validator_metadata_write(
+                snapshot,
+                validator,
+                self.magnolia_active(block_number),
+                persisted_count,
+            )?;
+        }
+        Ok(outcome)
     }
 
     fn apply_slashing_transaction(
@@ -8430,7 +8675,23 @@ impl FinalChain {
             .entry(registration.validator)
             .or_default();
         snapshot.reward_reference_graph = reward_reference_graph;
+        record_owned_validator_creation(snapshot, validator, self.magnolia_active(block_number))?;
         Ok(DposApplyOutcome::success(logs))
+    }
+
+    fn record_current_validator_metadata_write(
+        &self,
+        snapshot: &mut DposSnapshot,
+        validator: [u8; 20],
+        transient_count: u16,
+    ) -> Result<()> {
+        let period = snapshot.reward_reference_graph.current_block()?;
+        record_validator_metadata_write(
+            snapshot,
+            validator,
+            self.magnolia_active(period.into()),
+            transient_count,
+        )
     }
 
     fn apply_dpos_delegate(
@@ -8507,6 +8768,8 @@ impl FinalChain {
             ),
         );
         self.set_validator_stake(snapshot, validator, new_stake)?;
+        let persisted_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
+        self.record_current_validator_metadata_write(snapshot, validator, persisted_count)?;
         logs.push(dpos_delegated_log(delegator, validator, add_amount)?);
         Ok(DposApplyOutcome::success(logs))
     }
@@ -8579,6 +8842,7 @@ impl FinalChain {
             .as_u64()
             .checked_add(self.dpos_delegation_locking_period(block_number))
             .ok_or_else(|| anyhow::anyhow!("DPoS undelegation unlock block overflow"))?;
+        let loaded_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
         let mut logs = self.remove_dpos_delegation_stake(
             snapshot,
             accounts,
@@ -8606,6 +8870,14 @@ impl FinalChain {
             StoredDposTokenAmount::canonical_u256_after_mutation(remove_amount),
             unlock_block,
         )?;
+        if snapshot.total_stakes.contains_key(&validator) {
+            record_validator_metadata_write(
+                snapshot,
+                validator,
+                self.magnolia_active(block_number),
+                loaded_count.wrapping_add(1),
+            )?;
+        }
         logs.push(dpos_undelegated_log(delegator, validator, remove_amount)?);
         Ok(DposApplyOutcome::success(logs))
     }
@@ -8641,12 +8913,27 @@ impl FinalChain {
         if accounts.account(DPOS_CONTRACT_ADDRESS)?.balance < BigInt::from(amount_exact.clone()) {
             anyhow::bail!("DPoS contract balance insufficient for undelegation confirmation");
         }
+        let previous_count = if self.magnolia_active(block_number)
+            && snapshot.total_stakes.contains_key(&validator)
+        {
+            Some(checked_dpos_undelegations_count_for_validator(
+                snapshot, validator,
+            )?)
+        } else {
+            None
+        };
         remove_undelegation(snapshot, delegator, validator).ok_or_else(|| {
             anyhow::anyhow!("DPoS V1 undelegation disappeared after successful preflight")
         })?;
+        if let Some(count) = previous_count {
+            set_persisted_undelegations_count(snapshot, validator, count.saturating_sub(1))?;
+        }
         if self.magnolia_active(block_number)
             && snapshot.total_stakes.contains_key(&validator)
-            && dpos_undelegations_count_for_validator(snapshot, validator) == 0
+            && previous_count.map_or_else(
+                || dpos_undelegations_count_for_validator(snapshot, validator),
+                |count| count.saturating_sub(1),
+            ) == 0
             && snapshot
                 .total_stakes
                 .get(&validator)
@@ -8657,6 +8944,24 @@ impl FinalChain {
                 .is_none_or(StoredDposTokenAmount::is_zero)
         {
             remove_dpos_validator(snapshot, validator, false)?;
+        }
+        if !self.ficus_active_at(block_number)
+            && snapshot.total_stakes.contains_key(&validator)
+            && let Some(count) = previous_count
+        {
+            // Go omitted ModifyValidator for the surviving pre-Ficus row.
+            set_persisted_undelegations_count(snapshot, validator, count)?;
+        }
+        if self.ficus_active_at(block_number)
+            && snapshot.total_stakes.contains_key(&validator)
+            && let Some(count) = previous_count
+        {
+            record_validator_metadata_write(
+                snapshot,
+                validator,
+                self.magnolia_active(block_number),
+                count.saturating_sub(1),
+            )?;
         }
         // Load the recipient before the port-specific addition so authoritative
         // staged read failures retain their typed error. Once loaded, only the
@@ -8696,6 +9001,7 @@ impl FinalChain {
                 DposContractError::NonExistentValidator,
             ));
         }
+        let loaded_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
         remove_undelegation(snapshot, delegator, validator).ok_or_else(|| {
             anyhow::anyhow!("DPoS V1 undelegation disappeared after successful preflight")
         })?;
@@ -8748,6 +9054,11 @@ impl FinalChain {
                 .checked_add(amount)
                 .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V1 cancel stake overflow"))?,
         )?;
+        self.record_current_validator_metadata_write(
+            snapshot,
+            validator,
+            loaded_count.saturating_sub(1),
+        )?;
         logs.push(dpos_undelegate_canceled_log(delegator, validator, amount)?);
         Ok(DposApplyOutcome::success(logs))
     }
@@ -8770,6 +9081,7 @@ impl FinalChain {
         )? {
             return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
+        let loaded_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
         let mut logs = self.remove_dpos_delegation_stake(
             snapshot,
             accounts,
@@ -8800,6 +9112,14 @@ impl FinalChain {
                 .checked_add(self.dpos_delegation_locking_period(block_number))
                 .ok_or_else(|| anyhow::anyhow!("DPoS undelegation unlock block overflow"))?,
         )?;
+        if snapshot.total_stakes.contains_key(&validator) {
+            record_validator_metadata_write(
+                snapshot,
+                validator,
+                self.magnolia_active(block_number),
+                loaded_count.wrapping_add(1),
+            )?;
+        }
         logs.push(dpos_undelegated_v2_log(
             delegator,
             validator,
@@ -8836,10 +9156,25 @@ impl FinalChain {
         if accounts.account(DPOS_CONTRACT_ADDRESS)?.balance < BigInt::from(amount_exact.clone()) {
             anyhow::bail!("DPoS contract balance insufficient for undelegation V2 confirmation");
         }
+        let previous_count = if self.magnolia_active(block_number)
+            && snapshot.total_stakes.contains_key(&validator)
+        {
+            Some(checked_dpos_undelegations_count_for_validator(
+                snapshot, validator,
+            )?)
+        } else {
+            None
+        };
         remove_undelegation_v2(snapshot, delegator, validator, id);
+        if let Some(count) = previous_count {
+            set_persisted_undelegations_count(snapshot, validator, count.saturating_sub(1))?;
+        }
         if self.magnolia_active(block_number)
             && snapshot.total_stakes.contains_key(&validator)
-            && dpos_undelegations_count_for_validator(snapshot, validator) == 0
+            && previous_count.map_or_else(
+                || dpos_undelegations_count_for_validator(snapshot, validator),
+                |count| count.saturating_sub(1),
+            ) == 0
             && snapshot
                 .total_stakes
                 .get(&validator)
@@ -8850,6 +9185,24 @@ impl FinalChain {
                 .is_none_or(StoredDposTokenAmount::is_zero)
         {
             remove_dpos_validator(snapshot, validator, false)?;
+        }
+        if !self.ficus_active_at(block_number)
+            && snapshot.total_stakes.contains_key(&validator)
+            && let Some(count) = previous_count
+        {
+            // Go omitted ModifyValidator for the surviving pre-Ficus row.
+            set_persisted_undelegations_count(snapshot, validator, count)?;
+        }
+        if self.ficus_active_at(block_number)
+            && snapshot.total_stakes.contains_key(&validator)
+            && let Some(count) = previous_count
+        {
+            record_validator_metadata_write(
+                snapshot,
+                validator,
+                self.magnolia_active(block_number),
+                count.saturating_sub(1),
+            )?;
         }
         accounts.subtract_balance(DPOS_CONTRACT_ADDRESS, &amount_exact)?;
         accounts
@@ -8888,6 +9241,7 @@ impl FinalChain {
             ));
         }
         let amount = entry.amount.as_u256();
+        let loaded_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
         let mut logs = if snapshot
             .delegations
             .get(&validator)
@@ -8937,6 +9291,11 @@ impl FinalChain {
                 .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V2 cancel stake overflow"))?,
         )?;
         remove_undelegation_v2(snapshot, delegator, validator, id);
+        self.record_current_validator_metadata_write(
+            snapshot,
+            validator,
+            loaded_count.saturating_sub(1),
+        )?;
         logs.push(dpos_undelegate_canceled_v2_log(
             delegator, validator, id, amount,
         )?);
@@ -9275,6 +9634,8 @@ impl FinalChain {
                 .checked_add(amount)
                 .ok_or_else(|| anyhow::anyhow!("DPoS redelegation destination stake overflow"))?,
         )?;
+        let persisted_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
+        self.record_current_validator_metadata_write(snapshot, validator, persisted_count)?;
         Ok(logs)
     }
 
@@ -9937,6 +10298,8 @@ impl FinalChain {
         )? {
             return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
+        let original_source_shape = checked_validator_row_shape(snapshot, from)?;
+        let original_source_count = checked_dpos_undelegations_count_for_validator(snapshot, from)?;
         // Restore the actual earlier-loaded current source copy only within the
         // evidence-bound distinct-validator profile. Other kernel paths retain
         // their behavior, including the separate pre-fix same-validator repair.
@@ -10148,6 +10511,34 @@ impl FinalChain {
                 || dpos_undelegations_count_for_validator(snapshot, from) == 0)
         {
             remove_dpos_validator(snapshot, from, true)?;
+        }
+        if snapshot.total_stakes.contains_key(&from) {
+            let retained_without_write = snapshot
+                .total_stakes
+                .get(&from)
+                .is_some_and(StoredDposTokenAmount::is_zero)
+                && snapshot
+                    .commission_rewards
+                    .get(&from)
+                    .is_none_or(StoredDposTokenAmount::is_zero)
+                && !self.ficus_active_at(block_number);
+            if retained_without_write {
+                if let Some(shape) = original_source_shape {
+                    record_validator_metadata_write(
+                        snapshot,
+                        from,
+                        shape == ValidatorRowShape::Extended,
+                        original_source_count,
+                    )?;
+                }
+            } else {
+                record_validator_metadata_write(
+                    snapshot,
+                    from,
+                    self.magnolia_active(block_number),
+                    original_source_count,
+                )?;
+            }
         }
         logs.extend(
             self.apply_dpos_redelegate_destination(snapshot, accounts, delegator, to, amount)?
@@ -11312,6 +11703,8 @@ fn canonical_concrete_precompile_storage(
     snapshot: &DposSnapshot,
     extended_validator_active: bool,
 ) -> Result<ConcreteRawStorageMap, anyhow::Error> {
+    validate_validator_row_authority(snapshot)?;
+    validate_retained_undelegation_counts(snapshot)?;
     let mut storage = ConcreteRawStorageMap::new();
 
     insert_concrete_iterable_map(
@@ -11336,24 +11729,8 @@ fn canonical_concrete_precompile_storage(
         let last_updated = snapshot
             .reward_reference_graph
             .read_validator_head(validator)?;
-        let undelegations_count = snapshot
-            .undelegations
-            .values()
-            .flat_map(|entries| entries.iter())
-            .filter(|entry| entry.validator == *validator)
-            .count()
-            .checked_add(
-                snapshot
-                    .undelegations_v2
-                    .values()
-                    .flat_map(|entries| entries.iter())
-                    .filter(|entry| entry.validator == *validator)
-                    .map(|entry| entry.entries.len())
-                    .sum::<usize>(),
-            )
-            .ok_or_else(|| anyhow::anyhow!("DPoS undelegation count overflow"))?;
-        let undelegations_count = u16::try_from(undelegations_count)
-            .map_err(|_| anyhow::anyhow!("DPoS undelegation count exceeds uint16"))?;
+        let undelegations_count =
+            checked_dpos_undelegations_count_for_validator(snapshot, *validator)?;
 
         let encode_validator = |extended: bool| {
             let mut legacy = rlp::RlpStream::new_list(4);
@@ -11378,11 +11755,19 @@ fn canonical_concrete_precompile_storage(
             &mut storage,
             DPOS_CONTRACT_ADDRESS,
             validator_key,
-            encode_validator(extended_validator_active),
+            encode_persisted_validator_row(snapshot, *validator, extended_validator_active)?,
         );
         // A validator untouched since before Magnolia may legitimately retain
         // the four-field representation when its extended count is zero.
-        if extended_validator_active && undelegations_count == 0 {
+        if matches!(
+            snapshot.validator_row_authority,
+            ValidatorRowAuthority::CompatibilityOnly
+        ) && extended_validator_active
+            && undelegations_count == 0
+            && !snapshot
+                .retained_undelegation_counts
+                .contains_key(validator)
+        {
             insert_concrete_storage_value(
                 &mut storage,
                 DPOS_CONTRACT_ADDRESS,
@@ -11764,7 +12149,20 @@ fn validate_concrete_precompile_final_storage(
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Result<Vec<u8>, anyhow::Error> {
     validate_dpos_principal_ledger(snapshot)?;
-    let mut stream = rlp::RlpStream::new_list(24);
+    validate_retained_undelegation_counts(snapshot)?;
+    validate_validator_row_authority(snapshot)?;
+    let mut stream = rlp::RlpStream::new_list(
+        if matches!(
+            snapshot.validator_row_authority,
+            ValidatorRowAuthority::Complete(_)
+        ) {
+            26
+        } else if snapshot.retained_undelegation_counts.is_empty() {
+            24
+        } else {
+            25
+        },
+    );
     append_stored_dpos_token_amount_map(&mut stream, &snapshot.total_stakes);
     append_stored_dpos_token_amount_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -11784,7 +12182,21 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Result<Vec<u8>, anyhow::
             current_yield,
         } => {
             stream.append(&Vec::<u8>::new());
-            stream.append(&total_supply.to_snapshot_bytes());
+            if total_supply.is_zero() {
+                // Schema26 reserves this previously rejected blob for explicit
+                // migrated canonical zero. Native storage keeps its empty zero.
+                anyhow::ensure!(
+                    matches!(
+                        snapshot.validator_row_authority,
+                        ValidatorRowAuthority::Complete(_)
+                    ) && total_supply.to_snapshot_bytes().is_empty()
+                        && current_yield.as_u64() == 0,
+                    "FINAL_CHAIN_DPOS_ASPEN_ZERO_SUPPLY_PERSISTENCE_AUTHORITY"
+                );
+                stream.append(&vec![0_u8; 32]);
+            } else {
+                stream.append(&total_supply.to_snapshot_bytes());
+            }
             stream.append(&current_yield.as_u64());
         }
     }
@@ -11810,6 +12222,32 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Result<Vec<u8>, anyhow::
     );
     stream.append(&snapshot.delegation_ledger_history_complete);
     stream.append(&encode_dpos_reward_graph(&snapshot.reward_reference_graph)?);
+    if matches!(
+        snapshot.validator_row_authority,
+        ValidatorRowAuthority::Complete(_)
+    ) || !snapshot.retained_undelegation_counts.is_empty()
+    {
+        stream.begin_list(snapshot.retained_undelegation_counts.len());
+        for (address, count) in &snapshot.retained_undelegation_counts {
+            stream
+                .begin_list(2)
+                .append(&address.as_slice())
+                .append(&count.0);
+        }
+    }
+    if let ValidatorRowAuthority::Complete(rows) = &snapshot.validator_row_authority {
+        stream.begin_list(3).append(&1_u8).append(&true);
+        stream.begin_list(rows.len());
+        for (address, shape) in rows {
+            stream
+                .begin_list(2)
+                .append(&address.as_slice())
+                .append(&match shape {
+                    ValidatorRowShape::LegacyV1 => 0_u8,
+                    ValidatorRowShape::Extended => 1_u8,
+                });
+        }
+    }
     Ok(stream.out().to_vec())
 }
 
@@ -11869,6 +12307,28 @@ fn decode_aspen_supply_state(
 
 fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     let rlp = Rlp::new(raw);
+    let outer = rlp.payload_info()?;
+    anyhow::ensure!(
+        rlp.is_list() && outer.total() == raw.len(),
+        "FINAL_CHAIN_DPOS_RLP_OUTER_FRAMING"
+    );
+    // RLP iteration stops silently on a malformed child. Prove full coverage
+    // before using item_count to select an older schema.
+    let mut consumed = 0_usize;
+    for child in rlp.iter() {
+        let child_raw = child.as_raw();
+        anyhow::ensure!(
+            !child_raw.is_empty() && child.payload_info()?.total() == child_raw.len(),
+            "FINAL_CHAIN_DPOS_RLP_CHILD_FRAMING"
+        );
+        consumed = consumed
+            .checked_add(child_raw.len())
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_DPOS_RLP_CHILD_LENGTH_OVERFLOW"))?;
+    }
+    anyhow::ensure!(
+        consumed == outer.value_len,
+        "FINAL_CHAIN_DPOS_RLP_INCOMPLETE_CHILDREN"
+    );
     let item_count = rlp.item_count()?;
     if item_count != 5
         && item_count != 6
@@ -11883,9 +12343,11 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         && item_count != 22
         && item_count != 23
         && item_count != 24
+        && item_count != 25
+        && item_count != 26
     {
         anyhow::bail!(
-            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, seventeen, twenty, twenty-one, twenty-two, twenty-three, or twenty-four items"
+            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, seventeen, twenty, twenty-one, twenty-two, twenty-three, twenty-four, twenty-five, or twenty-six items"
         );
     }
     let total_stakes = decode_stored_dpos_token_amount_map(&rlp.at(0)?, "total stake")?;
@@ -11926,7 +12388,21 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     } else {
         (Vec::new(), 0)
     };
-    let aspen_supply_state = decode_aspen_supply_state(minted_tokens, total_supply, current_yield)?;
+    let migrated_zero_marker =
+        item_count == 26 && total_supply.len() == 32 && total_supply.iter().all(|byte| *byte == 0);
+    let aspen_supply_state = if migrated_zero_marker {
+        anyhow::ensure!(
+            minted_tokens.is_empty() && current_yield == 0,
+            "FINAL_CHAIN_DPOS_ASPEN_ZERO_SUPPLY_MARKER_CONFLICT"
+        );
+        // Do not establish migration until the full schema26 authority below
+        // has been validated. Ambiguous old empty supply remains unmigrated.
+        AspenSupplyState::Unmigrated {
+            minted_tokens: StoredDposTokenAmount::default(),
+        }
+    } else {
+        decode_aspen_supply_state(minted_tokens, total_supply, current_yield)?
+    };
     let validator_reward_per_stake = if item_count >= 14 {
         decode_reward_index_map(&rlp.at(11)?, "validator reward per stake")?
     } else {
@@ -12007,7 +12483,75 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     } else {
         BTreeSet::new()
     };
-    let snapshot = DposSnapshot {
+    let retained_undelegation_counts = if item_count >= 25 {
+        anyhow::ensure!(
+            rlp.payload_info()?.total() == raw.len(),
+            "DPoS counter snapshot trailing bytes"
+        );
+        let rows = rlp.at(24)?;
+        anyhow::ensure!(
+            rows.is_list() && (item_count == 26 || rows.item_count()? != 0),
+            "DPoS empty counter extension"
+        );
+        let mut values = BTreeMap::new();
+        let mut previous = None;
+        for row in rows.iter() {
+            anyhow::ensure!(
+                row.is_list() && row.item_count()? == 2,
+                "DPoS counter row shape"
+            );
+            let address = decode_address(&row.at(0)?, "retained validator count")?;
+            anyhow::ensure!(
+                previous.is_none_or(|prior| prior < address),
+                "DPoS counter rows duplicate or unordered"
+            );
+            // u16 decoding rejects over-width and noncanonical integer values.
+            let value: u16 = row.val_at(1)?;
+            values.insert(address, StoredUndelegationCounter(value));
+            previous = Some(address);
+        }
+        values
+    } else {
+        // Old schemas never acquire inferred persisted-counter provenance.
+        BTreeMap::new()
+    };
+    let validator_row_authority = if item_count == 26 {
+        let shape = rlp.at(25)?;
+        anyhow::ensure!(
+            shape.is_list() && shape.item_count()? == 3,
+            "DPoS row authority shape"
+        );
+        anyhow::ensure!(
+            shape.val_at::<u8>(0)? == 1 && shape.val_at::<bool>(1)?,
+            "DPoS row authority version/completeness"
+        );
+        let rows = shape.at(2)?;
+        anyhow::ensure!(rows.is_list(), "DPoS row authority rows");
+        let mut result = BTreeMap::new();
+        let mut previous = None;
+        for row in rows.iter() {
+            anyhow::ensure!(
+                row.is_list() && row.item_count()? == 2,
+                "DPoS row shape entry"
+            );
+            let address = decode_address(&row.at(0)?, "validator row shape")?;
+            anyhow::ensure!(
+                previous.is_none_or(|prior| prior < address),
+                "DPoS row shapes duplicate/unordered"
+            );
+            let shape = match row.val_at::<u8>(1)? {
+                0 => ValidatorRowShape::LegacyV1,
+                1 => ValidatorRowShape::Extended,
+                _ => anyhow::bail!("DPoS row shape tag"),
+            };
+            result.insert(address, shape);
+            previous = Some(address);
+        }
+        ValidatorRowAuthority::Complete(result)
+    } else {
+        ValidatorRowAuthority::CompatibilityOnly
+    };
+    let mut snapshot = DposSnapshot {
         total_stakes,
         commission_rewards,
         delegator_rewards,
@@ -12022,6 +12566,8 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         delegation_reward_cursors,
         validator_reward_per_stake,
         aspen_supply_state,
+        retained_undelegation_counts,
+        validator_row_authority,
         undelegations_v2,
         undelegation_v2_last_ids,
         undelegations,
@@ -12033,6 +12579,20 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         redelegate_same_validator_corruption,
     };
     validate_dpos_principal_ledger(&snapshot)?;
+    validate_retained_undelegation_counts(&snapshot)?;
+    validate_validator_row_authority(&snapshot)?;
+    if migrated_zero_marker {
+        snapshot.aspen_supply_state = AspenSupplyState::Migrated {
+            total_supply: StoredDposTokenAmount::canonical_u256_after_mutation(U256::zero()),
+            current_yield: AspenYield::default(),
+        };
+    }
+    if item_count == 26 {
+        anyhow::ensure!(
+            encode_dpos_snapshot_rlp(&snapshot)? == raw,
+            "DPoS row authority noncanonical encoding"
+        );
+    }
     Ok(snapshot)
 }
 
@@ -12802,6 +13362,10 @@ fn remove_dpos_validator(
             remove_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
         }
     }
+    snapshot.retained_undelegation_counts.remove(&validator);
+    if let ValidatorRowAuthority::Complete(rows) = &mut snapshot.validator_row_authority {
+        rows.remove(&validator);
+    }
     snapshot.total_stakes.remove(&validator);
     snapshot.commission_rewards.remove(&validator);
     snapshot.delegator_rewards.remove(&validator);
@@ -12831,6 +13395,13 @@ fn create_undelegation(
     amount: StoredDposTokenAmount,
     block: u64,
 ) -> Result<(), anyhow::Error> {
+    let previous_count = if snapshot.total_stakes.contains_key(&validator) {
+        Some(checked_dpos_undelegations_count_for_validator(
+            snapshot, validator,
+        )?)
+    } else {
+        None
+    };
     snapshot
         .undelegations
         .entry(delegator)
@@ -12840,6 +13411,9 @@ fn create_undelegation(
             amount,
             block,
         });
+    if let Some(count) = previous_count {
+        record_persisted_undelegations_count(snapshot, validator, count.wrapping_add(1));
+    }
     Ok(())
 }
 
@@ -12855,6 +13429,13 @@ fn remove_undelegation(
     let entry = undelegations.swap_remove(position);
     if undelegations.is_empty() {
         snapshot.undelegations.remove(&delegator);
+    }
+    if let Some(count) = snapshot
+        .retained_undelegation_counts
+        .get(&validator)
+        .copied()
+    {
+        record_persisted_undelegations_count(snapshot, validator, count.0.saturating_sub(1));
     }
     Some(entry)
 }
@@ -12905,21 +13486,343 @@ fn validate_dpos_undelegations_page(
     Ok(())
 }
 
-fn dpos_undelegations_count_for_validator(snapshot: &DposSnapshot, validator: [u8; 20]) -> u16 {
-    let v1_count = snapshot
+/// None denotes the unchanged old CF1 compatibility scope, never inferred shape.
+fn owned_genesis_initialization(header: bool, head: bool, snapshot: bool) -> Result<bool> {
+    anyhow::ensure!(header || !snapshot, "FINAL_CHAIN_GENESIS_SNAPSHOT_ORPHAN");
+    Ok(!header && !head && !snapshot)
+}
+
+fn checked_validator_row_shape(
+    snapshot: &DposSnapshot,
+    validator: [u8; 20],
+) -> Result<Option<ValidatorRowShape>> {
+    match &snapshot.validator_row_authority {
+        ValidatorRowAuthority::CompatibilityOnly => Ok(None),
+        ValidatorRowAuthority::Complete(rows) => rows
+            .get(&validator)
+            .copied()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("DPoS validator row provenance missing")),
+    }
+}
+
+fn validate_validator_row_authority(snapshot: &DposSnapshot) -> Result<()> {
+    if let ValidatorRowAuthority::Complete(rows) = &snapshot.validator_row_authority {
+        anyhow::ensure!(
+            rows.keys().eq(snapshot.total_stakes.keys()),
+            "DPoS validator row provenance coverage"
+        );
+        for (validator, shape) in rows {
+            if *shape == ValidatorRowShape::LegacyV1 {
+                anyhow::ensure!(
+                    !snapshot
+                        .retained_undelegation_counts
+                        .contains_key(validator),
+                    "DPoS legacy row has counter override"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Records exactly one Go Create/ModifyValidator metadata write. A successful
+/// operation that writes only rewards or omits ModifyValidator must not call it.
+/// The transient loaded count is passed explicitly; Legacy never publishes an
+/// interim retained override, including zero.
+fn record_validator_metadata_write(
+    snapshot: &mut DposSnapshot,
+    validator: [u8; 20],
+    extended: bool,
+    transient_count: u16,
+) -> Result<()> {
+    anyhow::ensure!(
+        snapshot.total_stakes.contains_key(&validator),
+        "DPoS validator write without validator"
+    );
+    if let ValidatorRowAuthority::Complete(rows) = &mut snapshot.validator_row_authority {
+        let shape = rows
+            .get_mut(&validator)
+            .ok_or_else(|| anyhow::anyhow!("DPoS modify missing validator row provenance"))?;
+        *shape = if extended {
+            ValidatorRowShape::Extended
+        } else {
+            ValidatorRowShape::LegacyV1
+        };
+        if extended {
+            record_persisted_undelegations_count(snapshot, validator, transient_count);
+        } else {
+            snapshot.retained_undelegation_counts.remove(&validator);
+        }
+    }
+    Ok(())
+}
+
+fn record_owned_validator_creation(
+    snapshot: &mut DposSnapshot,
+    validator: [u8; 20],
+    extended: bool,
+) -> Result<()> {
+    if let ValidatorRowAuthority::Complete(rows) = &mut snapshot.validator_row_authority {
+        anyhow::ensure!(
+            !rows.contains_key(&validator),
+            "DPoS creation existing row provenance"
+        );
+        rows.insert(
+            validator,
+            if extended {
+                ValidatorRowShape::Extended
+            } else {
+                ValidatorRowShape::LegacyV1
+            },
+        );
+    }
+    record_validator_metadata_write(snapshot, validator, extended, 0)
+}
+
+fn encode_persisted_validator_row(
+    snapshot: &DposSnapshot,
+    validator: [u8; 20],
+    compatibility_extended: bool,
+) -> Result<Vec<u8>> {
+    let metadata = snapshot
+        .validator_metadata
+        .get(&validator)
+        .ok_or_else(|| anyhow::anyhow!("DPoS validator metadata missing"))?;
+    let stake = snapshot
+        .total_stakes
+        .get(&validator)
+        .ok_or_else(|| anyhow::anyhow!("DPoS validator stake missing"))?
+        .as_u256();
+    let head = snapshot
+        .reward_reference_graph
+        .read_validator_head(&validator)?;
+    let mut legacy = rlp::RlpStream::new_list(4);
+    legacy
+        .append(&stake)
+        .append(&metadata.commission)
+        .append(&metadata.last_commission_change)
+        .append(&head);
+    let legacy = legacy.out();
+    let extended = match checked_validator_row_shape(snapshot, validator)? {
+        Some(ValidatorRowShape::LegacyV1) => false,
+        Some(ValidatorRowShape::Extended) => true,
+        None => compatibility_extended,
+    };
+    if !extended {
+        return Ok(legacy.to_vec());
+    }
+    let mut row = rlp::RlpStream::new_list(2);
+    row.append_raw(&legacy, 1)
+        .append(&checked_dpos_undelegations_count_for_validator(
+            snapshot, validator,
+        )?);
+    Ok(row.out().to_vec())
+}
+
+/// Pure staging step for the private root/catalog-authenticated ingress. This
+/// function cannot publish authority; synthetic_fixture obtains all rows from
+/// one verified root and checks complete catalog/metadata before storing its
+/// returned snapshot. Normal execution has no external Complete-map setter.
+#[cfg(any(test, feature = "synthetic-fixtures"))]
+fn stage_validator_rows_from_authenticated_catalog(
+    snapshot: &DposSnapshot,
+    raw: &AuthenticatedNativeRawCatalog,
+    compatibility_extended: bool,
+) -> Result<DposSnapshot> {
+    validate_validator_row_authority(snapshot)?;
+    validate_retained_undelegation_counts(snapshot)?;
+    validate_dpos_principal_ledger(snapshot)?;
+    let mut staged = snapshot.clone();
+    let mut shapes = BTreeMap::new();
+    let mut counts = BTreeMap::new();
+    for validator in snapshot.total_stakes.keys() {
+        let key = (
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[0, 0], validator]),
+        );
+        let bytes = raw
+            .get(&key)
+            .and_then(Option::as_deref)
+            .ok_or_else(|| anyhow::anyhow!("DPoS authenticated validator row absent"))?;
+        let row = Rlp::new(bytes);
+        anyhow::ensure!(
+            row.is_list() && row.payload_info()?.total() == bytes.len(),
+            "DPoS authenticated validator row RLP"
+        );
+        let shape = match row.item_count()? {
+            4 => ValidatorRowShape::LegacyV1,
+            2 => ValidatorRowShape::Extended,
+            _ => anyhow::bail!("DPoS authenticated validator shape"),
+        };
+        let facts = native_session::semantic_port::decode_validator_facts(bytes, true)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let metadata = snapshot
+            .validator_metadata
+            .get(validator)
+            .ok_or_else(|| anyhow::anyhow!("DPoS validator metadata absent"))?;
+        anyhow::ensure!(
+            (facts.0, facts.1, facts.2, facts.3)
+                == (
+                    snapshot.total_stakes[validator].as_u256(),
+                    metadata.commission,
+                    metadata.last_commission_change,
+                    snapshot
+                        .reward_reference_graph
+                        .read_validator_head(validator)?
+                ),
+            "DPoS authenticated validator facts mismatch"
+        );
+        if let Some(established) = checked_validator_row_shape(snapshot, *validator)? {
+            anyhow::ensure!(
+                established == shape
+                    && checked_dpos_undelegations_count_for_validator(snapshot, *validator)?
+                        == facts.4,
+                "DPoS authenticated validator provenance conflict"
+            );
+        }
+        if let Some(count) = snapshot.retained_undelegation_counts.get(validator) {
+            anyhow::ensure!(
+                shape == ValidatorRowShape::Extended && count.0 == facts.4,
+                "DPoS authenticated retained counter conflict"
+            );
+        }
+        shapes.insert(*validator, shape);
+        counts.insert(*validator, facts.4);
+    }
+    staged.validator_row_authority = ValidatorRowAuthority::Complete(shapes);
+    for (validator, count) in counts {
+        if checked_validator_row_shape(&staged, validator)? == Some(ValidatorRowShape::Extended) {
+            record_persisted_undelegations_count(&mut staged, validator, count);
+        }
+    }
+    validate_retained_undelegation_counts(&staged)?;
+    validate_validator_row_authority(&staged)?;
+    validate_dpos_principal_ledger(&staged)?;
+    let canonical = canonical_concrete_precompile_storage(&staged, compatibility_extended)?;
+    for (key, values) in canonical {
+        let actual = raw.get(&key).and_then(Option::as_ref);
+        let absent_empty_jail = key.0 == SLASHING_CONTRACT_ADDRESS
+            && key.1 == {
+                let mut k = [0; 32];
+                k[31] = 2;
+                k
+            }
+            && staged.slashing_jailed_validators.is_empty()
+            && values.contains(&vec![0xc0])
+            && actual.is_none();
+        anyhow::ensure!(
+            actual.map_or_else(
+                || values.iter().any(Vec::is_empty) || absent_empty_jail,
+                |value| values.contains(value)
+            ),
+            "DPoS complete authenticated native catalog mismatch"
+        );
+    }
+    Ok(staged)
+}
+
+fn queue_undelegations_count(snapshot: &DposSnapshot, validator: [u8; 20]) -> usize {
+    let v1 = snapshot
         .undelegations
         .values()
-        .map(|delegations| {
-            delegations
-                .iter()
-                .filter(|entry| entry.validator == validator)
-                .count()
+        .flat_map(|entries| entries.iter())
+        .filter(|entry| entry.validator == validator)
+        .count();
+    let v2: usize = snapshot
+        .undelegations_v2
+        .values()
+        .flat_map(|groups| groups.iter())
+        .filter(|group| group.validator == validator)
+        .map(|group| group.entries.len())
+        .sum();
+    v1 + v2
+}
+
+fn dpos_undelegations_count_for_validator(snapshot: &DposSnapshot, validator: [u8; 20]) -> u16 {
+    if matches!(&snapshot.validator_row_authority, ValidatorRowAuthority::Complete(rows) if rows.get(&validator) == Some(&ValidatorRowShape::LegacyV1))
+    {
+        return 0;
+    }
+    snapshot
+        .retained_undelegation_counts
+        .get(&validator)
+        .map(|count| count.0)
+        .unwrap_or_else(|| {
+            u16::try_from(queue_undelegations_count(snapshot, validator)).unwrap_or(u16::MAX)
         })
-        .sum::<usize>();
-    let v2_count = usize::from(dpos_undelegations_v2_count_for_validator(
-        snapshot, validator,
-    ));
-    u16::try_from(v1_count + v2_count).unwrap_or(u16::MAX)
+}
+
+fn checked_dpos_undelegations_count_for_validator(
+    snapshot: &DposSnapshot,
+    validator: [u8; 20],
+) -> Result<u16> {
+    if checked_validator_row_shape(snapshot, validator)? == Some(ValidatorRowShape::LegacyV1) {
+        anyhow::ensure!(
+            !snapshot
+                .retained_undelegation_counts
+                .contains_key(&validator),
+            "DPoS legacy row has counter override"
+        );
+        return Ok(0);
+    }
+    if let Some(count) = snapshot.retained_undelegation_counts.get(&validator) {
+        return Ok(count.0);
+    }
+    u16::try_from(queue_undelegations_count(snapshot, validator)).map_err(|_| {
+        anyhow::anyhow!("DPoS queue count exceeds uint16 without persisted-counter provenance")
+    })
+}
+
+fn record_persisted_undelegations_count(
+    snapshot: &mut DposSnapshot,
+    validator: [u8; 20],
+    value: u16,
+) {
+    if matches!(&snapshot.validator_row_authority, ValidatorRowAuthority::Complete(rows) if rows.get(&validator) == Some(&ValidatorRowShape::LegacyV1))
+    {
+        snapshot.retained_undelegation_counts.remove(&validator);
+        return;
+    }
+    if usize::from(value) == queue_undelegations_count(snapshot, validator) {
+        snapshot.retained_undelegation_counts.remove(&validator);
+    } else {
+        snapshot
+            .retained_undelegation_counts
+            .insert(validator, StoredUndelegationCounter(value));
+    }
+}
+
+fn set_persisted_undelegations_count(
+    snapshot: &mut DposSnapshot,
+    validator: [u8; 20],
+    value: u16,
+) -> Result<()> {
+    anyhow::ensure!(
+        snapshot.total_stakes.contains_key(&validator),
+        "DPoS counter orphan validator"
+    );
+    anyhow::ensure!(
+        checked_validator_row_shape(snapshot, validator)? != Some(ValidatorRowShape::LegacyV1)
+            || value == 0,
+        "DPoS nonzero counter on legacy row"
+    );
+    record_persisted_undelegations_count(snapshot, validator, value);
+    Ok(())
+}
+
+fn validate_retained_undelegation_counts(snapshot: &DposSnapshot) -> Result<()> {
+    for (validator, count) in &snapshot.retained_undelegation_counts {
+        anyhow::ensure!(
+            snapshot.total_stakes.contains_key(validator),
+            "DPoS counter orphan validator"
+        );
+        anyhow::ensure!(
+            usize::from(count.0) != queue_undelegations_count(snapshot, *validator),
+            "DPoS redundant counter override"
+        );
+    }
+    Ok(())
 }
 
 fn dpos_undelegations_storage_read_count(
@@ -12940,6 +13843,13 @@ fn create_undelegation_v2(
     amount: StoredDposTokenAmount,
     block: u64,
 ) -> Result<u64, anyhow::Error> {
+    let previous_count = if snapshot.total_stakes.contains_key(&validator) {
+        Some(checked_dpos_undelegations_count_for_validator(
+            snapshot, validator,
+        )?)
+    } else {
+        None
+    };
     let id = snapshot
         .undelegation_v2_last_ids
         .get(&delegator)
@@ -12961,6 +13871,9 @@ fn create_undelegation_v2(
             validator,
             entries: vec![DposUndelegationV2Entry { id, amount, block }],
         });
+    }
+    if let Some(count) = previous_count {
+        record_persisted_undelegations_count(snapshot, validator, count.wrapping_add(1));
     }
     Ok(id)
 }
@@ -12990,6 +13903,13 @@ fn remove_undelegation_v2(
     }
     if validators.is_empty() {
         snapshot.undelegations_v2.remove(&delegator);
+    }
+    if let Some(count) = snapshot
+        .retained_undelegation_counts
+        .get(&validator)
+        .copied()
+    {
+        record_persisted_undelegations_count(snapshot, validator, count.0.saturating_sub(1));
     }
     true
 }
@@ -13074,17 +13994,6 @@ fn validate_dpos_undelegations_v2_page(
         }
     }
     Ok(())
-}
-
-fn dpos_undelegations_v2_count_for_validator(snapshot: &DposSnapshot, validator: [u8; 20]) -> u16 {
-    let count = snapshot
-        .undelegations_v2
-        .values()
-        .flat_map(|validators| validators.iter())
-        .filter(|group| group.validator == validator)
-        .map(|group| group.entries.len())
-        .sum::<usize>();
-    u16::try_from(count).unwrap_or(u16::MAX)
 }
 
 fn dpos_undelegations_v2_storage_read_count(
@@ -13722,10 +14631,12 @@ fn dpos_mutation_action_gas(
 /// Computes legacy DPoS action gas after selector classification and decoding.
 ///
 /// Malformed fixed-gas methods retain selector gas. Malformed legacy batch
-/// claim-all is a successful no-op with zero action gas, while unsupported
-/// selectors fail with zero action gas. Valid claim-all calls derive gas from
-/// the staged snapshot and may surface only snapshot or arithmetic invariant
-/// failures.
+/// claim-all has zero action gas. The common envelope executor separately
+/// qualifies the exact selector-only, value-zero, B-1 post-Magnolia and
+/// pre-Cornus unpack failure. Other malformed fallback behavior is unchanged
+/// and remains unqualified. Unsupported selectors also have zero action gas.
+/// Valid claim-all calls derive gas from the staged snapshot and may surface
+/// only snapshot or arithmetic invariant failures.
 fn dpos_transaction_required_gas(
     dpos_tx: &DposTransaction,
     block_number: FinalChainBlockNumber,
@@ -17685,6 +18596,1284 @@ mod tests {
         let _ = crate::closeout_test_scratch::dispose(path);
     }
 
+    fn encode_pre_counter_schema24_golden(
+        snapshot: &DposSnapshot,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        validate_dpos_principal_ledger(snapshot)?;
+        let mut stream = rlp::RlpStream::new_list(24);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.total_stakes);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.commission_rewards);
+        append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
+        append_address_fixed_hash_map(&mut stream, &snapshot.vrf_keys);
+        append_vote_count_map(&mut stream, &snapshot.vote_counts);
+        stream.append(&snapshot.total_vote_count);
+        append_delegations_map(&mut stream, &snapshot.delegations);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.delegator_rewards);
+        match &snapshot.aspen_supply_state {
+            AspenSupplyState::Unmigrated { minted_tokens } => {
+                stream.append(&minted_tokens.to_snapshot_bytes());
+                stream.append(&Vec::<u8>::new());
+                stream.append(&0_u64);
+            }
+            AspenSupplyState::Migrated {
+                total_supply,
+                current_yield,
+            } => {
+                stream.append(&Vec::<u8>::new());
+                stream.append(&total_supply.to_snapshot_bytes());
+                stream.append(&current_yield.as_u64());
+            }
+        }
+        append_reward_index_map(&mut stream, &snapshot.validator_reward_per_stake);
+        append_nested_reward_index_map(&mut stream, &snapshot.delegation_reward_cursors);
+        append_delegator_validators_map(&mut stream, &snapshot.delegator_validators);
+        append_address_vec(&mut stream, &snapshot.validator_order);
+        append_undelegations_v2_map(&mut stream, &snapshot.undelegations_v2);
+        append_address_u64_map(&mut stream, &snapshot.undelegation_v2_last_ids);
+        append_address_u64_map(&mut stream, &snapshot.slashing_jail_blocks);
+        append_address_vec(&mut stream, &snapshot.slashing_jailed_validators);
+        append_fixed_hash_set(&mut stream, &snapshot.slashing_double_voting_proofs);
+        append_undelegations_map(&mut stream, &snapshot.undelegations);
+        stream.begin_list(2);
+        stream.append(&snapshot.redelegate_same_validator_history_complete);
+        append_address_vec(
+            &mut stream,
+            &snapshot
+                .redelegate_same_validator_corruption
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        stream.append(&snapshot.delegation_ledger_history_complete);
+        stream.append(&encode_dpos_reward_graph(&snapshot.reward_reference_graph)?);
+        Ok(stream.out().to_vec())
+    }
+
+    #[test]
+    fn pre_magnolia_constructor_requires_actual_delayed_authority_except_live_trace() {
+        let path = temp_db_path("premag-constructor-delayed-authority");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            Vec::new(),
+            Vec::new(),
+            GenesisDposConfig {
+                delegation_delay: 2,
+                ..Default::default()
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 7.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let key = SigningKey::from_slice(&[1; 32]).unwrap();
+        chain
+            .finalize_block(signed_pbft_block(&key, 1, 1), Vec::new(), Vec::new())
+            .unwrap();
+        assert!(chain.begin_native_simulation(1.into()).is_ok());
+        assert!(chain.begin_native_session(2.into(), 1.into()).is_ok());
+        let original = chain
+            .dpos_snapshots
+            .lock()
+            .unwrap()
+            .get(&FinalChainBlockNumber::GENESIS)
+            .unwrap()
+            .clone();
+        chain
+            .dpos_snapshots
+            .lock()
+            .unwrap()
+            .get_mut(&FinalChainBlockNumber::GENESIS)
+            .unwrap()
+            .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+        assert!(matches!(
+            chain.begin_native_simulation(1.into()),
+            Err(native_session::FinalChainNativeSessionError::PreMagnoliaUnsupported)
+        ));
+        assert!(matches!(
+            chain.begin_native_session(2.into(), 1.into()),
+            Err(native_session::FinalChainNativeSessionError::PreMagnoliaUnsupported)
+        ));
+        // Go TraceRunner's logical delayed readers physically use the bound
+        // live parent plus private prefix, not the unrelated delayed CF1.
+        assert!(chain.begin_native_trace(1.into(), 2.into()).is_ok());
+        chain
+            .dpos_snapshots
+            .lock()
+            .unwrap()
+            .insert(FinalChainBlockNumber::GENESIS, original);
+        let head = chain
+            .dpos_snapshots
+            .lock()
+            .unwrap()
+            .get(&FinalChainBlockNumber::new(1))
+            .unwrap()
+            .clone();
+        chain
+            .dpos_snapshots
+            .lock()
+            .unwrap()
+            .get_mut(&FinalChainBlockNumber::new(1))
+            .unwrap()
+            .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+        assert!(matches!(
+            chain.begin_native_trace(1.into(), 2.into()),
+            Err(native_session::FinalChainNativeSessionError::PreMagnoliaUnsupported)
+        ));
+        assert!(matches!(
+            chain.begin_native_simulation(1.into()),
+            Err(native_session::FinalChainNativeSessionError::PreMagnoliaUnsupported)
+        ));
+        assert!(matches!(
+            chain.begin_native_session(2.into(), 1.into()),
+            Err(native_session::FinalChainNativeSessionError::PreMagnoliaUnsupported)
+        ));
+        chain
+            .dpos_snapshots
+            .lock()
+            .unwrap()
+            .insert(FinalChainBlockNumber::new(1), head);
+        assert!(chain.begin_native_trace(1.into(), 2.into()).is_ok());
+        assert!(chain.begin_native_simulation(1.into()).is_ok());
+        assert!(chain.begin_native_session(2.into(), 1.into()).is_ok());
+        assert_eq!(
+            chain.last_block_number_typed().unwrap(),
+            FinalChainBlockNumber::new(1)
+        );
+        drop(chain);
+        drop(storage);
+        crate::closeout_test_scratch::dispose(path).unwrap();
+    }
+
+    #[cfg(feature = "synthetic-fixtures")]
+    #[test]
+    fn synthetic_frequency_one_legacy_order_is_checked_without_override() {
+        let path = temp_db_path("frequency-one-legacy-order");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            Vec::new(),
+            Vec::new(),
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                committee_size: 1,
+                magnolia_period: 5.into(),
+                aspen_part_one_period: 10.into(),
+                rewards_distribution_frequency: vec![(5.into(), 3)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let fact = FinalizedRewardsPeriodFact {
+            period: 1,
+            block_author: H160::zero(),
+            blocks_per_year: 100,
+            dpos_eligible_total_vote_count: 1,
+            transactions: Vec::new(),
+            dag_blocks: Vec::new(),
+            cert_votes: Vec::new(),
+        };
+        let baseline = chain
+            .plan_external_evm_rewards_stats([0x71; 32], fact.clone())
+            .unwrap();
+        let cache_before = chain
+            .rewards_stats_runtime
+            .lock()
+            .unwrap()
+            .runtime
+            .cached_stats_rlp();
+        assert!(
+            chain
+                .synthetic_legacy_distribution_orders
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        for order in [Vec::new(), vec![1, 1], vec![0], vec![1, 2]] {
+            assert!(
+                chain
+                    .configure_synthetic_legacy_distribution_order(1, order)
+                    .is_err()
+            );
+            assert!(
+                chain
+                    .synthetic_legacy_distribution_orders
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        for period in [1, 2] {
+            chain
+                .configure_synthetic_legacy_distribution_order(period, vec![period])
+                .unwrap();
+            assert!(
+                chain
+                    .synthetic_legacy_distribution_orders
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let observed = chain
+            .plan_external_evm_rewards_stats([0x71; 32], fact)
+            .unwrap();
+        assert_eq!(observed, baseline);
+        assert_eq!(observed.distribution_stats.len(), 1);
+        assert_eq!(observed.distribution_stats[0].period, 1);
+        assert!(!observed.storage_update.cache_current_period);
+        assert!(!observed.storage_update.clear_cached_stats);
+        assert_eq!(
+            chain
+                .rewards_stats_runtime
+                .lock()
+                .unwrap()
+                .runtime
+                .cached_stats_rlp(),
+            cache_before
+        );
+        assert_eq!(
+            chain.last_block_number_typed().unwrap(),
+            FinalChainBlockNumber::GENESIS
+        );
+        chain
+            .configure_synthetic_legacy_distribution_order(6, vec![5, 6, 4])
+            .unwrap();
+        let overrides = chain
+            .synthetic_legacy_distribution_orders
+            .lock()
+            .unwrap()
+            .clone();
+        assert_eq!(overrides.get(&6), Some(&vec![5, 6, 4]));
+        for (period, order) in [
+            (5, vec![5]),
+            (6, Vec::new()),
+            (6, vec![4, 6, 6]),
+            (6, vec![4, 5, 7]),
+            (10, vec![10]),
+            (1, vec![1, 1]),
+        ] {
+            assert!(
+                chain
+                    .configure_synthetic_legacy_distribution_order(period, order)
+                    .is_err()
+            );
+            assert_eq!(
+                *chain.synthetic_legacy_distribution_orders.lock().unwrap(),
+                overrides
+            );
+        }
+        drop(chain);
+        drop(storage);
+        crate::closeout_test_scratch::dispose(path).unwrap();
+    }
+
+    #[test]
+    fn pre_magnolia_constructor_preserves_origin_specific_old_compatibility_unions() {
+        for (name, magnolia, cornus, cacti, aspen_two, normal, trace) in [
+            ("magnolia", 0, u64::MAX, u64::MAX, u64::MAX, true, true),
+            ("cornus", 7, 0, u64::MAX, u64::MAX, true, false),
+            ("cacti-aspen", 7, u64::MAX, 0, 0, false, true),
+            ("unsupported", 7, u64::MAX, u64::MAX, u64::MAX, false, false),
+        ] {
+            let path = temp_db_path(&format!("premag-old-union-{name}"));
+            let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+            let chain = FinalChain::new_with_rewards_config(
+                storage.clone(),
+                1_000_000.into(),
+                0,
+                Vec::new(),
+                Vec::new(),
+                GenesisDposConfig::default(),
+                FinalChainRewardsConfig {
+                    magnolia_period: magnolia.into(),
+                    cornus_period: cornus.into(),
+                    cacti_period: cacti.into(),
+                    aspen_part_two_period: aspen_two.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            chain
+                .dpos_snapshots
+                .lock()
+                .unwrap()
+                .get_mut(&FinalChainBlockNumber::GENESIS)
+                .unwrap()
+                .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+            let simulation = chain.begin_native_simulation(FinalChainBlockNumber::GENESIS);
+            let pending = chain.begin_native_session(1.into(), FinalChainBlockNumber::GENESIS);
+            let traced = chain.begin_native_trace(FinalChainBlockNumber::GENESIS, 1.into());
+            if normal {
+                assert!(simulation.is_ok(), "{name} simulation");
+                assert!(pending.is_ok(), "{name} pending");
+            } else {
+                assert!(
+                    matches!(
+                        simulation,
+                        Err(native_session::FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                    ),
+                    "{name} simulation rejection"
+                );
+                assert!(
+                    matches!(
+                        pending,
+                        Err(native_session::FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                    ),
+                    "{name} pending rejection"
+                );
+            }
+            if trace {
+                assert!(traced.is_ok(), "{name} trace");
+            } else {
+                assert!(
+                    matches!(
+                        traced,
+                        Err(native_session::FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                    ),
+                    "{name} trace rejection"
+                );
+            }
+            drop(simulation);
+            drop(pending);
+            drop(traced);
+            assert_eq!(
+                chain.last_block_number_typed().unwrap(),
+                FinalChainBlockNumber::GENESIS
+            );
+            drop(chain);
+            drop(storage);
+            crate::closeout_test_scratch::dispose(path).unwrap();
+        }
+    }
+
+    fn replace_migrated_zero_snapshot_field(
+        raw: &[u8],
+        index: usize,
+        replacement: &[u8],
+    ) -> Vec<u8> {
+        let parsed = Rlp::new(raw);
+        let mut out = RlpStream::new_list(parsed.item_count().unwrap());
+        for i in 0..parsed.item_count().unwrap() {
+            out.append_raw(
+                if i == index {
+                    replacement
+                } else {
+                    parsed.at(i).unwrap().as_raw()
+                },
+                1,
+            );
+        }
+        out.out().to_vec()
+    }
+
+    #[test]
+    fn migrated_zero_schema26_roundtrip_is_explicit_and_preserves_native_empty_zero() {
+        let mut snapshot = shape_fixture(ValidatorRowShape::Extended);
+        snapshot.aspen_supply_state = AspenSupplyState::Migrated {
+            total_supply: StoredDposTokenAmount::canonical_u256_after_mutation(U256::zero()),
+            current_yield: AspenYield::default(),
+        };
+        let encoded = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        assert_eq!(Rlp::new(&encoded).item_count().unwrap(), 26);
+        assert_eq!(
+            Rlp::new(&encoded).at(9).unwrap().data().unwrap(),
+            [0_u8; 32]
+        );
+        assert_eq!(decode_dpos_snapshot_rlp(&encoded).unwrap(), snapshot);
+        let native = canonical_concrete_precompile_storage(&snapshot, true).unwrap();
+        assert!(
+            native[&(DPOS_CONTRACT_ADDRESS, concrete_storage_key(&[&[7]]))].contains(&Vec::new())
+        );
+        let ambiguous =
+            replace_migrated_zero_snapshot_field(&encoded, 9, &rlp::encode(&Vec::<u8>::new()));
+        assert!(matches!(
+            decode_dpos_snapshot_rlp(&ambiguous)
+                .unwrap()
+                .aspen_supply_state,
+            AspenSupplyState::Unmigrated { .. }
+        ));
+        let mut nonzero = snapshot.clone();
+        nonzero.aspen_supply_state = AspenSupplyState::Migrated {
+            total_supply: StoredDposTokenAmount::canonical_u256_after_mutation(U256::one()),
+            current_yield: AspenYield(7),
+        };
+        let raw = encode_dpos_snapshot_rlp(&nonzero).unwrap();
+        assert_eq!(Rlp::new(&raw).at(9).unwrap().data().unwrap(), [1]);
+        assert_eq!(decode_dpos_snapshot_rlp(&raw).unwrap(), nonzero);
+        let mut compatibility = snapshot.clone();
+        compatibility.validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+        assert!(
+            encode_dpos_snapshot_rlp(&compatibility)
+                .unwrap_err()
+                .to_string()
+                .contains("ZERO_SUPPLY_PERSISTENCE_AUTHORITY")
+        );
+        compatibility.aspen_supply_state = AspenSupplyState::Unmigrated {
+            minted_tokens: StoredDposTokenAmount::default(),
+        };
+        assert_eq!(
+            encode_dpos_snapshot_rlp(&compatibility).unwrap(),
+            encode_pre_counter_schema24_golden(&compatibility).unwrap()
+        );
+        let mut foreign = snapshot.clone();
+        foreign.aspen_supply_state = AspenSupplyState::Migrated {
+            total_supply: StoredDposTokenAmount::from_snapshot_bytes(&[0; 32], "foreign-zero")
+                .unwrap(),
+            current_yield: AspenYield::default(),
+        };
+        assert!(
+            encode_dpos_snapshot_rlp(&foreign)
+                .unwrap_err()
+                .to_string()
+                .contains("ZERO_SUPPLY_PERSISTENCE_AUTHORITY")
+        );
+    }
+
+    #[test]
+    fn migrated_zero_schema26_rejects_conflicts_foreign_widths_and_legacy_markers() {
+        let mut snapshot = shape_fixture(ValidatorRowShape::Extended);
+        snapshot.aspen_supply_state = AspenSupplyState::Migrated {
+            total_supply: StoredDposTokenAmount::canonical_u256_after_mutation(U256::zero()),
+            current_yield: AspenYield::default(),
+        };
+        let encoded = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        for width in (1..=33).filter(|n| *n != 32) {
+            assert!(
+                decode_dpos_snapshot_rlp(&replace_migrated_zero_snapshot_field(
+                    &encoded,
+                    9,
+                    &rlp::encode(&vec![0_u8; width])
+                ))
+                .is_err(),
+                "zero width {width}"
+            );
+        }
+        for minted in [vec![1_u8], vec![0_u8; 32]] {
+            assert!(
+                decode_dpos_snapshot_rlp(&replace_migrated_zero_snapshot_field(
+                    &encoded,
+                    8,
+                    &rlp::encode(&minted)
+                ))
+                .unwrap_err()
+                .to_string()
+                .contains("ZERO_SUPPLY_MARKER_CONFLICT")
+            );
+        }
+        assert!(
+            decode_dpos_snapshot_rlp(&replace_migrated_zero_snapshot_field(
+                &encoded,
+                10,
+                &rlp::encode(&1_u64)
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("ZERO_SUPPLY_MARKER_CONFLICT")
+        );
+        let mut bad_shape = RlpStream::new_list(3);
+        bad_shape.append(&1_u8).append(&false).begin_list(0);
+        assert!(
+            decode_dpos_snapshot_rlp(&replace_migrated_zero_snapshot_field(
+                &encoded,
+                25,
+                &bad_shape.out()
+            ))
+            .is_err()
+        );
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert!(decode_dpos_snapshot_rlp(&trailing).is_err());
+        let mut noncanonical = vec![0xb8, 0x20];
+        noncanonical.extend_from_slice(&[0_u8; 32]);
+        assert!(
+            decode_dpos_snapshot_rlp(&replace_migrated_zero_snapshot_field(
+                &encoded,
+                9,
+                &noncanonical
+            ))
+            .is_err()
+        );
+        for fields in [24, 25] {
+            let parsed = Rlp::new(&encoded);
+            let mut legacy = RlpStream::new_list(fields);
+            for i in 0..fields {
+                legacy.append_raw(parsed.at(i).unwrap().as_raw(), 1);
+            }
+            assert!(
+                decode_dpos_snapshot_rlp(&legacy.out())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ZERO_TOTAL_SUPPLY")
+            );
+        }
+    }
+
+    fn shape_fixture(shape: ValidatorRowShape) -> DposSnapshot {
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        snapshot.validator_row_authority = ValidatorRowAuthority::Complete(
+            snapshot.total_stakes.keys().map(|v| (*v, shape)).collect(),
+        );
+        snapshot
+    }
+
+    fn shape_catalog(snapshot: &DposSnapshot) -> AuthenticatedNativeRawCatalog {
+        canonical_concrete_precompile_storage(snapshot, true)
+            .unwrap()
+            .into_iter()
+            .map(|(key, values)| (key, Some(values.into_iter().next().unwrap())))
+            .collect()
+    }
+
+    #[test]
+    fn validator_row_shape_codec_preserves_old25_and_distinguishes_zero_queue_shapes() {
+        let mut compatibility = sample_dpos_snapshot_with_undelegations();
+        let validator = *compatibility.total_stakes.keys().next().unwrap();
+        let count = checked_dpos_undelegations_count_for_validator(&compatibility, validator)
+            .unwrap()
+            .wrapping_add(7);
+        let old24 = encode_pre_counter_schema24_golden(&compatibility).unwrap();
+        set_persisted_undelegations_count(&mut compatibility, validator, count).unwrap();
+        let mut old25 = RlpStream::new_list(25);
+        let body = Rlp::new(&old24);
+        for i in 0..24 {
+            old25.append_raw(body.at(i).unwrap().as_raw(), 1);
+        }
+        old25
+            .begin_list(1)
+            .begin_list(2)
+            .append(&validator.as_slice())
+            .append(&count);
+        let old25 = old25.out().to_vec();
+        assert_eq!(encode_dpos_snapshot_rlp(&compatibility).unwrap(), old25);
+        assert_eq!(
+            decode_dpos_snapshot_rlp(&old25)
+                .unwrap()
+                .validator_row_authority,
+            ValidatorRowAuthority::CompatibilityOnly
+        );
+        let mut legacy = shape_fixture(ValidatorRowShape::LegacyV1);
+        legacy.undelegations.clear();
+        legacy.undelegations_v2.clear();
+        let raw = encode_dpos_snapshot_rlp(&legacy).unwrap();
+        assert_eq!(Rlp::new(&raw).item_count().unwrap(), 26);
+        assert_eq!(Rlp::new(&raw).at(24).unwrap().item_count().unwrap(), 0);
+        assert_eq!(decode_dpos_snapshot_rlp(&raw).unwrap(), legacy);
+        assert_eq!(
+            Rlp::new(&encode_persisted_validator_row(&legacy, validator, true).unwrap())
+                .item_count()
+                .unwrap(),
+            4
+        );
+        let mut extended = legacy.clone();
+        record_validator_metadata_write(&mut extended, validator, true, 0).unwrap();
+        assert_ne!(encode_dpos_snapshot_rlp(&extended).unwrap(), raw);
+        assert_eq!(
+            Rlp::new(&encode_persisted_validator_row(&extended, validator, false).unwrap())
+                .item_count()
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&extended).unwrap()).unwrap(),
+            extended
+        );
+    }
+
+    #[test]
+    fn validator_row_shape_codec_rejects_noncanonical_conflicting_and_incomplete_authority() {
+        let legacy = shape_fixture(ValidatorRowShape::LegacyV1);
+        let validator = *legacy.total_stakes.keys().next().unwrap();
+        let raw = encode_dpos_snapshot_rlp(&legacy).unwrap();
+        let replace =
+            |version: u8, complete: bool, rows: Vec<([u8; 20], u8)>, counter: Option<u16>| {
+                let old = Rlp::new(&raw);
+                let mut out = RlpStream::new_list(26);
+                for i in 0..24 {
+                    out.append_raw(old.at(i).unwrap().as_raw(), 1);
+                }
+                out.begin_list(usize::from(counter.is_some()));
+                if let Some(count) = counter {
+                    out.begin_list(2)
+                        .append(&validator.as_slice())
+                        .append(&count);
+                }
+                out.begin_list(3)
+                    .append(&version)
+                    .append(&complete)
+                    .begin_list(rows.len());
+                for (address, tag) in rows {
+                    out.begin_list(2).append(&address.as_slice()).append(&tag);
+                }
+                out.out().to_vec()
+            };
+        for (version, complete, rows, counter) in [
+            (2, true, vec![(validator, 0)], None),
+            (1, false, vec![(validator, 0)], None),
+            (1, true, vec![], None),
+            (1, true, vec![(validator, 2)], None),
+            (1, true, vec![(validator, 0), (validator, 0)], None),
+            (1, true, vec![([0xff; 20], 0), (validator, 0)], None),
+            (1, true, vec![([0xff; 20], 0)], None),
+            (1, true, vec![(validator, 0)], Some(0)),
+            (1, true, vec![(validator, 0)], Some(1)),
+        ] {
+            assert!(decode_dpos_snapshot_rlp(&replace(version, complete, rows, counter)).is_err());
+        }
+        let mut trailing = raw.clone();
+        trailing.push(0);
+        assert!(decode_dpos_snapshot_rlp(&trailing).is_err());
+        let mut empty = legacy.clone();
+        empty
+            .total_stakes
+            .insert(validator, StoredDposTokenAmount::default());
+        empty
+            .commission_rewards
+            .insert(validator, StoredDposTokenAmount::default());
+        empty
+            .reward_reference_graph
+            .delete_cursor(&validator, &[0x11; 20])
+            .unwrap();
+        empty.delegations.clear();
+        empty.delegation_reward_cursors.clear();
+        empty.delegator_validators.clear();
+        remove_dpos_validator(&mut empty, validator, true).unwrap();
+        assert!(empty.total_stakes.is_empty() && empty.has_complete_validator_shapes());
+        assert_eq!(
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&empty).unwrap()).unwrap(),
+            empty
+        );
+        let mut contradictory = legacy;
+        contradictory
+            .retained_undelegation_counts
+            .insert(validator, StoredUndelegationCounter(0));
+        assert!(encode_dpos_snapshot_rlp(&contradictory).is_err());
+    }
+
+    #[test]
+    fn validator_row_shape_mixed_catalog_binds_each_shape_without_period_inference() {
+        let mut mixed = shape_fixture(ValidatorRowShape::LegacyV1);
+        let source = [0x22; 20];
+        let other = [0x44; 20];
+        mixed
+            .total_stakes
+            .insert(other, StoredDposTokenAmount::default());
+        mixed
+            .validator_metadata
+            .insert(other, mixed.validator_metadata[&source].clone());
+        mixed.vrf_keys.insert(other, mixed.vrf_keys[&source]);
+        mixed.vote_counts.insert(other, 0);
+        mixed.validator_order.push(other);
+        mixed
+            .reward_reference_graph
+            .bootstrap_node(
+                NodeKey {
+                    validator: other,
+                    block: 1,
+                },
+                Node {
+                    reward_per_stake: DposRewardIndex::zero(),
+                    count: 1,
+                },
+                true,
+                &[],
+            )
+            .unwrap();
+        if let ValidatorRowAuthority::Complete(rows) = &mut mixed.validator_row_authority {
+            rows.insert(other, ValidatorRowShape::Extended);
+        }
+        let raw = shape_catalog(&mixed);
+        let mut scaffold = mixed.clone();
+        scaffold.validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+        let bound =
+            stage_validator_rows_from_authenticated_catalog(&scaffold, &raw, false).unwrap();
+        assert_eq!(bound, mixed);
+        assert_eq!(
+            checked_validator_row_shape(&bound, source).unwrap(),
+            Some(ValidatorRowShape::LegacyV1)
+        );
+        assert_eq!(
+            checked_validator_row_shape(&bound, other).unwrap(),
+            Some(ValidatorRowShape::Extended)
+        );
+        assert_eq!(
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&bound).unwrap()).unwrap(),
+            bound
+        );
+    }
+
+    #[test]
+    fn validator_row_shape_catalog_binding_is_staged_complete_and_conflict_rejecting() {
+        // Constructed pure staging inputs, not a proof of a concrete root. The
+        // production ingress alone obtains this map from root-bound readers.
+        let legacy = shape_fixture(ValidatorRowShape::LegacyV1);
+        let validator = *legacy.total_stakes.keys().next().unwrap();
+        assert!(queue_undelegations_count(&legacy, validator) > 0);
+        let raw = shape_catalog(&legacy);
+        let mut scaffold = legacy.clone();
+        scaffold.validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+        let bound = stage_validator_rows_from_authenticated_catalog(&scaffold, &raw, true).unwrap();
+        assert_eq!(bound, legacy);
+        assert_eq!(
+            checked_dpos_undelegations_count_for_validator(&bound, validator).unwrap(),
+            0
+        );
+        let mut ext = legacy.clone();
+        record_validator_metadata_write(&mut ext, validator, true, 9).unwrap();
+        let ext_raw = shape_catalog(&ext);
+        let promoted =
+            stage_validator_rows_from_authenticated_catalog(&scaffold, &ext_raw, true).unwrap();
+        assert_eq!(promoted, ext);
+        assert!(stage_validator_rows_from_authenticated_catalog(&legacy, &ext_raw, true).is_err());
+        let mut established = scaffold.clone();
+        set_persisted_undelegations_count(&mut established, validator, 8).unwrap();
+        assert!(
+            stage_validator_rows_from_authenticated_catalog(&established, &ext_raw, true).is_err()
+        );
+        assert!(stage_validator_rows_from_authenticated_catalog(&established, &raw, true).is_err());
+        for key in [
+            (
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[0, 0], &validator]),
+            ),
+            (
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[0, 2], &validator]),
+            ),
+            (
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[0, 1], &validator]),
+            ),
+        ] {
+            let mut partial = raw.clone();
+            partial.remove(&key);
+            assert!(
+                stage_validator_rows_from_authenticated_catalog(&scaffold, &partial, true).is_err()
+            );
+            let mut malformed = raw.clone();
+            malformed.insert(key, Some(vec![0xff]));
+            assert!(
+                stage_validator_rows_from_authenticated_catalog(&scaffold, &malformed, true)
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            scaffold.validator_row_authority,
+            ValidatorRowAuthority::CompatibilityOnly
+        );
+        assert_eq!(shape_catalog(&legacy), raw);
+    }
+
+    #[test]
+    fn validator_row_shape_binding_rejects_malformed_incoming_authority_without_repair() {
+        let mut extended = shape_fixture(ValidatorRowShape::Extended);
+        let validator = *extended.total_stakes.keys().next().unwrap();
+        let count = u16::try_from(queue_undelegations_count(&extended, validator)).unwrap();
+        record_validator_metadata_write(&mut extended, validator, true, count).unwrap();
+        let raw = shape_catalog(&extended);
+        let mut compatibility = extended.clone();
+        compatibility.validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+        for orphan in [false, true] {
+            let mut malformed = compatibility.clone();
+            malformed.retained_undelegation_counts.insert(
+                if orphan { [0xff; 20] } else { validator },
+                StoredUndelegationCounter(if orphan { 1 } else { count }),
+            );
+            let before = malformed.clone();
+            // A redundant incoming count could otherwise match the raw row
+            // and disappear during normalization, falsely repairing authority.
+            assert!(
+                stage_validator_rows_from_authenticated_catalog(&malformed, &raw, true).is_err()
+            );
+            assert_eq!(malformed, before);
+        }
+        let mut malformed = compatibility.clone();
+        malformed.total_stakes.insert(
+            validator,
+            stored_amount(compatibility.total_stakes[&validator].as_u256() + U256::from(1)),
+        );
+        let before = malformed.clone();
+        assert!(stage_validator_rows_from_authenticated_catalog(&malformed, &raw, true).is_err());
+        assert_eq!(malformed, before);
+        assert_eq!(shape_catalog(&extended), raw);
+    }
+
+    #[test]
+    fn validator_row_shape_cf1_closed_handle_reopen_preserves_legacy_zero_without_queue() {
+        let path = temp_db_path("validator-row-shape-reopen");
+        let mut snapshot = shape_fixture(ValidatorRowShape::LegacyV1);
+        snapshot.undelegations.clear();
+        snapshot.undelegations_v2.clear();
+        let raw = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        {
+            let storage = Storage::new(Config::new(path.clone())).unwrap();
+            storage
+                .final_chain()
+                .write_block_header_with_dpos_snapshot(
+                    1,
+                    H256::zero(),
+                    &[0xc0],
+                    &[0xc0],
+                    Some(&raw),
+                )
+                .unwrap();
+        }
+        {
+            let storage = Storage::new(Config::new(path.clone())).unwrap();
+            let bytes = storage.final_chain().dpos_snapshot_raw(1).unwrap().unwrap();
+            assert_eq!(bytes, raw);
+            assert_eq!(decode_dpos_snapshot_rlp(&bytes).unwrap(), snapshot);
+        }
+        crate::closeout_test_scratch::dispose(path).unwrap();
+    }
+
+    #[test]
+    fn validator_row_shape_genesis_freshness_and_orphan_admission_are_exact() {
+        for header in [false, true] {
+            for head in [false, true] {
+                for snapshot in [false, true] {
+                    let result = owned_genesis_initialization(header, head, snapshot);
+                    if !header && snapshot {
+                        assert!(result.is_err());
+                    } else {
+                        assert_eq!(result.unwrap(), !header && !head && !snapshot);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn validator_row_shape_genesis_reopen_preserves26_and_old24_never_mints_authority() {
+        for validators in [
+            Vec::new(),
+            vec![genesis_validator([0x22; 20], U256::from(10_000))],
+        ] {
+            let path = temp_db_path("validator-row-shape-genesis");
+            let (native, header) = {
+                let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+                let chain = new_final_chain(
+                    storage.clone(),
+                    1_000_000,
+                    0,
+                    Vec::new(),
+                    validators.clone(),
+                );
+                let snapshot = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+                assert!(snapshot.has_complete_validator_shapes());
+                let bytes = storage.final_chain().dpos_snapshot_raw(0).unwrap().unwrap();
+                assert_eq!(Rlp::new(&bytes).item_count().unwrap(), 26);
+                (
+                    snapshot,
+                    storage.final_chain().block_header_raw(0).unwrap().unwrap(),
+                )
+            };
+            {
+                let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+                let chain = new_final_chain(
+                    storage.clone(),
+                    1_000_000,
+                    0,
+                    Vec::new(),
+                    validators.clone(),
+                );
+                assert_eq!(
+                    chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+                    native
+                );
+                let mut old = native.clone();
+                old.validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                let old = encode_dpos_snapshot_rlp(&old).unwrap();
+                // Explicit old-schema fixture, not imported execution authority.
+                storage
+                    .final_chain()
+                    .write_block_header_with_dpos_snapshot(
+                        0,
+                        H256::zero(),
+                        &header,
+                        &[0xc0],
+                        Some(&old),
+                    )
+                    .unwrap();
+            }
+            {
+                let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+                let before = storage.final_chain().dpos_snapshot_raw(0).unwrap();
+                let chain = new_final_chain(
+                    storage.clone(),
+                    1_000_000,
+                    0,
+                    Vec::new(),
+                    validators.clone(),
+                );
+                assert_eq!(
+                    chain
+                        .dpos_snapshot_at_finalized_block(0.into())
+                        .unwrap()
+                        .validator_row_authority,
+                    ValidatorRowAuthority::CompatibilityOnly
+                );
+                assert_eq!(storage.final_chain().dpos_snapshot_raw(0).unwrap(), before);
+                storage
+                    .final_chain()
+                    .write_block_header_with_dpos_snapshot(
+                        0,
+                        H256::zero(),
+                        &header,
+                        &[0xc0],
+                        Some(&[0xff]),
+                    )
+                    .unwrap();
+            }
+            {
+                let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+                assert!(
+                    FinalChain::new(
+                        storage.clone(),
+                        1_000_000.into(),
+                        0,
+                        Vec::new(),
+                        validators,
+                        GenesisDposConfig::default()
+                    )
+                    .is_err()
+                );
+                assert_eq!(
+                    storage.final_chain().dpos_snapshot_raw(0).unwrap(),
+                    Some(vec![0xff])
+                );
+                assert_eq!(
+                    storage.final_chain().block_header_raw(0).unwrap(),
+                    Some(header)
+                );
+            }
+            crate::closeout_test_scratch::dispose(path).unwrap();
+        }
+        // An old header without CF1 has no shape authority to recover or backfill.
+        let source = temp_db_path("validator-row-shape-genesis-old-source");
+        let header = {
+            let storage = Arc::new(Storage::new(Config::new(source.clone())).unwrap());
+            let _chain = new_final_chain(storage.clone(), 1_000_000, 0, Vec::new(), Vec::new());
+            storage.final_chain().block_header_raw(0).unwrap().unwrap()
+        };
+        let old = temp_db_path("validator-row-shape-genesis-old-empty");
+        {
+            let storage = Arc::new(Storage::new(Config::new(old.clone())).unwrap());
+            storage
+                .final_chain()
+                .write_block_header(0, H256::zero(), &header, &[0xc0])
+                .unwrap();
+            let chain = new_final_chain(storage.clone(), 1_000_000, 0, Vec::new(), Vec::new());
+            assert!(
+                !chain
+                    .dpos_snapshot_at_finalized_block(0.into())
+                    .unwrap()
+                    .has_complete_validator_shapes()
+            );
+            assert!(
+                storage
+                    .final_chain()
+                    .dpos_snapshot_raw(0)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        crate::closeout_test_scratch::dispose(source).unwrap();
+        crate::closeout_test_scratch::dispose(old).unwrap();
+    }
+
+    #[test]
+    fn validator_row_shape_shared_kernels_preserve_no_write_then_upgrade_on_modify() {
+        let path = temp_db_path("validator-row-shape-kernels");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let mut chain = new_final_chain(storage.clone(), 1_000_000, 0, Vec::new(), Vec::new());
+        chain.rewards_config.magnolia_period = 2.into();
+        chain.ficus_activation_period = 3.into();
+        chain.dpos_minimum_deposit = U256::zero().into();
+        // The imported 10_000-token fixture requires a nonzero stake ceiling.
+        chain.dpos_validator_maximum_stake = U256::from(1_000_000).into();
+        chain.dpos_delegation_locking_period = 1;
+        let mut snapshot = shape_fixture(ValidatorRowShape::LegacyV1);
+        let validator = [0x22; 20];
+        let delegator = [0x11; 20];
+        snapshot.undelegations.clear();
+        snapshot.undelegations_v2.clear();
+        snapshot
+            .delegator_rewards
+            .insert(validator, StoredDposTokenAmount::default());
+        let mut accounts = HashMap::from([
+            (
+                DPOS_CONTRACT_ADDRESS,
+                Account {
+                    nonce: FinalChainNonce::zero(),
+                    balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(
+                        1_000_000,
+                    )),
+                    ..empty_account()
+                },
+            ),
+            (
+                delegator,
+                Account {
+                    nonce: FinalChainNonce::zero(),
+                    balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(
+                        1_000_000,
+                    )),
+                    ..empty_account()
+                },
+            ),
+        ]);
+        assert_eq!(
+            chain
+                .apply_dpos_undelegate(
+                    &mut snapshot,
+                    &mut accounts,
+                    delegator,
+                    validator,
+                    U256::from(1).to_big_endian().to_vec(),
+                    1.into()
+                )
+                .unwrap()
+                .status_code,
+            1
+        );
+        assert_eq!(
+            checked_dpos_undelegations_count_for_validator(&snapshot, validator).unwrap(),
+            0
+        );
+        assert_eq!(
+            checked_validator_row_shape(&snapshot, validator).unwrap(),
+            Some(ValidatorRowShape::LegacyV1)
+        );
+        chain
+            .advance_reward_reference_graph_block(&mut snapshot, 2.into())
+            .unwrap();
+        let at_b = snapshot.clone();
+        assert_eq!(
+            chain
+                .apply_dpos_confirm_undelegate(
+                    &mut snapshot,
+                    &mut accounts,
+                    delegator,
+                    validator,
+                    2.into()
+                )
+                .unwrap()
+                .status_code,
+            1
+        );
+        assert_eq!(
+            checked_validator_row_shape(&snapshot, validator).unwrap(),
+            Some(ValidatorRowShape::LegacyV1)
+        );
+        assert!(snapshot.retained_undelegation_counts.is_empty());
+        chain.ficus_activation_period = 2.into();
+        let mut written = at_b;
+        assert_eq!(
+            chain
+                .apply_dpos_confirm_undelegate(
+                    &mut written,
+                    &mut accounts,
+                    delegator,
+                    validator,
+                    2.into()
+                )
+                .unwrap()
+                .status_code,
+            1
+        );
+        assert_eq!(
+            checked_validator_row_shape(&written, validator).unwrap(),
+            Some(ValidatorRowShape::Extended)
+        );
+        assert_eq!(
+            checked_dpos_undelegations_count_for_validator(&written, validator).unwrap(),
+            0
+        );
+        assert_eq!(
+            chain
+                .apply_dpos_delegate(
+                    &mut snapshot,
+                    &mut accounts,
+                    delegator,
+                    validator,
+                    U256::from(1).to_big_endian().to_vec()
+                )
+                .unwrap()
+                .status_code,
+            1
+        );
+        assert_eq!(
+            checked_validator_row_shape(&snapshot, validator).unwrap(),
+            Some(ValidatorRowShape::Extended)
+        );
+        assert_eq!(
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot).unwrap()).unwrap(),
+            snapshot
+        );
+        drop(chain);
+        drop(storage);
+        crate::closeout_test_scratch::dispose(path).unwrap();
+    }
+
+    #[test]
+    fn retained_counter_codec_keeps_frozen_schema24_bytes_and_old_defaults() {
+        let snapshot = sample_dpos_snapshot_with_undelegations();
+        let golden = encode_pre_counter_schema24_golden(&snapshot).unwrap();
+        assert_eq!(encode_dpos_snapshot_rlp(&snapshot).unwrap(), golden);
+        for count in [5, 6, 7, 9, 11, 14, 15, 17, 20, 21, 22, 23, 24] {
+            let bytes = if count <= 6 {
+                encode_legacy_dpos_snapshot_before_delegation_ledger(&snapshot, count == 6)
+            } else {
+                let original = Rlp::new(&golden);
+                let mut old = RlpStream::new_list(count);
+                for index in 0..count {
+                    old.append_raw(original.at(index).unwrap().as_raw(), 1);
+                }
+                old.out().to_vec()
+            };
+            let decoded = decode_dpos_snapshot_rlp(&bytes).unwrap();
+            assert!(decoded.retained_undelegation_counts.is_empty());
+        }
+    }
+
+    #[test]
+    fn retained_counter_codec_rejects_orphans_duplicates_width_order_and_redundancy() {
+        let snapshot = sample_dpos_snapshot_with_undelegations();
+        let address = *snapshot.total_stakes.keys().next().unwrap();
+        let count = checked_dpos_undelegations_count_for_validator(&snapshot, address).unwrap();
+        let golden = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        let extension = |rows: Vec<([u8; 20], u64)>| {
+            let original = Rlp::new(&golden);
+            let mut out = RlpStream::new_list(25);
+            for index in 0..24 {
+                out.append_raw(original.at(index).unwrap().as_raw(), 1);
+            }
+            out.begin_list(rows.len());
+            for (address, value) in rows {
+                out.begin_list(2).append(&address.as_slice()).append(&value);
+            }
+            out.out().to_vec()
+        };
+        for rows in [
+            vec![],
+            vec![(address, 65536)],
+            vec![(address, u64::from(count))],
+            vec![(address, 1), (address, 2)],
+            vec![([0xff; 20], 1)],
+            vec![([0xff; 20], 1), (address, 2)],
+        ] {
+            assert!(decode_dpos_snapshot_rlp(&extension(rows)).is_err());
+        }
+        let mut valid = snapshot.clone();
+        set_persisted_undelegations_count(&mut valid, address, count.wrapping_add(1)).unwrap();
+        let bytes = encode_dpos_snapshot_rlp(&valid).unwrap();
+        assert_eq!(Rlp::new(&bytes).item_count().unwrap(), 25);
+        assert_eq!(decode_dpos_snapshot_rlp(&bytes).unwrap(), valid);
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(decode_dpos_snapshot_rlp(&trailing).is_err());
+    }
+
+    #[test]
+    fn actual_uint16_wrap_keeps_zero_counter_with_65536_queue_entries() {
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        let validator = *snapshot.total_stakes.keys().next().unwrap();
+        snapshot.undelegations.clear();
+        snapshot.undelegations_v2.clear();
+        snapshot.undelegation_v2_last_ids.clear();
+        snapshot.undelegations_v2.insert(
+            [0x77; 20],
+            vec![DposValidatorUndelegationsV2 {
+                validator,
+                entries: (1..=65535)
+                    .map(|id| DposUndelegationV2Entry {
+                        id,
+                        amount: stored_amount(U256::zero()),
+                        block: 100,
+                    })
+                    .collect(),
+            }],
+        );
+        snapshot.undelegation_v2_last_ids.insert([0x77; 20], 65535);
+        assert_eq!(
+            checked_dpos_undelegations_count_for_validator(&snapshot, validator).unwrap(),
+            65535
+        );
+        let id = create_undelegation_v2(
+            &mut snapshot,
+            [0x77; 20],
+            validator,
+            stored_amount(U256::zero()),
+            100,
+        )
+        .unwrap();
+        assert_eq!(id, 65536);
+        assert_eq!(queue_undelegations_count(&snapshot, validator), 65536);
+        assert_eq!(
+            checked_dpos_undelegations_count_for_validator(&snapshot, validator).unwrap(),
+            0
+        );
+        let bytes = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        snapshot = decode_dpos_snapshot_rlp(&bytes).unwrap();
+        assert_eq!(
+            dpos_undelegations_count_for_validator(&snapshot, validator),
+            0
+        );
+        // Cancellation, like confirmation, decrements only when positive.
+        assert!(remove_undelegation_v2(
+            &mut snapshot,
+            [0x77; 20],
+            validator,
+            id
+        ));
+        assert_eq!(
+            dpos_undelegations_count_for_validator(&snapshot, validator),
+            0
+        );
+        assert_eq!(queue_undelegations_count(&snapshot, validator), 65535);
+        let bytes = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        assert_eq!(decode_dpos_snapshot_rlp(&bytes).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn retained_counter_cf1_bytes_survive_closed_storage_handle_reopen() {
+        let path = temp_db_path("retained-counter-cf1-reopen");
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        let validator = *snapshot.total_stakes.keys().next().unwrap();
+        let count = checked_dpos_undelegations_count_for_validator(&snapshot, validator).unwrap();
+        set_persisted_undelegations_count(&mut snapshot, validator, count.wrapping_add(1)).unwrap();
+        let raw = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        {
+            let storage = Storage::new(Config::new(path.clone())).unwrap();
+            // Repository codec fixture only: this test does not adopt a node,
+            // authenticate a concrete root or claim execution acceptance.
+            storage
+                .final_chain()
+                .write_block_header_with_dpos_snapshot(
+                    1,
+                    H256::zero(),
+                    &[0xc0],
+                    &[0xc0],
+                    Some(&raw),
+                )
+                .unwrap();
+        }
+        {
+            let storage = Storage::new(Config::new(path.clone())).unwrap();
+            let stored = storage.final_chain().dpos_snapshot_raw(1).unwrap().unwrap();
+            assert_eq!(stored, raw);
+            assert_eq!(decode_dpos_snapshot_rlp(&stored).unwrap(), snapshot);
+        }
+        let _ = crate::closeout_test_scratch::dispose(path);
+    }
+
     fn encode_legacy_dpos_snapshot_without_undelegations(snapshot: &DposSnapshot) -> Vec<u8> {
         let mut stream = RlpStream::new_list(20);
         append_stored_dpos_token_amount_map(&mut stream, &snapshot.total_stakes);
@@ -17929,6 +20118,8 @@ mod tests {
                 )
                 .unwrap(),
             },
+            retained_undelegation_counts: BTreeMap::new(),
+            validator_row_authority: ValidatorRowAuthority::CompatibilityOnly,
             undelegations_v2,
             undelegations,
             undelegation_v2_last_ids,
@@ -19971,13 +22162,58 @@ mod tests {
     }
 
     #[test]
+    fn genesis_dpos_principal_mismatch_is_rejected_before_header_publication() {
+        let path = temp_db_path("genesis-principal-mismatch-no-publication");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let mut first = genesis_validator([0x31; 20], U256::from(12));
+        first.delegations = vec![([0x41; 20], u256_to_big_endian(U256::from(5)))];
+        let mut second = genesis_validator([0x32; 20], U256::from(8));
+        second.delegations.clear();
+        let result = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(3))],
+            vec![first, second],
+            GenesisDposConfig {
+                eligibility_balance_threshold: U256::one().into(),
+                vote_eligibility_balance_step: U256::one().into(),
+                validator_maximum_stake: U256::from(1_000).into(),
+                ..Default::default()
+            },
+            FinalChainRewardsConfig::default(),
+        );
+        let error = match result {
+            Ok(_) => panic!("inconsistent principal ledger accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_DPOS_PRINCIPAL_AGGREGATE_MISMATCH")
+        );
+        assert!(storage.final_chain().block_header_raw(0).unwrap().is_none());
+        assert!(
+            storage
+                .final_chain()
+                .dpos_snapshot_raw(0)
+                .unwrap()
+                .is_none()
+        );
+        drop(storage);
+        crate::closeout_test_scratch::dispose(path).unwrap();
+    }
+
+    #[test]
     fn genesis_dpos_escrow_uses_total_stake_and_preserves_contract_balance() {
         let path = temp_db_path("genesis-dpos-escrow");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let mut first_validator = genesis_validator([0x31; 20], U256::from(12u64));
-        first_validator.delegations = vec![([0x41; 20], u256_to_big_endian(U256::from(5u64)))];
-        let mut second_validator = genesis_validator([0x32; 20], U256::from(8u64));
-        second_validator.delegations.clear();
+        first_validator.delegations = vec![
+            ([0x41; 20], u256_to_big_endian(U256::from(5u64))),
+            ([0x31; 20], u256_to_big_endian(U256::from(7u64))),
+        ];
+        let second_validator = genesis_validator([0x32; 20], U256::from(8u64));
         let dpos_config = GenesisDposConfig {
             eligibility_balance_threshold: DposTokenAmount::from(U256::from(1u64)),
             vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1u64)),
@@ -26322,6 +28558,9 @@ mod tests {
         };
         let rewards_config = FinalChainRewardsConfig {
             magnolia_period: 0.into(),
+            // This lifecycle requires the Phala fix to clear the retained pool,
+            // so confirming the final pending withdrawal can delete its owner.
+            phalaenopsis_period: FinalChainBlockNumber::GENESIS,
             aspen_part_one_period: u64::MAX.into(),
             rewards_distribution_frequency: vec![(0.into(), 1)],
             ..Default::default()
@@ -26495,7 +28734,14 @@ mod tests {
                 genesis_account(owner, U256::from(1_000_000u64)),
                 genesis_account(validator, U256::from(1_000_000u64)),
             ],
-            vec![],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                0,
+                "validator",
+                "endpoint",
+            )],
             genesis_dpos_config,
             rewards_config,
         )
@@ -26616,25 +28862,28 @@ mod tests {
             &first_pbft,
             std::slice::from_ref(&first_transaction.rlp),
         );
-        let final_chain = FinalChain::new_with_rewards_config(
+        let final_chain = FinalChain::new_with_rewards_config_and_ficus_activation(
             storage.clone(),
             100_000.into(),
             0,
-            vec![
-                genesis_account(sender, U256::from(1_000_000u64)),
-                genesis_account(owner, U256::from(1_000_000u64)),
-                genesis_account(validator, U256::from(1_000_000u64)),
-            ],
-            vec![genesis_validator_with_metadata(
-                validator,
-                U256::from(10_000u64),
-                owner,
-                0,
-                "validator",
-                "endpoint",
-            )],
+            FinalChainGenesisAllocation {
+                accounts: vec![
+                    genesis_account(sender, U256::from(1_000_000u64)),
+                    genesis_account(owner, U256::from(1_000_000u64)),
+                    genesis_account(validator, U256::from(1_000_000u64)),
+                ],
+                validators: vec![genesis_validator_with_metadata(
+                    validator,
+                    U256::from(10_000u64),
+                    owner,
+                    0,
+                    "validator",
+                    "endpoint",
+                )],
+            },
             genesis_dpos_config,
             rewards_config,
+            FinalChainBlockNumber::GENESIS,
         )
         .unwrap();
 
@@ -28470,6 +30719,190 @@ mod tests {
         let _ = crate::closeout_test_scratch::dispose(path);
     }
 
+    /// The independent envelope must fail the exact accepted B-1 selector-only
+    /// action, while retaining the normal admission and transaction settlement.
+    #[test]
+    fn legacy_selector_only_envelope_failure_preserves_settlement_and_scope() {
+        let path = temp_db_path("legacy-selector-only-envelope");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let sender = [0xc7; 20];
+        let mut chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 0.into(),
+                fix_claim_all_block_num: 2.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                aspen_part_one_period: FinalChainBlockNumber::MAX,
+                rewards_distribution_frequency: vec![(0.into(), 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let transaction = test_transaction(TestTransactionInput {
+            hash_byte: 0xc7,
+            sender,
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            nonce: 0,
+            value: U256::zero(),
+            gas_price: U256::one(),
+            gas_limit: 100_000,
+            data: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec(),
+            rlp: vec![0xc1, 0xc7],
+        });
+        let mut snapshot = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+        chain
+            .advance_reward_reference_graph_block(&mut snapshot, 1.into())
+            .unwrap();
+        let accounts = chain.current_account_snapshot().unwrap();
+        let run = |chain: &FinalChain, period: u64, tx: &FinalizationTransaction| {
+            chain
+                .execute_native_transactions_from_state(
+                    period.into(),
+                    std::slice::from_ref(tx),
+                    accounts.clone(),
+                    snapshot.clone(),
+                    false,
+                )
+                .unwrap()
+        };
+        let failure = chain
+            .bounded_legacy_claim_all_unpack_failure(1.into(), &transaction)
+            .unwrap();
+        assert_eq!(failure, DposApplyOutcome::contract_failure());
+        assert!(failure.code_retval.is_empty() && failure.logs.is_empty());
+        assert_eq!(
+            dpos_mutation_action_gas(
+                DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
+                1.into(),
+                2.into(),
+                FinalChainBlockNumber::MAX
+            ),
+            None
+        );
+        let execution = run(&chain, 1, &transaction);
+        assert_eq!(intrinsic_gas(&transaction.data, false).unwrap(), 21_208);
+        assert_eq!(execution.receipts.len(), 1);
+        let receipt = &execution.receipts[0];
+        assert_eq!(receipt.status_code, 0);
+        assert_eq!(receipt.gas_used.as_u64(), 21_208);
+        assert_eq!(receipt.cumulative_gas_used.as_u64(), 21_208);
+        assert!(receipt.logs.is_empty() && receipt.new_contract_address.is_none());
+        assert_eq!(execution.dpos_snapshot, snapshot);
+        let mut expected_accounts = accounts.clone();
+        let account = expected_accounts.get_mut(&sender).unwrap();
+        account.nonce = FinalChainNonce::from_u64(1);
+        account
+            .balance
+            .replace_after_mutation(U256::from(1_000_000u64 - 21_208));
+        assert_eq!(execution.accounts, expected_accounts);
+        assert_eq!(execution.transaction_fees.len(), 1);
+        assert_eq!(execution.transaction_fees[0].0, transaction.hash);
+        assert_eq!(
+            execution.transaction_fees[0].1.as_u256(),
+            U256::from(21_208u64)
+        );
+
+        // Admission precedes unpack: a sub-intrinsic cap consumes only that cap
+        // and does not advance the pre-Cornus sender nonce.
+        let mut underfunded = transaction.clone();
+        underfunded.gas_limit = 1.into();
+        let underfunded_result = run(&chain, 1, &underfunded);
+        assert_eq!(underfunded_result.receipts[0].status_code, 0);
+        assert_eq!(underfunded_result.receipts[0].gas_used.as_u64(), 1);
+        assert_eq!(
+            underfunded_result.accounts[&sender].nonce,
+            FinalChainNonce::zero()
+        );
+        assert_eq!(
+            *underfunded_result.accounts[&sender].balance.as_u256(),
+            U256::from(999_999u64)
+        );
+        assert_eq!(underfunded_result.dpos_snapshot, snapshot);
+
+        // Neighboring lengths and value retain the prior malformed fallback.
+        let mut longer = transaction.clone();
+        longer.data.push(0);
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(1.into(), &longer)
+                .is_none()
+        );
+        assert_eq!(run(&chain, 1, &longer).receipts[0].status_code, 1);
+        let mut nonzero = transaction.clone();
+        nonzero.value = U256::one().into();
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(1.into(), &nonzero)
+                .is_none()
+        );
+        assert_eq!(run(&chain, 1, &nonzero).receipts[0].status_code, 1);
+        let mut valid_batch = transaction.clone();
+        valid_batch.data = claim_all_rewards_batch_input(1);
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(1.into(), &valid_batch)
+                .is_none()
+        );
+        assert_eq!(run(&chain, 1, &valid_batch).receipts[0].status_code, 1);
+        let mut noarg = transaction.clone();
+        noarg.data = claim_all_rewards_input();
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(1.into(), &noarg)
+                .is_none()
+        );
+        // This checks the prior pure-envelope path only, not the open Go noarg family.
+        assert_eq!(run(&chain, 1, &noarg).receipts[0].status_code, 1);
+        let mut high_word = valid_batch.clone();
+        high_word.data[4] = 1;
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(1.into(), &high_word)
+                .is_none()
+        );
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(0.into(), &transaction)
+                .is_none()
+        );
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(2.into(), &transaction)
+                .is_none()
+        );
+        assert_eq!(run(&chain, 0, &transaction).receipts[0].status_code, 1);
+        assert_eq!(run(&chain, 2, &transaction).receipts[0].status_code, 0);
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(3.into(), &transaction)
+                .is_none()
+        );
+        assert_eq!(run(&chain, 3, &transaction).receipts[0].status_code, 0);
+        chain.rewards_config.magnolia_period = 2.into();
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(1.into(), &transaction)
+                .is_none()
+        );
+        assert_eq!(run(&chain, 1, &transaction).receipts[0].status_code, 1);
+        chain.rewards_config.magnolia_period = 0.into();
+        chain.dpos_cornus_period = 1.into();
+        assert!(
+            chain
+                .bounded_legacy_claim_all_unpack_failure(1.into(), &transaction)
+                .is_none()
+        );
+        assert_eq!(run(&chain, 1, &transaction).receipts[0].status_code, 1);
+        drop(chain);
+        drop(storage);
+        let _ = crate::closeout_test_scratch::dispose(path);
+    }
+
     #[test]
     fn finalize_block_supports_legacy_batch_claim_all_rewards() {
         let path = temp_db_path("finalize-dpos-claim-all-rewards-batch");
@@ -29281,6 +31714,7 @@ mod tests {
             .apply_dpos_reward_deltas(
                 &mut snapshot,
                 DposRewardDeltas {
+                    reward_row_writes: BTreeSet::new(),
                     commission_rewards: BTreeMap::new(),
                     delegator_rewards: BTreeMap::from([(
                         validator,

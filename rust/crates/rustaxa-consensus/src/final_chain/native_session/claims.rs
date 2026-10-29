@@ -9,8 +9,8 @@
 
 use super::account::StagedDposAccountPort;
 use super::custody::{
-    ExpectedRaw, NodeTrace, checked_put, delegation_key, encode_delegation, map_kernel_error,
-    put_rewards,
+    ExpectedRaw, NodeTrace, checked_put, delegation_key, encode_delegation, encode_rewards,
+    map_kernel_error, put_rewards, rewards_key,
 };
 use super::raw::FinalChainNativeRawTrace;
 use super::*;
@@ -36,7 +36,7 @@ impl FinalChainNativeSession<'_> {
         }
         if let DposTransaction::ClaimCommissionRewards { owner, validator } = &transaction {
             // Preserve the contract's owner-check precedence. Once ownership is
-            // established, require the reviewed post-Phalaenopsis lifecycle.
+            // established, authenticate the retained-validator lifecycle.
             // Pending authority comes from actual V1/V2 queue entries, including
             // checked V2 iterable metadata. Zero pending entries admit deletion.
             if self
@@ -51,9 +51,6 @@ impl FinalChainNativeSession<'_> {
                     .is_some_and(StoredDposTokenAmount::is_zero)
             {
                 checked_undelegations_count(&self.dpos_state, *validator)?;
-                if self.pending_period < self.final_chain.dpos_phalaenopsis_period {
-                    return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
-                }
             }
         }
 
@@ -193,6 +190,26 @@ impl FinalChainNativeSession<'_> {
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
         if !after.total_stakes.contains_key(&validator) {
             return self.serialize_deleted_validator(validator, before, trace);
+        }
+        if self.pending_period < self.final_chain.dpos_phalaenopsis_period
+            && before
+                .total_stakes
+                .get(&validator)
+                .is_some_and(StoredDposTokenAmount::is_zero)
+            && checked_undelegations_count(before, validator)? != 0
+        {
+            if before != after {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "pre-Phalaenopsis retained commission changed semantic state".to_owned(),
+                ));
+            }
+            let read = trace.current(DPOS_CONTRACT_ADDRESS, rewards_key(validator))?;
+            if !ExpectedRaw::Exact(encode_rewards(before, validator)).matches(&read) {
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "validator rewards raw/domain facts disagree".to_owned(),
+                ));
+            }
+            return Ok(());
         }
         put_rewards(before, after, validator, trace)
     }

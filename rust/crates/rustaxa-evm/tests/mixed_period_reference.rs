@@ -211,12 +211,13 @@ impl BlockHashRead for ChainHashes<'_> {
     }
 }
 /// Fixture classifier selects the same stateless registry as its driver.
-struct AllNatives(TaraxaProfile);
-impl NativeAddressClassifier for AllNatives {
-    fn is_native_address(&self, _: FinalChainBlockNumber, address: [u8; 20]) -> bool {
+struct AllNatives<'a>(TaraxaProfile, &'a FinalChain);
+impl NativeAddressClassifier for AllNatives<'_> {
+    fn is_native_address(&self, period: FinalChainBlockNumber, address: [u8; 20]) -> bool {
         use rustaxa_evm::bls::{BlsPrecompile, BlsRegistry};
-        (address[..19] == [0; 19]
-            && (matches!(address[19], 1..=8 | 0xee | 0xfe) || (self.0.ficus() && address[19] == 9)))
+        self.1.native_contract_kind(period, address).is_some()
+            || (address[..19] == [0; 19]
+                && (matches!(address[19], 1..=8) || (self.0.ficus() && address[19] == 9)))
             || (self.0.ficus()
                 && BlsPrecompile::at_address(
                     if self.0.cacti() {
@@ -236,14 +237,30 @@ impl NativeAddressClassifier for AllNatives {
     }
 }
 /// Consensus-owned subset; stateless addresses are handled directly by the driver.
-struct ConsensusNatives;
-impl NativeAddressClassifier for ConsensusNatives {
-    fn is_native_address(&self, _: FinalChainBlockNumber, address: [u8; 20]) -> bool {
-        address[..19] == [0; 19] && matches!(address[19], 0xee | 0xfe)
+struct ConsensusNatives<'a>(&'a FinalChain);
+impl NativeAddressClassifier for ConsensusNatives<'_> {
+    fn is_native_address(&self, period: FinalChainBlockNumber, address: [u8; 20]) -> bool {
+        self.0.native_contract_kind(period, address).is_some()
     }
 }
+#[path = "support/ordinary_observer.rs"]
+mod ordinary_observer;
+type OrdinaryObserver = std::rc::Rc<RefCell<ordinary_observer::KnownOrdinaryStorageIdentities>>;
+
+fn is_second_distribution_scenario(fixture: &Value) -> bool {
+    matches!(
+        fixture["scenario"].as_str(),
+        Some(
+            "mainnet_second_distribution_followthrough"
+                | "mainnet_second_distribution_reopen"
+                | "mainnet_second_distribution_followthrough_recovery"
+        )
+    )
+}
+
 struct Staged {
     prepared: ConcreteObserverPhaseOutput,
+    system_accounts: BTreeSet<[u8; 20]>,
     projection: FinalChainConcreteStateProjection,
     provenance: Vec<u8>,
     catalog_rlp: Vec<u8>,
@@ -255,6 +272,288 @@ struct NativeContextParts {
     invocations: Vec<FinalChainNativeInvocationContext>,
     rewards: FinalChainNativeRewardsContext,
     raw_slots: BTreeSet<ConcreteStorageSlot>,
+    raw_read_slots: BTreeSet<ConcreteStorageSlot>,
+}
+
+fn raw_read_slots<'a>(
+    reads: impl Iterator<
+        Item = &'a rustaxa_consensus::native_projection_context::FinalChainNativeRawRead,
+    >,
+) -> BTreeSet<ConcreteStorageSlot> {
+    reads
+        .map(|read| ConcreteStorageSlot {
+            address: read.address,
+            key: read.key.0,
+        })
+        .collect()
+}
+
+/// Keep replay reads separate from storage mutations. A read proves an input
+/// to native execution; it does not itself add a physical catalog identity.
+fn native_raw_observations(
+    contexts: &[FinalChainNativeInvocationContext],
+) -> (BTreeSet<ConcreteStorageSlot>, BTreeSet<ConcreteStorageSlot>) {
+    let reads = raw_read_slots(contexts.iter().flat_map(|context| context.raw_reads.iter()));
+    let writes = contexts
+        .iter()
+        .flat_map(|context| context.raw_mutations.iter())
+        .map(|mutation| ConcreteStorageSlot {
+            address: mutation.address,
+            key: mutation.key.0,
+        })
+        .collect();
+    (reads, writes)
+}
+
+#[test]
+fn native_read_only_slots_remain_replay_evidence_without_catalog_promotion() {
+    use rustaxa_consensus::native_projection_context::FinalChainNativeRawRead;
+    use rustaxa_consensus::native_session::{
+        FinalChainNativeCallKind, FinalChainNativeInvocationId, FinalChainNativeRawMutation,
+        FinalChainNativeRawOperation, FinalChainNativeRawValue, FinalChainNativeRequest,
+        FinalChainNativeValue,
+    };
+    let address = [0xfe; 20];
+    let absent = ConcreteStorageKey([1; 32]);
+    let present = ConcreteStorageKey([2; 32]);
+    let absent_then_put = ConcreteStorageKey([9; 32]);
+    let deleted = ConcreteStorageKey([3; 32]);
+    let noop = ConcreteStorageKey([6; 32]);
+    let empty = ConcreteStorageKey([8; 32]);
+    let prior = ConcreteStorageSlot {
+        address,
+        key: [4; 32],
+    };
+    let probe = ConcreteStorageSlot {
+        address,
+        key: [5; 32],
+    };
+    let request = FinalChainNativeRequest {
+        id: FinalChainNativeInvocationId {
+            transaction: 0.into(),
+            sequence: 0,
+        },
+        period: 1.into(),
+        depth: 1,
+        kind: FinalChainNativeCallKind::Call,
+        is_static: false,
+        caller: [6; 20],
+        contract: address,
+        state_address: address,
+        value: FinalChainNativeValue::default(),
+        input: Vec::new(),
+        supplied_gas: 100_000.into(),
+    };
+    let context = FinalChainNativeInvocationContext {
+        request,
+        accounts: Vec::new(),
+        raw_reads: vec![
+            FinalChainNativeRawRead {
+                address,
+                key: absent,
+                value: ConcreteRead::Absent,
+            },
+            FinalChainNativeRawRead {
+                address,
+                key: present,
+                value: ConcreteRead::Present(vec![7]),
+            },
+            FinalChainNativeRawRead {
+                address,
+                key: absent_then_put,
+                value: ConcreteRead::Absent,
+            },
+        ],
+        ordinary_mutations: Vec::new(),
+        raw_mutations: vec![
+            FinalChainNativeRawMutation {
+                address,
+                key: absent_then_put,
+                expected: ConcreteRead::Absent,
+                operation: FinalChainNativeRawOperation::Put(
+                    FinalChainNativeRawValue::new(vec![10]).unwrap(),
+                ),
+            },
+            FinalChainNativeRawMutation {
+                address,
+                key: deleted,
+                expected: ConcreteRead::Present(vec![8]),
+                operation: FinalChainNativeRawOperation::Delete,
+            },
+            FinalChainNativeRawMutation {
+                address,
+                key: deleted,
+                expected: ConcreteRead::Tombstone,
+                operation: FinalChainNativeRawOperation::Delete,
+            },
+            FinalChainNativeRawMutation {
+                address,
+                key: noop,
+                expected: ConcreteRead::Present(vec![9]),
+                operation: FinalChainNativeRawOperation::Put(
+                    FinalChainNativeRawValue::new(vec![9]).unwrap(),
+                ),
+            },
+            FinalChainNativeRawMutation {
+                address,
+                key: empty,
+                expected: ConcreteRead::Present(Vec::new()),
+                operation: FinalChainNativeRawOperation::Delete,
+            },
+        ],
+    };
+    let original = context.clone();
+    let (reads, writes) = native_raw_observations(std::slice::from_ref(&context));
+    assert_eq!(
+        context, original,
+        "replay inputs and ordered effects remain intact"
+    );
+    assert_eq!(
+        reads,
+        BTreeSet::from([
+            ConcreteStorageSlot {
+                address,
+                key: absent.0
+            },
+            ConcreteStorageSlot {
+                address,
+                key: present.0
+            },
+            ConcreteStorageSlot {
+                address,
+                key: absent_then_put.0
+            },
+        ])
+    );
+    assert_eq!(
+        writes,
+        BTreeSet::from([
+            ConcreteStorageSlot {
+                address,
+                key: absent_then_put.0
+            },
+            ConcreteStorageSlot {
+                address,
+                key: deleted.0
+            },
+            ConcreteStorageSlot {
+                address,
+                key: noop.0
+            },
+            ConcreteStorageSlot {
+                address,
+                key: empty.0
+            }
+        ])
+    );
+    assert_eq!(context.raw_reads[2].key, absent_then_put);
+    assert_eq!(context.raw_reads[2].value, ConcreteRead::Absent);
+    assert_eq!(context.raw_mutations[0].key, absent_then_put);
+    assert_eq!(context.raw_mutations[0].expected, ConcreteRead::Absent);
+    assert_eq!(
+        context.raw_mutations[0].operation,
+        FinalChainNativeRawOperation::Put(FinalChainNativeRawValue::new(vec![10]).unwrap(),)
+    );
+    let written = ConcreteStorageSlot {
+        address,
+        key: absent_then_put.0,
+    };
+    assert!(
+        reads.contains(&written),
+        "absent pre-write read remains replay evidence"
+    );
+    assert!(
+        writes.contains(&written),
+        "subsequent put produces a catalog identity"
+    );
+    let reward_key = ConcreteStorageKey([7; 32]);
+    let reward = FinalChainNativeRewardsContext {
+        raw_reads: vec![FinalChainNativeRawRead {
+            address,
+            key: reward_key,
+            value: ConcreteRead::Absent,
+        }],
+        ..Default::default()
+    };
+    let reward_before = reward.clone();
+    let reward_reads = raw_read_slots(reward.raw_reads.iter());
+    assert_eq!(reward, reward_before, "reward replay facts remain intact");
+    assert_eq!(
+        reward_reads,
+        BTreeSet::from([ConcreteStorageSlot {
+            address,
+            key: reward_key.0
+        }])
+    );
+    let mut catalog = BTreeSet::from([prior, probe]);
+    catalog.extend(writes);
+    assert_eq!(
+        catalog,
+        BTreeSet::from([
+            prior,
+            probe,
+            ConcreteStorageSlot {
+                address,
+                key: absent_then_put.0
+            },
+            ConcreteStorageSlot {
+                address,
+                key: deleted.0
+            },
+            ConcreteStorageSlot {
+                address,
+                key: noop.0
+            },
+            ConcreteStorageSlot {
+                address,
+                key: empty.0
+            }
+        ])
+    );
+    assert!(
+        catalog.contains(&written),
+        "absent-then-put remains catalogued"
+    );
+    assert!(!catalog.contains(&ConcreteStorageSlot {
+        address,
+        key: absent.0
+    }));
+    assert!(!catalog.contains(&ConcreteStorageSlot {
+        address,
+        key: present.0
+    }));
+    assert!(!catalog.contains(&ConcreteStorageSlot {
+        address,
+        key: reward_key.0
+    }));
+}
+
+/// Exact C bridge fee product (uint256), followed by wide ordinary addition.
+/// The owner selects the phase; standalone driver/query paths never call this.
+fn c_composed_transaction_fee(gas_price: &BigUint, gas_used: u64) -> BigUint {
+    let modulus = BigUint::from(1_u8) << 256_usize;
+    ((gas_price % &modulus) * BigUint::from(gas_used)) % modulus
+}
+
+fn credit_c_composed_transaction_fee<
+    R: rustaxa_types::concrete_state::execution::ConcreteExecutionRead,
+>(
+    journal: &mut ExecutionJournal<R>,
+    author: [u8; 20],
+    gas_price: &BigUint,
+    gas_used: u64,
+) -> Result<()> {
+    // Even a zero fee follows the journal's actual touch/create/prune path.
+    journal.add_balance(author, &c_composed_transaction_fee(gas_price, gas_used))?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum AccountNodePublication {
+    ObserverHistory,
+    FinalPeriod {
+        limits: rustaxa_storage::ConcreteStorageInventoryLimits,
+    },
 }
 
 struct Adapter<'a> {
@@ -265,7 +564,9 @@ struct Adapter<'a> {
     native: RefCell<Option<MixedNativeExecutionPort<'a>>>,
     native_context: RefCell<Option<NativeContextParts>>,
     state_api_epoch: StateApiEpoch,
+    ordinary_observer: Option<OrdinaryObserver>,
     fixture: &'a Value,
+    account_node_publication: AccountNodePublication,
 }
 impl ConsensusExecutionPort for Adapter<'_> {
     fn load_final_chain_committed_state(
@@ -331,6 +632,16 @@ impl ConsensusExecutionPort for Adapter<'_> {
             .ok_or_else(|| anyhow::anyhow!("fixture concrete handle unavailable"))?;
         concrete.stage_execution(&request.concrete_marker_rlp)?;
         let marker = decode_concrete_execution_marker(&request.concrete_marker_rlp)?;
+        if let Some(observer) = &self.ordinary_observer {
+            let observed = concrete.observation()?;
+            ensure!(
+                marker.identity == observed.identity
+                    && marker.generation == observed.generation + 1
+            );
+            observer
+                .borrow_mut()
+                .bind_marker(&request.concrete_marker_rlp)?;
+        }
         let expected = self.fixture["transactions"]
             .as_array()
             .context("period transactions")?;
@@ -349,6 +660,55 @@ impl ConsensusExecutionPort for Adapter<'_> {
         let mut sequence = PeriodConsensusSequence::new(request.period);
         let mut prepared: Option<ConcreteObserverPhaseOutput> = None;
         let mut identity = concrete.observation()?.committed;
+        // Protocol code changes precede every transaction, including periods
+        // without transactions. The owner selects rules from chain configuration;
+        // fixture output is only a later comparison oracle.
+        let dpos_address = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
+        ];
+        let dpos_code_empty = match concrete.prior_reader().account(dpos_address)? {
+            ConcreteRead::Present(record) => record.account.code_size == 0,
+            ConcreteRead::Absent | ConcreteRead::Tombstone => true,
+        };
+        let updates = self
+            .chain
+            .native_code_updates(request.period, dpos_code_empty);
+        let mut system_accounts = BTreeSet::new();
+        // Apply one replacement at a time to preserve Aspen then Cornus when
+        // both are configured for the same period.
+        for update in updates {
+            let prior = match prepared.as_ref() {
+                Some(output) => {
+                    rustaxa_types::concrete_state::execution::ConcreteExecutionRead::account(
+                        &concrete.prepared_view(output)?,
+                        update.address,
+                    )?
+                }
+                None => concrete.prior_reader().account(update.address)?,
+            };
+            let (nonce, balance) = match prior {
+                ConcreteRead::Present(record) => (record.account.nonce, record.account.balance),
+                ConcreteRead::Absent | ConcreteRead::Tombstone => (
+                    FinalChainNonce::zero(),
+                    ConcreteAccountBalance::new(BigUint::default()),
+                ),
+            };
+            let hash = keccak256(update.code).0;
+            let next = concrete.apply_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address: update.address,
+                    record: record(nonce, balance, Some(hash), update.code.len() as u64),
+                }],
+                storage: Vec::new(),
+                code: vec![ConcreteCodeInsertion {
+                    code_hash: hash,
+                    code: update.code.to_vec(),
+                }],
+            })?;
+            system_accounts.insert(update.address);
+            identity = next.identity();
+            prepared = Some(next);
+        }
         let mut raw_catalog =
             decode_concrete_storage_catalog(&concrete.observation()?.catalog_rlp)?
                 .into_iter()
@@ -393,8 +753,8 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 ExecutionTransactionKind::Call => execute_top_level_call_with_native(
                     &mut journal,
                     &ChainHashes(self.chain),
-                    &AllNatives(fixture_execution_profile(self.fixture)),
-                    &ConsensusNatives,
+                    &AllNatives(fixture_execution_profile(self.fixture), self.chain),
+                    &ConsensusNatives(self.chain),
                     &mut native,
                     &mut sequence,
                     &block,
@@ -403,12 +763,20 @@ impl ConsensusExecutionPort for Adapter<'_> {
                         cornus: self.fixture["rules"]["cornus"].as_bool().unwrap_or(true),
                     },
                     fixture_execution_profile(self.fixture),
-                )?,
+                )
+                .with_context(|| {
+                    format!(
+                        "fixture transaction {} ({}) at period {}",
+                        string(&expected["name"]),
+                        hex::encode(decoded.hash),
+                        request.period.as_u64(),
+                    )
+                })?,
                 ExecutionTransactionKind::Create => execute_top_level_create_with_native(
                     &mut journal,
                     &ChainHashes(self.chain),
-                    &AllNatives(fixture_execution_profile(self.fixture)),
-                    &ConsensusNatives,
+                    &AllNatives(fixture_execution_profile(self.fixture), self.chain),
+                    &ConsensusNatives(self.chain),
                     &mut native,
                     &mut sequence,
                     &block,
@@ -417,7 +785,15 @@ impl ConsensusExecutionPort for Adapter<'_> {
                         cornus: self.fixture["rules"]["cornus"].as_bool().unwrap_or(true),
                     },
                     fixture_execution_profile(self.fixture),
-                )?,
+                )
+                .with_context(|| {
+                    format!(
+                        "fixture transaction {} ({}) at period {}",
+                        string(&expected["name"]),
+                        hex::encode(decoded.hash),
+                        request.period.as_u64(),
+                    )
+                })?,
                 other => bail!("fixture unsupported transaction kind: {other:?}"),
             };
             let TransactionExecutionResult::Executed(result) = result else {
@@ -452,6 +828,14 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 result.refund_applied.as_u64() == number(&expected["gas_refund"]["applied"]),
                 "Go applied refund"
             );
+            if self.chain.pre_magnolia_fee_reward_period(request.period) {
+                credit_c_composed_transaction_fee(
+                    &mut journal,
+                    request.block_author,
+                    decoded.gas_price.value(),
+                    result.gas_used.as_u64(),
+                )?;
+            }
             let settled = journal.settle_transaction()?;
             drop(journal);
             ensure!(
@@ -545,6 +929,12 @@ impl ConsensusExecutionPort for Adapter<'_> {
             }
             for write in settled.writes.ordinary_storage {
                 changed.insert(write.address);
+                if let Some(observer) = &self.ordinary_observer {
+                    observer.borrow_mut().record_settled(ConcreteStorageSlot {
+                        address: write.address,
+                        key: write.key.0,
+                    })?;
+                }
                 storage.push(ConcreteStorageMutation {
                     address: write.address,
                     key: write.key,
@@ -668,25 +1058,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
             rewards_input: Vec::new(),
             catalog_hash: concrete_storage_catalog_hash(&[]),
         };
-        let period_raw_slots = native_contexts
-            .iter()
-            .flat_map(|context| {
-                context
-                    .raw_reads
-                    .iter()
-                    .map(|read| (read.address, read.key))
-                    .chain(
-                        context
-                            .raw_mutations
-                            .iter()
-                            .map(|mutation| (mutation.address, mutation.key)),
-                    )
-            })
-            .map(|(address, key)| ConcreteStorageSlot {
-                address,
-                key: key.0,
-            })
-            .collect();
+        let (period_raw_read_slots, period_raw_slots) = native_raw_observations(&native_contexts);
         *self.native.borrow_mut() = Some(native);
         *self.native_context.borrow_mut() = Some(NativeContextParts {
             request_id: request.request_id,
@@ -694,9 +1066,11 @@ impl ConsensusExecutionPort for Adapter<'_> {
             invocations: native_contexts,
             rewards: FinalChainNativeRewardsContext::default(),
             raw_slots: period_raw_slots,
+            raw_read_slots: period_raw_read_slots,
         });
         *self.staged.borrow_mut() = Some(Staged {
             prepared,
+            system_accounts,
             projection,
             provenance: Vec::new(),
             catalog_rlp: encode_concrete_storage_catalog(raw_catalog.iter().copied()),
@@ -804,6 +1178,12 @@ impl ConsensusExecutionPort for Adapter<'_> {
         }
         for write in settled.writes.ordinary_storage {
             changed.insert(write.address);
+            if let Some(observer) = &self.ordinary_observer {
+                observer.borrow_mut().record_settled(ConcreteStorageSlot {
+                    address: write.address,
+                    key: write.key.0,
+                })?;
+            }
             storage.push(ConcreteStorageMutation {
                 address: write.address,
                 key: write.key,
@@ -850,6 +1230,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
             .flat_map(|effect| effect.accounts.iter().map(|entry| entry.address))
             .collect::<BTreeSet<_>>();
         account_identities.extend(changed);
+        account_identities.extend(staged.system_accounts.iter().copied());
         // The actual local Go RecordConcreteRewardsProjection hook records
         // DPoS even for a non-distribution period with an unchanged root. Its
         // touched-account catalog is distinct from changed account rows.
@@ -874,14 +1255,14 @@ impl ConsensusExecutionPort for Adapter<'_> {
             .context("native context accumulator unavailable")?
             .raw_slots
             .clone();
-        for read in &reward_context.raw_reads {
-            let slot = ConcreteStorageSlot {
-                address: read.address,
-                key: read.key.0,
-            };
-            catalog.insert(slot);
-            period_raw_slots.insert(slot);
-        }
+        let mut period_raw_read_slots = self
+            .native_context
+            .borrow()
+            .as_ref()
+            .context("native context accumulator unavailable")?
+            .raw_read_slots
+            .clone();
+        period_raw_read_slots.extend(raw_read_slots(reward_context.raw_reads.iter()));
         for mutation in &native_rewards.raw_mutations {
             let slot = ConcreteStorageSlot {
                 address: mutation.address,
@@ -895,21 +1276,104 @@ impl ConsensusExecutionPort for Adapter<'_> {
         let declared_absence_probes = catalog_storage_identities(
             &self.fixture["final"]["native_catalog"]["coverage"]["absent_slot_identities"],
         )?;
-        // The Go period catalog also carries declared absence probes. They are
-        // lifecycle coverage facts and need not equal the implementation's
-        // consumed reward reads, which the native sidecar validates directly.
+        let mut ordinary_slots = BTreeSet::new();
+        if let Some(observer) = &self.ordinary_observer {
+            let view = concrete.prepared_view(&final_output)?;
+            observer
+                .borrow_mut()
+                .finish_prepared(final_output.identity(), |slot| {
+                    Ok(
+                        rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                            &view,
+                            slot.address,
+                            ConcreteStorageKey(slot.key),
+                        )?,
+                    )
+                })?;
+            let borrowed = observer.borrow();
+            ordinary_slots = borrowed.staged_slots()?;
+            for (slot, actual) in borrowed.staged_values()? {
+                let rows = self.fixture["final"]["native_catalog"]["slots"]
+                    .as_array()
+                    .context("full observed slot rows")?;
+                let row = rows
+                    .iter()
+                    .find(|row| {
+                        fixed::<20>(&row["address"]) == slot.address
+                            && fixed::<32>(&row["key"]) == slot.key
+                    })
+                    .context("ordinary observed Go slot missing")?;
+                if row["present"] == true {
+                    ensure!(
+                        *actual == ConcreteRead::Present(bytes(&row["value"])),
+                        "ordinary prepared value differs"
+                    );
+                } else {
+                    ensure!(
+                        matches!(actual, ConcreteRead::Absent | ConcreteRead::Tombstone)
+                            || *actual == ConcreteRead::Present(Vec::new()),
+                        "ordinary prepared absence differs"
+                    );
+                }
+            }
+        }
+        let native_absence_probes = if self.ordinary_observer.is_some() {
+            let mut native = BTreeSet::new();
+            let view = concrete.prepared_view(&final_output)?;
+            for slot in &declared_absence_probes {
+                if ordinary_observer::is_native_storage_domain(slot.address) {
+                    native.insert(*slot);
+                } else {
+                    ensure!(
+                        ordinary_slots.contains(slot),
+                        "ordinary absence probe has no observed provenance"
+                    );
+                    ensure!(
+                        matches!(
+                        rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                            &view, slot.address, ConcreteStorageKey(slot.key))?,
+                        ConcreteRead::Absent | ConcreteRead::Tombstone
+                    ),
+                        "ordinary absence probe is present or unavailable"
+                    );
+                }
+            }
+            native
+        } else {
+            declared_absence_probes.clone()
+        };
+        // Native declared probes retain their established coverage treatment.
+        // Ordinary identities come only from actual prior or settled writes.
         let mut explained_period_slots = catalog.clone();
         explained_period_slots.extend(period_raw_slots.iter().copied());
-        explained_period_slots.extend(declared_absence_probes.iter().copied());
+        explained_period_slots.extend(period_raw_read_slots.iter().copied());
+        explained_period_slots.extend(native_absence_probes.iter().copied());
+        explained_period_slots.extend(ordinary_slots.iter().copied());
         ensure!(
             expected_slots.is_subset(&explained_period_slots),
-            "Go period catalog identity is neither prior, consumed, mutated nor a declared absence probe"
+            "Go period catalog identity is neither prior, consumed, mutated nor a declared absence probe; period={} unexplained={:?}",
+            request.period.as_u64(),
+            expected_slots
+                .difference(&explained_period_slots)
+                .collect::<Vec<_>>()
         );
-        catalog.extend(declared_absence_probes.iter().copied());
+        catalog.extend(native_absence_probes.iter().copied());
         catalog.extend(period_raw_slots);
         let expected_catalog =
             catalog_storage_identities(&self.fixture["final"]["native_catalog"]["slots"])?;
-        ensure!(catalog == expected_catalog, "Go full raw catalog");
+        let mut full_catalog = catalog.clone();
+        full_catalog.extend(ordinary_slots.iter().copied());
+        ensure!(
+            full_catalog == expected_catalog,
+            "Go full raw catalog period={} missing={:?} extra={:?}",
+            request.period.as_u64(),
+            expected_catalog
+                .difference(&full_catalog)
+                .collect::<Vec<_>>(),
+            full_catalog
+                .difference(&expected_catalog)
+                .collect::<Vec<_>>()
+        );
         let catalog_rlp = encode_concrete_storage_catalog(catalog.iter().copied());
         // Replace the temporary pre-rewards catalog hash only after every raw
         // key is known and every final value can be read from one prepared view.
@@ -1109,6 +1573,16 @@ impl ConsensusExecutionPort for Adapter<'_> {
             .borrow_mut()
             .take()
             .ok_or_else(|| anyhow::anyhow!("fixture concrete handle unavailable"))?;
+        if let Some(observer) = &self.ordinary_observer {
+            let prior = concrete.observation()?;
+            observer.borrow().validate_pending_commit(
+                prior.identity,
+                prior.committed,
+                prior.generation,
+                &request.concrete_marker_rlp,
+                staged.prepared.identity(),
+            )?;
+        }
         let approval = ConcreteCommitApproval {
             marker_rlp: request.concrete_marker_rlp.clone(),
             provenance_rlp: request.concrete_provenance_rlp.clone(),
@@ -1116,12 +1590,27 @@ impl ConsensusExecutionPort for Adapter<'_> {
             projection_hash: request.concrete_projection_hash,
             catalog_hash: staged.projection.catalog_hash,
         };
-        let observed = concrete.commit_observer_approved(staged.prepared, approval)?;
+        let observed = match self.account_node_publication {
+            AccountNodePublication::FinalPeriod { limits } => {
+                concrete.commit_observer_final_trie_nodes(staged.prepared, approval, limits)?
+            }
+            AccountNodePublication::ObserverHistory => {
+                concrete.commit_observer_approved(staged.prepared, approval)?
+            }
+        };
         ensure!(
             observed.pending_marker_rlp.is_empty()
                 && observed.provenance_rlp == request.concrete_provenance_rlp,
             "concrete commit observation"
         );
+        if let Some(observer) = &self.ordinary_observer {
+            observer.borrow_mut().concrete_commit(
+                observed.identity,
+                &request.concrete_marker_rlp,
+                observed.committed,
+                observed.generation,
+            )?;
+        }
         Ok(FinalChainExternalEvmStateCommitResult {
             request_id: request.request_id,
             state_api_epoch: request.state_api_epoch,
@@ -1166,6 +1655,13 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 && observed.committed.state_root == request.prior_state.state_root,
             "fixture discard reopened prior descriptor"
         );
+        if let Some(observer) = &self.ordinary_observer {
+            observer.borrow_mut().discard_from_owner(
+                observed.identity,
+                observed.committed,
+                observed.generation,
+            )?;
+        }
         let (previous_state_api_epoch, state_api_epoch) = self
             .state_api_epoch
             .replace_after_discard(request.expected_state_api_epoch)?;
@@ -1365,7 +1861,13 @@ fn compare_raw_mutation(
     let value = bytes(&expected["value"]);
     match &actual.operation {
         rustaxa_consensus::native_session::FinalChainNativeRawOperation::Put(actual) => {
-            ensure!(actual.as_bytes() == value, "raw trace put bytes")
+            ensure!(
+                actual.as_bytes() == value,
+                "raw trace put bytes: key={} actual={} expected={}",
+                string(&expected["key"]),
+                hex::encode(actual.as_bytes()),
+                hex::encode(&value)
+            )
         }
         rustaxa_consensus::native_session::FinalChainNativeRawOperation::Delete => {
             ensure!(value.is_empty(), "raw trace delete bytes")
@@ -1578,6 +2080,25 @@ fn verify_receipts(storage: &Storage, period: &Value) -> Result<()> {
             "durable receipt differs from Go"
         );
     }
+    Ok(())
+}
+
+fn verify_physical_cf5(path: &Path, expected: &Value) -> Result<()> {
+    let options = rocksdb::Options::default();
+    let columns = rocksdb::DB::list_cf(&options, path)?;
+    let descriptors = columns
+        .iter()
+        .map(|name| rocksdb::ColumnFamilyDescriptor::new(name, rocksdb::Options::default()));
+    let db = rocksdb::DB::open_cf_descriptors_read_only(&options, path, descriptors, false)?;
+    let handle = db.cf_handle("5").context("concrete CF5")?;
+    let actual = db
+        .iterator_cf(handle, rocksdb::IteratorMode::Start)
+        .map(|row| row.map(|(key, value)| (hex::encode(key), Value::String(hex::encode(value)))))
+        .collect::<Result<serde_json::Map<String, Value>, _>>()?;
+    ensure!(
+        Value::Object(actual) == *expected,
+        "Go physical CF5 rows differ"
+    );
     Ok(())
 }
 
@@ -1870,7 +2391,9 @@ fn run_period(
         native: RefCell::new(None),
         native_context: RefCell::new(None),
         state_api_epoch: StateApiEpoch::new(),
+        ordinary_observer: None,
         fixture: period,
+        account_node_publication: AccountNodePublication::ObserverHistory,
     };
     initialize_and_recover_final_chain_application_state_at_joint_startup(&chain, &adapter)?;
     let author = fixed(&period["reward_input"]["block_author"]);
@@ -2050,3 +2573,172 @@ mod native_integration;
 
 #[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
 pub mod closeout_test_scratch;
+
+#[test]
+fn c_composed_fee_product_wraps256_before_wide_addition() {
+    let high = BigUint::from(1_u8) << 255_usize;
+    assert_eq!(c_composed_transaction_fee(&high, 3), high);
+    assert_eq!(
+        c_composed_transaction_fee(&(BigUint::from(1_u8) << 256_usize), 7),
+        BigUint::default()
+    );
+    assert_eq!(
+        c_composed_transaction_fee(&BigUint::from(1_000_000_000_u64), 21000),
+        BigUint::from(21_000_000_000_000_u64)
+    );
+}
+
+#[derive(Clone)]
+struct FeeJournalRead {
+    author: [u8; 20],
+    present: bool,
+    unavailable: bool,
+}
+impl rustaxa_types::concrete_state::execution::ConcreteExecutionRead for FeeJournalRead {
+    fn identity(&self) -> ConcreteStateIdentity {
+        ConcreteStateIdentity {
+            period: 1.into(),
+            state_root: [0; 32],
+        }
+    }
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> std::result::Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+        if address != self.author {
+            return Ok(ConcreteRead::Absent);
+        }
+        if self.unavailable {
+            return Err(ConcreteReadError::HistoryUnavailable(self.identity()));
+        }
+        Ok(if self.present {
+            ConcreteRead::Present(record(
+                7.into(),
+                ConcreteAccountBalance::new(BigUint::from(50_u64)),
+                Some([0x55; 32]),
+                2,
+            ))
+        } else {
+            ConcreteRead::Absent
+        })
+    }
+    fn storage(
+        &self,
+        _: [u8; 20],
+        _: ConcreteStorageKey,
+    ) -> std::result::Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        Ok(ConcreteRead::Absent)
+    }
+    fn code(&self, _: [u8; 32]) -> std::result::Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        Ok(ConcreteRead::Absent)
+    }
+}
+#[test]
+fn c_composed_fee_journal_preserves_metadata_and_uses_current_self_author_balance() {
+    let author = [0x71; 20];
+    let mut journal = ExecutionJournal::new(FeeJournalRead {
+        author,
+        present: true,
+        unavailable: false,
+    });
+    // Model the real outer envelope's net debit/refund before the fee credit.
+    journal
+        .subtract_balance(author, &BigUint::from(9_u64))
+        .unwrap();
+    credit_c_composed_transaction_fee(&mut journal, author, &BigUint::from(3_u64), 3).unwrap();
+    let account = journal.account(author).unwrap();
+    assert_eq!(account.nonce, FinalChainNonce::from_u64(7));
+    assert_eq!(account.balance.value(), &num_bigint::BigInt::from(50));
+    let metadata = journal.account_metadata(author).unwrap();
+    assert_eq!(metadata.code_hash, Some([0x55; 32]));
+    assert_eq!(metadata.code_size, 2);
+    let settled = journal.settle_transaction().unwrap();
+    assert!(settled.writes.ordinary_storage.is_empty() && settled.writes.raw_storage.is_empty());
+}
+#[test]
+fn c_composed_fee_journal_absent_zero_and_unavailable_author_are_isolated() {
+    let author = [0x71; 20];
+    for fee in [0_u64, 21] {
+        let mut journal = ExecutionJournal::new(FeeJournalRead {
+            author,
+            present: false,
+            unavailable: false,
+        });
+        credit_c_composed_transaction_fee(&mut journal, author, &BigUint::from(fee), 1).unwrap();
+        let account = journal.account(author).unwrap();
+        assert!(account.exists);
+        assert_eq!(account.balance.value(), &num_bigint::BigInt::from(fee));
+        let settled = journal.settle_transaction().unwrap();
+        if fee == 0 {
+            assert!(
+                settled
+                    .writes
+                    .accounts
+                    .iter()
+                    .any(|row| row.address == author
+                        && matches!(row.operation, JournalAccountOperation::Delete))
+            );
+        }
+    }
+    let mut failed = ExecutionJournal::new(FeeJournalRead {
+        author,
+        present: false,
+        unavailable: true,
+    });
+    assert!(
+        credit_c_composed_transaction_fee(&mut failed, author, &BigUint::from(21_u64), 1).is_err()
+    );
+    assert!(
+        failed
+            .settle_transaction()
+            .unwrap()
+            .writes
+            .accounts
+            .is_empty()
+    );
+    let mut retry = ExecutionJournal::new(FeeJournalRead {
+        author,
+        present: false,
+        unavailable: false,
+    });
+    credit_c_composed_transaction_fee(&mut retry, author, &BigUint::from(21_u64), 1).unwrap();
+    assert_eq!(
+        retry.account(author).unwrap().balance.value(),
+        &num_bigint::BigInt::from(21)
+    );
+}
+
+#[test]
+fn c_composed_fee_credit_survives_reverted_inner_frame_and_remains_wide() {
+    let author = [0x71; 20];
+    let mut journal = ExecutionJournal::new(FeeJournalRead {
+        author,
+        present: true,
+        unavailable: false,
+    });
+    let checkpoint = journal.checkpoint();
+    journal
+        .subtract_balance(author, &BigUint::from(13_u64))
+        .unwrap();
+    journal.revert_checkpoint(checkpoint).unwrap();
+    let high = BigUint::from(1_u8) << 255_usize;
+    credit_c_composed_transaction_fee(&mut journal, author, &high, 1).unwrap();
+    credit_c_composed_transaction_fee(&mut journal, author, &high, 1).unwrap();
+    assert_eq!(
+        journal.account(author).unwrap().balance.value(),
+        &num_bigint::BigInt::from((BigUint::from(1_u8) << 256_usize) + BigUint::from(50_u64))
+    );
+    assert!(
+        journal
+            .settle_transaction()
+            .unwrap()
+            .writes
+            .raw_storage
+            .is_empty()
+    );
+}
+
+// Actual transaction and real owner EndBlock component. Root parity requires
+// captured cross-language comparison; no Go post-writes are used as inputs.
+#[path = "support/zero_fee_checkpoint_component.rs"]
+mod zero_fee_checkpoint_component;

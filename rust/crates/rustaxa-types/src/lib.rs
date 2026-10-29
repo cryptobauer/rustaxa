@@ -3,6 +3,7 @@ pub mod concrete_lifecycle;
 pub mod concrete_state;
 pub mod dag;
 pub mod final_chain;
+pub mod native_code;
 pub mod pbft;
 pub mod pillar;
 pub mod transaction;

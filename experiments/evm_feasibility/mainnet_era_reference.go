@@ -12,6 +12,7 @@ import (
  "os"
  "sort"
  "strings"
+ "github.com/holiman/uint256"
 
  "github.com/Taraxa-project/taraxa-evm/common"
  "github.com/Taraxa-project/taraxa-evm/core"
@@ -31,6 +32,24 @@ import (
  contract_storage "github.com/Taraxa-project/taraxa-evm/taraxa/state/contracts/storage"
 )
 
+// The production C bridge composes this ordinary credit after every returned
+// execution result. Standalone Call/Estimate/TraceRunner do not use this seam.
+type eraCComposedFeeState interface {
+ BlockNumber() types.BlockNum
+ GetChainConfig() *chain_config.ChainConfig
+ AddTxFeeToBalance(*common.Address, *uint256.Int)
+}
+func eraCreditCComposedTransactionFee(st eraCComposedFeeState, author common.Address, tx vm.Transaction, result vm.ExecutionResult) bool {
+ if st.BlockNumber() < st.GetChainConfig().Hardforks.MagnoliaHf.BlockNum {
+  fee:=new(uint256.Int).SetUint64(result.GasUsed)
+  price,_:=uint256.FromBig(tx.GasPrice)
+  fee.Mul(fee,price)
+  st.AddTxFeeToBalance(&author,fee)
+  return true
+ }
+ return false
+}
+
 type eraInput struct {
  Configuration chain_config.ChainConfig `json:"configuration"`
  Name string `json:"name"`
@@ -43,6 +62,7 @@ type eraInput struct {
  Actions []eraAction `json:"actions,omitempty"`
  NoWarmupDelegation bool `json:"no_warmup_delegation,omitempty"`
  SeedActionsOnly bool `json:"seed_actions_only,omitempty"`
+ ReopenAfter []uint64 `json:"reopen_after,omitempty"`
  APIHeads []uint64 `json:"api_heads,omitempty"`
  APIOrdinaryNonce *uint64 `json:"api_ordinary_nonce,omitempty"`
  OrdinaryAPIName string `json:"ordinary_api_name,omitempty"`
@@ -157,6 +177,45 @@ func eraWritten(ids catalogIdentities,writes []rawWrite) catalogIdentities {
  return mergeCatalogs(ids,extra)
 }
 
+// These are logical identities from real committed mutations, never expected
+// storage values or additional irreversible native-write events.
+func eraAddAccountIdentity(ids *catalogIdentities,address common.Address) {
+ for _,prior:=range ids.Accounts {if prior==address {return}}
+ ids.Accounts=append(ids.Accounts,address)
+}
+
+func eraAddStorageIdentity(ids *catalogIdentities,address common.Address,key common.Hash) {
+ eraAddAccountIdentity(ids,address)
+ slot:=catalogSlot{Address:address,Key:key}
+ for _,prior:=range ids.Slots {if prior==slot {return}}
+ ids.Slots=append(ids.Slots,slot)
+}
+
+func eraCatalogScope(ids *catalogIdentities) func() {
+ var next func(common.Address,common.Hash)
+ if ids!=nil {next=func(address common.Address,key common.Hash){eraAddStorageIdentity(ids,address,key)}}
+ previous:=state_evm.SwapEraCommittedStorageKeyObserver(next)
+ return func(){state_evm.SwapEraCommittedStorageKeyObserver(previous)}
+}
+
+func eraQueriesWithoutCatalog(query func() []map[string]any) []map[string]any {
+ restore:=eraCatalogScope(nil);defer restore()
+ return query()
+}
+
+func eraRecordFeeCredit(ids *catalogIdentities, addresses *[]common.Address, author common.Address) {
+ eraAddAccountIdentity(ids,author)
+ for _,address:=range *addresses {if address==author {return}}
+ *addresses=append(*addresses,author)
+}
+
+func eraRecordCreated(ids *catalogIdentities,addresses *[]common.Address,tx vm.Transaction,result vm.ExecutionResult) {
+ if tx.To!=nil || result.ExecutionErr!="" || result.ConsensusErr!="" {return}
+ eraAddAccountIdentity(ids,result.NewContractAddr)
+ // Keep the observer's actual CREATE event occurrences, including duplicates.
+ *addresses=append(*addresses,result.NewContractAddr)
+}
+
 func eraSigned(spec eraTransaction, nonce *big.Int) signedTransaction {
  sender:=addressForPrivateKey(spec.PrivateKey)
  unsigned:=unsignedLegacyTransaction{Nonce:nonce,GasPrice:new(big.Int).SetUint64(spec.GasPrice),Gas:spec.Gas,To:spec.To,
@@ -169,7 +228,16 @@ func eraSigned(spec eraTransaction, nonce *big.Int) signedTransaction {
  return signedTransaction{RLP:body,Hash:crypto.Keccak256Hash(body),Decoded:decoded,Sender:sender,ChainID:chainID}
 }
 
+func eraValidateReopens(input eraInput) {
+ if input.ReopenAfter==nil {if input.Name=="mainnet_second_distribution_reopen" || input.Name=="mainnet_second_distribution_followthrough_recovery" {panic("missing reopen topology")};return}
+ expected:=[]uint64{25706999,25707000,25707001,25707002,25707003,25707004}
+ if input.Name=="mainnet_second_distribution_followthrough_recovery" {expected=append([]uint64{25706905},expected...)} else if input.Name!="mainnet_second_distribution_reopen" {panic("unqualified reopen topology")}
+ if len(input.ReopenAfter)!=len(expected) {panic("invalid reopen count")}
+ for i,p:=range input.ReopenAfter {if p!=expected[i] {panic("invalid reopen boundary")}}
+}
+
 func eraTransactions(input eraInput,p uint64) []eraTransaction {
+ eraValidateReopens(input)
  rows:=[]eraTransaction{}
  add:=func(who int,name string,to *common.Address,value *big.Int,data []byte) {
   spec:=fullSpec(name,0,addressForPrivateKey(integrationKeys[who]),integrationKeys[who],to,0,data)
@@ -179,7 +247,7 @@ func eraTransactions(input eraInput,p uint64) []eraTransaction {
  zero:=new(big.Int)
  a,b:=integrationValidators[0],integrationValidators[1]
  if p==input.FirstRetained+1 && !input.NoWarmupDelegation {add(3,"seed_delegation",dpos.ContractAddress(),eraAmount("3000000000000000000000"),integrationPack(false,"delegate",a))}
- if input.Name=="mainnet_106" {
+ if input.Name=="mainnet_106" || input.Name=="mainnet_second_distribution_followthrough" || input.Name=="mainnet_second_distribution_reopen" || input.Name=="mainnet_second_distribution_followthrough_recovery" {
   switch p {
   case 25706895:
    newKey:=bytes.Repeat([]byte{12},32);newValidator:=addressForPrivateKey(newKey)
@@ -279,6 +347,8 @@ func eraStatsFromReader(c chain_config.ChainConfig,p uint64,fees *big.Int,hashes
 }
 
 func eraRun(input eraInput,observer bool,source *eraSeedSource) (out map[string]any) {
+ // A recursive donor or query must never update the caller's catalog.
+ restoreCallerCatalog:=eraCatalogScope(nil);defer restoreCallerCatalog()
  cfg:=eraConfig(input.Configuration)
  depth:=0;for donor:=input.Donor;donor!=nil;donor=donor.Donor {depth++;if depth>3 {panic("bounded donor hierarchy exceeded")}}
  if input.SeedActionsOnly && !strings.HasSuffix(input.Name,"_donor") {panic("only declared donor prefixes may omit workload APIs")}
@@ -297,6 +367,9 @@ func eraRun(input eraInput,observer bool,source *eraSeedSource) (out map[string]
  }
  if source!=nil {defer func(){source.Latest=latest;source.IDs=ids;source.Addresses=append([]common.Address(nil),addresses...);source.Document=out;source.Writes=eraSourceWrites(out)}()}
  st:=newStateTransition(latest,&cfg)
+ // Keep this scope through every real flush, including PrepareCommit/Commit.
+ // The closure sees ids replacements by native/observer catalog merges.
+ restoreActualCatalog:=eraCatalogScope(&ids);defer restoreActualCatalog()
  ordinaryNonce:=uint64(1);if input.APIOrdinaryNonce!=nil {ordinaryNonce=*input.APIOrdinaryNonce}
  ordinaryName:=input.OrdinaryAPIName;if ordinaryName=="" {ordinaryName="ordinary_storage_value_log"}
  cache,facts:=eraPendingStats(cfg,input,latest)
@@ -306,7 +379,7 @@ func eraRun(input eraInput,observer bool,source *eraSeedSource) (out map[string]
  periods:=[]map[string]any{}
  for p:=input.FirstRetained+1;p<=input.Periods[len(input.Periods)-1];p++ {
   priorRoot:=latest.descriptor.StateRoot
-  beginRawWriteTrace();eraAPIConfiguration=cfg;st.BeginBlock(&eraBlock(p).BlockInfo);begin:=finishRawWriteTrace()
+  beginRawWriteTrace();eraAPIConfiguration=cfg;executionBlock:=eraBlock(p);st.BeginBlock(&executionBlock.BlockInfo);begin:=finishRawWriteTrace()
   ids=eraWritten(ids,begin)
   txs:=[]map[string]any{};hashes:=[]string{};fees:=new(big.Int);var gas uint64
   for i,spec:=range eraTransactions(input,p) {
@@ -318,8 +391,13 @@ func eraRun(input eraInput,observer bool,source *eraSeedSource) (out map[string]
    signed:=eraSigned(spec,nonce)
    tx:=vm.Transaction{From:sender,To:signed.Decoded.To,Nonce:signed.Decoded.Nonce,GasPrice:signed.Decoded.GasPrice,Gas:signed.Decoded.Gas,Value:signed.Decoded.Value,Input:common.CopyBytes(signed.Decoded.Input)}
    beginRawWriteTrace();beginGasRefundTrace();result:=st.ExecuteTransaction(&tx);refund:=finishGasRefundTrace();writes:=finishRawWriteTrace();gas+=result.GasUsed
+   if eraCreditCComposedTransactionFee(st,executionBlock.Author,tx,result) {
+    // Membership comes from the actual ordinary credit event, including a
+    // zero touch whose account may later be removed by EIP161 settlement.
+    eraRecordFeeCredit(&ids,&addresses,executionBlock.Author)
+   }
    ids=eraWritten(ids,writes)
-   if tx.To==nil && result.ExecutionErr=="" && result.ConsensusErr=="" {addresses=append(addresses,result.NewContractAddr)}
+   eraRecordCreated(&ids,&addresses,tx,result)
    original:=tx;original.Input=common.CopyBytes(signed.Decoded.Input)
    spec.ExpectedError=string(result.ExecutionErr)
    row:=fullTransactionRow(spec.fullTransactionSpec,signed,original,result,gas);row["nonce"]=nonce.String();row["ordered_raw_writes"]=writes;row["index"]=i;row["gas_refund"]=refund
@@ -336,7 +414,7 @@ func eraRun(input eraInput,observer bool,source *eraSeedSource) (out map[string]
    root:=st.PrepareCommit()
    view:=eraCopiedView(latest,p,root)
    reader:=state_db.ExtendedReader{Reader:view.readerAt(types.BlockNum(p))}
-   queries:=eraAPIs(view,cfg,[]uint64{p},ids,addresses,p,ordinaryNonce,ordinaryName,input.APIValidator)
+   queries:=eraQueriesWithoutCatalog(func() []map[string]any{return eraAPIs(view,cfg,[]uint64{p},ids,addresses,p,ordinaryNonce,ordinaryName,input.APIValidator)})
    st.Close()
    return map[string]any{"schema":1,"kind":"pre_reward_fork","profile":"synthetic_mainnet_era","scenario":input.Name,"head":input.Head,
     "prefix_periods":periods,"pre_reward":map[string]any{"number":p,"root":hex.EncodeToString(root[:]),"accounts":observeAddressSet(reader,addresses),"native_catalog":captureNativeCatalog(reader,ids)},
@@ -364,14 +442,16 @@ func eraRun(input eraInput,observer bool,source *eraSeedSource) (out map[string]
    "distributions":distributions,"distribution_order":order,"period_catalog_identities":periodIDs,"reward_output":map[string]any{"minted_reward":minted.String(),"actual_transaction_fees":fees.String()},
    "ordered_raw_writes":map[string]any{"begin_block":begin,"rewards":allWrites,"end_block":end},
    "final":map[string]any{"root":hex.EncodeToString(root[:]),"committed_root":hex.EncodeToString(committed[:]),"accounts":observeAddressSet(r,addresses),"native_catalog":captureNativeCatalog(r,ids)}})
-  if p==25706905 {st.Close();st=newStateTransition(latest,&cfg)}
+  shouldReopen:=false
+  if input.ReopenAfter==nil {shouldReopen=p==25706905} else {for _,height:=range input.ReopenAfter {if p==height {shouldReopen=true;break}}}
+  if shouldReopen {st.Close();st=newStateTransition(latest,&cfg)}
  }
  st.Close()
  heads:=[]uint64{}
  if input.Name=="mainnet_106" {heads=[]uint64{input.Head,25706900,25706905,25706906,25706911,25707000}} else {heads=input.Periods}
  if len(input.APIHeads)>0 {heads=input.APIHeads}
  apiCases:=[]map[string]any{}
- if !input.SeedActionsOnly {apiCases=eraAPIs(latest,cfg,heads,ids,addresses,input.Periods[len(input.Periods)-1],ordinaryNonce,ordinaryName,input.APIValidator)}
+ if !input.SeedActionsOnly {apiCases=eraQueriesWithoutCatalog(func() []map[string]any{return eraAPIs(latest,cfg,heads,ids,addresses,input.Periods[len(input.Periods)-1],ordinaryNonce,ordinaryName,input.APIValidator)})}
  config:=configurationJSON(cfg,1000)
  corrections:=[]map[string]any{};for _,r:=range cfg.Hardforks.Redelegations {corrections=append(corrections,map[string]any{"validator":hex.EncodeToString(r.Validator[:]),"delegator":hex.EncodeToString(r.Delegator[:]),"amount":r.Amount.String()})}
  config["hardforks"].(map[string]any)["redelegations"]=corrections
@@ -385,11 +465,13 @@ func eraRun(input eraInput,observer bool,source *eraSeedSource) (out map[string]
  allocations:=[]map[string]string{};for a,n:=range cfg.GenesisBalances {allocations=append(allocations,map[string]string{"address":hex.EncodeToString(a[:]),"balance":n.String()})};sort.Slice(allocations,func(i,j int)bool{return allocations[i]["address"]<allocations[j]["address"]})
  validators:=[]map[string]any{};for _,v:=range cfg.DPOS.InitialValidators {delegations:=[]map[string]string{};for a,n:=range v.Delegations {delegations=append(delegations,map[string]string{"delegator":hex.EncodeToString(a[:]),"amount":n.String()})};validators=append(validators,map[string]any{"address":hex.EncodeToString(v.Address[:]),"owner":hex.EncodeToString(v.Owner[:]),"vrf_key":hex.EncodeToString(v.VrfKey),"commission":v.Commission,"description":v.Description,"endpoint":v.Endpoint,"delegations":delegations})}
  pending=nil;for _,p:=range input.Pending {pending=append(pending,facts[p])}
- reopen:=uint64(0);if input.FirstRetained<25706905 && input.Periods[len(input.Periods)-1]>=25706905 {reopen=25706905}
- return map[string]any{"schema":1,"profile":"synthetic_mainnet_era","scenario":input.Name,"head":input.Head,"configuration":config,"genesis":genesis,
+ reopen:=uint64(0);if input.ReopenAfter==nil && input.FirstRetained<25706905 && input.Periods[len(input.Periods)-1]>=25706905 {reopen=25706905}
+ result:=map[string]any{"schema":1,"profile":"synthetic_mainnet_era","scenario":input.Name,"head":input.Head,"configuration":config,"genesis":genesis,
   "inputs":map[string]any{"genesis_allocations":allocations,"initial_validators":validators,"initial_validator":validators[0]},
   "seed":seed,"pending_reward_facts":pending,"periods":periods,"api_cases":apiCases,"history_rows":latest.rows.exportPhysical(),"go_row_model_reopen_after":reopen,
   "cpp_scheduler_seed_reopen_after":input.FirstRetained,"seed_actions_only":input.SeedActionsOnly}
+ if input.ReopenAfter!=nil {result["go_row_model_reopen_after_list"]=input.ReopenAfter}
+ return result
 }
 
 func main() {

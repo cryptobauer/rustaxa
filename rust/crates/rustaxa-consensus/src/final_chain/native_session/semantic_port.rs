@@ -175,6 +175,17 @@ impl CheckpointJournalCommissionPort {
             ));
         };
         let expected_facts = snapshot_validator_facts(snapshot, validator)?;
+        if matches!(
+            snapshot.validator_row_authority,
+            ValidatorRowAuthority::Complete(_)
+        ) && encode_persisted_validator_row(snapshot, validator, extended_validator_active)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
+            != *validator_bytes
+        {
+            return Err(FinalChainNativeSessionError::RawIntegrity(
+                "setCommission persisted validator shape mismatch".into(),
+            ));
+        }
         if extended_validator_active
             && expected_facts.4 != 0
             && super::exact_rlp(validator_bytes, "setCommission validator row")?
@@ -232,6 +243,7 @@ impl CheckpointJournalCommissionPort {
                 commission: self.facts.1,
                 last_change: self.facts.2,
                 replacement,
+                written_extended: self.extended_validator_active,
             })
     }
 
@@ -263,6 +275,7 @@ pub(super) struct AuthenticatedCommissionUpdate {
     commission: u16,
     last_change: u64,
     replacement: Vec<u8>,
+    written_extended: bool,
 }
 
 /// Applies one authenticated checkpoint result to the complete session state.
@@ -275,13 +288,19 @@ pub(super) fn apply_authenticated_checkpoint_to_snapshot(
     snapshot: &mut DposSnapshot,
     update: AuthenticatedCommissionUpdate,
 ) -> Result<Vec<u8>, anyhow::Error> {
-    let mut port = SnapshotCommissionPort::new(snapshot, update.validator);
+    let mut next = snapshot.clone();
+    let mut port = SnapshotCommissionPort::new(&mut next, update.validator);
     anyhow::ensure!(
         port.metadata() == Some(update.previous),
         "setCommission checkpoint no longer matches complete snapshot"
     );
     port.validate_validator_record()?;
     port.set_commission(update.commission, update.last_change);
+    let count = decode_validator_facts(&update.replacement, true)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        .4;
+    record_validator_metadata_write(&mut next, update.validator, update.written_extended, count)?;
+    *snapshot = next;
     Ok(update.replacement)
 }
 
@@ -368,7 +387,7 @@ pub(in crate::final_chain) fn apply_set_commission<P: CommissionStatePort>(
     )?]))
 }
 
-pub(super) fn decode_validator_facts(
+pub(in crate::final_chain) fn decode_validator_facts(
     bytes: &[u8],
     extended_validator_active: bool,
 ) -> std::result::Result<ValidatorFacts, FinalChainNativeSessionError> {

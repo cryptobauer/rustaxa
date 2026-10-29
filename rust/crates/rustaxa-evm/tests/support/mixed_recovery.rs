@@ -394,6 +394,15 @@ fn hydrate_genesis(chain: &mut FinalChain, state_path: &Path, fixture: &Value) -
 /// Executes a genuine mixed period, optionally losing control at the named
 /// callback boundary. No expected root is passed into the execution result.
 pub(super) fn run_period(root: &Path, fixture: &Value, index: usize, fault: Fault) -> Result<()> {
+    run_period_observing(root, fixture, index, fault, None)
+}
+pub(super) fn run_period_observing(
+    root: &Path,
+    fixture: &Value,
+    index: usize,
+    fault: Fault,
+    ordinary: Option<OrdinaryObserver>,
+) -> Result<()> {
     let period = &fixture["periods"][index];
     let number = number(&period["number"]);
     let state_path = root.join("state_db");
@@ -409,6 +418,15 @@ pub(super) fn run_period(root: &Path, fixture: &Value, index: usize, fault: Faul
         hydrate_genesis(&mut chain, &state_path, fixture)?;
     }
     let prior = ConcreteStateLifecycle::inspect_existing(&state_path, identity)?;
+    if let Some(observer) = &ordinary {
+        observer.borrow_mut().begin(
+            &state_path,
+            prior.identity,
+            prior.committed,
+            number,
+            prior.generation,
+        )?;
+    }
     let concrete = ConcreteStateLifecycle::open(&state_path, identity, prior.committed)?;
     let adapter = FaultAdapter {
         inner: Adapter {
@@ -419,7 +437,19 @@ pub(super) fn run_period(root: &Path, fixture: &Value, index: usize, fault: Faul
             native: RefCell::new(None),
             native_context: RefCell::new(None),
             state_api_epoch: StateApiEpoch::new(),
+            ordinary_observer: ordinary.clone(),
             fixture: period,
+            account_node_publication: if fixture["oracle_lifecycle"] == "public_batched" {
+                AccountNodePublication::FinalPeriod {
+                    limits: rustaxa_storage::ConcreteStorageInventoryLimits {
+                        max_nodes: 1_000_000,
+                        max_leaves: 100_000,
+                        max_value_bytes: 32_000_000,
+                    },
+                }
+            } else {
+                AccountNodePublication::ObserverHistory
+            },
         },
         fault,
         executions: Cell::new(0),
@@ -428,6 +458,7 @@ pub(super) fn run_period(root: &Path, fixture: &Value, index: usize, fault: Faul
         original_projection_hash: Cell::new(None),
     };
     initialize_and_recover_final_chain_application_state_at_joint_startup(&chain, &adapter.inner)?;
+    super::mainnet_era::bind_legacy_scheduler_order(&chain, fixture, period)?;
     let execution_request = request(fixture, period)?;
     chain.ensure_period_data(number.into(), &period_data(&execution_request))?;
     let outcome = execute_final_chain_application_task(
@@ -451,6 +482,12 @@ pub(super) fn run_period(root: &Path, fixture: &Value, index: usize, fault: Faul
         ensure!(report.period.as_u64() == number);
         ensure!(chain.last_block_number_typed()?.as_u64() == number);
         verify_receipts(&application, period)?;
+        ensure!(
+            application
+                .final_chain()
+                .external_evm_pending_publication_raw()?
+                .is_none()
+        );
     } else {
         let error = outcome.expect_err("injected interruption must require recovery");
         ensure!(
@@ -483,6 +520,17 @@ pub(super) fn run_period(root: &Path, fixture: &Value, index: usize, fault: Faul
     drop(chain);
     drop(application);
     let observed = ConcreteStateLifecycle::inspect_existing(&state_path, identity)?;
+    if fault == Fault::None {
+        ensure!(observed.pending_marker_rlp.is_empty());
+        if let Some(observer) = &ordinary {
+            observer.borrow_mut().promote(
+                &state_path,
+                observed.identity,
+                observed.committed,
+                observed.generation,
+            )?;
+        }
+    }
     let committed = fault != Fault::BeforeCommit;
     ensure!(observed.generation == prior.generation + u64::from(committed));
     if committed {
@@ -529,6 +577,17 @@ pub(super) fn recover_period(
     index: usize,
     committed: bool,
 ) -> Result<()> {
+    recover_period_observing(root, fixture, index, committed, None, || Ok(()))
+}
+
+fn recover_period_observing(
+    root: &Path,
+    fixture: &Value,
+    index: usize,
+    committed: bool,
+    ordinary: Option<OrdinaryObserver>,
+    mut observe: impl FnMut() -> Result<()>,
+) -> Result<()> {
     let period = &fixture["periods"][index];
     let period_number = number(&period["number"]);
     let state_path = root.join("state_db");
@@ -564,6 +623,24 @@ pub(super) fn recover_period(
     if committed {
         verify_receipts(&application, period)?;
     }
+    if let Some(observer) = &ordinary {
+        if committed {
+            observer.borrow_mut().promote(
+                &state_path,
+                after.identity,
+                after.committed,
+                after.generation,
+            )?;
+        } else {
+            observer.borrow_mut().discard(
+                &state_path,
+                after.identity,
+                after.committed,
+                after.generation,
+            )?;
+        }
+    }
+    observe()?;
     let header = application.final_chain().block_header_raw(period_number)?;
     let counts = chain.execution_status()?;
     let repeated = recover_final_chain_application_state(&chain, &recovery)?;
@@ -587,6 +664,15 @@ pub(super) fn recover_period(
     if committed {
         verify_receipts(&application, period)?;
     }
+    if let Some(observer) = &ordinary {
+        observer.borrow().verify_committed(
+            &state_path,
+            repeated_observation.identity,
+            repeated_observation.committed,
+            repeated_observation.generation,
+        )?;
+    }
+    observe()?;
     Ok(())
 }
 
@@ -594,13 +680,16 @@ pub(super) fn recover_period(
 /// interrupting the first distribution at an existing commit callback.
 ///
 /// The caller owns bootstrap and the completed uninterrupted baseline. This
-/// runner accepts only the two existing commit faults, executes the real prefix
-/// through 25,706,899, and retains that committed reader across interruption,
+/// runner accepts only the two existing commit faults and the current-era or
+/// Phalaenopsis window. It executes the exact prefix before the first selected
+/// distribution and retains that committed reader across interruption,
 /// repeated recovery, retry (BeforeCommit only), and the remaining workload.
 /// RecoveryLeaf cannot execute transactions or rewards; run_period checks that
 /// the fault reached exactly one execution, rewards, and commit callback. The
 /// inner Adapter uses mainnet_era::compare_distribution_writes for the terminal
-/// native transcript. No expected root enters execution or publication.
+/// native transcript, including the exact pre-Aspen order. The membership check
+/// here permits that legacy order but no missing or duplicate source period.
+/// No expected root enters execution or publication.
 ///
 /// Both inputs must be distinct existing synthetic pairs. The fresh pair must
 /// still be at the declared retained seed coordinate, with no pending marker.
@@ -613,8 +702,35 @@ pub(super) fn verify_mainnet_recovery(
     fresh_bootstrapped_root: &Path,
     fault: Fault,
 ) -> Result<()> {
+    verify_mainnet_recovery_observing(fixture, baseline_root, fresh_bootstrapped_root, fault, None)
+}
+pub(super) fn verify_mainnet_recovery_observing(
+    fixture: &Value,
+    baseline_root: &Path,
+    fresh_bootstrapped_root: &Path,
+    fault: Fault,
+    ordinary: Option<OrdinaryObserver>,
+) -> Result<()> {
     ensure!(fixture["profile"] == "synthetic_mainnet_era");
-    ensure!(fixture["scenario"] == "mainnet_106");
+    ensure!((is_second_distribution_scenario(fixture)) == ordinary.is_some());
+    let (first_period, last_period, distribution_period) = match string(&fixture["scenario"]) {
+        "mainnet_106" => (25_706_890u64, 25_707_000u64, 25_706_900u64),
+        "mainnet_second_distribution_followthrough"
+        | "mainnet_second_distribution_reopen"
+        | "mainnet_second_distribution_followthrough_recovery" => {
+            (25_706_890, 25_707_005, 25_707_000)
+        }
+        "magnolia" => (5729995, 5730001, 5730000),
+        "aspen_one" => (8_117_995, 8_118_001, 8_118_000),
+        "aspen_two" => (8_571_995, 8_572_001, 8_572_000),
+        "soleirolia" => (17_379_995, 17_380_001, 17_380_000),
+        "phalaenopsis" => (6_942_995, 6_943_005, 6_943_000),
+        "claim_all_legacy_batch_correction" => (7_599_995, 7_600_005, 7_600_000),
+        "cornus" => (15_609_995, 15_610_005, 15_610_000),
+        "ficus" => (11_615_995, 11_616_005, 11_616_000),
+        "cornus_v2_maturity" => (15_773_564, 15_773_574, 15_773_569),
+        _ => bail!("unqualified recovery scenario"),
+    };
     ensure!(matches!(fault, Fault::BeforeCommit | Fault::AfterCommit));
     ensure!(
         std::fs::canonicalize(baseline_root)? != std::fs::canonicalize(fresh_bootstrapped_root)?,
@@ -624,10 +740,10 @@ pub(super) fn verify_mainnet_recovery(
         .as_array()
         .context("complete mainnet recovery periods")?;
     ensure!(
-        periods.len() == 111
-            && number(&periods[0]["number"]) == 25_706_890
-            && number(&periods[110]["number"]) == 25_707_000,
-        "mainnet recovery requires five warmup and all 106 workload periods"
+        periods.len() as u64 == last_period - first_period + 1
+            && number(&periods[0]["number"]) == first_period
+            && number(&periods.last().unwrap()["number"]) == last_period,
+        "recovery requires the complete explicitly qualified era window"
     );
     ensure!(
         periods.windows(2).all(|pair| {
@@ -637,24 +753,56 @@ pub(super) fn verify_mainnet_recovery(
     );
     let distribution_index = periods
         .iter()
-        .position(|period| number(&period["number"]) == 25_706_900)
+        .position(|period| number(&period["number"]) == distribution_period)
         .context("first mainnet distribution")?;
     ensure!(distribution_index > 0);
     let distributions = periods[distribution_index]["distributions"]
         .as_array()
         .context("actual first distribution invocations")?;
-    ensure!(
-        distributions.len() == 100
-            && distributions
+    if fixture["scenario"] == "cornus_v2_maturity" {
+        ensure!(
+            distributions.is_empty(),
+            "V2 maturity fault is an actual confirmation period, not a reward boundary"
+        );
+        ensure!(
+            !periods[distribution_index]["transactions"]
+                .as_array()
+                .context("actual V2 confirmation")?
+                .is_empty()
+        );
+    } else {
+        ensure!(
+            distributions.len() == 100
+                && distributions
+                    .iter()
+                    .map(|row| number(&row["period"]))
+                    .collect::<BTreeSet<_>>()
+                    == (distribution_period - 99..=distribution_period).collect(),
+            "recovery must interrupt every row of the qualified 100-row distribution"
+        );
+    }
+    if fixture["scenario"] == "mainnet_106" {
+        ensure!(
+            distributions
                 .iter()
                 .enumerate()
                 .all(|(index, row)| { number(&row["period"]) == 25_706_801 + index as u64 }),
-        "recovery must interrupt the complete first 100-row distribution"
-    );
+            "current-era distribution retains its exact chronological order"
+        );
+    }
+    if is_second_distribution_scenario(fixture) {
+        ensure!(
+            distributions
+                .iter()
+                .enumerate()
+                .all(|(i, row)| number(&row["period"]) == 25_706_901 + i as u64),
+            "second distribution exact chronology"
+        );
+    }
     let expected = final_facts(baseline_root, fixture)?;
     let application_path = fresh_bootstrapped_root.join("application");
     let state_path = fresh_bootstrapped_root.join("state_db");
-    {
+    let owner_identity = {
         let (application, chain) = open_chain(&application_path, fixture)?;
         let seed = ConcreteStateLifecycle::inspect_existing(
             &state_path,
@@ -671,14 +819,43 @@ pub(super) fn verify_mainnet_recovery(
                     .is_none(),
             "mainnet recovery requires a fresh, completely paired synthetic seed"
         );
+        seed.identity
+    };
+    if fixture["scenario"] == "mainnet_second_distribution_followthrough_recovery" {
+        let split = periods
+            .iter()
+            .position(|p| number(&p["number"]) == 25_706_906)
+            .context("companion reopen after 25706905")?;
+        ensure!(split < distribution_index);
+        native_integration::run_segment_observing(
+            fixture,
+            &periods[..split],
+            &application_path,
+            &state_path,
+            false,
+            Fault::None,
+            ordinary.clone(),
+        )?;
+        native_integration::run_segment_observing(
+            fixture,
+            &periods[split..distribution_index],
+            &application_path,
+            &state_path,
+            false,
+            Fault::None,
+            ordinary.clone(),
+        )?;
+    } else {
+        native_integration::run_segment_observing(
+            fixture,
+            &periods[..distribution_index],
+            &application_path,
+            &state_path,
+            false,
+            Fault::None,
+            ordinary.clone(),
+        )?;
     }
-    native_integration::run_segment(
-        fixture,
-        &periods[..distribution_index],
-        &application_path,
-        &state_path,
-        false,
-    )?;
     let prior_period = &periods[distribution_index - 1];
     let prior_identity = ConcreteStateIdentity {
         period: number(&prior_period["number"]).into(),
@@ -705,40 +882,175 @@ pub(super) fn verify_mainnet_recovery(
         known,
     };
     verify_final_reader(&retained, &prior_period["final"])?;
-    run_period(fresh_bootstrapped_root, fixture, distribution_index, fault)?;
-    verify_final_reader(&retained, &prior_period["final"])?;
-    // recover_period already repeats reconciliation with an execution-free
-    // leaf and verifies unchanged descriptors, receipts and execution counters.
-    recover_period(
+    // Open five distinct historical handles BEFORE the faulted B2 execution.
+    // Their actual immutable identities stay live through all reconciliation
+    // and signed continuation. The existing prior reader remains independent.
+    let mut followthrough_readers = Vec::new();
+    let legacy_readers = fixture["scenario"] == "claim_all_legacy_batch_correction";
+    let five_readers = is_second_distribution_scenario(fixture) || legacy_readers;
+    if five_readers {
+        let first_reader = if legacy_readers {
+            7_599_995
+        } else {
+            25_706_995
+        };
+        for height in first_reader..=first_reader + 4 {
+            let index = periods
+                .iter()
+                .position(|p| number(&p["number"]) == height)
+                .context("pre-second retained period")?;
+            let identity = ConcreteStateIdentity {
+                period: height.into(),
+                state_root: fixed(&periods[index]["final"]["root"]),
+            };
+            let mut known = BTreeSet::new();
+            for key in fixture["history_rows"][4]
+                .as_object()
+                .context("complete followthrough inventory")?
+                .keys()
+            {
+                let raw = hex::decode(key)?;
+                ensure!(raw.len() == 40, "followthrough history key width");
+                if u64::from_be_bytes(raw[32..].try_into()?) <= height {
+                    known.insert(raw[..32].try_into()?);
+                }
+            }
+            let reader = native_integration::api::CompleteReader {
+                inner: ConcreteStateReader::open_historical_read_only(
+                    &state_path,
+                    prior_identity,
+                    identity,
+                )?,
+                known,
+            };
+            verify_final_reader(&reader, &periods[index]["final"])?;
+            followthrough_readers.push((reader, index));
+        }
+        ensure!(
+            followthrough_readers.len() == 5,
+            "five independent pre-fault readers"
+        );
+    }
+    let verify_five = || -> Result<()> {
+        if five_readers {
+            ensure!(
+                followthrough_readers.len() == 5,
+                "five live historical readers required"
+            );
+        }
+        for (reader, index) in &followthrough_readers {
+            let expected = ConcreteStateIdentity {
+                period: number(&periods[*index]["number"]).into(),
+                state_root: fixed(&periods[*index]["final"]["root"]),
+            };
+            ensure!(
+                reader.identity() == expected,
+                "retained historical identity changed"
+            );
+            verify_final_reader(reader, &periods[*index]["final"])?;
+            if let Some(observer) = &ordinary {
+                let borrowed = observer.borrow();
+                for (slot, value) in borrowed.historical(&state_path, owner_identity, expected)? {
+                    ensure!(
+                        reader.storage(slot.address, ConcreteStorageKey(slot.key))? == *value,
+                        "historical ordinary value mismatch"
+                    );
+                }
+            }
+        }
+        Ok(())
+    };
+    verify_five()?;
+    run_period_observing(
         fresh_bootstrapped_root,
         fixture,
         distribution_index,
-        fault == Fault::AfterCommit,
+        fault,
+        ordinary.clone(),
     )?;
     verify_final_reader(&retained, &prior_period["final"])?;
+    verify_five()?;
+    // recover_period already repeats reconciliation with an execution-free
+    // leaf and verifies unchanged descriptors, receipts and execution counters.
+    if five_readers {
+        recover_period_observing(
+            fresh_bootstrapped_root,
+            fixture,
+            distribution_index,
+            fault == Fault::AfterCommit,
+            ordinary.clone(),
+            &verify_five,
+        )?;
+    } else {
+        recover_period(
+            fresh_bootstrapped_root,
+            fixture,
+            distribution_index,
+            fault == Fault::AfterCommit,
+        )?;
+    }
+    verify_final_reader(&retained, &prior_period["final"])?;
+    verify_five()?;
     if fault == Fault::BeforeCommit {
-        run_period(
+        run_period_observing(
             fresh_bootstrapped_root,
             fixture,
             distribution_index,
             Fault::None,
+            ordinary.clone(),
         )?;
+        verify_five()?;
     }
     // Reopen and reconcile the now-published distribution again, including
     // the internally repeated no-op reconciliation. No second execution occurs.
-    recover_period(fresh_bootstrapped_root, fixture, distribution_index, true)?;
-    native_integration::run_segment(
-        fixture,
-        &periods[distribution_index + 1..],
-        &application_path,
-        &state_path,
-        false,
-    )?;
+    if five_readers {
+        recover_period_observing(
+            fresh_bootstrapped_root,
+            fixture,
+            distribution_index,
+            true,
+            ordinary.clone(),
+            &verify_five,
+        )?;
+    } else {
+        recover_period(fresh_bootstrapped_root, fixture, distribution_index, true)?;
+    }
+    verify_five()?;
+    if five_readers {
+        for index in distribution_index + 1..periods.len() {
+            run_period_observing(
+                fresh_bootstrapped_root,
+                fixture,
+                index,
+                Fault::None,
+                ordinary.clone(),
+            )?;
+            verify_five()?;
+        }
+        verify_five()?;
+    } else {
+        native_integration::run_segment(
+            fixture,
+            &periods[distribution_index + 1..],
+            &application_path,
+            &state_path,
+            false,
+        )?;
+    }
     verify_final_reader(&retained, &prior_period["final"])?;
+    verify_five()?;
+    if ordinary.is_some() {
+        verify_physical_cf5(&state_path, &fixture["history_rows"][4])?;
+    }
     ensure!(
         final_facts(fresh_bootstrapped_root, fixture)? == expected,
         "{fault:?}: recovered mainnet workload differs from uninterrupted output"
     );
+    drop(followthrough_readers);
+    drop(retained);
+    if legacy_readers {
+        verify_physical_rows(&state_path, &fixture["history_rows"])?;
+    }
     Ok(())
 }
 
@@ -908,7 +1220,19 @@ fn mixed_invalid_reports_cannot_contaminate_retry_or_publication() -> Result<()>
                 native: RefCell::new(None),
                 native_context: RefCell::new(None),
                 state_api_epoch: StateApiEpoch::new(),
+                ordinary_observer: None,
                 fixture: period,
+                account_node_publication: if fixture["oracle_lifecycle"] == "public_batched" {
+                    AccountNodePublication::FinalPeriod {
+                        limits: rustaxa_storage::ConcreteStorageInventoryLimits {
+                            max_nodes: 1_000_000,
+                            max_leaves: 100_000,
+                            max_value_bytes: 32_000_000,
+                        },
+                    }
+                } else {
+                    AccountNodePublication::ObserverHistory
+                },
             },
             fault,
             executions: Cell::new(0),

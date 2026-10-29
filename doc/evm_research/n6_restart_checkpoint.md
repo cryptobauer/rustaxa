@@ -1,5 +1,10 @@
 # EVM restart entry point
 
+Checkout cleanup, October 28, 2026: the owner requested that all pending source
+remain active and be committed with known failures. Read the
+[cleanup record](cleanup_2026_10_28.md) before resuming historical EVM or fixed-VRF
+work. The records below describe the earlier run.
+
 Read [checkpoint](n4_next_run_checkpoint.md) and [plan](n4_next_10point_plan.md).
 GEN29 passed61 in actual run,61constructors complete,failed60. GEN30full60path accepted:
 144reads,constructor1,540,233/review1,583,203under2MiB. Current190profile authenticated

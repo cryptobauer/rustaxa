@@ -165,7 +165,35 @@ def scenarios():
                     'periods': list(range(HEAD + 1, LAST + 1)),
                     'pending_periods': pending_periods(policy, HEAD)})
     from mainnet_era_historical_actions import apply_historical_actions
-    return apply_historical_actions(windows, policy, frame_matrix)
+    result = apply_historical_actions(windows, policy, frame_matrix)
+    # Separate full replay; no existing scenario or reference artifact changes.
+    from copy import deepcopy
+    followthrough = deepcopy(next(row for row in result if row['name'] == 'mainnet_106'))
+    followthrough.update(name='mainnet_second_distribution_followthrough',
+                         periods=list(range(HEAD + 1, 25707006)),
+                         api_heads=list(range(25707000, 25707006)))
+    # Real signed transitions force fresh nonces, fees, balances and roots at
+    # the second distribution and every following period through +5.
+    followthrough['actions'] = [
+        dict(period=p, who=4, name='second_distribution_transfer_'+str(p),
+             method='raw', to='c48b812bb43401392c037381aca934f4069c0517',
+             input='', value='1', gas=21000, gas_price=1000000000)
+        for p in range(25707000, 25707006)]
+    result.append(followthrough)
+    # Independent replay matching the recovery owner reopen boundaries.
+    reopened = deepcopy(followthrough)
+    reopened.update(name='mainnet_second_distribution_reopen',
+                    reopen_after=[25706999, 25707000, 25707001, 25707002, 25707003, 25707004])
+    result.append(reopened)
+    recovery = deepcopy(followthrough)
+    recovery.update(name='mainnet_second_distribution_followthrough_recovery',
+                    reopen_after=[25706905, 25706999, 25707000, 25707001, 25707002, 25707003, 25707004])
+    result.append(recovery)
+    from mainnet_era_historical_actions import legacy_batch_correction_component
+    component = legacy_batch_correction_component(
+        next(row for row in result if row['name'] == 'claim_all_correction'))
+    result.append(component)
+    return result
 
 
 def go_configuration():

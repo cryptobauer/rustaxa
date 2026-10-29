@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -16,6 +17,9 @@ OLD_RUN = Path('/home/fry/artifacts/mainnet-era-20261026-01a179de')
 RUN = OLD_RUN
 RUN_CONFIG = None
 ACTIVE_RESOURCES = None
+CUTOVER_AUTHORITY = {'path':'/home/fry/artifacts/evm-rust-cutover-driver-20261027/driver-prompt.txt','sha256':'66dd0ac827e6e57352d4d0f67d2df3b4a9185e42c4a8bf2975f9e702b4e8da5f'}
+CUTOVER_TIMEOUTS = {'focused':600,'reference':900,'package':1800,'integration':3600}
+ACTIVE_ENVELOPE = None
 CORPUS = ROOT / 'experiments/evm_feasibility/fixtures/mainnet_era'
 # Original databases are not synthetic-gate source or input. No source selector
 # descends into them; selected Rust/C++/Go/scripts/fixtures stay fully enumerated.
@@ -28,19 +32,39 @@ def save(path, value):
     descriptor=os.open(path.parent,os.O_RDONLY);os.fsync(descriptor);os.close(descriptor)
 def configure_run(path):
     """Select only an explicitly pinned successor envelope; never inherit charges."""
-    global RUN, RUN_CONFIG, ACTIVE_RESOURCES
+    global RUN, RUN_CONFIG, ACTIVE_RESOURCES, ACTIVE_ENVELOPE
     path=Path(path)
     assert path.is_absolute() and not path.is_symlink()
     path=path.resolve(strict=True)
     config=json.loads(path.read_bytes())
     run=Path(config['run'])
-    assert config['schema']==1 and run.is_absolute() and run==run.resolve(strict=True)
+    assert type(config['schema']) is int and config['schema'] in (1,2)
+    assert run.is_absolute() and run==run.resolve(strict=True)
     assert not run.is_relative_to(OLD_RUN) and run.is_relative_to(Path('/home/fry/artifacts'))
     assert path.parent==run and not path.is_symlink()
     for key in ('authority','baseline'):
         pin=config[key]; target=Path(pin['path'])
         assert target.is_absolute() and sha(target.read_bytes())==pin['sha256']
-    assert config['retained_live_cap_bytes']==1073741824
+    envelope=None
+    cap=config['retained_live_cap_bytes']
+    assert type(cap) is int
+    if config['schema']==1:
+        assert cap==1073741824
+    else:
+        assert config['authority']==CUTOVER_AUTHORITY
+        assert cap==68719476736
+        for key,expected in (('aggregate_child_seconds',43200),('max_output_bytes',67108864)):
+            assert type(config[key]) is int and config[key]==expected
+        limits=config['command_timeout_seconds']
+        assert limits==CUTOVER_TIMEOUTS and all(type(value) is int for value in limits.values())
+        envelope={'aggregate_child_seconds':43200,'max_output_bytes':67108864,'command_timeout_seconds':dict(limits)}
+        if 'scheduler_input' in config:
+            pin=config['scheduler_input']; target=Path(pin['path'])
+            assert set(pin)=={'path','sha256'}
+            assert target.is_absolute() and target==target.resolve(strict=True) and target.is_file()
+            assert not target.is_symlink() and all(not parent.is_symlink() for parent in target.parents)
+            assert sha(target.read_bytes())==pin['sha256']
+            envelope['scheduler_input']=dict(pin)
     baseline=config['baseline_actual_bytes']
     assert type(baseline) is int and 0<=baseline<=tree_bytes(CORPUS)
     baseline_record=json.loads(Path(config['baseline']['path']).read_bytes())
@@ -54,7 +78,22 @@ def configure_run(path):
         assert item.stat().st_size==row['bytes'] and sha(item.read_bytes())==row['sha256']
         names.add(item)
     RUN=run; RUN_CONFIG={'path':str(path),'sha256':sha(path.read_bytes())}
-    ACTIVE_RESOURCES={'run':str(run),'corpus':str(CORPUS),'baseline_actual_bytes':baseline,'prior_charged_bytes':0,'retained_live_cap_bytes':1073741824}
+    ACTIVE_RESOURCES={'run':str(run),'corpus':str(CORPUS),'baseline_actual_bytes':baseline,'prior_charged_bytes':0,'retained_live_cap_bytes':cap}
+    ACTIVE_ENVELOPE=envelope
+
+def command_limits(timeout, command_kind=None):
+    """Validate the selected envelope before any command root is created."""
+    assert type(timeout) in (int,float) and math.isfinite(timeout) and timeout>0
+    if ACTIVE_ENVELOPE is None:
+        assert command_kind is None and timeout<=1800
+    else:
+        assert command_kind in ACTIVE_ENVELOPE['command_timeout_seconds']
+        assert timeout<=ACTIVE_ENVELOPE['command_timeout_seconds'][command_kind]
+
+def admit_peak(resource, current, reserve, max_output_bytes):
+    """Include the capture bound and closeout reserve in the existing peak test."""
+    assert type(max_output_bytes) is int and 1<=max_output_bytes<=67108864
+    assert current+reserve+max_output_bytes+16*1024*1024<=resource['retained_live_cap_bytes'], ('peak admission',current,reserve)
 
 def resources():
     if ACTIVE_RESOURCES is not None: return dict(ACTIVE_RESOURCES)
@@ -237,6 +276,7 @@ def main():
     parser.add_argument('--execute',type=Path)
     parser.add_argument('--name')
     parser.add_argument('--timeout',type=float,default=600)
+    parser.add_argument('--command-kind',choices=tuple(CUTOVER_TIMEOUTS))
     parser.add_argument('--max-output-bytes',type=output_limit,default=67108864)
     parser.add_argument('--retain',action='store_true')
     parser.add_argument('--input',type=Path,action='append',default=[])
@@ -249,6 +289,8 @@ def main():
     if args.execute:
         manifest=json.loads(args.execute.read_bytes())
         assert manifest.get('run_config')==RUN_CONFIG
+        if ACTIVE_ENVELOPE is not None:
+            command_limits(manifest['timeout_seconds'],manifest['command_kind'])
         assert manifest['source_manifest']['sha256']==sha(Path(manifest['source_manifest']['path']).read_bytes())
         before=json.loads(Path(manifest['source_manifest']['path']).read_bytes())
         inputs=[ROOT/r['path'] for r in before if (ROOT/r['path']).parent==CORPUS]
@@ -264,7 +306,8 @@ def main():
         return result.returncode if stable else 125
     assert args.name and all(c.isalnum() or c in '-_' for c in args.name)
     command=args.command[1:] if args.command[:1]==['--'] else args.command
-    assert command and 0<args.timeout<=1800
+    assert command
+    command_limits(args.timeout,args.command_kind)
     directory=RUN/'transition-commands'/args.name; directory.mkdir(parents=True,exist_ok=False)
     scratch=RUN/'transition-scratch'/args.name
     assert not scratch.exists()
@@ -278,7 +321,12 @@ def main():
     generated=[]
     if any('mainnet_era_reference.py' in arg or 'mainnet_era_estimate_reference.py' in arg for arg in command) and ('--record' in command or any('mainnet_era_estimate_reference.py' in arg for arg in command)):
         scenario=command[command.index('--scenario')+1]
-        assert scenario in ('mainnet_106','cacti')
+        if ACTIVE_ENVELOPE is None:
+            assert scenario in ('mainnet_106','cacti')
+        else:
+            sys.path.insert(0,str(ROOT/'experiments/evm_feasibility'))
+            from mainnet_era_profile import scenarios
+            assert scenario in {row['name'] for row in scenarios()}
         generated=[str(CORPUS/(scenario+'.manifest.json'))]
     source=snapshot(generated=generated); source_path=directory/'source.json'; save(source_path,source)
     env={'RUN_ARTIFACT_DIR':str(scratch),'TMPDIR':str(legacy),'RUSTAXA_ERA_TASK_RUN':str(RUN),'RUSTAXA_ERA_RETAIN':'qualification' if args.retain else 'dispose','RUST_TEST_THREADS':'1','CMAKE_BUILD_PARALLEL_LEVEL':'12'}
@@ -287,6 +335,8 @@ def main():
     if any('mainnet_era_' in arg and arg.endswith('.py') for arg in command):
         env['RUN_ARTIFACT_DIR']=str(RUN)
         env['RUN_SCHEDULER_MANIFEST']=str(RUN/'cpp-scheduler-05/manifest.json')
+        if ACTIVE_ENVELOPE is not None and 'scheduler_input' in ACTIVE_ENVELOPE:
+            env['RUN_SCHEDULER_MANIFEST']=ACTIVE_ENVELOPE['scheduler_input']['path']
     for name in ('CARGO_TARGET_DIR','RUSTFLAGS','CARGO_BUILD_JOBS','RUSTC_WRAPPER','PATH','HOME','RUSTUP_TOOLCHAIN','RUSTUP_HOME','CARGO_HOME','USER','LOGNAME','LANG','LC_ALL','LD_LIBRARY_PATH','PKG_CONFIG_PATH','CMAKE_PREFIX_PATH','CC','CXX','AR','GOPATH','GOMODCACHE','GOFLAGS','GOCACHE','CGO_ENABLED','SCCACHE_DIR'):
         if name in os.environ: env[name]=os.environ[name]
     assert not any(os.environ.get(name) for name in ('MAINNET_ERA_API_PAIR','CACTI_ERA_API_LOCAL_PAIR','CACTI_ERA_API_PUBLIC_PAIR'))
@@ -300,8 +350,13 @@ def main():
     extras=set(args.input)
     if RUN_CONFIG is not None:
         config=json.loads(Path(RUN_CONFIG['path']).read_bytes()); extras.update(Path(config[key]['path']) for key in ('authority','baseline')); extras.add(Path(RUN_CONFIG['path']))
+        if ACTIVE_ENVELOPE is not None and 'scheduler_input' in ACTIVE_ENVELOPE:
+            extras.add(Path(ACTIVE_ENVELOPE['scheduler_input']['path']))
     for path in args.input:
         value=json.loads(path.read_bytes())
+        if not isinstance(value,dict):
+            assert ACTIVE_ENVELOPE is not None and isinstance(value,list)
+            continue
         # Explicit effective CMake overlay inputs are outside the checkout.
         # Pin every generated byte used by the compiler, not only its recipe.
         for effective in value.get('effective_files', []): extras.add(Path(effective))
@@ -317,10 +372,14 @@ def main():
     current=resource['prior_charged_bytes']+max(0,tree_bytes(RUN)+tree_bytes(CORPUS)-baseline)+2*1024*1024
     oracle=any('mainnet_era_' in arg and arg.endswith('.py') for arg in command)
     reserve=(128 if oracle else 96 if args.retain else 64)*1024*1024
-    assert current+reserve+args.max_output_bytes+16*1024*1024<=resource['retained_live_cap_bytes'], ('peak admission',current,reserve)
+    admit_peak(resource,current,reserve,args.max_output_bytes)
     stat=scratch.stat()
     manifest={'schema':1,'argv':command,'environment':env,'source_manifest':source_pin,'extra_inputs':extra_pins,'toolchain_build':build_settings,'peak_admission':{'charged_live_bytes':current,'case_peak_reserve':reserve,'failure_reserve':args.max_output_bytes,'output_reserve_bytes':args.max_output_bytes,'closeout_reserve':16*1024*1024},'declared_generated_inputs':generated,'scratch_parent':str(scratch),'scratch_parent_identity':[stat.st_dev,stat.st_ino],'scratch_ledger':str(directory/'scratch-events.jsonl'),'unit_scratch_ledger':str(directory/'unit-scratch.jsonl'),'resources':resource}
     manifest['max_output_bytes']=args.max_output_bytes
+    if ACTIVE_ENVELOPE is not None:
+        manifest['command_kind']=args.command_kind
+        manifest['timeout_seconds']=args.timeout
+        manifest['envelope']=ACTIVE_ENVELOPE
     if RUN_CONFIG is not None: manifest['run_config']=RUN_CONFIG
     if args.cargo_test_runner: manifest['cargo_test_runner']=True
     manifest['identity']=sha(json.dumps(manifest,sort_keys=True).encode())

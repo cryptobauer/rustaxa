@@ -1,0 +1,776 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "claim_all_legacy_batch_correction",
+    "head": 7599998,
+    "first_retained": 7599994,
+    "periods": [
+      7599999,
+      7600000,
+      7600001,
+      7600002,
+      7600003,
+      7600004,
+      7600005
+    ],
+    "pending_periods": [
+      7599901,
+      7599902,
+      7599903,
+      7599904,
+      7599905,
+      7599906,
+      7599907,
+      7599908,
+      7599909,
+      7599910,
+      7599911,
+      7599912,
+      7599913,
+      7599914,
+      7599915,
+      7599916,
+      7599917,
+      7599918,
+      7599919,
+      7599920,
+      7599921,
+      7599922,
+      7599923,
+      7599924,
+      7599925,
+      7599926,
+      7599927,
+      7599928,
+      7599929,
+      7599930,
+      7599931,
+      7599932,
+      7599933,
+      7599934,
+      7599935,
+      7599936,
+      7599937,
+      7599938,
+      7599939,
+      7599940,
+      7599941,
+      7599942,
+      7599943,
+      7599944,
+      7599945,
+      7599946,
+      7599947,
+      7599948,
+      7599949,
+      7599950,
+      7599951,
+      7599952,
+      7599953,
+      7599954,
+      7599955,
+      7599956,
+      7599957,
+      7599958,
+      7599959,
+      7599960,
+      7599961,
+      7599962,
+      7599963,
+      7599964,
+      7599965,
+      7599966,
+      7599967,
+      7599968,
+      7599969,
+      7599970,
+      7599971,
+      7599972,
+      7599973,
+      7599974,
+      7599975,
+      7599976,
+      7599977,
+      7599978,
+      7599979,
+      7599980,
+      7599981,
+      7599982,
+      7599983,
+      7599984,
+      7599985,
+      7599986,
+      7599987,
+      7599988,
+      7599989,
+      7599990,
+      7599991,
+      7599992,
+      7599993,
+      7599994,
+      7599995,
+      7599996,
+      7599997,
+      7599998
+    ],
+    "donor": {
+      "name": "claim_all_membership_donor",
+      "head": 7599793,
+      "first_retained": 7599789,
+      "periods": [
+        7599794,
+        7599795,
+        7599796,
+        7599797,
+        7599798,
+        7599799,
+        7599800,
+        7599801
+      ],
+      "pending_periods": [
+        7599701,
+        7599702,
+        7599703,
+        7599704,
+        7599705,
+        7599706,
+        7599707,
+        7599708,
+        7599709,
+        7599710,
+        7599711,
+        7599712,
+        7599713,
+        7599714,
+        7599715,
+        7599716,
+        7599717,
+        7599718,
+        7599719,
+        7599720,
+        7599721,
+        7599722,
+        7599723,
+        7599724,
+        7599725,
+        7599726,
+        7599727,
+        7599728,
+        7599729,
+        7599730,
+        7599731,
+        7599732,
+        7599733,
+        7599734,
+        7599735,
+        7599736,
+        7599737,
+        7599738,
+        7599739,
+        7599740,
+        7599741,
+        7599742,
+        7599743,
+        7599744,
+        7599745,
+        7599746,
+        7599747,
+        7599748,
+        7599749,
+        7599750,
+        7599751,
+        7599752,
+        7599753,
+        7599754,
+        7599755,
+        7599756,
+        7599757,
+        7599758,
+        7599759,
+        7599760,
+        7599761,
+        7599762,
+        7599763,
+        7599764,
+        7599765,
+        7599766,
+        7599767,
+        7599768,
+        7599769,
+        7599770,
+        7599771,
+        7599772,
+        7599773,
+        7599774,
+        7599775,
+        7599776,
+        7599777,
+        7599778,
+        7599779,
+        7599780,
+        7599781,
+        7599782,
+        7599783,
+        7599784,
+        7599785,
+        7599786,
+        7599787,
+        7599788,
+        7599789,
+        7599790,
+        7599791,
+        7599792,
+        7599793
+      ],
+      "seed_actions_only": true,
+      "no_warmup_delegation": true,
+      "actions": [
+        {
+          "period": 7599794,
+          "who": 4,
+          "name": "ordered_delegate_0",
+          "method": "delegate",
+          "validator": 0,
+          "value": "1000000000000000000000"
+        },
+        {
+          "period": 7599794,
+          "who": 4,
+          "name": "ordered_delegate_1",
+          "method": "delegate",
+          "validator": 1,
+          "value": "1000000000000000000000"
+        },
+        {
+          "period": 7599794,
+          "who": 4,
+          "name": "ordered_delegate_2",
+          "method": "delegate",
+          "validator": 2,
+          "value": "1000000000000000000000"
+        },
+        {
+          "period": 7599801,
+          "who": 4,
+          "name": "remove_tail_membership",
+          "method": "undelegate",
+          "validator": 2,
+          "amount": "1000000000000000000000"
+        }
+      ]
+    },
+    "actions": [
+      {
+        "period": 7599999,
+        "who": 0,
+        "name": "create_nested_claim_parent_revert",
+        "method": "create",
+        "input": "366000600037600060003660003460fe620493e0f15060006000fd"
+      },
+      {
+        "period": 7599999,
+        "who": 4,
+        "name": "old_batch_zero",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "period": 7599999,
+        "who": 4,
+        "name": "old_batch_one_empty_tail",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000001"
+      },
+      {
+        "period": 7599999,
+        "who": 4,
+        "name": "old_batch_truncated",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e00"
+      },
+      {
+        "period": 7599999,
+        "who": 4,
+        "name": "old_batch_zero_with_value",
+        "method": "raw",
+        "value": "1",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "period": 7599999,
+        "who": 4,
+        "name": "nested_old_claim_parent_revert",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 0,
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "period": 7600000,
+        "who": 4,
+        "name": "old_batch_zero",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "period": 7600000,
+        "who": 4,
+        "name": "old_batch_one_empty_tail",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000001"
+      },
+      {
+        "period": 7600000,
+        "who": 4,
+        "name": "old_batch_truncated",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e00"
+      },
+      {
+        "period": 7600000,
+        "who": 4,
+        "name": "old_batch_zero_with_value",
+        "method": "raw",
+        "value": "1",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "period": 7600000,
+        "who": 4,
+        "name": "nested_old_claim_parent_revert",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 0,
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "period": 7600001,
+        "who": 4,
+        "name": "old_batch_zero",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "period": 7600001,
+        "who": 4,
+        "name": "old_batch_one_empty_tail",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000001"
+      },
+      {
+        "period": 7600001,
+        "who": 4,
+        "name": "old_batch_truncated",
+        "method": "raw",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e00"
+      },
+      {
+        "period": 7600001,
+        "who": 4,
+        "name": "old_batch_zero_with_value",
+        "method": "raw",
+        "value": "1",
+        "to": "00000000000000000000000000000000000000fe",
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "period": 7600001,
+        "who": 4,
+        "name": "nested_old_claim_parent_revert",
+        "method": "call",
+        "created_by_key": 0,
+        "created_nonce": 0,
+        "input": "09b72e000000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "no_warmup_delegation": true,
+    "required_activation_periods": [
+      7599999,
+      7600000,
+      7600001
+    ],
+    "api_heads": [
+      7599999,
+      7600000,
+      7600001,
+      7600004,
+      7600005
+    ],
+    "api_ordinary_nonce": 0
+  },
+  "scheduler_manifest_sha256": "bdee48c7c3eeae6c91f763e3633f6b17a68fe36965860c567f716ca2991101b2",
+  "support": {
+    "mainnet_era_reference.py": "25593818ab0d157886674dd6f55e82bc3146dc8cf2b6bcda044c4e2ccbdc3533",
+    "mainnet_era_profile.py": "fe93190a382cbd54ea061425b701b08294dddb4f0ff82a89bb073478f9b56b64",
+    "mainnet_era_historical_actions.py": "1c41c2bc7ec96d417d54a739b45477f32d975f6c0cde140288561370db6a3f22",
+    "mainnet_era_reference.go": "c348edbb5043b340987eede730460d0a2713aa81a6eb8e08ca08fd74c7de1aa2",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference.py": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149",
+    "native_integration_reference.go": "e3189439d62dc65d245b89e5eabd1ced2b774409400c3e4540a1f4756a59a43f",
+    "native_integration_reference.py": "f280aab0db3d4ca7756e6f7501380a5a6fe4c8d0d747fa4031375c3cc822f0dd",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637"
+  },
+  "streams": {
+    "public": {
+      "file": "b8153e4555aa5de4f9fb886c01177c3b93ddd6c1385c2d5af993507cbe24e715.json.gz",
+      "sha256": "b8153e4555aa5de4f9fb886c01177c3b93ddd6c1385c2d5af993507cbe24e715",
+      "bytes": 6156941,
+      "gzip_sha256": "5002189a958c5c1de77ee647d092e5718d17d5b00d43874256d489822c8a5653",
+      "gzip_bytes": 350896,
+      "capture": null
+    },
+    "local": {
+      "file": "9b1e32ba0bffb5cb922a3b6ba7647eac37e7c5e76394efba8ba60fdbefc98c4b.json.gz",
+      "sha256": "9b1e32ba0bffb5cb922a3b6ba7647eac37e7c5e76394efba8ba60fdbefc98c4b",
+      "bytes": 6473187,
+      "gzip_sha256": "fa1c097dad6fa45e147d86a6cca00398e6b061cf9a5afe18b6fbf4a73ff5aba4",
+      "gzip_bytes": 380519,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 1532115,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-claim_all_legacy_batch_correction-7nl4nasm",
+            "file": "a8f18656759e00cdd5fd616545be3ed50177e895b71ac5c9ef4bf6ea2e98e587.json.gz",
+            "gzip_bytes": 164897,
+            "gzip_sha256": "cb34556d65a0c7668e570dd8c27379e1fc944c1021e247222ef1490887f166ce",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "a8f18656759e00cdd5fd616545be3ed50177e895b71ac5c9ef4bf6ea2e98e587"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 7599995,
+            "end": 7600006
+          },
+          "stream": {
+            "bytes": 827393,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-claim_all_legacy_batch_correction-j6jumoyv",
+            "file": "f6aad36b0304fb996292e0b413b14f7595fae933ca37345b8f862e1fba7e8386.json.gz",
+            "gzip_bytes": 104527,
+            "gzip_sha256": "e5014ab153932337325193d70a14cf50012e58b7eb0e178d2ad4b52fa979173b",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "f6aad36b0304fb996292e0b413b14f7595fae933ca37345b8f862e1fba7e8386"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 756483,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-claim_all_legacy_batch_correction-oc1sspzm",
+            "file": "20978ebaa94d6ed785ddda14761d5da91538d0e391eacb40b0bbcd0505599e76.json.gz",
+            "gzip_bytes": 21943,
+            "gzip_sha256": "358b2704eda1b16e2e4006686b982c4151559789ba2bbe3c8aead8636cc5c72a",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "20978ebaa94d6ed785ddda14761d5da91538d0e391eacb40b0bbcd0505599e76"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 774332,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-claim_all_legacy_batch_correction-szncq02w",
+            "file": "bd66ce58333dfaafd497e898adbaf84d3c29b447d6b847260f91257f55d1f497.json.gz",
+            "gzip_bytes": 26464,
+            "gzip_sha256": "96abc66482b236b786df948a45f5acdfc2bde9a72f6a031a1b3b791342e1a780",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "bd66ce58333dfaafd497e898adbaf84d3c29b447d6b847260f91257f55d1f497"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 774333,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-claim_all_legacy_batch_correction-p23xfsdi",
+            "file": "b65211ffd24ed1570a750bc83c851ddcf029873da0680020faef288c827bdef5.json.gz",
+            "gzip_bytes": 26473,
+            "gzip_sha256": "f260edd451275a43ef7f287b40572bc9c29c92b5339c3523764df0dfa623532c",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "b65211ffd24ed1570a750bc83c851ddcf029873da0680020faef288c827bdef5"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "bytes": 774333,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-claim_all_legacy_batch_correction-u1a387xh",
+            "file": "2328791b2c7cd7c98f2d7c5d920f790f0c3e42ead6475840282891d564b7edda.json.gz",
+            "gzip_bytes": 26493,
+            "gzip_sha256": "b05c2d90b003fdd529059d576a0daf3ffe12db2da3890326227fb9ef2d30644e",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "2328791b2c7cd7c98f2d7c5d920f790f0c3e42ead6475840282891d564b7edda"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "bytes": 774333,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-claim_all_legacy_batch_correction-qijvvg0f",
+            "file": "458f009c20f5908ec57291b023c9d87da697bfd82dda26d04796f4083b300238.json.gz",
+            "gzip_bytes": 26460,
+            "gzip_sha256": "45261019a877d1a9ad904ad610af20d924a5d94a53b3f7084cc00c5dd7bfcb2b",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "458f009c20f5908ec57291b023c9d87da697bfd82dda26d04796f4083b300238"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 1649775,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-claim_all_legacy_batch_correction-71hlakd2",
+            "file": "f6e6933316891671fbb263cb499e36a644488e2f675c2ff84625b7c57c46d66a.json.gz",
+            "gzip_bytes": 178518,
+            "gzip_sha256": "73eb4c1a9fbe277e47f52f01e759413f4494fbb1bd554e09ea225c882174c3dd",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "f6e6933316891671fbb263cb499e36a644488e2f675c2ff84625b7c57c46d66a"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 7599995,
+            "end": 7600006
+          },
+          "stream": {
+            "bytes": 927697,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-claim_all_legacy_batch_correction-6ilknhqg",
+            "file": "e1f97beec9c657090e738bb111a362564f2d038a5afdf7ae65cc6bfbee57f1f5.json.gz",
+            "gzip_bytes": 114531,
+            "gzip_sha256": "d6d6afa87ac84dfd59e1bbd79f4f67a7c0a0a7910a3c9af957ee19a5cf44a203",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "e1f97beec9c657090e738bb111a362564f2d038a5afdf7ae65cc6bfbee57f1f5"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 776138,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-claim_all_legacy_batch_correction-2wwq0peh",
+            "file": "d74e7319ad377bddab14ee328ef578fd1e2aedd10a69b028d3ed50481b015e00.json.gz",
+            "gzip_bytes": 23334,
+            "gzip_sha256": "371a93b900b2336d8e46af5459057337cafb5f6bf1954653e67e65e4cbfcc8e6",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "d74e7319ad377bddab14ee328ef578fd1e2aedd10a69b028d3ed50481b015e00"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 793987,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-claim_all_legacy_batch_correction-dwgpaxfv",
+            "file": "6e27c36be84828fe0c8be3e8f0ab8f4ecc5ea7e54ff5a9afed4b3ef32eb9b310.json.gz",
+            "gzip_bytes": 27400,
+            "gzip_sha256": "9f0ad8cef85243084dffee6a70577d5df215da41488c161a9db7961095dad46c",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "6e27c36be84828fe0c8be3e8f0ab8f4ecc5ea7e54ff5a9afed4b3ef32eb9b310"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 793988,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-claim_all_legacy_batch_correction-ee3azrey",
+            "file": "5e75130b6adaa875a6133c4ce71fad54d50aa8e1ffb6e2f1c33bf61604ea0dd7.json.gz",
+            "gzip_bytes": 27423,
+            "gzip_sha256": "9c426d3547fbebaa90a7133a8af57383e83b4d27b0d622fe90961168cf923c0d",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "5e75130b6adaa875a6133c4ce71fad54d50aa8e1ffb6e2f1c33bf61604ea0dd7"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "bytes": 793988,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-claim_all_legacy_batch_correction-ixqh9x2j",
+            "file": "ebf5eaf10e82c8a4ddfe7da74120040ae3314def2a02f120c730770bdf91438c.json.gz",
+            "gzip_bytes": 27426,
+            "gzip_sha256": "7a445c328234c33469549b238e78d5732ac7c08f8ffa01e06be6c13156e5dc4e",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "ebf5eaf10e82c8a4ddfe7da74120040ae3314def2a02f120c730770bdf91438c"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "bytes": 793988,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-claim_all_legacy_batch_correction-39idny2w",
+            "file": "882a200fcd3bae3edd4fa077e466e224f8b98d1c03ca5411deefca9475554027.json.gz",
+            "gzip_bytes": 27382,
+            "gzip_sha256": "83e449edfa264f5f4b5f06ffbd4b4a7adf22bdcf40d8013ad69f471f682789d5",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "882a200fcd3bae3edd4fa077e466e224f8b98d1c03ca5411deefca9475554027"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "b51faffca52afaa25c863a5459e5b817aa40d808966624c4d3179ecd8ef4aa8f",
+    "streams": {
+      "public": "060afc5f1aba62909bf788c7f257c572307f6502cfffe4d0ea9979ff510ce408",
+      "local": "a667fd212116a157ca023241d88f8f76ee505d1196c6a9823ba843b89ba46159"
+    },
+    "forks": {}
+  }
+}

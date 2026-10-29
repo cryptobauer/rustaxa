@@ -393,6 +393,32 @@ pub(super) fn construct_concrete(
             .map(|(code_hash, code)| ConcreteCodeInsertion { code_hash, code })
             .collect(),
     };
+    if matches!(
+        fixture["scenario"].as_str(),
+        Some(
+            "mainnet_second_distribution_followthrough"
+                | "mainnet_second_distribution_reopen"
+                | "mainnet_second_distribution_followthrough_recovery"
+        )
+    ) {
+        ensure!(
+            batch.storage.iter().all(|row| {
+                let mut dpos = [0_u8; 20];
+                dpos[19] = 0xfe;
+                let mut slashing = [0_u8; 20];
+                slashing[19] = 0xee;
+                row.address == dpos || row.address == slashing
+            }),
+            "fresh bootstrap submitted ordinary storage"
+        );
+        ensure!(
+            catalog.len() == batch.storage.len(),
+            "fresh bootstrap catalog differs from submitted writes"
+        );
+        ensure!(batch.accounts.iter().all(|mutation| matches!(mutation,
+            ConcreteAccountMutation::Upsert { record, .. } if record.account.storage_root.is_none())),
+            "fresh bootstrap account carried storage root");
+    }
     let concrete = if let Some(period) = period {
         ConcreteStateLifecycle::create_synthetic_exclusive(
             path,

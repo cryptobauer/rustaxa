@@ -1,0 +1,453 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "aspen_one",
+    "head": 8117998,
+    "first_retained": 8117994,
+    "periods": [
+      8117999,
+      8118000,
+      8118001
+    ],
+    "pending_periods": [
+      8117901,
+      8117902,
+      8117903,
+      8117904,
+      8117905,
+      8117906,
+      8117907,
+      8117908,
+      8117909,
+      8117910,
+      8117911,
+      8117912,
+      8117913,
+      8117914,
+      8117915,
+      8117916,
+      8117917,
+      8117918,
+      8117919,
+      8117920,
+      8117921,
+      8117922,
+      8117923,
+      8117924,
+      8117925,
+      8117926,
+      8117927,
+      8117928,
+      8117929,
+      8117930,
+      8117931,
+      8117932,
+      8117933,
+      8117934,
+      8117935,
+      8117936,
+      8117937,
+      8117938,
+      8117939,
+      8117940,
+      8117941,
+      8117942,
+      8117943,
+      8117944,
+      8117945,
+      8117946,
+      8117947,
+      8117948,
+      8117949,
+      8117950,
+      8117951,
+      8117952,
+      8117953,
+      8117954,
+      8117955,
+      8117956,
+      8117957,
+      8117958,
+      8117959,
+      8117960,
+      8117961,
+      8117962,
+      8117963,
+      8117964,
+      8117965,
+      8117966,
+      8117967,
+      8117968,
+      8117969,
+      8117970,
+      8117971,
+      8117972,
+      8117973,
+      8117974,
+      8117975,
+      8117976,
+      8117977,
+      8117978,
+      8117979,
+      8117980,
+      8117981,
+      8117982,
+      8117983,
+      8117984,
+      8117985,
+      8117986,
+      8117987,
+      8117988,
+      8117989,
+      8117990,
+      8117991,
+      8117992,
+      8117993,
+      8117994,
+      8117995,
+      8117996,
+      8117997,
+      8117998
+    ],
+    "actions": [
+      {
+        "period": 8117999,
+        "who": 4,
+        "name": "aspen_one_fee_before",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 8118000,
+        "who": 4,
+        "name": "aspen_one_fee_activation",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      },
+      {
+        "period": 8118001,
+        "who": 4,
+        "name": "aspen_one_fee_after",
+        "method": "raw",
+        "to": "c48b812bb43401392c037381aca934f4069c0517",
+        "input": "",
+        "value": "1",
+        "gas": 21000,
+        "gas_price": 1000000000
+      }
+    ]
+  },
+  "scheduler_manifest_sha256": "cbb3adfad0b18277d7806b44901c7da8cba571c9696ef2b4695a352c31d36b37",
+  "support": {
+    "mainnet_era_reference.py": "25593818ab0d157886674dd6f55e82bc3146dc8cf2b6bcda044c4e2ccbdc3533",
+    "mainnet_era_profile.py": "44aaf3bd52beed3c0b60c8f42bd8fa490a6f7f3bf62c26c874c51266949194d7",
+    "mainnet_era_historical_actions.py": "fb1e9196bfd56689c4017ff3cb4167c5b47ab1528a772408491ad630f3bfb123",
+    "mainnet_era_reference.go": "d41b7af624677db55897fc44d1a574b4fd475d5b958bb4d4fb53023a73d0fb7a",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference.py": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149",
+    "native_integration_reference.go": "e3189439d62dc65d245b89e5eabd1ced2b774409400c3e4540a1f4756a59a43f",
+    "native_integration_reference.py": "f280aab0db3d4ca7756e6f7501380a5a6fe4c8d0d747fa4031375c3cc822f0dd",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637"
+  },
+  "streams": {
+    "public": {
+      "file": "e06a325c93d4c6ffd625b3ab18af72fd1f5728a8c269c959d6d27830f60721d6.json.gz",
+      "sha256": "e06a325c93d4c6ffd625b3ab18af72fd1f5728a8c269c959d6d27830f60721d6",
+      "bytes": 2829105,
+      "gzip_sha256": "ae9ef7d48c4af2411de20ee3065310a4247c8e6c34af8672fbf0b9744f6f82c4",
+      "gzip_bytes": 114414,
+      "capture": null
+    },
+    "local": {
+      "file": "d8861912bd0fe7fc93261b77c850c4feadcb6e780131760806137728dfe76e18.json.gz",
+      "sha256": "d8861912bd0fe7fc93261b77c850c4feadcb6e780131760806137728dfe76e18",
+      "bytes": 2914974,
+      "gzip_sha256": "8f4a5a5ed9368f3ea9bf692e05664e3bb6c9d07471173213b261a072cd1b4ac1",
+      "gzip_bytes": 120837,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 341277,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_one-6hu5moe4",
+            "file": "6778567b814b3e08a9b2658dd923f84582c40980917bdeb41f05c1637487d64f.json.gz",
+            "gzip_bytes": 41249,
+            "gzip_sha256": "fdfaf1dd616c5ecf84478c89d4dc7122b7adf17da8354de93a866b27029fed4e",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "6778567b814b3e08a9b2658dd923f84582c40980917bdeb41f05c1637487d64f"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 8117995,
+            "end": 8118002
+          },
+          "stream": {
+            "bytes": 616844,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_one-q7ybj0pe",
+            "file": "700be92857a9a3a09aa2fb9cbc559aa39f16fa8eee5283c2404fdf7a08712915.json.gz",
+            "gzip_bytes": 53537,
+            "gzip_sha256": "3c9396373f99da7ee7cf2bdcc6a3807662efd51110afe07a99ef2453a8bc2138",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "700be92857a9a3a09aa2fb9cbc559aa39f16fa8eee5283c2404fdf7a08712915"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 629213,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_one-c46e7hcf",
+            "file": "176d0cf4303dde36b529d9efbed6f3e88acf8ea4e7d750518e00ee0a30358782.json.gz",
+            "gzip_bytes": 14416,
+            "gzip_sha256": "180b9145c725974e1de6813ec6a97382d80ba6bbcc8c105c6e3a928b3b32aabc",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "176d0cf4303dde36b529d9efbed6f3e88acf8ea4e7d750518e00ee0a30358782"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 633624,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_one-40hwogh2",
+            "file": "5b1893cae468953a54edc8858d7ddd5df72ecf5dcff9793dbc9a860f5bafa450.json.gz",
+            "gzip_bytes": 14546,
+            "gzip_sha256": "14d01cfbdb16daa2579f5d223ebb8afb7d9c95a1fcf9181aea2992ccc6e23750",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "5b1893cae468953a54edc8858d7ddd5df72ecf5dcff9793dbc9a860f5bafa450"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 633625,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-aspen_one-9ee2q_bv",
+            "file": "478bfa07db72460bba9f94f81c576f95a20cdc5d4586cee003e2266b2607f523.json.gz",
+            "gzip_bytes": 14544,
+            "gzip_sha256": "b20261636aa9036bdc5df33620bc496770cd8508d248a7ba6d314dafc2c6116b",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "478bfa07db72460bba9f94f81c576f95a20cdc5d4586cee003e2266b2607f523"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 350783,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_one-e4cz8goj",
+            "file": "15f92a71786065be4915da718131d511e3f761a2fc48efbae2a4c21ca9fb8c4e.json.gz",
+            "gzip_bytes": 42915,
+            "gzip_sha256": "2d8dfe73878770c82fee4dcae1f6f44501429db81e7a60c8b67d8b78e36b868d",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "15f92a71786065be4915da718131d511e3f761a2fc48efbae2a4c21ca9fb8c4e"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 8117995,
+            "end": 8118002
+          },
+          "stream": {
+            "bytes": 653893,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_one-nn9eyue0",
+            "file": "3c36838a98585f3a98c30597786e36bd576d30feda84410a38c4f61088321f6a.json.gz",
+            "gzip_bytes": 57548,
+            "gzip_sha256": "5ad275690fd589ad809870d2033aed5b2b1e6f8f8b554e38d188f18a579ce471",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "3c36838a98585f3a98c30597786e36bd576d30feda84410a38c4f61088321f6a"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 642316,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_one-18rp47op",
+            "file": "85425eba460f140c67f9e0fc15638b993d953620bd52ee503fb1f07eb340dfe9.json.gz",
+            "gzip_bytes": 14694,
+            "gzip_sha256": "eecd60ffe2517b06b8ad8a5abed43119152693585ebf0adcab6155982504628d",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "85425eba460f140c67f9e0fc15638b993d953620bd52ee503fb1f07eb340dfe9"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 646727,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_one-lb4jj8x9",
+            "file": "add2de395b442dcaa2eeb0c6360ef86ad7d691654dd8accd052cb72d45ec41ac.json.gz",
+            "gzip_bytes": 14759,
+            "gzip_sha256": "cfc1016097cf564fb0e80310d2c801f0fcfcc3c3a2ce8eacf02cf07941be6533",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "add2de395b442dcaa2eeb0c6360ef86ad7d691654dd8accd052cb72d45ec41ac"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 646728,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-aspen_one-oxf9e4f6",
+            "file": "e24cbfe5c45b3fd2ac75c8c267c502b506687d84daadfe3cc83a233e0304b063.json.gz",
+            "gzip_bytes": 14757,
+            "gzip_sha256": "7a93bba7db6e0ebc4b97cd3b8530f17509c14eabad37f43b6bb6bf80486f0a0b",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "e24cbfe5c45b3fd2ac75c8c267c502b506687d84daadfe3cc83a233e0304b063"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "b51faffca52afaa25c863a5459e5b817aa40d808966624c4d3179ecd8ef4aa8f",
+    "streams": {
+      "public": "29c05644a382970a214ef2873cc10418fa4cce51b63f116b7c1b85c67912904e",
+      "local": "fb96009ae47972d3f39372151089b387afe2ab18784b0179e5437ec946e55970"
+    },
+    "forks": {}
+  },
+  "cpp_estimates": {
+    "file": "4a2a1580ba97afcabc5329f860c91080faefd711a5a88b9a639d771cfb3fafc5.cpp-estimates.json",
+    "sha256": "4a2a1580ba97afcabc5329f860c91080faefd711a5a88b9a639d771cfb3fafc5",
+    "bytes": 13023
+  }
+}

@@ -44,6 +44,8 @@ mod claims_reference_tests;
 #[cfg(test)]
 mod native_integration_tests;
 #[cfg(test)]
+mod registry_reference_tests;
+#[cfg(test)]
 mod retained_commission_reference_tests;
 #[cfg(test)]
 mod v1_custody_reference_tests;
@@ -55,6 +57,34 @@ pub use raw::{
     FinalChainNativeRawValueError,
 };
 pub use rewards::FinalChainNativeRewardsOutcome;
+
+/// Contract registered by the required consensus-native composition.
+/// Registry membership is independent of account presence and stored bytecode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeContractKind {
+    /// DPoS is registered at every period.
+    Dpos,
+    /// Slashing is registered from the configured Magnolia period.
+    Slashing,
+}
+
+impl FinalChain {
+    /// Classifies a native contract with this owner's immutable hardfork policy.
+    /// Returns `None` for ordinary addresses, including slashing before Magnolia.
+    pub fn native_contract_kind(
+        &self,
+        period: FinalChainBlockNumber,
+        address: [u8; 20],
+    ) -> Option<FinalChainNativeContractKind> {
+        if address == DPOS_CONTRACT_ADDRESS {
+            Some(FinalChainNativeContractKind::Dpos)
+        } else if address == SLASHING_CONTRACT_ADDRESS && self.magnolia_active(period) {
+            Some(FinalChainNativeContractKind::Slashing)
+        } else {
+            None
+        }
+    }
+}
 
 /// Arbitrary-width unsigned value carried by a native child call.
 ///
@@ -269,8 +299,10 @@ pub enum FinalChainNativeSessionError {
     },
     /// The pending period is not exactly one after its finalized parent.
     PendingPeriodMismatch,
-    /// This first adapter does not implement pre-Cornus native behavior.
+    /// The specialized measured adapter requires Cornus native behavior.
     PreCornusUnsupported,
+    /// Neither the legacy Cornus scope nor the Magnolia layout is active.
+    PreMagnoliaUnsupported,
     /// Reward-claim storage behavior outside the source-proven staged slice.
     ClaimsScopeUnsupported,
     /// Historical simulation requested state beyond the committed finalized head.
@@ -354,6 +386,7 @@ enum PreparedKind {
     SelectedCustody(DposTransaction),
     ClaimAll(claim_all::PreparedClaimAll),
     CurrentClaimAll(claim_all::PreparedCurrentClaimAll),
+    LegacyClaimAll(claim_all::PreparedLegacyClaimAll),
     Query {
         transaction: DposTransaction,
         abi_data_len: usize,
@@ -392,6 +425,22 @@ impl NativeSessionOrigin {
     }
 }
 
+enum NativeSessionOwner<'a> {
+    Borrowed(&'a FinalChain),
+    Owned(std::sync::Arc<FinalChain>),
+}
+
+impl std::ops::Deref for NativeSessionOwner<'_> {
+    type Target = FinalChain;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(chain) => chain,
+            Self::Owned(chain) => chain.as_ref(),
+        }
+    }
+}
+
 /// Single-period staged native kernel state.
 ///
 /// The session begins from an exact finalized DPoS snapshot. Pending sessions
@@ -399,7 +448,7 @@ impl NativeSessionOrigin {
 /// finalized period. Neither constructor publishes state. Successful raw mutations advance this state even when a surrounding
 /// ordinary EVM frame later rolls back.
 pub struct FinalChainNativeSession<'a> {
-    final_chain: &'a FinalChain,
+    final_chain: NativeSessionOwner<'a>,
     origin: NativeSessionOrigin,
     request_id: Option<[u8; 32]>,
     /// Immutable process-local cleanup timer issued by this FinalChain. It is
@@ -433,7 +482,7 @@ pub struct FinalChainNativeSimulation<'a> {
 }
 
 impl FinalChain {
-    /// Opens one disposable current-profile trace over its exact parent reader.
+    /// Opens one disposable trace for the Magnolia or current-profile layout.
     /// Prefix and targets share native writes and per-reader Go byte caches.
     /// No rewards, persistence, or publication capability escapes this wrapper.
     pub fn begin_native_trace(
@@ -443,9 +492,6 @@ impl FinalChain {
     ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
         if reader_period.checked_add_distance(1) != Some(execution_period) {
             return Err(FinalChainNativeSessionError::PeriodMismatch);
-        }
-        if !self.cacti_active(execution_period) || !self.aspen_part_two_active(execution_period) {
-            return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
         }
         let head = self
             .last_block_number_typed()
@@ -472,7 +518,9 @@ impl FinalChain {
     /// Begins an unpublished native session for the block immediately after an
     /// exact currently finalized parent.
     ///
-    /// The call rejects stale parents, skipped periods, and pre-Cornus periods.
+    /// The call rejects stale parents and skipped periods. Earlier layouts
+    /// outside the qualified Magnolia/Cornus scope require Complete current and
+    /// delayed validator-row authority.
     /// It clones and advances DPoS state but does not acquire publication
     /// authority or alter FinalChain snapshots.
     pub fn begin_native_session(
@@ -526,6 +574,71 @@ impl FinalChain {
         )
     }
 
+    /// Opens the same epoch-bound pending session while retaining this exact owner.
+    /// This does not grant publication authority or concurrent access.
+    pub fn begin_owned_native_session_bound_at_state_api_epoch(
+        self: &std::sync::Arc<Self>,
+        request_id: [u8; 32],
+        state_api_epoch: u64,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'static>, FinalChainNativeSessionError> {
+        let session = self.begin_native_session_bound_at_state_api_epoch(
+            request_id,
+            state_api_epoch,
+            pending_period,
+            expected_parent,
+        )?;
+        let FinalChainNativeSession {
+            final_chain,
+            origin,
+            request_id,
+            reward_scheduler_basis,
+            pending_period,
+            period_start_total_vote_count,
+            period_start_amount_delegated,
+            next_sequence,
+            completed_input_invocation,
+            input_mutations,
+            dpos_state,
+            eligibility_state,
+            eligibility_period,
+            prepared,
+            aborted,
+            finished_rewards,
+            verified_slashing,
+            trace_readers,
+        } = session;
+        match final_chain {
+            NativeSessionOwner::Borrowed(owner) if std::ptr::eq(owner, self.as_ref()) => {}
+            _ => {
+                return Err(FinalChainNativeSessionError::Domain(
+                    "native session owner mismatch".to_owned(),
+                ));
+            }
+        }
+        Ok(FinalChainNativeSession {
+            final_chain: NativeSessionOwner::Owned(std::sync::Arc::clone(self)),
+            origin,
+            request_id,
+            reward_scheduler_basis,
+            pending_period,
+            period_start_total_vote_count,
+            period_start_amount_delegated,
+            next_sequence,
+            completed_input_invocation,
+            input_mutations,
+            dpos_state,
+            eligibility_state,
+            eligibility_period,
+            prepared,
+            aborted,
+            finished_rewards,
+            verified_slashing,
+            trace_readers,
+        })
+    }
+
     pub(super) fn reward_scheduler_basis(
         &self,
         request_id: [u8; 32],
@@ -575,9 +688,6 @@ impl FinalChain {
         &self,
         period: FinalChainBlockNumber,
     ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
-        if period < self.dpos_cornus_period {
-            return Err(FinalChainNativeSessionError::PreCornusUnsupported);
-        }
         let finalized_head = self
             .last_block_number_typed()
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
@@ -844,9 +954,6 @@ impl FinalChain {
         if expected_parent.checked_next() != Some(pending_period) {
             return Err(FinalChainNativeSessionError::PendingPeriodMismatch);
         }
-        if pending_period < self.dpos_cornus_period {
-            return Err(FinalChainNativeSessionError::PreCornusUnsupported);
-        }
         let mut dpos_state = self
             .dpos_snapshot_at_finalized_block(expected_parent)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
@@ -860,6 +967,25 @@ impl FinalChain {
         )
     }
 
+    // Earlier layouts require persisted, authenticated shape authority. Keep
+    // each existing origin's independently qualified compatibility union.
+    fn native_session_requires_complete_layout(
+        &self,
+        period: FinalChainBlockNumber,
+        origin: NativeSessionOrigin,
+    ) -> bool {
+        match origin {
+            NativeSessionOrigin::CurrentHistoricalTrace => {
+                !self.magnolia_active(period)
+                    && !(self.cacti_active(period) && self.aspen_part_two_active(period))
+            }
+            NativeSessionOrigin::PendingPeriod | NativeSessionOrigin::HistoricalSimulation => {
+                period < self.dpos_cornus_period && !self.magnolia_active(period)
+            }
+            _ => false,
+        }
+    }
+
     fn native_session_from_state(
         &self,
         request_id: Option<[u8; 32]>,
@@ -867,6 +993,10 @@ impl FinalChain {
         dpos_state: DposSnapshot,
         origin: NativeSessionOrigin,
     ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let complete_layout_required = self.native_session_requires_complete_layout(period, origin);
+        if complete_layout_required && !dpos_state.has_complete_validator_shapes() {
+            return Err(FinalChainNativeSessionError::PreMagnoliaUnsupported);
+        }
         // StateTransition retains the reader installed after the preceding
         // commit. A dry runner instead constructs its reader at the selected
         // finalized head. Even delay zero must freeze the pending parent.
@@ -889,11 +1019,19 @@ impl FinalChain {
             self.dpos_snapshot_at_finalized_block(eligibility_period)
                 .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
         };
+        // TraceRunner supplies one live blockstate to every reader callback;
+        // normal pending and dry-run origins load real delayed snapshots above.
+        if complete_layout_required
+            && origin != NativeSessionOrigin::CurrentHistoricalTrace
+            && !eligibility_state.has_complete_validator_shapes()
+        {
+            return Err(FinalChainNativeSessionError::PreMagnoliaUnsupported);
+        }
         let period_start_total_vote_count = dpos_state.total_vote_count;
         let period_start_amount_delegated = total_staked_amount(&dpos_state)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         Ok(FinalChainNativeSession {
-            final_chain: self,
+            final_chain: NativeSessionOwner::Borrowed(self),
             origin,
             request_id,
             reward_scheduler_basis: None,
@@ -1024,6 +1162,16 @@ impl FinalChainNativeSession<'_> {
         if request.input.starts_with(&DPOS_REGISTER_VALIDATOR_SELECTOR) {
             return self.prepare_registration(request);
         }
+        if request
+            .input
+            .starts_with(&DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR)
+        {
+            let result = self.prepare_legacy_claim_all(request, state);
+            if result.is_err() {
+                self.aborted = true;
+            }
+            return result;
+        }
         if request.input.starts_with(&DPOS_CLAIM_ALL_REWARDS_SELECTOR) {
             let result = self.prepare_claim_all(request, state);
             if result.is_err() {
@@ -1043,6 +1191,37 @@ impl FinalChainNativeSession<'_> {
             self.final_chain.dpos_cornus_period,
             self.final_chain.rewards_config.phalaenopsis_period,
         );
+        // The exact escrow selector is absent from the ABI. Its activation and
+        // exact-length exception are decided by the shared execution decoder.
+        // Failed lookup precedes Cornus payability and never reads native rows.
+        if matches!(transaction, DposTransaction::UnrecognizedInput)
+            && request
+                .input
+                .starts_with(&DPOS_PHALA_ESCROW_TRANSFER_SELECTOR)
+        {
+            let quote = FinalChainNativeGasQuote {
+                invocation: request.id,
+                required_gas: FinalChainGas::ZERO,
+            };
+            self.prepared = Some(PreparedCall {
+                request: request.clone(),
+                quote,
+                kind: if request.period < self.final_chain.rewards_config.fix_redelegate_block_num
+                    && request.depth != 0
+                {
+                    PreparedKind::NestedCallRejected
+                } else {
+                    PreparedKind::AbiFailure(format!(
+                        "no method with id: 0x{}",
+                        request.input[..4]
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    ))
+                },
+            });
+            return Ok(quote);
+        }
         let validator = match &mut transaction {
             DposTransaction::SetCommission { validator, .. } => Some(*validator),
             DposTransaction::Delegate { amount, .. } => {
@@ -1059,6 +1238,7 @@ impl FinalChainNativeSession<'_> {
             | DposTransaction::ClaimRewards { .. }
             | DposTransaction::ClaimCommissionRewards { .. }
             | DposTransaction::PhalaenopsisEscrowTransfer
+            | DposTransaction::MethodNotSupported
             | DposTransaction::SetValidatorInfo { .. } => None,
             DposTransaction::MalformedMutation { selector }
                 if request.input.len() == 4
@@ -1151,6 +1331,8 @@ impl FinalChainNativeSession<'_> {
                 quote,
                 kind: if matches!(transaction, DposTransaction::PhalaenopsisEscrowTransfer) {
                     PreparedKind::EscrowTransfer
+                } else if matches!(transaction, DposTransaction::MethodNotSupported) {
+                    PreparedKind::AbiFailure(DposContractError::MethodNotSupported.legacy_message())
                 } else if matches!(transaction, DposTransaction::MalformedMutation { .. }) {
                     // Only a recognized selector-only request passed above.
                     // Go quotes the selector before ABI unpack; no state is read.
@@ -1328,6 +1510,9 @@ impl FinalChainNativeSession<'_> {
             PreparedKind::SetCommission(prepared) => {
                 self.invoke_set_commission(prepared, quote, state)
             }
+            PreparedKind::LegacyClaimAll(prepared) => {
+                self.invoke_legacy_claim_all(prepared, quote, state)
+            }
             PreparedKind::ClaimAll(prepared) => self.invoke_claim_all(prepared, quote, state),
             PreparedKind::CurrentClaimAll(prepared) => {
                 self.invoke_current_claim_all(prepared, quote, state)
@@ -1492,10 +1677,11 @@ impl FinalChainNativeSession<'_> {
         ) {
             return Err(FinalChainNativeSessionError::UnsupportedCallKind);
         }
-        if !matches!(
-            request.contract,
-            DPOS_CONTRACT_ADDRESS | SLASHING_CONTRACT_ADDRESS
-        ) || request.state_address != request.contract
+        if self
+            .final_chain
+            .native_contract_kind(request.period, request.contract)
+            .is_none()
+            || request.state_address != request.contract
         {
             return Err(FinalChainNativeSessionError::UnsupportedAddress);
         }
@@ -1515,21 +1701,12 @@ impl FinalChainNativeSession<'_> {
         snapshot: &DposSnapshot,
         validator: [u8; 20],
     ) -> std::result::Result<Vec<u8>, FinalChainNativeSessionError> {
-        let (stake, commission, last_change, reward_head, undelegations_count) =
-            self.validator_facts(snapshot, validator)?;
-        let mut legacy = rlp::RlpStream::new_list(4);
-        legacy
-            .append(&stake)
-            .append(&commission)
-            .append(&last_change)
-            .append(&reward_head);
-        let legacy = legacy.out().to_vec();
-        if !self.final_chain.magnolia_active(self.pending_period) {
-            return Ok(legacy);
-        }
-        let mut extended = rlp::RlpStream::new_list(2);
-        extended.append_raw(&legacy, 1).append(&undelegations_count);
-        Ok(extended.out().to_vec())
+        encode_persisted_validator_row(
+            snapshot,
+            validator,
+            self.final_chain.magnolia_active(self.pending_period),
+        )
+        .map_err(custody::map_kernel_error)
     }
 }
 
@@ -1587,35 +1764,8 @@ fn checked_undelegations_count(
     snapshot: &DposSnapshot,
     validator: [u8; 20],
 ) -> std::result::Result<u16, FinalChainNativeSessionError> {
-    let v1_count = snapshot
-        .undelegations
-        .values()
-        .flat_map(|entries| entries.iter())
-        .filter(|entry| entry.validator == validator)
-        .count();
-    let v2_count = snapshot
-        .undelegations_v2
-        .values()
-        .flat_map(|entries| entries.iter())
-        .filter(|entry| entry.validator == validator)
-        .try_fold(0usize, |count, group| {
-            count.checked_add(group.entries.len())
-        })
-        .ok_or_else(|| {
-            FinalChainNativeSessionError::Domain(
-                "DPoS validator undelegation count overflow".to_owned(),
-            )
-        })?;
-    let count = v1_count.checked_add(v2_count).ok_or_else(|| {
-        FinalChainNativeSessionError::Domain(
-            "DPoS validator undelegation count overflow".to_owned(),
-        )
-    })?;
-    u16::try_from(count).map_err(|_| {
-        FinalChainNativeSessionError::Domain(
-            "DPoS validator undelegation count exceeds uint16".to_owned(),
-        )
-    })
+    checked_dpos_undelegations_count_for_validator(snapshot, validator)
+        .map_err(custody::map_kernel_error)
 }
 
 #[cfg(test)]
@@ -1809,7 +1959,8 @@ mod tests {
         with_chain_config(
             test_name,
             FinalChainRewardsConfig {
-                magnolia_period: FinalChainBlockNumber::GENESIS,
+                // The oracle base row was created before Magnolia; writes at1 upgrade it.
+                magnolia_period: 1.into(),
                 cornus_period: FinalChainBlockNumber::GENESIS,
                 fix_redelegate_block_num,
                 aspen_part_two_period: FinalChainBlockNumber::MAX,
@@ -1828,7 +1979,8 @@ mod tests {
         with_chain_config_and_ficus(
             test_name,
             FinalChainRewardsConfig {
-                magnolia_period: FinalChainBlockNumber::GENESIS,
+                // The oracle base row was created before Magnolia; writes at1 upgrade it.
+                magnolia_period: 1.into(),
                 cornus_period: FinalChainBlockNumber::GENESIS,
                 fix_redelegate_block_num,
                 aspen_part_two_period: FinalChainBlockNumber::MAX,
@@ -1877,33 +2029,50 @@ mod tests {
         dpos_config: GenesisDposConfig,
         test: impl FnOnce(&FinalChain),
     ) {
-        let path = temp_db_path(test_name);
-        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
-        let final_chain = FinalChain::new_with_rewards_config_and_ficus_activation(
-            storage.clone(),
-            1_000_000.into(),
-            0,
-            crate::FinalChainGenesisAllocation {
-                accounts: Vec::new(),
-                validators: vec![GenesisValidator {
-                    address: VALIDATOR,
-                    vrf_key: [0; 32],
-                    total_stake: U256::from(10_000).to_big_endian().to_vec(),
-                    delegations: vec![(VALIDATOR, U256::from(10_000).to_big_endian().to_vec())],
-                    metadata: GenesisValidatorMetadata {
-                        owner: OWNER,
-                        commission: 100,
-                        ..Default::default()
-                    },
-                }],
-            },
-            dpos_config,
+        with_arc_chain_dpos_config(
+            test_name,
             rewards_config,
             ficus_activation_period,
-        )
-        .unwrap();
-        test(&final_chain);
-        drop(final_chain);
+            dpos_config,
+            |chain| test(&chain),
+        );
+    }
+
+    fn with_arc_chain_dpos_config(
+        test_name: &str,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
+        dpos_config: GenesisDposConfig,
+        test: impl FnOnce(Arc<FinalChain>),
+    ) {
+        let path = temp_db_path(test_name);
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = Arc::new(
+            FinalChain::new_with_rewards_config_and_ficus_activation(
+                storage.clone(),
+                1_000_000.into(),
+                0,
+                crate::FinalChainGenesisAllocation {
+                    accounts: Vec::new(),
+                    validators: vec![GenesisValidator {
+                        address: VALIDATOR,
+                        vrf_key: [0; 32],
+                        total_stake: U256::from(10_000).to_big_endian().to_vec(),
+                        delegations: vec![(VALIDATOR, U256::from(10_000).to_big_endian().to_vec())],
+                        metadata: GenesisValidatorMetadata {
+                            owner: OWNER,
+                            commission: 100,
+                            ..Default::default()
+                        },
+                    }],
+                },
+                dpos_config,
+                rewards_config,
+                ficus_activation_period,
+            )
+            .unwrap(),
+        );
+        test(final_chain);
         drop(storage);
         let _ = crate::closeout_test_scratch::dispose(path);
     }
@@ -2164,6 +2333,15 @@ mod tests {
                 let changed = completed(simulation.invoke(&mutation, quote, &state).unwrap());
                 assert_eq!(changed.status, FinalChainNativeStatus::Success);
                 assert_eq!(changed.raw_mutations.len(), 1);
+                assert_eq!(
+                    checked_validator_row_shape(&simulation.session.dpos_state, VALIDATOR).unwrap(),
+                    Some(ValidatorRowShape::LegacyV1)
+                );
+                let FinalChainNativeRawOperation::Put(row) = &changed.raw_mutations[0].operation
+                else {
+                    panic!("commission must write its legacy row")
+                };
+                assert_eq!(rlp::Rlp::new(row.as_bytes()).item_count().unwrap(), 4);
                 apply_raw_mutations(&state, &changed);
 
                 let reread = simulation_request(
@@ -2252,6 +2430,268 @@ mod tests {
                     }) if requested == FinalChainBlockNumber::new(1)
                         && finalized_head == FinalChainBlockNumber::GENESIS
                 ));
+            },
+        );
+    }
+
+    fn owned_test_signed_block(period: u64) -> Vec<u8> {
+        let key = k256::ecdsa::SigningKey::from_slice(&[1; 32]).unwrap();
+        let fields = |stream: &mut rlp::RlpStream| {
+            for n in 10..14 {
+                stream.append(&H256::from_low_u64_be(n));
+            }
+            stream.append(&period);
+            stream.append(&period);
+            stream.begin_list(0);
+        };
+        let mut unsigned = rlp::RlpStream::new_list(7);
+        fields(&mut unsigned);
+        use tiny_keccak::{Hasher, Keccak};
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+        let (signature, recovery) = key.sign_prehash_recoverable(&digest).unwrap();
+        let mut bytes = signature.to_bytes().to_vec();
+        bytes.push(recovery.to_byte());
+        let mut signed = rlp::RlpStream::new_list(8);
+        fields(&mut signed);
+        signed.append(&bytes);
+        signed.out().to_vec()
+    }
+
+    fn owned_test_reopen(
+        storage: Arc<Storage>,
+        rewards: FinalChainRewardsConfig,
+        dpos: GenesisDposConfig,
+    ) -> Arc<FinalChain> {
+        Arc::new(
+            FinalChain::new_with_rewards_config_and_ficus_activation(
+                storage,
+                1_000_000.into(),
+                0,
+                crate::FinalChainGenesisAllocation {
+                    accounts: Vec::new(),
+                    validators: vec![GenesisValidator {
+                        address: VALIDATOR,
+                        vrf_key: [0; 32],
+                        total_stake: U256::from(10_000).to_big_endian().to_vec(),
+                        delegations: vec![(VALIDATOR, U256::from(10_000).to_big_endian().to_vec())],
+                        metadata: GenesisValidatorMetadata {
+                            owner: OWNER,
+                            commission: 100,
+                            ..Default::default()
+                        },
+                    }],
+                },
+                dpos,
+                rewards,
+                FinalChainBlockNumber::MAX,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn owned_pending_delayed_authority_and_real_query_parity() {
+        for delay in [0_u64, 2] {
+            let rewards = FinalChainRewardsConfig {
+                magnolia_period: 7.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            };
+            let dpos = GenesisDposConfig {
+                eligibility_balance_threshold: U256::from(1_000).into(),
+                vote_eligibility_balance_step: U256::from(1_000).into(),
+                validator_maximum_stake: U256::from(30_000).into(),
+                delegation_delay: delay,
+                ..Default::default()
+            };
+            with_arc_chain_dpos_config(
+                "owned-delayed-authority",
+                rewards.clone(),
+                FinalChainBlockNumber::MAX,
+                dpos.clone(),
+                |first| {
+                    first
+                        .finalize_block(owned_test_signed_block(1), Vec::new(), Vec::new())
+                        .unwrap();
+                    let storage = Arc::clone(&first.storage);
+                    drop(first);
+                    let chain = owned_test_reopen(storage, rewards, dpos);
+                    let parent = FinalChainBlockNumber::new(1);
+                    chain
+                        .authorize_reward_scheduler_joint_startup(91, parent)
+                        .unwrap();
+                    chain.complete_reward_scheduler_recovery(91).unwrap();
+                    let request_id = [0x39; 32];
+                    let selected = FinalChainBlockNumber::new(1_u64.saturating_sub(delay));
+                    let mut borrowed = chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            request_id,
+                            91,
+                            2.into(),
+                            parent,
+                        )
+                        .unwrap();
+                    let mut owned = chain
+                        .begin_owned_native_session_bound_at_state_api_epoch(
+                            request_id,
+                            91,
+                            2.into(),
+                            parent,
+                        )
+                        .unwrap();
+                    let expected = chain.dpos_snapshot_at_finalized_block(selected).unwrap();
+                    assert_eq!(borrowed.eligibility_period, selected);
+                    assert_eq!(owned.eligibility_period, selected);
+                    assert_eq!(borrowed.eligibility_state, expected);
+                    assert_eq!(owned.eligibility_state, expected);
+                    if delay == 0 {
+                        assert_eq!(selected, parent);
+                    }
+                    let state_a = RawState::fixture();
+                    let state_b = RawState::fixture();
+                    let request = simulation_request(
+                        2.into(),
+                        0,
+                        address_word_input(DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR, VALIDATOR),
+                        DPOS_DEFAULT_METHOD_GAS,
+                    );
+                    let qa = borrowed.prepare(&request, &state_a).unwrap();
+                    let qb = owned.prepare(&request, &state_b).unwrap();
+                    assert_eq!(qa, qb);
+                    let left = borrowed.invoke(&request, qa, &state_a).unwrap();
+                    let right = owned.invoke(&request, qb, &state_b).unwrap();
+                    assert_eq!(left, right);
+                    let result = completed(left);
+                    assert_eq!(result.status, FinalChainNativeStatus::Success);
+                    assert_eq!(
+                        BigUint::from_bytes_be(&result.output),
+                        BigUint::from(*expected.vote_counts.get(&VALIDATOR).unwrap())
+                    );
+                    drop(borrowed);
+                    drop(owned);
+                    let current = chain
+                        .dpos_snapshots
+                        .lock()
+                        .unwrap()
+                        .get(&parent)
+                        .unwrap()
+                        .clone();
+                    chain
+                        .dpos_snapshots
+                        .lock()
+                        .unwrap()
+                        .get_mut(&parent)
+                        .unwrap()
+                        .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                    assert!(matches!(
+                        chain.begin_owned_native_session_bound_at_state_api_epoch(
+                            request_id,
+                            91,
+                            2.into(),
+                            parent
+                        ),
+                        Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                    ));
+                    chain.dpos_snapshots.lock().unwrap().insert(parent, current);
+                    if delay != 0 {
+                        let old = chain
+                            .dpos_snapshots
+                            .lock()
+                            .unwrap()
+                            .get(&selected)
+                            .unwrap()
+                            .clone();
+                        chain
+                            .dpos_snapshots
+                            .lock()
+                            .unwrap()
+                            .get_mut(&selected)
+                            .unwrap()
+                            .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                        assert!(matches!(
+                            chain.begin_owned_native_session_bound_at_state_api_epoch(
+                                request_id,
+                                91,
+                                2.into(),
+                                parent
+                            ),
+                            Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                        ));
+                        chain.dpos_snapshots.lock().unwrap().remove(&selected);
+                        assert!(matches!(
+                            chain.begin_owned_native_session_bound_at_state_api_epoch(
+                                request_id,
+                                91,
+                                2.into(),
+                                parent
+                            ),
+                            Err(FinalChainNativeSessionError::Domain(_))
+                        ));
+                        chain.dpos_snapshots.lock().unwrap().insert(selected, old);
+                    }
+                    assert!(
+                        chain
+                            .begin_owned_native_session_bound_at_state_api_epoch(
+                                request_id,
+                                91,
+                                2.into(),
+                                parent
+                            )
+                            .is_ok()
+                    );
+                    assert_eq!(chain.last_block_number_typed().unwrap(), parent);
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn owned_compatibility_authority_is_accepted_in_existing_cornus_scope() {
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: 7.into(),
+            cornus_period: FinalChainBlockNumber::GENESIS,
+            ..Default::default()
+        };
+        with_arc_chain_dpos_config(
+            "owned-compatibility-cornus",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig::default(),
+            |chain| {
+                chain
+                    .authorize_reward_scheduler_joint_startup(91, FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(91).unwrap();
+                chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&FinalChainBlockNumber::GENESIS)
+                    .unwrap()
+                    .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                assert!(
+                    chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into()
+                        )
+                        .is_ok()
+                );
+                assert!(
+                    chain
+                        .begin_owned_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into()
+                        )
+                        .is_ok()
+                );
             },
         );
     }
@@ -3825,6 +4265,256 @@ mod tests {
     }
 
     #[test]
+    fn pre_magnolia_delegate_requires_exact_owned_legacy_rows_and_isolates_read_faults() {
+        const DELEGATOR: [u8; 20] = [0x50; 20];
+        with_chain_config(
+            "pre-magnolia-owned-delegate",
+            FinalChainRewardsConfig {
+                magnolia_period: 2.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            |chain| {
+                let accounts = BTreeMap::from([
+                    (
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::from_u64(1),
+                            balance: BigInt::from(1_000_500_u64),
+                        },
+                    ),
+                    (
+                        DELEGATOR,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(1_000_u64),
+                        },
+                    ),
+                ]);
+                let mut req = custody_request(
+                    0,
+                    DELEGATOR,
+                    500,
+                    address_word_input(DPOS_DELEGATE_SELECTOR, VALIDATOR),
+                    100_000,
+                );
+                // This signed warmup is top-level; the common helper models nesting.
+                req.depth = 0;
+                let parent_before = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+                let mut baseline = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let before = baseline.dpos_state.clone();
+                assert!(before.has_complete_validator_shapes());
+                assert_eq!(
+                    checked_validator_row_shape(&before, VALIDATOR).unwrap(),
+                    Some(ValidatorRowShape::LegacyV1)
+                );
+                let raw = RawState::from_snapshot(&before, accounts.clone());
+                let outcome = invoke_custody(&mut baseline, &raw, &req);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    baseline.dpos_state.delegations[&VALIDATOR][&DELEGATOR].as_u256(),
+                    U256::from(500)
+                );
+                assert_eq!(
+                    checked_validator_row_shape(&baseline.dpos_state, VALIDATOR).unwrap(),
+                    Some(ValidatorRowShape::LegacyV1)
+                );
+                assert!(baseline.dpos_state.retained_undelegation_counts.is_empty());
+                let key = ConcreteStorageKey(VALIDATOR_KEY);
+                let rows = outcome
+                    .raw_mutations
+                    .iter()
+                    .filter(|row| row.key == key)
+                    .collect::<Vec<_>>();
+                assert_eq!(rows.len(), 1);
+                let FinalChainNativeRawOperation::Put(value) = &rows[0].operation else {
+                    panic!("delegate validator write")
+                };
+                assert_eq!(rlp::Rlp::new(value.as_bytes()).item_count().unwrap(), 4);
+                assert!(
+                    outcome.account_mutations.is_empty(),
+                    "frame owns payable value"
+                );
+                let expected = baseline.dpos_state.clone();
+                for mode in 0..4 {
+                    let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                    let mut raw = RawState::from_snapshot(&before, accounts.clone());
+                    match mode {
+                        0 => raw.set(DPOS_CONTRACT_ADDRESS, VALIDATOR_KEY, ConcreteRead::Absent),
+                        1 => raw.set(
+                            DPOS_CONTRACT_ADDRESS,
+                            VALIDATOR_KEY,
+                            ConcreteRead::Present(vec![0xff]),
+                        ),
+                        2 => {
+                            let mut wrong = rlp::RlpStream::new_list(2);
+                            wrong.append_raw(&LEGACY_VALIDATOR_100, 1).append(&0_u16);
+                            raw.set(
+                                DPOS_CONTRACT_ADDRESS,
+                                VALIDATOR_KEY,
+                                ConcreteRead::Present(wrong.out().to_vec()),
+                            );
+                        }
+                        _ => raw.fail_reads = true,
+                    }
+                    let rows = raw.rows.borrow().clone();
+                    let quote = session.prepare(&req, &raw).unwrap();
+                    let error = session.invoke(&req, quote, &raw).unwrap_err();
+                    assert!(
+                        if mode == 3 {
+                            matches!(error, FinalChainNativeSessionError::StateRead(_))
+                        } else {
+                            matches!(error, FinalChainNativeSessionError::RawIntegrity(_))
+                        },
+                        "{error:?}"
+                    );
+                    assert!(session.aborted);
+                    assert_eq!(session.dpos_state, before);
+                    assert_eq!(session.next_sequence, 0);
+                    assert_eq!(*raw.rows.borrow(), rows);
+                    assert_eq!(raw.accounts, accounts);
+                    let mut retry = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                    let fresh = RawState::from_snapshot(&before, accounts.clone());
+                    assert_eq!(invoke_custody(&mut retry, &fresh, &req), outcome);
+                    assert_eq!(retry.dpos_state, expected);
+                }
+                assert_eq!(
+                    chain.last_block_number_typed().unwrap(),
+                    FinalChainBlockNumber::GENESIS
+                );
+                assert_eq!(
+                    chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+                    parent_before
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn general_sessions_reject_pre_magnolia_without_shape_authority() {
+        with_chain_config(
+            "native-pre-magnolia-scope",
+            FinalChainRewardsConfig {
+                magnolia_period: 2.into(),
+                cornus_period: 3.into(),
+                ..Default::default()
+            },
+            |chain| {
+                // Model an existing old-schema snapshot with no row-shape authority.
+                chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&FinalChainBlockNumber::GENESIS)
+                    .unwrap()
+                    .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                assert!(matches!(
+                    chain.begin_native_session(1.into(), FinalChainBlockNumber::GENESIS),
+                    Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                ));
+                assert!(matches!(
+                    chain.begin_native_simulation(FinalChainBlockNumber::GENESIS),
+                    Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                ));
+                assert!(matches!(
+                    chain.begin_native_trace(0.into(), 1.into()),
+                    Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn general_trace_preserves_legacy_scope_without_magnolia() {
+        with_chain_config(
+            "trace-legacy-scope-without-magnolia",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::MAX,
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                phalaenopsis_period: FinalChainBlockNumber::GENESIS,
+                cacti_period: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::GENESIS,
+                // The helper allocates 10,000 stake at genesis. Activating
+                // Aspen also requires a nonzero maximum covering that supply.
+                aspen_max_supply: U256::from(20_000).into(),
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                ..Default::default()
+            },
+            |chain| {
+                let mut trace = chain.begin_native_trace(0.into(), 1.into()).unwrap();
+                let before = trace.session.dpos_state.clone();
+                let state = RawState::from_snapshot(&before, BTreeMap::new());
+                let req = custody_request(
+                    0,
+                    VALIDATOR,
+                    7,
+                    DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.to_vec(),
+                    1000,
+                );
+                let quote = trace.prepare(&req, &state).unwrap();
+                assert_eq!(quote.required_gas.as_u64(), 1000);
+                let outcome = completed(trace.invoke(&req, quote, &state).unwrap());
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert!(outcome.raw_mutations.is_empty());
+                assert!(outcome.account_mutations.is_empty());
+                assert!(outcome.logs.is_empty());
+                assert_eq!(trace.session.dpos_state, before);
+            },
+        );
+    }
+
+    #[test]
+    fn phala_escrow_exact_selector_activation_and_trailing_byte_failures() {
+        for activation in [1_u64, 2] {
+            with_chain_config(
+                "native-phala-escrow-boundary",
+                FinalChainRewardsConfig {
+                    magnolia_period: FinalChainBlockNumber::GENESIS,
+                    phalaenopsis_period: activation.into(),
+                    cornus_period: 3.into(),
+                    fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                    ..Default::default()
+                },
+                |chain| {
+                    let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                    let before = session.dpos_state.clone();
+                    let state = RawState::from_snapshot(&before, BTreeMap::new());
+                    for (sequence, trailing) in [false, true].into_iter().enumerate() {
+                        let mut input = DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.to_vec();
+                        if trailing {
+                            input.push(0);
+                        }
+                        let req = custody_request(sequence as u64, VALIDATOR, 7, input, 1000);
+                        let active = activation == 1 && !trailing;
+                        let quote = session.prepare(&req, &state).unwrap();
+                        assert_eq!(quote.required_gas.as_u64(), if active { 1000 } else { 0 });
+                        let outcome = completed(session.invoke(&req, quote, &state).unwrap());
+                        assert_eq!(
+                            outcome.status,
+                            if active {
+                                FinalChainNativeStatus::Success
+                            } else {
+                                FinalChainNativeStatus::ContractFailure {
+                                    error: "no method with id: 0x44df8e70".to_owned(),
+                                }
+                            }
+                        );
+                        assert_eq!(outcome.gas_used, quote.required_gas);
+                        assert!(outcome.raw_mutations.is_empty());
+                        assert!(outcome.account_mutations.is_empty());
+                        assert!(outcome.logs.is_empty());
+                        assert_eq!(session.dpos_state, before);
+                    }
+                },
+            );
+        }
+    }
+
+    #[test]
     fn cornus_boundary_rejects_v2_before_activation_and_runs_it_at_activation() {
         with_chain_config(
             "selected-custody-cornus-h-minus-one",
@@ -3837,10 +4527,47 @@ mod tests {
                 ..Default::default()
             },
             |chain| {
-                assert!(matches!(
-                    chain.begin_native_session(1.into(), FinalChainBlockNumber::GENESIS),
-                    Err(FinalChainNativeSessionError::PreCornusUnsupported)
-                ));
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let before = session.dpos_state.clone();
+                let state = RawState::from_snapshot(&before, BTreeMap::new());
+                let request = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_V2_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let quote = session.prepare(&request, &state).unwrap();
+                assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+                let outcome = completed(session.invoke(&request, quote, &state).unwrap());
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Method not supported".to_owned(),
+                    }
+                );
+                assert_eq!(outcome.gas_used, FinalChainGas::ZERO);
+                assert!(outcome.raw_mutations.is_empty());
+                assert!(outcome.account_mutations.is_empty());
+                assert!(outcome.logs.is_empty());
+                assert_eq!(session.dpos_state, before);
+                let mut simulation = chain.begin_native_simulation(0.into()).unwrap();
+                let mut request = request;
+                request.period = 0.into();
+                let quote = simulation.prepare(&request, &state).unwrap();
+                assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+                let outcome = completed(simulation.invoke(&request, quote, &state).unwrap());
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Method not supported".to_owned(),
+                    }
+                );
+                assert!(outcome.raw_mutations.is_empty());
+                assert!(outcome.account_mutations.is_empty());
+                assert!(outcome.logs.is_empty());
             },
         );
         with_chain_config_and_ficus(
@@ -3964,7 +4691,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_rewards_reject_pre_magnolia_scope_before_state_reads() {
+    fn bound_rewards_reject_pre_magnolia_unknown_shape_scope_before_state_reads() {
         with_chain_config(
             "bound-rewards-pre-magnolia",
             FinalChainRewardsConfig {
@@ -4017,6 +4744,9 @@ mod tests {
                         FinalChainBlockNumber::GENESIS,
                     )
                     .unwrap();
+                // Old snapshots cannot acquire Complete authority from configuration.
+                session.dpos_state.validator_row_authority =
+                    ValidatorRowAuthority::CompatibilityOnly;
                 let state = RawState::erroring();
 
                 assert_eq!(

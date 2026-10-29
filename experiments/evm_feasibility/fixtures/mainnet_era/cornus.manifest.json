@@ -1,0 +1,692 @@
+{
+  "schema": 2,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "policy": {
+    "schema": 1,
+    "chain_id": 841,
+    "committee_size": 1000,
+    "dpos": {
+      "delegation_delay": 5,
+      "delegation_locking_period": 700540,
+      "eligibility_balance_threshold": 500000000000000000000000,
+      "vote_eligibility_balance_step": 1000000000000000000000,
+      "validator_maximum_stake": 80000000000000000000000000,
+      "minimum_deposit": 1000000000000000000000,
+      "max_block_author_reward": 5,
+      "dag_proposers_reward": 50,
+      "commission_change_delta": 500,
+      "commission_change_frequency": 116756,
+      "yield_percentage": 20
+    },
+    "hardforks": {
+      "fix_redelegate_block_num": 3091000,
+      "redelegations": [
+        {
+          "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+          "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+          "amount": "0x3e8"
+        }
+      ],
+      "rewards_distribution_frequency": {
+        "5730000": 100
+      },
+      "magnolia_hf": {
+        "block_num": 5730000,
+        "jail_time": 163459
+      },
+      "phalaenopsis_hf_block_num": 6943000,
+      "fix_claim_all_block_num": 7600000,
+      "aspen_hf": {
+        "block_num_part_one": 8118000,
+        "block_num_part_two": 8572000,
+        "max_supply": "0x26C62AD77DC602DAE0000000",
+        "generated_rewards": "0x105674788D280AE305A6EC0"
+      },
+      "ficus_hf": {
+        "block_num": 11616000,
+        "pillar_blocks_interval": 4000,
+        "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+      },
+      "cornus_hf": {
+        "block_num": 15610000,
+        "delegation_locking_period": 163459,
+        "dag_gas_limit": "0x1908B100",
+        "pbft_gas_limit": "0x7d2b7500"
+      },
+      "soleirolia_hf": {
+        "block_num": 17380000,
+        "trx_min_gas_price": "0x3B9ACA00",
+        "trx_max_gas_limit": "0x1E0A6E0"
+      },
+      "cacti_hf": {
+        "block_num": 24350801,
+        "lambda_min": 500,
+        "lambda_max": 1500,
+        "lambda_default": 2000,
+        "lambda_change_interval": 300,
+        "lambda_change": 10,
+        "block_propagation_min": 4000,
+        "block_propagation_max": 17000,
+        "consensus_delay": 400,
+        "delegation_locking_period": 252000,
+        "jail_time": 252000
+      }
+    },
+    "blocks_per_year_before_cacti": 8523243,
+    "genesis_sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "pbft_gas_limit": 315000000,
+    "dag_gas_limit": 31500000
+  },
+  "scenario": {
+    "name": "cornus",
+    "head": 15609998,
+    "first_retained": 15609994,
+    "periods": [
+      15609999,
+      15610000,
+      15610001,
+      15610002,
+      15610003,
+      15610004,
+      15610005
+    ],
+    "pending_periods": [
+      15609901,
+      15609902,
+      15609903,
+      15609904,
+      15609905,
+      15609906,
+      15609907,
+      15609908,
+      15609909,
+      15609910,
+      15609911,
+      15609912,
+      15609913,
+      15609914,
+      15609915,
+      15609916,
+      15609917,
+      15609918,
+      15609919,
+      15609920,
+      15609921,
+      15609922,
+      15609923,
+      15609924,
+      15609925,
+      15609926,
+      15609927,
+      15609928,
+      15609929,
+      15609930,
+      15609931,
+      15609932,
+      15609933,
+      15609934,
+      15609935,
+      15609936,
+      15609937,
+      15609938,
+      15609939,
+      15609940,
+      15609941,
+      15609942,
+      15609943,
+      15609944,
+      15609945,
+      15609946,
+      15609947,
+      15609948,
+      15609949,
+      15609950,
+      15609951,
+      15609952,
+      15609953,
+      15609954,
+      15609955,
+      15609956,
+      15609957,
+      15609958,
+      15609959,
+      15609960,
+      15609961,
+      15609962,
+      15609963,
+      15609964,
+      15609965,
+      15609966,
+      15609967,
+      15609968,
+      15609969,
+      15609970,
+      15609971,
+      15609972,
+      15609973,
+      15609974,
+      15609975,
+      15609976,
+      15609977,
+      15609978,
+      15609979,
+      15609980,
+      15609981,
+      15609982,
+      15609983,
+      15609984,
+      15609985,
+      15609986,
+      15609987,
+      15609988,
+      15609989,
+      15609990,
+      15609991,
+      15609992,
+      15609993,
+      15609994,
+      15609995,
+      15609996,
+      15609997,
+      15609998
+    ],
+    "donor": {
+      "name": "cornus_old_v1_donor",
+      "head": 14909458,
+      "first_retained": 14909454,
+      "periods": [
+        14909459,
+        14909460
+      ],
+      "pending_periods": [
+        14909401,
+        14909402,
+        14909403,
+        14909404,
+        14909405,
+        14909406,
+        14909407,
+        14909408,
+        14909409,
+        14909410,
+        14909411,
+        14909412,
+        14909413,
+        14909414,
+        14909415,
+        14909416,
+        14909417,
+        14909418,
+        14909419,
+        14909420,
+        14909421,
+        14909422,
+        14909423,
+        14909424,
+        14909425,
+        14909426,
+        14909427,
+        14909428,
+        14909429,
+        14909430,
+        14909431,
+        14909432,
+        14909433,
+        14909434,
+        14909435,
+        14909436,
+        14909437,
+        14909438,
+        14909439,
+        14909440,
+        14909441,
+        14909442,
+        14909443,
+        14909444,
+        14909445,
+        14909446,
+        14909447,
+        14909448,
+        14909449,
+        14909450,
+        14909451,
+        14909452,
+        14909453,
+        14909454,
+        14909455,
+        14909456,
+        14909457,
+        14909458
+      ],
+      "seed_actions_only": true,
+      "no_warmup_delegation": true,
+      "actions": [
+        {
+          "period": 14909459,
+          "who": 0,
+          "name": "old_mature_v1_creation",
+          "method": "undelegate",
+          "validator": 0,
+          "amount": "1000000000000000000000"
+        },
+        {
+          "period": 14909460,
+          "who": 1,
+          "name": "old_just_locked_v1_creation",
+          "method": "undelegate",
+          "validator": 1,
+          "amount": "1000000000000000000000"
+        }
+      ]
+    },
+    "actions": [
+      {
+        "period": 15609999,
+        "who": 0,
+        "name": "create_cornus_ordinary_control",
+        "method": "create",
+        "input": "600160005560006000f3"
+      },
+      {
+        "period": 15609999,
+        "who": 0,
+        "name": "old_lock_mature_v1",
+        "method": "confirm",
+        "validator": 0
+      },
+      {
+        "period": 15609999,
+        "who": 1,
+        "name": "old_lock_v1_one_period_locked",
+        "method": "confirm",
+        "validator": 1
+      },
+      {
+        "period": 15610000,
+        "who": 1,
+        "name": "old_lock_v1_matures_at_boundary",
+        "method": "confirm",
+        "validator": 1
+      },
+      {
+        "period": 15609999,
+        "who": 0,
+        "name": "inactive_v2_creation",
+        "method": "undelegateV2",
+        "validator": 0,
+        "amount": "1000000000000000000000"
+      },
+      {
+        "period": 15609999,
+        "who": 0,
+        "name": "inactive_v2_cancellation",
+        "method": "cancelV2",
+        "validator": 0,
+        "id": 1
+      },
+      {
+        "period": 15610000,
+        "who": 0,
+        "name": "new_v2_id_one",
+        "method": "undelegateV2",
+        "validator": 0,
+        "amount": "1000000000000000000000"
+      },
+      {
+        "period": 15610000,
+        "who": 0,
+        "name": "new_v2_one_not_mature",
+        "method": "confirmV2",
+        "validator": 0,
+        "id": 1
+      },
+      {
+        "period": 15610000,
+        "who": 0,
+        "name": "cancel_new_v2_one",
+        "method": "cancelV2",
+        "validator": 0,
+        "id": 1
+      },
+      {
+        "period": 15610001,
+        "who": 0,
+        "name": "new_v2_id_two",
+        "method": "undelegateV2",
+        "validator": 0,
+        "amount": "1000000000000000000000"
+      },
+      {
+        "period": 15610001,
+        "who": 0,
+        "name": "new_v2_two_not_mature",
+        "method": "confirmV2",
+        "validator": 0,
+        "id": 2
+      },
+      {
+        "period": 15610001,
+        "who": 0,
+        "name": "cancel_new_v2_two",
+        "method": "cancelV2",
+        "validator": 0,
+        "id": 2
+      },
+      {
+        "period": 15610001,
+        "who": 0,
+        "name": "v2_nonpayable_cancellation",
+        "method": "cancelV2",
+        "validator": 0,
+        "id": 2,
+        "value": "1"
+      }
+    ],
+    "no_warmup_delegation": true,
+    "required_activation_periods": [
+      15609999,
+      15610000,
+      15610001
+    ],
+    "api_heads": [
+      15609999,
+      15610000,
+      15610001,
+      15610004,
+      15610005
+    ],
+    "api_ordinary_nonce": 1
+  },
+  "scheduler_manifest_sha256": "cbb3adfad0b18277d7806b44901c7da8cba571c9696ef2b4695a352c31d36b37",
+  "support": {
+    "mainnet_era_reference.py": "012852c0043f278b4576504e880a9c04dd7b9fd11f313ab58efed0c9bc28c28e",
+    "mainnet_era_profile.py": "44aaf3bd52beed3c0b60c8f42bd8fa490a6f7f3bf62c26c874c51266949194d7",
+    "mainnet_era_historical_actions.py": "a9f9296151fa5e97fcceebcfe5ce82926289a34185d329476422365b8ecd76ad",
+    "mainnet_era_reference.go": "9ad0242c04b57def9563ea5d737363850d5eb47764c9d9bca28d98350d92877f",
+    "mainnet_era_api.go": "bf574b5b8ff1c284f2e97cefefe9bd4531f3aacd58582701edb4bec5783a9ae2",
+    "mainnet_era_seed.go": "f653f34237b1f6eec641650d764884cada583684f05a4daf414e4bde8e82b620",
+    "mainnet_era_actions.go": "3a6cafe1904a194cd0c7ccf5b6bf1edabff66cf8be90e540ff7abc902a9ad5d7",
+    "mainnet_era_pending.go": "354b98fef407fecabfb0ec2a5f71d76b9850fc68a66d5fae6d46bf4e7a6ae0c5",
+    "mainnet_era_code_objects.go": "300c0f94d2054181d80404c1950c7ab9e4979546aa8e51e32757bc9924a804f2",
+    "mainnet_era_code_objects.py": "31b412206b48d689d8637abef2b71f4892ad4e21f861e6686737a1d184120b1e",
+    "mainnet_era_scheduler.py": "b7d2890c4d38ffd33ef63a4b82bf8b38eb9d52d261157eba3579eeedf123b36c",
+    "mainnet_genesis.json": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference.py": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149",
+    "native_integration_reference.go": "e3189439d62dc65d245b89e5eabd1ced2b774409400c3e4540a1f4756a59a43f",
+    "native_integration_reference.py": "f280aab0db3d4ca7756e6f7501380a5a6fe4c8d0d747fa4031375c3cc822f0dd",
+    "native_retained_commission_trace_reference.py": "9c628926883fe595649e4ebf96e73299f202c650d0d46d5f5e900c776be38a33",
+    "native_reward_commission_trace_reference.py": "94595f72ea0d2559cb4a6da288d5d3525a608e49115647000ffb4a722f995637"
+  },
+  "streams": {
+    "public": {
+      "file": "9787a8abf6b5d82d72c6662a39ca9279afaee239fbc5abafc3d6fde2dfe05f84.json.gz",
+      "sha256": "9787a8abf6b5d82d72c6662a39ca9279afaee239fbc5abafc3d6fde2dfe05f84",
+      "bytes": 6093329,
+      "gzip_sha256": "d6bbe5688bc6a89d39959bb93d0b8a0a72691ebf4438f4b17fd08dd894c6cd6a",
+      "gzip_bytes": 385676,
+      "capture": null
+    },
+    "local": {
+      "file": "906f49f13b84c7b4a463c91e814fb6d9fa6f41ee59a7f2e63fe41c712e56c113.json.gz",
+      "sha256": "906f49f13b84c7b4a463c91e814fb6d9fa6f41ee59a7f2e63fe41c712e56c113",
+      "bytes": 6324782,
+      "gzip_sha256": "702ee9b6d808d30cbd2b3f03f7aba7d0437de13a3c9c2d0677d02c3121595cbe",
+      "gzip_bytes": 410631,
+      "capture": null
+    }
+  },
+  "pre_reward_forks": {},
+  "shards": {
+    "public": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 1344371,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus-9hv7fjo4",
+            "file": "c6ff3e7a6046e85fa01580787dce19e99e06e7261a57d864bda11204aa17db3d.json.gz",
+            "gzip_bytes": 195881,
+            "gzip_sha256": "6fb91f7e429be839af27fa9494fb46f1af69cb78cba86023880bef3027643c3d",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "c6ff3e7a6046e85fa01580787dce19e99e06e7261a57d864bda11204aa17db3d"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 15609995,
+            "end": 15610006
+          },
+          "stream": {
+            "bytes": 969837,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus-stk068ed",
+            "file": "14bb57f5618eeddf69838909ec668ac066cfbada677a8687b740fed7941c446c.json.gz",
+            "gzip_bytes": 120759,
+            "gzip_sha256": "915973413c560a9442b5757a90edb8bb42b7e14b4dda4b09ff970a687122a06b",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "14bb57f5618eeddf69838909ec668ac066cfbada677a8687b740fed7941c446c"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 764774,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus-u7e_v9d8",
+            "file": "33c428de941c444bae4adaa0b2eb754ecefa357cf8a77da9662c066090431411.json.gz",
+            "gzip_bytes": 22580,
+            "gzip_sha256": "57e00bbff2949567e9660eb72e3b0de7f2b64b972ee8ba0da7748259c57854c7",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "33c428de941c444bae4adaa0b2eb754ecefa357cf8a77da9662c066090431411"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 767127,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus-x3f8pg3e",
+            "file": "9e40a4e2196317d217682b52e42d38caba9b8756af859dfcee741ff0fdd3dfaa.json.gz",
+            "gzip_bytes": 22724,
+            "gzip_sha256": "58d088d1922e61f3db500effff739d6d683915547cbb767f6c804063a5ce195c",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "9e40a4e2196317d217682b52e42d38caba9b8756af859dfcee741ff0fdd3dfaa"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 767464,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus-5ya3t5sk",
+            "file": "42faa3df0f26e2aa5b2454d9f7ba2aaa3d78fcada5665846c4feb16c15f367c7.json.gz",
+            "gzip_bytes": 22868,
+            "gzip_sha256": "9f7cf20406a84d179362851923f6c85a43571dfb0b49e2499a4bec66d934fbca",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "42faa3df0f26e2aa5b2454d9f7ba2aaa3d78fcada5665846c4feb16c15f367c7"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "bytes": 767464,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus-rxkj4k47",
+            "file": "af5712dc5b379ef77b02a7d9af164924367ebeda1a18173fd68487a75be899f7.json.gz",
+            "gzip_bytes": 22867,
+            "gzip_sha256": "8e615d1c5a02c15df6d14f757dceabe66901ebbc0af780ff6bc6e59baecf1584",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "af5712dc5b379ef77b02a7d9af164924367ebeda1a18173fd68487a75be899f7"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "bytes": 767464,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-public-cornus-34kfyst5",
+            "file": "eb77e9d2e2ddf881274d67c9d3528b75c88b5cc8272f981e046e2fc53b84b028.json.gz",
+            "gzip_bytes": 22867,
+            "gzip_sha256": "b3cf3f727696b3961ca4d17278b1a42bb9e97d49bb65b76d0c9c190766170679",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "eb77e9d2e2ddf881274d67c9d3528b75c88b5cc8272f981e046e2fc53b84b028"
+          }
+        }
+      ]
+    },
+    "local": {
+      "0": [
+        {
+          "selector": {
+            "kind": "base"
+          },
+          "stream": {
+            "bytes": 1411709,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus-rh0p4w8h",
+            "file": "4947e56788535508ae29b67fbcf88866f3a1a5a5ef1e61efea1812145312f689.json.gz",
+            "gzip_bytes": 201542,
+            "gzip_sha256": "be1688558d8992f4259dee18c4192021f03114f7bd2b645c383833fa3ef02b7c",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "4947e56788535508ae29b67fbcf88866f3a1a5a5ef1e61efea1812145312f689"
+          }
+        },
+        {
+          "selector": {
+            "kind": "periods",
+            "first": 15609995,
+            "end": 15610006
+          },
+          "stream": {
+            "bytes": 1133950,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus-7s6n6b45",
+            "file": "5325599ba7b3c578595991317a1762026dc5ef11d1cc09301c362a1d5ce51550.json.gz",
+            "gzip_bytes": 139680,
+            "gzip_sha256": "d0244bab313636bc4aa19b3992e6d723abc1b231e76be381f17ebf4f374f0091",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "5325599ba7b3c578595991317a1762026dc5ef11d1cc09301c362a1d5ce51550"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 0,
+            "end": 7
+          },
+          "stream": {
+            "bytes": 764773,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus-57m47kn1",
+            "file": "fe839afa0f7a647cbb8cc94614cc3fd8dcbeaeffb8442703fadb9b89e91ee086.json.gz",
+            "gzip_bytes": 22577,
+            "gzip_sha256": "09798afd36f45068863ef419e08fe3cdf890106094d196fcc0a0dcbfb8622440",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "fe839afa0f7a647cbb8cc94614cc3fd8dcbeaeffb8442703fadb9b89e91ee086"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 7,
+            "end": 14
+          },
+          "stream": {
+            "bytes": 767126,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus-88w2ofap",
+            "file": "430ce6faa139f59494dee34a282036ac1dbf62e313379fbd4a2130982b2f3507.json.gz",
+            "gzip_bytes": 22722,
+            "gzip_sha256": "b6337413ca8b0c47c258d6e88ff87fc42c21d86b8a12537ce7319b8675b05391",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "430ce6faa139f59494dee34a282036ac1dbf62e313379fbd4a2130982b2f3507"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 14,
+            "end": 21
+          },
+          "stream": {
+            "bytes": 767463,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus-u82iupgi",
+            "file": "addedecb53c0c71400181c16256f7ee3500bf1f9c718708ddcc6e7ef0b7f93ec.json.gz",
+            "gzip_bytes": 22865,
+            "gzip_sha256": "469b545c0ec40205ff232a02420ed9bdd40ad96fd8c894de8d77c58a7a5e9872",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "addedecb53c0c71400181c16256f7ee3500bf1f9c718708ddcc6e7ef0b7f93ec"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 21,
+            "end": 28
+          },
+          "stream": {
+            "bytes": 767463,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus-wvczgcxo",
+            "file": "29c4dfdf8ee928443cf4f92345558c5cf78602b92ea1304e0b08982251b9b225.json.gz",
+            "gzip_bytes": 22864,
+            "gzip_sha256": "39e672f29e5bc690ba0377f19aa6d5cdcb12b4269778e5deaf97337814ed1698",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "29c4dfdf8ee928443cf4f92345558c5cf78602b92ea1304e0b08982251b9b225"
+          }
+        },
+        {
+          "selector": {
+            "kind": "api",
+            "first": 28,
+            "end": 35
+          },
+          "stream": {
+            "bytes": 767463,
+            "capture": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/era-local-cornus-4abork4b",
+            "file": "08524896a6d166c83881bb50f68599b66142ff2822bce499fc07b2c0ce2b60ca.json.gz",
+            "gzip_bytes": 22864,
+            "gzip_sha256": "402e82716d6c7a6b227e2f29e672a2f4f6df9cf55a974145939fb533bb08007d",
+            "root": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/shard-streams",
+            "sha256": "08524896a6d166c83881bb50f68599b66142ff2822bce499fc07b2c0ce2b60ca"
+          }
+        }
+      ]
+    }
+  },
+  "comparison": {
+    "version": "mainnet-era-reward-comparison-v2",
+    "support_sha256": "b51faffca52afaa25c863a5459e5b817aa40d808966624c4d3179ecd8ef4aa8f",
+    "streams": {
+      "public": "4d356e9148f2df2a915d9acdc89293cd1cfda5c9963033c85154fc86fba207ce",
+      "local": "b74a490955da4e54bf5dbdf1bbc5257e7180a2f970ef633d8debea2e6abc5cbe"
+    },
+    "forks": {}
+  },
+  "cpp_estimates": {
+    "file": "136044f00a32b4b64f9819d7fe241cf3d899d95da6e21b59dfc37735a2dd7180.cpp-estimates.json",
+    "sha256": "136044f00a32b4b64f9819d7fe241cf3d899d95da6e21b59dfc37735a2dd7180",
+    "bytes": 21445
+  }
+}

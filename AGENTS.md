@@ -1,3 +1,5 @@
+> Current run: the owner-approved [Rust EVM cutover addendum](doc/evm_research/n6_rust_cutover_task_policy.md) supersedes conflicting scope and process rules below for root run 01a17dec. Historical run records remain unchanged.
+
 # Repository Guidelines
 
 This repository is the Rust rewrite track for Taraxa. Keep day-to-day work aligned with the rewrite plan in `PLAN.md`.

@@ -1,3 +1,5 @@
+> Current run: the owner-approved [Rust EVM cutover addendum](n6_rust_cutover_task_policy.md) supersedes conflicting scope and process rules below for root run 01a17dec. Historical run records remain unchanged.
+
 # Compatible EVM/state rewrite implementation plan
 
 Status: implementation plan; production routing and protocol changes remain unauthorized. This plan follows the
@@ -188,7 +190,7 @@ Astra when authority or difficult semantics remain unresolved.
 | Focused helper | `gpt-6-luna`, medium for maps/docs; high for settled bounded implementation | Inventories, report tooling and specified mechanical changes; no independent consensus/publication authority |
 
 The October 1 [first pilot audit](n6_token_usage_pilot_2026_10_01_audit.md) and
-[executed lifecycle audit](../../token_usage_audit_01a0f7e8.md) record Sol-medium
+[executed lifecycle audit](history/session_reports/token_usage_audit_01a0f7e8.md) record Sol-medium
 roots. The earlier Astra-lead runtime evidence remains in the September 30
 record. This routing is a bounded pilot, not proof of model equivalence or a
 switch to the live session. Confirm the actual root model at startup. Review

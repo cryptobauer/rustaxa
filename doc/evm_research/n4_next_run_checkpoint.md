@@ -1,54 +1,29 @@
-# N4 fixed VRF successor checkpoint — October 13
+# N4 checkpoint:61constructors;GEN30 full60 fix accepted,recovery pending
 
-Accepted source HEAD `b16511d9eeee881397ef70e5c46dc736927ff326` is local only.
-Voters eight, nine and ten each close 47 new facts. Total 490 facts and ten complete
-48-period voters are accepted. All ready fixed successors are complete. Never
-rerun any historical or new consumed capture marker.
+Authoritative [source190 checkpoint](/home/fry/artifacts/vrf40-role61-20261025-round162/checkpoint-214-source190-final-v2.json).
+GEN29/source189 passed61 in actual generation,completed61/81,failed60.
+Full61/related archive six-test occurrence accepted. GEN30 full60positive rerun plus
+three exact unchanged passing scopes accepted. All144required reads completed;
+constructor1,540,233bytes,review1,583,203 under2MiB.
 
-R is `/home/fry/artifacts/n4-vrf-successors-01a13763-641e-7371-96ad-102630143805-20261013`.
-R/checkpoint-final.md records final documentation HEAD and quota.
-[Successor record](n4_fixed_vrf_successors.md) gives the finite authority, APIs,
-source mapping, gates, exact READY and independent fact evidence.
-Historical shared-trial freezes and captures remain unchanged.
+Stale profile caused the earlier positive failure:index-only update was insufficient.
+Actual current190profile from reviewed namespace passed full authentication and
+positive rerun. Standalone profile wire peak1,994,821 is OFFLINE_PREFIX_ONLY,not
+normal producer caller/fit acceptance. Correct pre-role60controls1,067,394 excludes
+bodies created by failed attempt. No GEN30producer/recovery ran.
 
-All three commands have 314 occurrences and at most 416065967 pinned bytes.
-Each independent outcome charges its own fixed parent:345 occurrences and at
-most 417158352 bytes. Every instance preserves all 180 historical evidence
-occurrences, including reviewed current instruction successors. The reviewed
-metadata-fit supplement excludes 31 optional new duplicate representations;
-no old occurrence, source/binary pin, mandatory proof or cap was removed.
-Spec sizes 65434/65422/65422 and freezes 77303/77284/77284 fit unchanged 64 KiB/128 KiB.
+Stop:development time. Next B needs4,020seconds,remaining1,905.091;deficit2,114.909.
+Sol capacity expired;old overruns/UNKNOWNs retained,no deadline reset.
+Old87-to67 quota closed76%,11points used/9unused. Historical telemetry is not
+current authority;no fresh token audit.
+A consumed176Mreads/32MiBretention/1536units. B/C unconsumed fully held352Mreads/
+64MiBretention/3072units. No artifact,0/16fits,805/109/new0,effective214/durable8.
+Public guard/cold bridge open;no commit/push/production/physical capture.
 
-Source closure 74 Rust/owner paths plus two Python sources totals 1319694 bytes.
-Only the shared engine changes among the old 68 Rust paths;67 are unchanged.
-Six fixed CLIs are added. Gates 186 package/three focused/22 tool/one parity,
-18 actual argv controls, fmt/clippy/all-bin, fast 2130 and actual source hook 2130
-pass. Storage 172/ONbridge 4 evidence reuse has 106 exact unchanged pin occurrences,
-cache and evidence checks. No storage, C++ or production route changed.
-
-Each capture ran once. Lead and independent full 98-proof reports match byte
-for byte. Fresh 71-prior proof barriers and all 13 ceilings remain. All 141 new
-values are nonzero 32-byte logical Members with matching physical Present
-provenance. Every original-profile reverse rejects at Identity/Payload/index 0,
-with zero payload tuples and all qualification flags false. Fixed three metadata
-records match before/after; this is narrower than full database preservation.
-
-Fresh lead quota baseline 97%, floor 87%, reset 1792497899.
-Same-session resume keeps R/quota-budget.json. R/final-quota.json owns the final
-observation. The run ends after the ready fixed set is complete, below the ten-point
-limit. Allowance is separate from tokens and billing. Timing and corrections
-are in R/timing-record.json. Requested Sol 6.1-medium lead/reviewer, Luna-medium
-map and Astra-medium authority all ran; child runtimes remain unknown.
-R/routing-correction.md corrects earlier reviewer model transcription.
-
-Remaining 424 VRF + 1828 stake/jail=2252 voter rows, lambda 48 provenance, raw expected
-cache RLP 48, producer/configuration/custody/policy/export authority, weights/cache
-equality, owner/public finality and real 19-transfer replay remain open.
-No broader N4 closure, production routing, push or broad campaign is authorized.
-
-Next action: choose one remaining finite VRF or stake/jail dependency and settle
-its authenticated inputs, source closure and proof contract before implementation.
-The accepted ten-candidate complete set is exhausted; no automatic eleventh
-profile or retargeted consumed command is allowed. Further N4 acceptance needs
-the external provenance and real replay inputs above. Do not repeat this completed
-run merely because the prior preparation prompt still names voter eight.
+[Prompt](../../next_executable_slice_prompt.md) proposes NEW20points,no pooling,
+DEVELOPMENT32MiBretention/192MiBreads/43,200seconds/12,288units for current controls/
+profile/bindings,all actor work and complete B/C/failure/terminal/closeout chain.
+Reuse held B/C only after exact admission;documents activate none,user sends authority.
+Next:reuse accepted fix,preflight actual profile consumer pins,coherent new bindings,
+full-chain review,long work before final fresh pins,prompt GEN30execution/funded C.
+Runtime/attempt limits fixed;pruning deferred.

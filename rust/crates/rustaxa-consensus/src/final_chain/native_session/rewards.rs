@@ -44,7 +44,9 @@ impl FinalChainNativeSession<'_> {
     /// Finishes one bound session through rewards and deferred DPoS end-block writes.
     ///
     /// The opaque plan must belong to this exact request and pending period. The
-    /// current adapter accepts Magnolia reward periods and ordered zero-or-more
+    /// current adapter accepts pre-Magnolia periods only with Complete owned
+    /// validator shapes and proven source-period fee exclusion, and accepts
+    /// Magnolia reward periods and ordered zero-or-more
     /// distribution rows with any number of validators and previously committed
     /// jailed-validator lists whose membership changes at this period. An
     /// all-future nonempty list, a decreasing Magnolia-to-Cacti jail duration,
@@ -111,9 +113,10 @@ impl FinalChainNativeSession<'_> {
             .validate_external_evm_rewards_stats_plan(plan)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
 
-        if self
+        if (self
             .final_chain
             .pre_magnolia_fee_reward_period(self.pending_period)
+            && !self.dpos_state.has_complete_validator_shapes())
             || self.pending_period == self.final_chain.rewards_config.fix_redelegate_block_num
         {
             return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
@@ -121,6 +124,16 @@ impl FinalChainNativeSession<'_> {
         self.validate_committed_slashing_cleanup_scope()?;
         let distributions = decode_rewards_block_distributions(&plan.distribution_stats)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        // decode_rewards_block_distributions carries each source period from
+        // the authenticated opaque plan, not the current payout coordinate.
+        validate_source_period_fee_exclusion(
+            self.final_chain.rewards_config.magnolia_period,
+            &distributions,
+        )?;
+        validate_cached_source_period_fee_exclusion(
+            self.final_chain.rewards_config.magnolia_period,
+            plan,
+        )?;
         let rewards_enabled = self.final_chain.rewards_config.yield_percentage != 0;
 
         let mut trace = FinalChainNativeRawTrace::new(state);
@@ -835,11 +848,52 @@ impl FinalChain {
     }
 }
 
+fn validate_cached_source_period_fee_exclusion(
+    magnolia: FinalChainBlockNumber,
+    plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
+) -> std::result::Result<(), FinalChainNativeSessionError> {
+    if plan.storage_update.cache_current_period {
+        if plan.storage_update.current_period != plan.period
+            || plan.storage_update.current_block_stats_rlp.is_empty()
+        {
+            return Err(FinalChainNativeSessionError::RewardsPlanMismatch);
+        }
+        let source = RewardsStatsPeriodRlp {
+            period: plan.storage_update.current_period.as_u64(),
+            data: plan.storage_update.current_block_stats_rlp.clone(),
+        };
+        let decoded = decode_rewards_block_distributions(&[source])
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        validate_source_period_fee_exclusion(magnolia, &decoded)?;
+    }
+    Ok(())
+}
+
+fn validate_source_period_fee_exclusion(
+    magnolia: FinalChainBlockNumber,
+    distributions: &[RewardsBlockDistribution],
+) -> std::result::Result<(), FinalChainNativeSessionError> {
+    for source in distributions {
+        if source.period < magnolia.as_u64()
+            && source
+                .validators_stats
+                .values()
+                .any(|validator| !validator.fees_rewards.is_zero())
+        {
+            return Err(FinalChainNativeSessionError::Domain(
+                "pre-Magnolia source statistics contain unexplained native fee rewards".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ethereum_types::H160;
     use rustaxa_storage::{Config, Storage};
+    use rustaxa_types::concrete_state::ConcreteStateIdentity;
     use rustaxa_types::{FinalChainAccountBalance, GenesisValidatorMetadata};
     use serde_json::Value;
     use std::cell::{Cell, RefCell};
@@ -1007,6 +1061,45 @@ mod tests {
         distribution_frequency: u32,
         test: impl FnOnce(&FinalChain),
     ) {
+        with_reward_chain_setup_for_magnolia(
+            yield_percentage,
+            cacti_period,
+            magnolia_jail_time,
+            cacti_jail_time,
+            distribution_frequency,
+            FinalChainBlockNumber::GENESIS,
+            test,
+        );
+    }
+    fn with_reward_chain_setup_for_magnolia(
+        yield_percentage: u16,
+        cacti_period: FinalChainBlockNumber,
+        magnolia_jail_time: u64,
+        cacti_jail_time: u64,
+        distribution_frequency: u32,
+        magnolia_period: FinalChainBlockNumber,
+        test: impl FnOnce(&FinalChain),
+    ) {
+        with_owned_reward_chain_setup(
+            yield_percentage,
+            cacti_period,
+            magnolia_jail_time,
+            cacti_jail_time,
+            distribution_frequency,
+            magnolia_period,
+            |chain| test(&chain),
+        );
+    }
+
+    fn with_owned_reward_chain_setup(
+        yield_percentage: u16,
+        cacti_period: FinalChainBlockNumber,
+        magnolia_jail_time: u64,
+        cacti_jail_time: u64,
+        distribution_frequency: u32,
+        magnolia_period: FinalChainBlockNumber,
+        test: impl FnOnce(Arc<FinalChain>),
+    ) {
         let path = temp_db_path();
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = |address, delegator, stake: u64, commission| GenesisValidator {
@@ -1020,65 +1113,66 @@ mod tests {
                 ..Default::default()
             },
         };
-        let chain = FinalChain::new_with_rewards_config_and_ficus_activation(
-            storage.clone(),
-            1_000_000.into(),
-            0,
-            crate::FinalChainGenesisAllocation {
-                accounts: if distribution_frequency == 2 {
-                    [(DELEGATOR_ONE, 1_000_u64), (DELEGATOR_TWO, 1_000)]
-                        .into_iter()
-                        .map(|(address, balance)| GenesisAccount {
-                            address,
-                            balance: FinalChainAccountBalance::from_cpp_genesis_bytes(
-                                &U256::from(balance).to_big_endian(),
-                            )
-                            .unwrap(),
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
+        let chain = Arc::new(
+            FinalChain::new_with_rewards_config_and_ficus_activation(
+                storage.clone(),
+                1_000_000.into(),
+                0,
+                crate::FinalChainGenesisAllocation {
+                    accounts: if distribution_frequency == 2 {
+                        [(DELEGATOR_ONE, 1_000_u64), (DELEGATOR_TWO, 1_000)]
+                            .into_iter()
+                            .map(|(address, balance)| GenesisAccount {
+                                address,
+                                balance: FinalChainAccountBalance::from_cpp_genesis_bytes(
+                                    &U256::from(balance).to_big_endian(),
+                                )
+                                .unwrap(),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                    validators: vec![
+                        validator(VALIDATOR_ONE, DELEGATOR_ONE, 1_000, 100),
+                        validator(VALIDATOR_TWO, DELEGATOR_TWO, 2_000, 2_500),
+                    ],
                 },
-                validators: vec![
-                    validator(VALIDATOR_ONE, DELEGATOR_ONE, 1_000, 100),
-                    validator(VALIDATOR_TWO, DELEGATOR_TWO, 2_000, 2_500),
-                ],
-            },
-            GenesisDposConfig {
-                eligibility_balance_threshold: U256::from(100).into(),
-                vote_eligibility_balance_step: U256::from(10).into(),
-                validator_maximum_stake: U256::from(1_000_000).into(),
-                minimum_deposit: U256::one().into(),
-                ..Default::default()
-            },
-            FinalChainRewardsConfig {
-                committee_size: 10,
-                magnolia_period: FinalChainBlockNumber::GENESIS,
-                aspen_part_one_period: FinalChainBlockNumber::GENESIS,
-                aspen_part_two_period: 1.into(),
-                fix_redelegate_block_num: FinalChainBlockNumber::MAX,
-                max_block_author_reward_percent: 10,
-                dag_proposers_reward_percent: 50,
-                yield_percentage,
-                dpos_blocks_per_year: 10,
-                cornus_period: FinalChainBlockNumber::GENESIS,
-                genesis_balance_sum: Some(DposTokenAmount::from(U256::from(5_000))),
-                aspen_max_supply: DposTokenAmount::from(U256::from(6_000)),
-                aspen_generated_rewards: DposTokenAmount::zero(),
-                cacti_period,
-                magnolia_jail_time,
-                cacti_jail_time,
-                rewards_distribution_frequency: vec![(
-                    FinalChainBlockNumber::GENESIS,
-                    distribution_frequency,
-                )],
-                ..Default::default()
-            },
-            FinalChainBlockNumber::GENESIS,
-        )
-        .unwrap();
-        test(&chain);
-        drop(chain);
+                GenesisDposConfig {
+                    eligibility_balance_threshold: U256::from(100).into(),
+                    vote_eligibility_balance_step: U256::from(10).into(),
+                    validator_maximum_stake: U256::from(1_000_000).into(),
+                    minimum_deposit: U256::one().into(),
+                    ..Default::default()
+                },
+                FinalChainRewardsConfig {
+                    committee_size: 10,
+                    magnolia_period,
+                    aspen_part_one_period: FinalChainBlockNumber::GENESIS,
+                    aspen_part_two_period: 1.into(),
+                    fix_redelegate_block_num: FinalChainBlockNumber::MAX,
+                    max_block_author_reward_percent: 10,
+                    dag_proposers_reward_percent: 50,
+                    yield_percentage,
+                    dpos_blocks_per_year: 10,
+                    cornus_period: FinalChainBlockNumber::GENESIS,
+                    genesis_balance_sum: Some(DposTokenAmount::from(U256::from(5_000))),
+                    aspen_max_supply: DposTokenAmount::from(U256::from(6_000)),
+                    aspen_generated_rewards: DposTokenAmount::zero(),
+                    cacti_period,
+                    magnolia_jail_time,
+                    cacti_jail_time,
+                    rewards_distribution_frequency: vec![(
+                        FinalChainBlockNumber::GENESIS,
+                        distribution_frequency,
+                    )],
+                    ..Default::default()
+                },
+                FinalChainBlockNumber::GENESIS,
+            )
+            .unwrap(),
+        );
+        test(chain);
         drop(storage);
         let _ = crate::closeout_test_scratch::dispose(path);
     }
@@ -1163,6 +1257,206 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    #[test]
+    fn pre_magnolia_source_period_fees_are_classified_from_each_bound_record() {
+        let accepted = decode_rewards_block_distributions(&[
+            distribution_rlp(9, VALIDATOR_ONE, VALIDATOR_ONE, 0),
+            distribution_rlp(10, VALIDATOR_TWO, VALIDATOR_TWO, 17),
+        ])
+        .unwrap();
+        assert_eq!(
+            accepted.iter().map(|row| row.period).collect::<Vec<_>>(),
+            vec![9, 10]
+        );
+        validate_source_period_fee_exclusion(10.into(), &accepted).unwrap();
+        let invalid = decode_rewards_block_distributions(&[
+            distribution_rlp(9, VALIDATOR_ONE, VALIDATOR_ONE, 11),
+            distribution_rlp(10, VALIDATOR_TWO, VALIDATOR_TWO, 17),
+        ])
+        .unwrap();
+        assert!(validate_source_period_fee_exclusion(10.into(), &invalid).is_err());
+        validate_source_period_fee_exclusion(0.into(), &invalid).unwrap();
+    }
+
+    #[test]
+    fn pre_magnolia_cached_source_fees_require_bound_source_period_and_zero_fee() {
+        let mut prepared = plan(Vec::new());
+        prepared.period = 9.into();
+        prepared.expected_prior_head = 8.into();
+        prepared.storage_update.cache_current_period = true;
+        prepared.storage_update.current_period = 9.into();
+        prepared.storage_update.current_block_stats_rlp =
+            distribution_rlp(9, VALIDATOR_ONE, VALIDATOR_ONE, 11).data;
+        assert!(validate_cached_source_period_fee_exclusion(10.into(), &prepared).is_err());
+        prepared.storage_update.current_block_stats_rlp =
+            distribution_rlp(9, VALIDATOR_ONE, VALIDATOR_ONE, 0).data;
+        validate_cached_source_period_fee_exclusion(10.into(), &prepared).unwrap();
+        prepared.storage_update.current_period = 10.into();
+        assert_eq!(
+            validate_cached_source_period_fee_exclusion(10.into(), &prepared),
+            Err(FinalChainNativeSessionError::RewardsPlanMismatch)
+        );
+        prepared.period = 10.into();
+        prepared.storage_update.current_block_stats_rlp =
+            distribution_rlp(10, VALIDATOR_ONE, VALIDATOR_ONE, 11).data;
+        validate_cached_source_period_fee_exclusion(10.into(), &prepared).unwrap();
+    }
+
+    struct PreMagnoliaRewardFault<'a> {
+        state: &'a RewardState,
+        key: ConcreteStorageKey,
+        mode: u8,
+    }
+    impl FinalChainNativeStateRead for PreMagnoliaRewardFault<'_> {
+        fn account(
+            &self,
+            address: [u8; 20],
+        ) -> std::result::Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+            self.state.account(address)
+        }
+        fn raw_storage(
+            &self,
+            address: [u8; 20],
+            key: &ConcreteStorageKey,
+        ) -> std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+            if address == DPOS_CONTRACT_ADDRESS && *key == self.key {
+                return match self.mode {
+                    0 => Err(FinalChainNativeStateReadError::State(
+                        ConcreteReadError::HistoryUnavailable(ConcreteStateIdentity {
+                            period: 0.into(),
+                            state_root: [0; 32],
+                        }),
+                    )),
+                    1 => Ok(ConcreteRead::Present(vec![0xff])),
+                    _ => Ok(ConcreteRead::Absent),
+                };
+            }
+            self.state.raw_storage(address, key)
+        }
+    }
+
+    #[test]
+    fn pre_magnolia_terminal_rewards_keep_nonzero_mint_no_pbft_credit_and_fault_isolation() {
+        with_reward_chain_setup_for_magnolia(
+            20,
+            FinalChainBlockNumber::MAX,
+            0,
+            0,
+            1,
+            10.into(),
+            |chain| {
+                let reward_plan = plan(vec![distribution_rlp(1, VALIDATOR_ONE, VALIDATOR_ONE, 0)]);
+                let mut probe = chain
+                    .begin_native_session_bound(reward_plan.request_id, 1.into(), 0.into())
+                    .unwrap();
+                let before = probe.dpos_state.clone();
+                assert!(before.has_complete_validator_shapes());
+                let state = RewardState::from_snapshot(&before);
+                let successful = probe.finish_rewards(&reward_plan, &state).unwrap();
+                assert!(!successful.total_reward.is_zero());
+                assert!(!before.commission_rewards.contains_key(&VALIDATOR_ONE));
+                assert!(
+                    successful
+                        .dpos_snapshot
+                        .commission_rewards
+                        .get(&VALIDATOR_ONE)
+                        .unwrap()
+                        .is_zero()
+                );
+                assert_eq!(
+                    successful.dpos_snapshot.commission_rewards[&VALIDATOR_ONE].persisted_len(),
+                    0
+                );
+                assert_eq!(
+                    successful.dpos_snapshot.validator_row_authority,
+                    before.validator_row_authority
+                );
+                assert!(
+                    successful
+                        .account_mutations
+                        .iter()
+                        .all(|mutation| match mutation {
+                            FinalChainNativeOrdinaryMutation::BalanceReplace {
+                                address, ..
+                            }
+                            | FinalChainNativeOrdinaryMutation::Touch { address, .. }
+                            | FinalChainNativeOrdinaryMutation::EnsureExists { address, .. }
+                            | FinalChainNativeOrdinaryMutation::NonceReplace { address, .. } =>
+                                *address == DPOS_CONTRACT_ADDRESS,
+                        })
+                );
+                assert_eq!(
+                    probe.finish_rewards(&reward_plan, &state),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                );
+                let key = ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &VALIDATOR_ONE]));
+                assert!(
+                    state
+                        .raw_reads
+                        .borrow()
+                        .iter()
+                        .any(|((address, k), _)| *address == DPOS_CONTRACT_ADDRESS && *k == key.0)
+                );
+                for mode in 0..3 {
+                    let mut session = chain
+                        .begin_native_session_bound(reward_plan.request_id, 1.into(), 0.into())
+                        .unwrap();
+                    let state = RewardState::from_snapshot(&before);
+                    let rows = state.rows.borrow().clone();
+                    let balance = state.dpos_balance.borrow().clone();
+                    let fault = PreMagnoliaRewardFault {
+                        state: &state,
+                        key,
+                        mode,
+                    };
+                    let error = session.finish_rewards(&reward_plan, &fault).unwrap_err();
+                    assert!(
+                        if mode == 0 {
+                            matches!(error, FinalChainNativeSessionError::StateRead(_))
+                        } else {
+                            matches!(error, FinalChainNativeSessionError::RawIntegrity(_))
+                        },
+                        "{error:?}"
+                    );
+                    assert!(session.aborted);
+                    assert_eq!(session.dpos_state, before);
+                    assert_eq!(*state.rows.borrow(), rows);
+                    assert_eq!(*state.dpos_balance.borrow(), balance);
+                    assert_eq!(
+                        session.finish_rewards(&reward_plan, &state),
+                        Err(FinalChainNativeSessionError::Aborted)
+                    );
+                    let mut retry = chain
+                        .begin_native_session_bound(reward_plan.request_id, 1.into(), 0.into())
+                        .unwrap();
+                    assert_eq!(
+                        retry.finish_rewards(&reward_plan, &state).unwrap(),
+                        successful
+                    );
+                }
+                let mut incomplete = chain
+                    .begin_native_session_bound(reward_plan.request_id, 1.into(), 0.into())
+                    .unwrap();
+                incomplete.dpos_state.validator_row_authority =
+                    ValidatorRowAuthority::CompatibilityOnly;
+                assert_eq!(
+                    incomplete.finish_rewards(&reward_plan, &state),
+                    Err(FinalChainNativeSessionError::RewardsScopeUnsupported)
+                );
+                let bad_plan = plan(vec![distribution_rlp(1, VALIDATOR_ONE, VALIDATOR_ONE, 11)]);
+                let mut bad = chain
+                    .begin_native_session_bound(bad_plan.request_id, 1.into(), 0.into())
+                    .unwrap();
+                assert!(matches!(
+                    bad.finish_rewards(&bad_plan, &state),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
+                assert!(bad.aborted);
+                assert_eq!(bad.dpos_state, before);
+            },
+        );
     }
 
     fn mutation_value(mutation: &FinalChainNativeRawMutation) -> Vec<u8> {
@@ -1817,6 +2111,221 @@ mod tests {
         assert!(!plan.storage_update.clear_cached_stats);
         assert!(!plan.storage_update.current_block_stats_rlp.is_empty());
         plan
+    }
+
+    #[test]
+    fn owned_epoch_session_matches_borrowed_and_retains_owner() {
+        with_owned_reward_chain_setup(
+            1,
+            FinalChainBlockNumber::MAX,
+            0,
+            0,
+            2,
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let epoch = 73;
+                let parent = FinalChainBlockNumber::GENESIS;
+                chain
+                    .authorize_reward_scheduler_joint_startup(epoch, parent)
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(epoch).unwrap();
+                let plan = nonboundary_plan(&chain);
+                let mut borrowed = chain
+                    .begin_native_session_bound_at_state_api_epoch(
+                        plan.request_id,
+                        epoch,
+                        1.into(),
+                        parent,
+                    )
+                    .unwrap();
+                let mut owned = chain
+                    .begin_owned_native_session_bound_at_state_api_epoch(
+                        plan.request_id,
+                        epoch,
+                        1.into(),
+                        parent,
+                    )
+                    .unwrap();
+                assert_eq!(borrowed.dpos_state, owned.dpos_state);
+                assert_eq!(borrowed.eligibility_state, owned.eligibility_state);
+                assert_eq!(borrowed.eligibility_period, owned.eligibility_period);
+                assert_eq!(borrowed.next_sequence, owned.next_sequence);
+                assert_eq!(
+                    borrowed.period_start_total_vote_count,
+                    owned.period_start_total_vote_count
+                );
+                assert_eq!(
+                    borrowed.period_start_amount_delegated,
+                    owned.period_start_amount_delegated
+                );
+                let state_a = RewardState::from_snapshot(&borrowed.dpos_state);
+                let state_b = RewardState::from_snapshot(&owned.dpos_state);
+                let mut wrong_plan = plan.clone();
+                wrong_plan.request_id[0] ^= 1;
+                assert!(matches!(
+                    borrowed.finish_rewards(&wrong_plan, &state_a),
+                    Err(FinalChainNativeSessionError::RewardsPlanMismatch)
+                ));
+                assert!(matches!(
+                    owned.finish_rewards(&wrong_plan, &state_b),
+                    Err(FinalChainNativeSessionError::RewardsPlanMismatch)
+                ));
+                let request = delegate_request();
+                let qa = borrowed.prepare(&request, &state_a).unwrap();
+                let qb = owned.prepare(&request, &state_b).unwrap();
+                assert_eq!(qa, qb);
+                assert!(matches!(
+                    borrowed.finish_rewards(&plan, &state_a),
+                    Err(FinalChainNativeSessionError::QuoteOutstanding)
+                ));
+                assert!(matches!(
+                    owned.finish_rewards(&plan, &state_b),
+                    Err(FinalChainNativeSessionError::QuoteOutstanding)
+                ));
+                let a = borrowed.invoke(&request, qa, &state_a).unwrap();
+                let b = owned.invoke(&request, qb, &state_b).unwrap();
+                assert_eq!(a, b);
+                let FinalChainNativeInvocationResult::Completed(outcome) = a else {
+                    panic!("delegate gas")
+                };
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                for mutation in &outcome.raw_mutations {
+                    state_a.apply(mutation);
+                    state_b.apply(mutation);
+                }
+                state_a.set_dpos_balance(3100);
+                state_b.set_dpos_balance(3100);
+                let ra = borrowed.finish_rewards(&plan, &state_a).unwrap();
+                let rb = owned.finish_rewards(&plan, &state_b).unwrap();
+                assert_eq!(ra, rb);
+                assert_eq!(*state_a.raw_reads.borrow(), *state_b.raw_reads.borrow());
+                assert!(matches!(
+                    borrowed.finish_rewards(&plan, &state_a),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                ));
+                assert!(matches!(
+                    owned.finish_rewards(&plan, &state_b),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                ));
+                drop(borrowed);
+                drop(owned);
+                let mut lifetime_session = chain
+                    .begin_owned_native_session_bound_at_state_api_epoch(
+                        plan.request_id,
+                        epoch,
+                        1.into(),
+                        parent,
+                    )
+                    .unwrap();
+                let lifetime_state = RewardState::from_snapshot(&lifetime_session.dpos_state);
+                let weak = Arc::downgrade(&chain);
+                drop(chain);
+                assert!(weak.upgrade().is_some());
+                let quote = lifetime_session.prepare(&request, &lifetime_state).unwrap();
+                let result = lifetime_session
+                    .invoke(&request, quote, &lifetime_state)
+                    .unwrap();
+                assert!(matches!(
+                    result,
+                    FinalChainNativeInvocationResult::Completed(_)
+                ));
+                drop(lifetime_session);
+                assert!(weak.upgrade().is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn owned_epoch_session_preserves_constructor_rejections() {
+        with_owned_reward_chain_setup(
+            1,
+            FinalChainBlockNumber::MAX,
+            0,
+            0,
+            2,
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let parent = FinalChainBlockNumber::GENESIS;
+                chain
+                    .authorize_reward_scheduler_joint_startup(73, parent)
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(73).unwrap();
+                for (epoch, pending, expected_parent) in [(74, 1, 0), (73, 2, 0), (73, 2, 1)] {
+                    let a = chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x74; 32],
+                            epoch,
+                            pending.into(),
+                            expected_parent.into(),
+                        )
+                        .err()
+                        .unwrap();
+                    let b = chain
+                        .begin_owned_native_session_bound_at_state_api_epoch(
+                            [0x74; 32],
+                            epoch,
+                            pending.into(),
+                            expected_parent.into(),
+                        )
+                        .err()
+                        .unwrap();
+                    assert_eq!(a, b);
+                }
+                assert_eq!(chain.last_block_number_typed().unwrap(), parent);
+            },
+        );
+    }
+
+    #[test]
+    fn owned_epoch_session_abort_isolated_from_fresh_retry() {
+        with_owned_reward_chain_setup(
+            1,
+            FinalChainBlockNumber::MAX,
+            0,
+            0,
+            2,
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let parent = FinalChainBlockNumber::GENESIS;
+                chain
+                    .authorize_reward_scheduler_joint_startup(73, parent)
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(73).unwrap();
+                let plan = nonboundary_plan(&chain);
+                let mut failed = chain
+                    .begin_owned_native_session_bound_at_state_api_epoch(
+                        plan.request_id,
+                        73,
+                        1.into(),
+                        parent,
+                    )
+                    .unwrap();
+                let state = RewardState::from_snapshot(&failed.dpos_state);
+                state
+                    .rows
+                    .borrow_mut()
+                    .remove(&(DPOS_CONTRACT_ADDRESS, concrete_storage_key(&[&[4]])));
+                assert!(matches!(
+                    failed.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::RawIntegrity(_))
+                ));
+                assert!(matches!(
+                    failed.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                ));
+                let mut retry = chain
+                    .begin_owned_native_session_bound_at_state_api_epoch(
+                        plan.request_id,
+                        73,
+                        1.into(),
+                        parent,
+                    )
+                    .unwrap();
+                let fresh = RewardState::from_snapshot(&retry.dpos_state);
+                retry.finish_rewards(&plan, &fresh).unwrap();
+                assert_eq!(chain.last_block_number_typed().unwrap(), parent);
+            },
+        );
     }
 
     #[test]

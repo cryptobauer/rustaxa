@@ -39,6 +39,20 @@ impl FinalChainSyntheticDonor {
 }
 
 impl FinalChain {
+    /// Plans bound rewards from explicitly declared synthetic component facts.
+    ///
+    /// This test-only seam preserves the private planner's head, generation and
+    /// request checks and returns its opaque plan unchanged. It does not write
+    /// storage, publish a period or authenticate a real-network input bundle.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn plan_synthetic_external_evm_rewards_stats(
+        &self,
+        request_id: [u8; 32],
+        fact: FinalizedRewardsPeriodFact,
+    ) -> Result<FinalChainPreparedExternalEvmRewardsStatsPlan> {
+        self.plan_external_evm_rewards_stats(request_id, fact)
+    }
+
     fn synthetic_donor_policy(&self) -> DonorPolicy {
         DonorPolicy {
             genesis_root: self.genesis_state_root,
@@ -119,7 +133,7 @@ impl FinalChain {
             header.state_root.0 == source.state_root,
             "SYNTHETIC_DONOR_HEADER_ROOT"
         );
-        let snapshot = self.dpos_snapshot_at_finalized_block(source.period)?;
+        let mut snapshot = self.dpos_snapshot_at_finalized_block(source.period)?;
         let encoded = encode_dpos_snapshot_rlp(&snapshot)?;
         anyhow::ensure!(
             self.storage
@@ -180,6 +194,17 @@ impl FinalChain {
                 "SYNTHETIC_DONOR_DUPLICATE_SLOT"
             );
         }
+        // Full catalog values above are authenticated against the one committed
+        // source root, including explicit NonMember proofs for retained absences.
+        let bound_rows = raw
+            .iter()
+            .map(|(slot, value)| ((slot.address, slot.key), value.clone()))
+            .collect();
+        snapshot = stage_validator_rows_from_authenticated_catalog(
+            &snapshot,
+            &bound_rows,
+            source.period >= self.rewards_config.magnolia_period,
+        )?;
         let canonical = canonical_concrete_precompile_storage(
             &snapshot,
             source.period >= self.rewards_config.magnolia_period,
@@ -240,9 +265,17 @@ impl FinalChain {
             period.into(),
         );
         anyhow::ensure!(
-            period < self.rewards_config.aspen_part_one_period.as_u64()
-                && frequency > 1
-                && period.is_multiple_of(u64::from(frequency)),
+            period < self.rewards_config.aspen_part_one_period.as_u64(),
+            "SYNTHETIC_LEGACY_ORDER_SCOPE"
+        );
+        // Frequency one already has the deterministic current-period singleton.
+        // Authenticate that input without installing a fixture order override.
+        if frequency == 1 {
+            anyhow::ensure!(order == [period], "SYNTHETIC_LEGACY_ORDER_MEMBERSHIP");
+            return Ok(());
+        }
+        anyhow::ensure!(
+            frequency > 1 && period.is_multiple_of(u64::from(frequency)),
             "SYNTHETIC_LEGACY_ORDER_SCOPE"
         );
         let unique = order.iter().copied().collect::<BTreeSet<_>>();
@@ -428,7 +461,17 @@ impl FinalChain {
             );
             snapshot
         } else {
-            self.dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)?
+            let mut scaffold =
+                self.dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)?;
+            // This new imported identity is not the owned block0 creation.
+            // Its complete root/catalog, not constructor genesis policy, must
+            // establish shapes. The published genesis snapshot is unchanged.
+            anyhow::ensure!(
+                scaffold.retained_undelegation_counts.is_empty(),
+                "SYNTHETIC_SEED_SCAFFOLD_COUNTER_AUTHORITY"
+            );
+            scaffold.validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+            scaffold
         };
         let donor_supply = snapshot.aspen_supply_state.clone();
         let present = |key: u8| {
@@ -482,6 +525,60 @@ impl FinalChain {
             );
         }
         self.validate_aspen_supply_state(identity.period, &snapshot.aspen_supply_state)?;
+        // Bind from the actual complete root catalog, never the caller's sparse
+        // expected rows. All changes stay on this unpublished clone until every
+        // native/account/catalog check below has succeeded.
+        let mut bound_rows = donor
+            .map(|token| {
+                token
+                    .raw
+                    .iter()
+                    .map(|(slot, value)| ((slot.address, slot.key), value.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        for slot in rustaxa_types::codec::rlp::concrete_lifecycle::decode_concrete_storage_catalog(
+            &observation.catalog_rlp,
+        )? {
+            if slot.address != DPOS_CONTRACT_ADDRESS && slot.address != SLASHING_CONTRACT_ADDRESS {
+                continue;
+            }
+            let value = match reader.storage(slot.address, ConcreteStorageKey(slot.key)) {
+                Ok(ConcreteRead::Present(value)) if !value.is_empty() => Some(value),
+                Ok(ConcreteRead::Absent | ConcreteRead::Tombstone | ConcreteRead::Present(_)) => {
+                    None
+                }
+                Err(
+                    error @ rustaxa_types::concrete_state::ConcreteReadError::HistoryUnavailable(_),
+                ) => {
+                    anyhow::ensure!(
+                        donor.is_some_and(|token| token.raw.get(&slot) == Some(&None)),
+                        "SYNTHETIC_SEED_CATALOG_HISTORY_UNAVAILABLE:{error:?}"
+                    );
+                    None
+                }
+                Err(error) => return Err(error.into()),
+            };
+            bound_rows.insert((slot.address, slot.key), value);
+        }
+        let authenticated_present = bound_rows
+            .iter()
+            .filter_map(|((address, key), value)| {
+                value.as_ref().map(|_| ConcreteStorageSlot {
+                    address: *address,
+                    key: *key,
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            authenticated_present == slots_set,
+            "SYNTHETIC_SEED_FULL_NATIVE_CATALOG_MISMATCH"
+        );
+        snapshot = stage_validator_rows_from_authenticated_catalog(
+            &snapshot,
+            &bound_rows,
+            identity.period >= self.rewards_config.magnolia_period,
+        )?;
         let canonical = canonical_concrete_precompile_storage(
             &snapshot,
             identity.period >= self.rewards_config.magnolia_period,
