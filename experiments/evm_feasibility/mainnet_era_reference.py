@@ -110,17 +110,50 @@ def run(pin, label, scenario, schedule, artifact, stop=0, selector=None, frozen=
         raise ValueError("explicit bounded output selector required")
     directory = Path(tempfile.mkdtemp(prefix=f"era-{label}-{scenario['name']}-", dir=artifact))
     source = ROOT / 'submodules/taraxa-evm'
-    actual = subprocess.check_output(['rtk', 'proxy', 'git', '-C', str(source), 'rev-parse', pin + '^{commit}'], text=True).strip()
-    if actual != pin:
-        raise ValueError('Go reference pin differs')
-    archive = subprocess.check_output(['rtk', 'proxy', 'git', '-C', str(source), 'archive', pin])
-    subprocess.run(['rtk', 'proxy', 'tar', '-x', '-C', str(directory)], input=archive, check=True)
+    if scenario['name'] == 'claim_all_legacy_direct_quote_edges':
+        # Retain each setup command, bound it, and exclude forbidden paths from
+        # the archive before its bytes can be read or extracted.
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import capture_command as bounded_capture
+        def setup(name, argv, max_bytes, stdin_file=None):
+            target = directory / ('quote-setup-' + name)
+            code, status = bounded_capture.capture(target, argv, timeout_seconds=15,
+                                                    max_output_bytes=max_bytes, stdin_file=stdin_file)
+            if code != 0 or not status['capture_complete'] or status['child_exit'] != 0:
+                raise RuntimeError(f'quote-edge setup failed: {target}')
+            return target / 'stdout'
+        actual = setup('commit', ['rtk', 'proxy', 'git', '-C', str(source),
+                                  'rev-parse', pin + '^{commit}'], 1048576).read_text().strip()
+        if actual != pin:
+            raise ValueError('Go reference pin differs')
+        archive_file = setup('archive', ['rtk', 'proxy', 'git', '-C', str(source),
+            'archive', pin, '--', '.', ':!AI.md', ':!**/AI.md'], 67108864)
+        archive = archive_file.read_bytes()
+        setup('extract', ['rtk', 'proxy', 'tar', '-x', '-C', str(directory)], 1048576,
+              stdin_file=archive_file)
+    else:
+        actual = subprocess.check_output(['rtk', 'proxy', 'git', '-C', str(source), 'rev-parse', pin + '^{commit}'], text=True).strip()
+        if actual != pin:
+            raise ValueError('Go reference pin differs')
+        archive = subprocess.check_output(['rtk', 'proxy', 'git', '-C', str(source), 'archive', pin])
+        subprocess.run(['rtk', 'proxy', 'tar', '-x', '-C', str(directory)], input=archive, check=True)
     mixed.apply_raw_trace_patch(directory)
     apply_storage_catalog_patch(directory)
     command = directory / 'cmd/mainnet_era'
     command.mkdir(parents=True)
-    for name in [*mixed.SOURCES, 'native_integration_reference.go', 'mainnet_era_reference.go', 'mainnet_era_api.go', 'mainnet_era_seed.go', 'mainnet_era_actions.go', 'mainnet_era_pending.go', 'mainnet_era_code_objects.go', 'mainnet_era_catalog_test.go']:
+    names = [*mixed.SOURCES, 'native_integration_reference.go', 'mainnet_era_reference.go', 'mainnet_era_api.go', 'mainnet_era_seed.go', 'mainnet_era_actions.go', 'mainnet_era_pending.go', 'mainnet_era_code_objects.go', 'mainnet_era_catalog_test.go']
+    if scenario['name'] == 'claim_all_legacy_direct_quote_edges':
+        names.append('mainnet_era_legacy_quote_edges.go')
+    for name in names:
         raw = (HERE / name).read_bytes()
+        if name == 'mainnet_era_reference.go' and scenario['name'] == 'claim_all_legacy_direct_quote_edges':
+            # Inject only in this disposable source tree. Ordinary era Go
+            # composition and its main entry remain byte-identical.
+            needle = b' flag.Parse();body,err:=os.ReadFile(*inputPath);must(err);var input eraInput;must(json.Unmarshal(body,&input))\n'
+            addition = b" if input.Name==\"claim_all_legacy_direct_quote_edges\" {\n  if *output!=\"quote_edges\" || *first!=-1 || *end!=-1 || len(*reference)!=40 {panic(\"quote-edge exact selector/reference required\")}\n  actual:=quoteEdgeComponent(input,*observer);actual[\"reference\"]=*reference\n  must(json.NewEncoder(os.Stdout).Encode(actual));return\n }\n"
+            if raw.count(needle) != 1:
+                raise ValueError('nonunique quote-edge disposable main insertion')
+            raw = raw.replace(needle, needle + addition, 1)
         if name in ('mixed_period_reference.go', 'native_integration_reference.go'):
             if raw.count(b'func main() {') != 1:
                 raise ValueError('nonunique main entry')
@@ -199,9 +232,12 @@ def run(pin, label, scenario, schedule, artifact, stop=0, selector=None, frozen=
             raise ValueError('source object collision')
         name = str(path.relative_to(directory)) if path.is_relative_to(directory) else 'harness/' + path.name
         effective[name] = {'bytes': len(raw), 'sha256': hashed}
-    argv = ['rtk', 'proxy', 'go', 'run', '-mod=readonly',
+    argv = ['rtk', 'proxy', 'go', 'run']
+    if scenario['name'] == 'claim_all_legacy_direct_quote_edges':
+        argv.append('-p=1')
+    argv.extend(['-mod=readonly',
             '-tags=mixed_raw_trace' + (',concrete_observer' if label == 'local' else ''),
-            './cmd/mainnet_era', '--input', str(input_path), '--reference', pin, '--output', selector['kind']]
+            './cmd/mainnet_era', '--input', str(input_path), '--reference', pin, '--output', selector['kind']])
     if selector.get('first') is not None:
         argv.extend(['--first', str(selector['first']), '--end', str(selector['end'])])
     if label == 'local':
@@ -222,7 +258,9 @@ def run(pin, label, scenario, schedule, artifact, stop=0, selector=None, frozen=
         prepared['exact_retained_producer'] = digest(json.dumps(frozen, sort_keys=True).encode())
     (directory / 'command.json').write_text(json.dumps(prepared, indent=2) + '\n')
     record_live_peak(artifact, directory, 'before_child')
-    status = capture.capture_child(argv, directory, directory, timeout_seconds=600, max_output_bytes=33554432)
+    child_timeout = 80 if scenario['name'] == 'claim_all_legacy_direct_quote_edges' else 600
+    output_cap = 8388608 if scenario['name'] == 'claim_all_legacy_direct_quote_edges' else 33554432
+    status = capture.capture_child(argv, directory, directory, timeout_seconds=child_timeout, max_output_bytes=output_cap)
     record_live_peak(artifact, directory, 'child_terminated')
     if not status['capture_complete'] or status['child_exit']:
         raise RuntimeError(f'Go {label}/{scenario["name"]} failed; full capture: {directory}')

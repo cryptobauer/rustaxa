@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "decision": "ACCEPT_LEGACY_QUOTE_EDGE_PAIRED_ACTUAL",
+  "source_acceptance": {
+    "path": "/home/fry/artifacts/evm-rust-cutover-run-20261027-01a17dec/historical-closeout-20261028-01/newhist10-quote-edge-paired-actual-acceptance-01.json",
+    "sha256": "9a711216b61aac9b7705e09a32ba3edcf9ef42e0a4a3eb52da517f123b8b053e"
+  },
+  "scope": "Accepted local and public actual signed direct B-1 quote-edge transactions; transaction-only checkpoints, not end-block publication.",
+  "local": {
+    "path": "local.json",
+    "bytes": 2011137,
+    "sha256": "db6b352f190bafb61e1539d8e861474e760e6993d960f322cb5732e58bb14f45"
+  },
+  "public": {
+    "path": "public.json",
+    "bytes": 1887090,
+    "sha256": "ece1cad6fb6a5febab688ba04960fca8ba81d287e4e6f5c4ecaad64088071507"
+  }
+}

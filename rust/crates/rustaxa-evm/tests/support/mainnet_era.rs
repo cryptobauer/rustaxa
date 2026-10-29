@@ -8,6 +8,8 @@ mod api;
 mod code_objects;
 #[path = "mainnet_era_donor_negatives.rs"]
 mod donor_negatives;
+#[path = "legacy_quote_edges.rs"]
+mod legacy_quote_edges;
 
 fn corpus(name: &str) -> Result<Value> {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -1935,8 +1935,11 @@ fn legacy_capability_guards_reject_exactly() {
             }
             for (batch, depth, quote) in [(0u8, 0u16, 90_000u64), (1, 0, 45_000), (0, 1, 45_000)] {
                 for gas in [quote - 1, quote, quote + 1] {
-                    let s = session(chain);
+                    let mut s = session(chain);
+                    let before = s.dpos_state.clone();
                     let state = ReferenceState::from_snapshot(&s.dpos_state);
+                    let before_rows = state.rows.borrow().clone();
+                    let before_accounts = state.accounts.borrow().clone();
                     let mut r = legacy_request();
                     r.input[35] = batch;
                     r.depth = depth;
@@ -1944,7 +1947,54 @@ fn legacy_capability_guards_reject_exactly() {
                         r.caller = [0x77; 20];
                     }
                     r.supplied_gas = gas.into();
-                    assert_legacy_scope(s, r, &state);
+                    if depth == 1 {
+                        assert_legacy_scope(s, r, &state);
+                    } else {
+                        let q = s.prepare(&r, &state).unwrap();
+                        assert_eq!(q.required_gas.as_u64(), quote);
+                        let actual = s.invoke(&r, q, &state).unwrap();
+                        if gas < quote {
+                            assert_eq!(
+                                actual,
+                                FinalChainNativeInvocationResult::InsufficientGas {
+                                    required_gas: q.required_gas
+                                }
+                            );
+                            assert_eq!(s.dpos_state, before);
+                            assert_eq!(*state.rows.borrow(), before_rows);
+                            assert_eq!(*state.accounts.borrow(), before_accounts);
+                        } else {
+                            let FinalChainNativeInvocationResult::Completed(out) = actual else {
+                                panic!("funded quote edge")
+                            };
+                            assert_eq!(out.status, FinalChainNativeStatus::Success);
+                            assert_eq!(out.gas_used.as_u64(), quote);
+                            assert_eq!(out.output, [vec![0u8; 31], vec![1]].concat());
+                            if batch == 1 {
+                                assert!(out.raw_mutations.is_empty() && out.logs.is_empty());
+                            }
+                        }
+                    }
+                }
+                let s = session(chain);
+                let state = ReferenceState::from_snapshot(&s.dpos_state);
+                let mut below = legacy_request();
+                below.input[35] = batch;
+                below.depth = depth;
+                if depth == 1 {
+                    below.caller = [0x77; 20];
+                }
+                below.supplied_gas = (quote - 2).into();
+                assert_legacy_scope(s, below, &state);
+                if depth == 0 && batch == 0 {
+                    for gas in [quote - 1, quote, quote + 1] {
+                        let s = session(chain);
+                        let state = ReferenceState::from_snapshot(&s.dpos_state);
+                        let mut payable = legacy_request();
+                        payable.value = FinalChainNativeValue::new(BigUint::from(1u8));
+                        payable.supplied_gas = gas.into();
+                        assert_legacy_scope(s, payable, &state);
+                    }
                 }
                 let mut s = session(chain);
                 let state = ReferenceState::from_snapshot(&s.dpos_state);

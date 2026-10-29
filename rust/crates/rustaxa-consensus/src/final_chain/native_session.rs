@@ -1511,7 +1511,7 @@ impl FinalChainNativeSession<'_> {
                 self.invoke_set_commission(prepared, quote, state)
             }
             PreparedKind::LegacyClaimAll(prepared) => {
-                self.invoke_legacy_claim_all(prepared, quote, state)
+                self.invoke_legacy_claim_all(prepared, quote, state, request)
             }
             PreparedKind::ClaimAll(prepared) => self.invoke_claim_all(prepared, quote, state),
             PreparedKind::CurrentClaimAll(prepared) => {

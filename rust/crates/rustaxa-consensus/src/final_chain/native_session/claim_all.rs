@@ -182,7 +182,11 @@ impl FinalChainNativeSession<'_> {
             })?;
         let selected = end.min(validators.len()).saturating_sub(start);
         let gas = 45_000u64 * (selected.max(1) as u64);
-        if request.supplied_gas.as_u64() <= gas + 1 {
+        // The paired references qualify only the direct, value-zero edges.
+        let edge = request.depth == 0
+            && zero
+            && (gas - 1..=gas + 1).contains(&request.supplied_gas.as_u64());
+        if request.supplied_gas.as_u64() <= gas + 1 && !edge {
             return scope();
         }
         let quote = FinalChainNativeGasQuote {
@@ -209,6 +213,7 @@ impl FinalChainNativeSession<'_> {
         prepared: PreparedLegacyClaimAll,
         quote: FinalChainNativeGasQuote,
         state: &dyn FinalChainNativeStateRead,
+        request: &FinalChainNativeRequest,
     ) -> Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
         if state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.count_key)? != prepared.count_read
             || self
@@ -222,6 +227,13 @@ impl FinalChainNativeSession<'_> {
             return Err(FinalChainNativeSessionError::RawIntegrity(
                 "legacy claim-all bound count/order".into(),
             ));
+        }
+        // RequiredGas is observed but Run is not called on an underfunded
+        // frame. Reauthenticate the bound count/order without publishing effects.
+        if request.supplied_gas.as_u64() < quote.required_gas.as_u64() {
+            return Ok(FinalChainNativeInvocationResult::InsufficientGas {
+                required_gas: quote.required_gas,
+            });
         }
         let prefix = delegator_validators_prefix(prepared.caller);
         for (index, validator) in prepared.validators.iter().enumerate() {
