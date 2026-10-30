@@ -20,7 +20,7 @@ fn test_complete_vdf_workflow_small() {
     // Verify basic properties
     assert_eq!(vdf.iterations(), &Integer::from(256)); // 2^8
     assert!(*vdf.base() < *vdf.modulus());
-    assert!(*vdf.modulus() > Integer::from(0));
+    assert!(*vdf.modulus() > 0);
 
     // Test hash-to-prime functionality
     let test_input = Integer::from(42);
@@ -139,10 +139,7 @@ fn test_hash_to_prime_determinism_integration() {
         assert_eq!(result2.is_ok(), result3.is_ok());
 
         // If successful, results should be identical
-        if result1.is_ok() && result2.is_ok() && result3.is_ok() {
-            let r1 = result1.unwrap();
-            let r2 = result2.unwrap();
-            let r3 = result3.unwrap();
+        if let (Ok(r1), Ok(r2), Ok(r3)) = (result1, result2, result3) {
             assert_eq!(r1, r2);
             assert_eq!(r2, r3);
         }
@@ -225,8 +222,8 @@ fn test_large_parameter_stress() {
         let vdf = WesolowskiVdf::new(*lambda, 8, vec![1, 2], vec![7, 11]);
 
         // Should create successfully
-        assert!(*vdf.iterations() > Integer::from(0));
-        assert!(*vdf.modulus() > Integer::from(0));
+        assert!(*vdf.iterations() > 0);
+        assert!(*vdf.modulus() > 0);
 
         // Hash-to-prime should work
         let test_input = Integer::from(*lambda);
@@ -247,7 +244,7 @@ fn test_invalid_solution_rejection() {
     let verifier = WesolowskiVerifier::new(&vdf);
 
     // Test with invalid solutions
-    let invalid_solutions = vec![
+    let invalid_solutions = [
         // Empty solution
         Solution {
             first: vec![],
@@ -346,12 +343,12 @@ fn test_memory_usage_many_instances() {
     // Verify all instances are valid
     for (i, vdf) in instances.iter().enumerate() {
         assert!(
-            *vdf.iterations() > Integer::from(0),
+            *vdf.iterations() > 0,
             "Instance {} should have positive iterations",
             i
         );
         assert!(
-            *vdf.modulus() > Integer::from(0),
+            *vdf.modulus() > 0,
             "Instance {} should have positive modulus",
             i
         );
@@ -390,9 +387,9 @@ fn test_boundary_combinations() {
         let vdf = WesolowskiVdf::new(lambda, time_bits, input, modulus);
 
         // Basic sanity checks
-        assert!(*vdf.iterations() > Integer::from(0));
-        assert!(*vdf.base() >= Integer::from(0));
-        assert!(*vdf.modulus() > Integer::from(0));
+        assert!(*vdf.iterations() > 0);
+        assert!(*vdf.base() >= 0);
+        assert!(*vdf.modulus() > 0);
         assert!(*vdf.base() < *vdf.modulus());
 
         // Test hash-to-prime functionality

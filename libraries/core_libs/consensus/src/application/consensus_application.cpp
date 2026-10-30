@@ -127,19 +127,30 @@ SharedConsensusApplication createConsensusApplication(const FullNodeConfig& conf
   dag_proposer_config.cornus_dag_gas_limit = config.genesis.state.hardforks.cornus_hf.dag_gas_limit;
 
   auto application = std::make_shared<ConsensusApplication>(
-      rustaxa::create_consensus_application(
-          config.db_path.string(), TARAXA_DB_MAJOR_VERSION, TARAXA_DB_MINOR_VERSION,
-          config.genesis.genesisHash().asArray(), config.genesis.dag_genesis_block.getHash().asArray(),
-          config.dag_expiry_limit, config.max_levels_per_period, sortitionRuntimeConfigFromNodeConfig(config),
-          rustaxa::TransactionQueueConfig{config.transactions_pool_size}, gasPricerConfigFromNodeConfig(config),
-          config.propose_dag_gas_limit, std::move(pbft_config), std::move(signing_identities),
-          std::move(dag_proposer_config), config.genesis.pbft.gas_limit,
-          config.genesis.dag_genesis_block.getTimestamp(), state_api_descriptor.blk_num,
+      rustaxa::create_consensus_application(rustaxa::ConsensusApplicationBootstrapConfig{
+          rust::String(config.db_path.string()),
+          TARAXA_DB_MAJOR_VERSION,
+          TARAXA_DB_MINOR_VERSION,
+          config.genesis.genesisHash().asArray(),
+          config.genesis.dag_genesis_block.getHash().asArray(),
+          config.dag_expiry_limit,
+          config.max_levels_per_period,
+          sortitionRuntimeConfigFromNodeConfig(config),
+          config.transactions_pool_size,
+          gasPricerConfigFromNodeConfig(config),
+          config.propose_dag_gas_limit,
+          std::move(pbft_config),
+          std::move(signing_identities),
+          std::move(dag_proposer_config),
+          config.genesis.pbft.gas_limit,
+          config.genesis.dag_genesis_block.getTimestamp(),
+          state_api_descriptor.blk_num,
           state_api_descriptor.state_root.asArray(),
           config.genesis.state.hardforks.ficus_hf.bridge_contract_address.asArray(),
-          makeGenesisAccounts(config.genesis.state), makeGenesisValidators(config.genesis.state),
+          makeGenesisAccounts(config.genesis.state),
+          makeGenesisValidators(config.genesis.state),
           makeGenesisDposConfig(config.genesis.state.dpos, config.genesis.state.hardforks.magnolia_hf.block_num),
-          makeFinalChainRewardsConfig(config)),
+          makeFinalChainRewardsConfig(config)}),
       external_evm_state);
   external_evm_state->bindApplication(application);
   application->recoverExternalEvmPendingPublication(application);

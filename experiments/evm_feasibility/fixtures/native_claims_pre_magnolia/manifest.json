@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "fixture_scope": "SYNTHETIC_PRE_MAGNOLIA_COMPONENT_NOT_BOUNDARY_PARITY",
+  "public": {
+    "path": "public.json",
+    "sha256": "44ec6f821ceb73aecba4276f128d4a842480068c9f040217649fdb0042106b79"
+  },
+  "local": {
+    "path": "local.json",
+    "sha256": "44ec6f821ceb73aecba4276f128d4a842480068c9f040217649fdb0042106b79"
+  },
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  }
+}

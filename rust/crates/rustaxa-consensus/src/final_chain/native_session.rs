@@ -4265,6 +4265,148 @@ mod tests {
     }
 
     #[test]
+    fn pre_magnolia_missing_claim_authenticates_raw_absence_and_isolates_failures() {
+        const MISSING: [u8; 20] = [0x50; 20];
+        with_chain_config(
+            "pre-magnolia-missing-claim",
+            FinalChainRewardsConfig {
+                magnolia_period: 2.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            |chain| {
+                let mut request = custody_request(
+                    0,
+                    MISSING,
+                    0,
+                    address_word_input(DPOS_CLAIM_REWARDS_SELECTOR, VALIDATOR),
+                    DPOS_CLAIM_REWARDS_GAS,
+                );
+                request.depth = 0;
+                let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let before = session.dpos_state.clone();
+                let state = RawState::from_snapshot(&before, BTreeMap::new());
+                let rows_before = state.rows.borrow().clone();
+                let quote = session.prepare(&request, &state).unwrap();
+                assert_eq!(quote.required_gas.as_u64(), DPOS_CLAIM_REWARDS_GAS);
+                let outcome = session.invoke(&request, quote, &state).unwrap();
+                let FinalChainNativeInvocationResult::Completed(outcome) = outcome else {
+                    panic!("missing claim must complete with contract failure");
+                };
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Delegation does not exist".to_owned(),
+                    }
+                );
+                assert_eq!(outcome.gas_used, quote.required_gas);
+                assert!(outcome.output.is_empty() && outcome.logs.is_empty());
+                assert!(outcome.raw_mutations.is_empty() && outcome.account_mutations.is_empty());
+                assert_eq!(state.account_reads.get(), 0);
+                assert_eq!(session.dpos_state, before);
+                assert_eq!(*state.rows.borrow(), rows_before);
+                assert!(
+                    state
+                        .read_keys
+                        .borrow()
+                        .contains(&custody::delegation_key(VALIDATOR, MISSING))
+                );
+
+                for empty in [
+                    ConcreteRead::Absent,
+                    ConcreteRead::Tombstone,
+                    ConcreteRead::Present(Vec::new()),
+                ] {
+                    let mut candidate = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                    let before = candidate.dpos_state.clone();
+                    let state = RawState::from_snapshot(&before, BTreeMap::new());
+                    state.set(
+                        DPOS_CONTRACT_ADDRESS,
+                        custody::delegation_key(VALIDATOR, MISSING).0,
+                        empty,
+                    );
+                    let rows_before = state.rows.borrow().clone();
+                    let quote = candidate.prepare(&request, &state).unwrap();
+                    let FinalChainNativeInvocationResult::Completed(outcome) =
+                        candidate.invoke(&request, quote, &state).unwrap()
+                    else {
+                        panic!("empty delegation must complete as a business failure");
+                    };
+                    assert_eq!(
+                        outcome.status,
+                        FinalChainNativeStatus::ContractFailure {
+                            error: "Delegation does not exist".to_owned(),
+                        }
+                    );
+                    assert_eq!(outcome.gas_used, quote.required_gas);
+                    assert!(outcome.output.is_empty() && outcome.logs.is_empty());
+                    assert!(
+                        outcome.raw_mutations.is_empty() && outcome.account_mutations.is_empty()
+                    );
+                    assert_eq!(candidate.dpos_state, before);
+                    assert_eq!(*state.rows.borrow(), rows_before);
+                }
+
+                let mut incomplete = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let state = RawState::from_snapshot(&incomplete.dpos_state, BTreeMap::new());
+                let quote = incomplete.prepare(&request, &state).unwrap();
+                incomplete.dpos_state.validator_row_authority =
+                    ValidatorRowAuthority::CompatibilityOnly;
+                let before = incomplete.dpos_state.clone();
+                let reads_before = state.reads.get();
+                assert!(matches!(
+                    incomplete.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+                ));
+                assert_eq!(incomplete.dpos_state, before);
+                assert_eq!(state.reads.get(), reads_before);
+
+                let mut inconsistent = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let state = RawState::from_snapshot(&inconsistent.dpos_state, BTreeMap::new());
+                state.set(
+                    DPOS_CONTRACT_ADDRESS,
+                    custody::delegation_key(VALIDATOR, MISSING).0,
+                    ConcreteRead::Present(vec![1]),
+                );
+                let before = inconsistent.dpos_state.clone();
+                let rows_before = state.rows.borrow().clone();
+                let quote = inconsistent.prepare(&request, &state).unwrap();
+                assert!(matches!(
+                    inconsistent.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::RawIntegrity(_))
+                ));
+                assert_eq!(inconsistent.dpos_state, before);
+                assert_eq!(*state.rows.borrow(), rows_before);
+                assert!(matches!(
+                    inconsistent.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                ));
+
+                let mut fault = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let state = RawState::erroring();
+                let before = fault.dpos_state.clone();
+                let quote = fault.prepare(&request, &state).unwrap();
+                assert_eq!(
+                    fault.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::StateRead(
+                        FinalChainNativeStateReadError::Invariant(
+                            "reader must not run on this path".to_owned()
+                        )
+                    ))
+                );
+                assert_eq!(fault.dpos_state, before);
+                assert!(matches!(
+                    fault.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                ));
+            },
+        );
+    }
+
+    #[test]
     fn pre_magnolia_delegate_requires_exact_owned_legacy_rows_and_isolates_read_faults() {
         const DELEGATOR: [u8; 20] = [0x50; 20];
         with_chain_config(

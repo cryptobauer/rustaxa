@@ -209,12 +209,6 @@ pub mod rustaxa_ffi {
         frequency: u32,
     }
 
-    /// Previous-block cert-vote fact for rewards-stat planning.
-    /// TransactionQueue construction limits.
-    struct TransactionQueueConfig {
-        max_size: usize,
-    }
-
     /// Canonical public transaction plus immutable chain-policy facts.
     ///
     /// Rust decodes every transaction field from `transaction_rlp`; the scalar
@@ -1157,6 +1151,35 @@ pub mod rustaxa_ffi {
         ) -> Result<Vec<StorageConformanceObservation>>;
     }
 
+    /// Owned bootstrap facts for one consensus application. Field units and
+    /// validation remain in the native owners; this carrier retains no C++
+    /// references, including the UTF-8 storage path.
+    struct ConsensusApplicationBootstrapConfig {
+        storage_path: String,
+        schema_major: u32,
+        schema_minor: u32,
+        storage_genesis: [u8; 32],
+        dag_genesis: [u8; 32],
+        dag_expiry_limit: u32,
+        max_levels_per_period: u64,
+        sortition_config: SortitionRuntimeConfig,
+        transaction_queue_capacity: usize,
+        gas_pricer_config: GasPricerConfig,
+        proposal_dag_gas_limit: u64,
+        pbft_config: PbftServiceConfig,
+        signing_identities: Vec<SigningIdentity>,
+        dag_proposer: DagProposerConfig,
+        final_chain_block_gas_limit: u64,
+        final_chain_genesis_timestamp: u64,
+        final_chain_state_api_committed_period: u64,
+        final_chain_state_api_committed_root: [u8; 32],
+        final_chain_bridge_contract_address: [u8; 20],
+        final_chain_genesis_accounts: Vec<GenesisAccount>,
+        final_chain_genesis_validators: Vec<GenesisValidator>,
+        final_chain_genesis_dpos_config: GenesisDposConfig,
+        final_chain_rewards_config: FinalChainRewardsConfig,
+    }
+
     extern "Rust" {
         type BridgeConsensusNetworkApi;
 
@@ -1271,29 +1294,7 @@ pub mod rustaxa_ffi {
         type BridgeConsensusApplication;
 
         pub fn create_consensus_application(
-            storage_path: &str,
-            schema_major: u32,
-            schema_minor: u32,
-            storage_genesis: &[u8; 32],
-            dag_genesis: &[u8; 32],
-            dag_expiry_limit: u32,
-            max_levels_per_period: u64,
-            sortition_config: SortitionRuntimeConfig,
-            transaction_queue_config: TransactionQueueConfig,
-            gas_pricer_config: GasPricerConfig,
-            proposal_dag_gas_limit: u64,
-            pbft_config: PbftServiceConfig,
-            signing_identities: Vec<SigningIdentity>,
-            dag_proposer: DagProposerConfig,
-            final_chain_block_gas_limit: u64,
-            final_chain_genesis_timestamp: u64,
-            final_chain_state_api_committed_period: u64,
-            final_chain_state_api_committed_root: [u8; 32],
-            final_chain_bridge_contract_address: [u8; 20],
-            final_chain_genesis_accounts: Vec<GenesisAccount>,
-            final_chain_genesis_validators: Vec<GenesisValidator>,
-            final_chain_genesis_dpos_config: GenesisDposConfig,
-            final_chain_rewards_config: FinalChainRewardsConfig,
+            config: ConsensusApplicationBootstrapConfig,
         ) -> Result<Box<BridgeConsensusApplication>>;
         /// Returns one lock-coherent hot status snapshot without exposing the
         /// native PBFT manager or its internal executor cursor.

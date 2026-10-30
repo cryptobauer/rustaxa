@@ -109,8 +109,10 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
 
+    type MemoryColumns = HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>;
+
     struct MockPillarStore {
-        data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+        data: RwLock<MemoryColumns>,
     }
 
     impl MockPillarStore {
@@ -122,9 +124,7 @@ mod tests {
 
         fn put(&self, col: Column, key: &[u8], value: &[u8]) {
             let mut data = self.data.write().unwrap();
-            let cf = data
-                .entry(col.name().to_string())
-                .or_insert_with(BTreeMap::new);
+            let cf = data.entry(col.name().to_string()).or_default();
             cf.insert(key.to_vec(), value.to_vec());
         }
     }

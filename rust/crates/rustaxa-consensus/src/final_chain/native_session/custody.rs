@@ -181,6 +181,34 @@ impl FinalChainNativeSession<'_> {
         ))
     }
 
+    #[cfg(test)]
+    pub(super) fn serialize_legacy_setup_for_test(
+        &self,
+        transaction: &DposTransaction,
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        if !self.final_chain.magnolia_active(self.pending_period)
+            && let DposTransaction::ConfirmUndelegate {
+                delegator,
+                validator,
+            } = transaction
+        {
+            // The pre-Magnolia reference confirms only the V1 queue; validator
+            // cleanup and Ficus validator writes are nested under Magnolia.
+            return self.serialize_remove_v1_queue(
+                *delegator,
+                *validator,
+                before,
+                trace,
+                "successful V1 confirmation lost its prior queue entry",
+                "confirmed V1 undelegation",
+            );
+        }
+        self.serialize_selected_custody(transaction, before, after, trace)
+    }
+
     fn serialize_selected_custody(
         &self,
         transaction: &DposTransaction,

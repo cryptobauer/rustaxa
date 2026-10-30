@@ -239,10 +239,18 @@ fn temp_db_path(test_name: &str) -> PathBuf {
 }
 
 fn with_reference_chain(test_name: &str, test: impl FnOnce(&FinalChain)) {
+    with_reference_chain_at_magnolia(test_name, FinalChainBlockNumber::GENESIS, test)
+}
+
+fn with_reference_chain_at_magnolia(
+    test_name: &str,
+    magnolia: FinalChainBlockNumber,
+    test: impl FnOnce(&FinalChain),
+) {
     let path = temp_db_path(test_name);
     let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
     let rewards = FinalChainRewardsConfig {
-        magnolia_period: FinalChainBlockNumber::GENESIS,
+        magnolia_period: magnolia,
         fix_claim_all_block_num: FinalChainBlockNumber::GENESIS,
         fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
         dpos_blocks_per_year: 1,
@@ -364,7 +372,11 @@ fn compare_raw_mutations(actual: &[FinalChainNativeRawMutation], groups: &[&Valu
         .iter()
         .flat_map(|group| group.as_array().map(Vec::as_slice).unwrap_or_default())
         .collect::<Vec<_>>();
-    assert_eq!(actual.len(), expected.len());
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "actual ordered writes: {actual:?}; expected ordered writes: {expected:?}"
+    );
     for (actual, expected) in actual.iter().zip(expected) {
         let value = match &actual.operation {
             FinalChainNativeRawOperation::Put(value) => value.as_bytes(),
@@ -577,6 +589,539 @@ fn accrued_claim_sessions_match_pinned_go_outcomes_raw_traces_and_balances() {
             assert_fixture_balances(&state, &expected["after_claims"]);
         });
     }
+}
+
+fn compare_pre_magnolia_write_evidence(actual: &[FinalChainNativeRawMutation], tx: &Value) {
+    let before = tx["legacy_dpos_storage_before"].as_array().unwrap();
+    let after = tx["legacy_dpos_storage_after"].as_array().unwrap();
+    assert_eq!(actual.len(), before.len());
+    assert_eq!(actual.len(), after.len());
+    for ((mutation, prior), following) in actual.iter().zip(before).zip(after) {
+        assert_eq!(hex_bytes(mutation.address), prior["address"]);
+        assert_eq!(hex_bytes(mutation.key.0), prior["key"]);
+        assert_eq!(prior["address"], following["address"]);
+        assert_eq!(prior["key"], following["key"]);
+        let prior_bytes = hex_decode(prior["value"].as_str().unwrap());
+        if prior["callback_observed"] == true {
+            assert_eq!(mutation.expected, ConcreteRead::Present(prior_bytes));
+        } else if prior["callback_observed"] == false {
+            assert!(prior_bytes.is_empty());
+            if let ConcreteRead::Present(bytes) = &mutation.expected {
+                assert!(bytes.is_empty());
+            }
+        } else if prior["evidence"].as_str().unwrap().starts_with("replayed_") {
+            match &mutation.expected {
+                ConcreteRead::Present(bytes) => assert_eq!(bytes, &prior_bytes),
+                ConcreteRead::Absent | ConcreteRead::Tombstone => assert!(prior_bytes.is_empty()),
+            }
+        }
+        let written = match &mutation.operation {
+            FinalChainNativeRawOperation::Put(value) => value.as_bytes(),
+            FinalChainNativeRawOperation::Delete => &[],
+        };
+        assert_eq!(hex_bytes(written), following["value"]);
+    }
+}
+
+struct LegacyFaultReader<'a> {
+    state: &'a ReferenceState,
+    fail_key: ConcreteStorageKey,
+    reads_before_failure: std::cell::Cell<usize>,
+}
+
+impl FinalChainNativeStateRead for LegacyFaultReader<'_> {
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> std::result::Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        self.state.account(address)
+    }
+    fn raw_storage(
+        &self,
+        address: [u8; 20],
+        key: &ConcreteStorageKey,
+    ) -> std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+        if *key == self.fail_key {
+            return Err(FinalChainNativeStateReadError::Invariant(
+                "legacy late read fault".to_owned(),
+            ));
+        }
+        self.reads_before_failure
+            .set(self.reads_before_failure.get() + 1);
+        self.state.raw_storage(address, key)
+    }
+}
+
+#[test]
+fn pre_magnolia_commission_guards_and_late_fault_are_atomic() {
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../experiments/evm_feasibility/fixtures/native_claims_pre_magnolia/public.json"
+    )))
+    .unwrap();
+    let expected = scenario(&fixture, "commission_accrued");
+    for mode in [
+        "owner",
+        "validator",
+        "incomplete",
+        "nonlegacy",
+        "zero_stake",
+        "late_fault",
+    ] {
+        with_reference_chain_at_magnolia(mode, 3.into(), |chain| {
+            let initial = chain.begin_native_session(1.into(), 0.into()).unwrap();
+            let state = ReferenceState::from_snapshot(&initial.dpos_state);
+            let mut session = rewarded_claim_session(chain, &state, expected);
+            let request = fixture_request(2, 0, 0, &expected["transactions"][0]);
+            if mode == "owner" {
+                state.rows.borrow_mut().insert(
+                    (
+                        DPOS_CONTRACT_ADDRESS,
+                        custody::validator_owner_key(VALIDATOR).0,
+                    ),
+                    ConcreteRead::Present(vec![0x77]),
+                );
+            } else if mode == "validator" {
+                state.rows.borrow_mut().insert(
+                    (DPOS_CONTRACT_ADDRESS, custody::validator_key(VALIDATOR).0),
+                    ConcreteRead::Present(vec![1]),
+                );
+            } else if mode == "incomplete" {
+                session.dpos_state.validator_row_authority =
+                    ValidatorRowAuthority::CompatibilityOnly;
+            } else if mode == "nonlegacy" {
+                if let ValidatorRowAuthority::Complete(rows) =
+                    &mut session.dpos_state.validator_row_authority
+                {
+                    rows.insert(VALIDATOR, ValidatorRowShape::Extended);
+                } else {
+                    panic!("expected complete fixture authority");
+                }
+            } else if mode == "zero_stake" {
+                session
+                    .dpos_state
+                    .total_stakes
+                    .insert(VALIDATOR, StoredDposTokenAmount::default());
+            }
+            let before = session.dpos_state.clone();
+            let rows_before = state.rows.borrow().clone();
+            let accounts_before = state.accounts.borrow().clone();
+            let quote = session.prepare(&request, &state).unwrap();
+            if mode == "late_fault" {
+                let reader = LegacyFaultReader {
+                    state: &state,
+                    fail_key: custody::rewards_key(VALIDATOR),
+                    reads_before_failure: std::cell::Cell::new(0),
+                };
+                assert!(matches!(session.invoke(&request, quote, &reader),
+                    Err(FinalChainNativeSessionError::StateRead(FinalChainNativeStateReadError::Invariant(ref s))) if s == "legacy late read fault"));
+                assert!(reader.reads_before_failure.get() >= 2);
+            } else if mode == "owner" || mode == "validator" || mode == "zero_stake" {
+                assert!(matches!(
+                    session.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::RawIntegrity(_))
+                ));
+            } else {
+                assert!(matches!(
+                    session.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+                ));
+            }
+            assert_eq!(session.dpos_state, before);
+            assert_eq!(*state.rows.borrow(), rows_before);
+            assert_eq!(*state.accounts.borrow(), accounts_before);
+            assert!(matches!(
+                session.invoke(&request, quote, &state),
+                Err(FinalChainNativeSessionError::Aborted)
+            ));
+        });
+    }
+}
+
+fn legacy_fixture_advance(
+    chain: &FinalChain,
+    session: &mut FinalChainNativeSession<'_>,
+    next: u64,
+) {
+    chain
+        .advance_reward_reference_graph_block(&mut session.dpos_state, next.into())
+        .unwrap();
+    session.pending_period = next.into();
+    session.period_start_total_vote_count = session.dpos_state.total_vote_count;
+    session.period_start_amount_delegated = total_staked_amount(&session.dpos_state).unwrap();
+    session.eligibility_period = (next - 1).into();
+    session.eligibility_state = session.dpos_state.clone();
+    session.next_sequence = 0;
+    session.prepared = None;
+    session.finished_rewards = false;
+}
+
+fn compare_zero_setup_logs(actual: &[ReceiptLog], expected: &Value) {
+    let logs = expected["logs"].as_array().unwrap();
+    assert_eq!(actual.len(), logs.len());
+    for (log, row) in actual.iter().zip(logs) {
+        assert_eq!(hex_bytes(log.address), row["address"]);
+        assert_eq!(
+            log.topics.iter().map(hex_bytes).collect::<Vec<_>>(),
+            row["topics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(hex_bytes(&log.data), row["data"]);
+    }
+}
+
+fn apply_captured_legacy_setup(
+    chain: &FinalChain,
+    session: &mut FinalChainNativeSession<'_>,
+    state: &ReferenceState,
+    transaction: DposTransaction,
+    expected: &Value,
+    before_key: &str,
+    after_key: &str,
+) {
+    let before = session.dpos_state.clone();
+    let mut after = before.clone();
+    let mut accounts = account::StagedDposAccountPort::from_state(state);
+    let result = match transaction.clone() {
+        DposTransaction::Undelegate {
+            delegator,
+            validator,
+            amount,
+        } => chain.apply_dpos_undelegate(
+            &mut after,
+            &mut accounts,
+            delegator,
+            validator,
+            amount,
+            session.pending_period,
+        ),
+        DposTransaction::ConfirmUndelegate {
+            delegator,
+            validator,
+        } => chain.apply_dpos_confirm_undelegate(
+            &mut after,
+            &mut accounts,
+            delegator,
+            validator,
+            session.pending_period,
+        ),
+        _ => panic!("unsupported synthetic setup"),
+    }
+    .unwrap();
+    let tx = if matches!(transaction, DposTransaction::Undelegate { .. }) {
+        &expected["undelegation"]
+    } else {
+        &expected["confirmation"]
+    };
+    let mut input = hex_decode(tx["selector"].as_str().unwrap());
+    input.extend_from_slice(&[0; 12]);
+    input.extend_from_slice(&VALIDATOR);
+    let action_gas = if matches!(transaction, DposTransaction::Undelegate { .. }) {
+        input.extend_from_slice(&U256::from(1000_u64).to_big_endian());
+        DPOS_UNDELEGATE_GAS
+    } else {
+        DPOS_DEFAULT_METHOD_GAS
+    };
+    assert_eq!(
+        intrinsic_gas(&input, false).unwrap() + action_gas,
+        tx["gas_used"].as_u64().unwrap()
+    );
+    assert_eq!(result.status_code, 1);
+    assert_eq!(tx["consensus_error"], "");
+    assert_eq!(tx["execution_error"], "");
+    assert_eq!(hex_bytes(&result.code_retval), tx["output"]);
+    compare_zero_setup_logs(&result.logs, tx);
+    let mut trace = raw::FinalChainNativeRawTrace::new(state);
+    session
+        .serialize_legacy_setup_for_test(&transaction, &before, &after, &mut trace)
+        .unwrap();
+    let writes = trace.finish();
+    compare_raw_mutations(&writes, &[&tx["ordered_raw_writes"]]);
+    let mut evidence = tx.clone();
+    evidence["legacy_dpos_storage_before"] = expected[before_key].clone();
+    evidence["legacy_dpos_storage_after"] = expected[after_key].clone();
+    compare_pre_magnolia_write_evidence(&writes, &evidence);
+    state.apply_raw(&writes);
+    state.apply_accounts(&accounts.into_mutations());
+    session.dpos_state = after;
+}
+
+fn assert_no_recorded_end_block_writes(value: &Value) {
+    assert!(
+        value.is_null() || value.as_array().is_some_and(Vec::is_empty),
+        "skipped EndBlock must have no recorded raw effects"
+    );
+}
+
+#[test]
+fn pre_magnolia_zero_stake_and_cold_commission_match_paired_go() {
+    let public: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
+        "/../../../experiments/evm_feasibility/fixtures/native_commission_zero_stake_pre_magnolia/public.json"))).unwrap();
+    let local: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
+        "/../../../experiments/evm_feasibility/fixtures/native_commission_zero_stake_pre_magnolia/local.json"))).unwrap();
+    assert_eq!(public, local);
+    assert_eq!(public["configuration"]["magnolia"], 10);
+    for name in ["pending_retained", "confirmed_cleared"] {
+        let expected = scenario(&public, name);
+        for mode in [
+            "owner_mismatch",
+            "validator_mismatch",
+            "zero_pool",
+            "late_fault",
+            "clean",
+        ] {
+            with_reference_chain_at_magnolia(name, 10.into(), |chain| {
+                let initial = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let state = ReferenceState::from_snapshot(&initial.dpos_state);
+                let mut session = rewarded_claim_session(chain, &state, expected);
+                let setup = DposTransaction::Undelegate {
+                    delegator: DELEGATOR,
+                    validator: VALIDATOR,
+                    amount: U256::from(1000_u64).to_big_endian().to_vec(),
+                };
+                apply_captured_legacy_setup(
+                    chain,
+                    &mut session,
+                    &state,
+                    setup,
+                    expected,
+                    "undelegation_before_writes",
+                    "undelegation_after_writes",
+                );
+                let mut trace = raw::FinalChainNativeRawTrace::new(&state);
+                session
+                    .serialize_deferred_end_block_for_test(&session.dpos_state, &mut trace)
+                    .unwrap();
+                let writes = trace.finish();
+                compare_raw_mutations(
+                    &writes,
+                    &[&expected["undelegation_end_block_ordered_raw_writes"]],
+                );
+                state.apply_raw(&writes);
+                assert!(session.dpos_state.total_stakes[&VALIDATOR].is_zero());
+                assert!(find_undelegation(&session.dpos_state, DELEGATOR, VALIDATOR).is_some());
+                if name == "confirmed_cleared" {
+                    let empty = expected["empty_periods"].as_array().unwrap();
+                    assert_eq!(empty.len(), 2);
+                    for (entry, period) in empty.iter().zip([3u64, 4]) {
+                        assert_eq!(entry["period"], period);
+                        assert_no_recorded_end_block_writes(&entry["end_block_ordered_raw_writes"]);
+                    }
+                    for period in 3..=5 {
+                        legacy_fixture_advance(chain, &mut session, period);
+                    }
+                    apply_captured_legacy_setup(
+                        chain,
+                        &mut session,
+                        &state,
+                        DposTransaction::ConfirmUndelegate {
+                            delegator: DELEGATOR,
+                            validator: VALIDATOR,
+                        },
+                        expected,
+                        "confirmation_before_writes",
+                        "confirmation_after_writes",
+                    );
+                    assert!(find_undelegation(&session.dpos_state, DELEGATOR, VALIDATOR).is_none());
+                    assert_no_recorded_end_block_writes(
+                        &expected["confirmation_end_block_ordered_raw_writes"],
+                    );
+                }
+                let claim_period = expected["claim_period"].as_u64().unwrap();
+                legacy_fixture_advance(chain, &mut session, claim_period);
+                assert_eq!(
+                    state.balance(OWNER).to_string(),
+                    expected["before_claim"]["owner_balance"]
+                );
+                assert_eq!(
+                    state.balance(DELEGATOR).to_string(),
+                    expected["before_claim"]["custody"]["delegator_balance"]
+                );
+                assert_eq!(
+                    state.balance(DPOS_CONTRACT_ADDRESS).to_string(),
+                    expected["before_claim"]["custody"]["contract_balance"]
+                );
+                assert_no_recorded_end_block_writes(
+                    &expected["claim_end_block_ordered_raw_writes"],
+                );
+                let request = fixture_request(claim_period, 0, 0, &expected["claim"]);
+                if mode != "clean" {
+                    if mode == "owner_mismatch" {
+                        state.rows.borrow_mut().insert(
+                            (
+                                DPOS_CONTRACT_ADDRESS,
+                                custody::validator_owner_key(VALIDATOR).0,
+                            ),
+                            ConcreteRead::Present(vec![0x77]),
+                        );
+                    } else if mode == "validator_mismatch" {
+                        state.rows.borrow_mut().insert(
+                            (DPOS_CONTRACT_ADDRESS, custody::validator_key(VALIDATOR).0),
+                            ConcreteRead::Present(vec![1]),
+                        );
+                    } else if mode == "zero_pool" {
+                        session
+                            .dpos_state
+                            .commission_rewards
+                            .insert(VALIDATOR, StoredDposTokenAmount::default());
+                        state.rows.borrow_mut().insert(
+                            (DPOS_CONTRACT_ADDRESS, custody::rewards_key(VALIDATOR).0),
+                            ConcreteRead::Present(custody::encode_rewards(
+                                &session.dpos_state,
+                                VALIDATOR,
+                            )),
+                        );
+                    }
+                    let before = session.dpos_state.clone();
+                    let rows_before = state.rows.borrow().clone();
+                    let accounts_before = state.accounts.borrow().clone();
+                    let quote = session.prepare(&request, &state).unwrap();
+                    if mode == "late_fault" {
+                        let last = expected["claim"]["ordered_raw_writes"]
+                            .as_array()
+                            .unwrap()
+                            .last()
+                            .unwrap();
+                        let key: [u8; 32] = hex_decode(last["key"].as_str().unwrap())
+                            .try_into()
+                            .unwrap();
+                        let reader = LegacyFaultReader {
+                            state: &state,
+                            fail_key: ConcreteStorageKey(key),
+                            reads_before_failure: std::cell::Cell::new(0),
+                        };
+                        assert!(matches!(session.invoke(&request, quote, &reader),
+                        Err(FinalChainNativeSessionError::StateRead(FinalChainNativeStateReadError::Invariant(ref s))) if s == "legacy late read fault"));
+                        assert!(
+                            reader.reads_before_failure.get() >= 5,
+                            "earlier serializer rows were reached"
+                        );
+                    } else if mode == "zero_pool" {
+                        assert!(matches!(
+                            session.invoke(&request, quote, &state),
+                            Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+                        ));
+                    } else {
+                        assert!(matches!(
+                            session.invoke(&request, quote, &state),
+                            Err(FinalChainNativeSessionError::RawIntegrity(_))
+                        ));
+                    }
+                    assert_eq!(session.dpos_state, before);
+                    assert_eq!(*state.rows.borrow(), rows_before);
+                    assert_eq!(*state.accounts.borrow(), accounts_before);
+                    assert!(matches!(
+                        session.invoke(&request, quote, &state),
+                        Err(FinalChainNativeSessionError::Aborted)
+                    ));
+                    return;
+                }
+                let outcome =
+                    invoke_and_compare(&mut session, &state, &request, &expected["claim"]);
+                let mut evidence = expected["claim"].clone();
+                evidence["legacy_dpos_storage_before"] = expected["claim_before_writes"].clone();
+                evidence["legacy_dpos_storage_after"] = expected["claim_after_writes"].clone();
+                compare_pre_magnolia_write_evidence(&outcome.raw_mutations, &evidence);
+                state.apply_outcome(&outcome);
+                assert!(!session.dpos_state.total_stakes.contains_key(&VALIDATOR));
+                assert_eq!(
+                    find_undelegation(&session.dpos_state, DELEGATOR, VALIDATOR).is_some(),
+                    name == "pending_retained"
+                );
+                assert_eq!(
+                    state.balance(OWNER).to_string(),
+                    expected["after_claim"]["owner_balance"]
+                );
+                assert_eq!(
+                    state.balance(DELEGATOR).to_string(),
+                    expected["after_claim"]["custody"]["delegator_balance"]
+                );
+                assert_eq!(
+                    state.balance(DPOS_CONTRACT_ADDRESS).to_string(),
+                    expected["after_claim"]["custody"]["contract_balance"]
+                );
+            });
+        }
+    }
+    let expected = scenario(&public, "cold_zero_positive_stake");
+    assert_no_recorded_end_block_writes(&expected["claim_end_block_ordered_raw_writes"]);
+    with_reference_chain_at_magnolia("cold-zero", 10.into(), |chain| {
+        let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+        let state = ReferenceState::from_snapshot(&session.dpos_state);
+        let request = fixture_request(1, 0, 0, &expected["claim"]);
+        let outcome = invoke_and_compare(&mut session, &state, &request, &expected["claim"]);
+        let mut evidence = expected["claim"].clone();
+        evidence["legacy_dpos_storage_before"] = expected["claim_before_writes"].clone();
+        evidence["legacy_dpos_storage_after"] = expected["claim_after_writes"].clone();
+        compare_pre_magnolia_write_evidence(&outcome.raw_mutations, &evidence);
+        state.apply_outcome(&outcome);
+        assert_eq!(
+            state.balance(OWNER).to_string(),
+            expected["after_claim"]["owner_balance"]
+        );
+        assert_eq!(
+            state.balance(DPOS_CONTRACT_ADDRESS).to_string(),
+            expected["after_claim"]["custody"]["contract_balance"]
+        );
+    });
+}
+
+#[test]
+fn pre_magnolia_claims_match_paired_go_reference_and_ordered_raw_effects() {
+    let public: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../experiments/evm_feasibility/fixtures/native_claims_pre_magnolia/public.json"
+    )))
+    .unwrap();
+    let local: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../experiments/evm_feasibility/fixtures/native_claims_pre_magnolia/local.json"
+    )))
+    .unwrap();
+    assert_eq!(local, public);
+    assert_eq!(public["configuration"]["magnolia"], 3);
+    assert_eq!(public["configuration"]["reward_period"], 1);
+    assert_eq!(public["configuration"]["claims_period"], 2);
+    for name in ["delegator_accrued", "commission_accrued"] {
+        let expected = scenario(&public, name);
+        with_reference_chain_at_magnolia(name, 3.into(), |chain| {
+            let initial = chain.begin_native_session(1.into(), 0.into()).unwrap();
+            assert!(initial.dpos_state.has_complete_validator_shapes());
+            let state = ReferenceState::from_snapshot(&initial.dpos_state);
+            assert_fixture_balances(&state, &expected["before"]);
+            let mut session = rewarded_claim_session(chain, &state, expected);
+            assert_fixture_balances(&state, &expected["after_reward"]);
+            for (position, transaction) in expected["transactions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
+                let request = fixture_request(2, position as u32, position as u64, transaction);
+                let outcome = invoke_and_compare(&mut session, &state, &request, transaction);
+                compare_pre_magnolia_write_evidence(&outcome.raw_mutations, transaction);
+                state.apply_outcome(&outcome);
+            }
+            assert_fixture_balances(&state, &expected["after_claims"]);
+        });
+    }
+    with_reference_chain_at_magnolia("legacy-errors", 3.into(), |chain| {
+        let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+        let state = ReferenceState::from_snapshot(&session.dpos_state);
+        for (position, expected) in public["errors"].as_array().unwrap().iter().enumerate() {
+            let request = fixture_request(1, position as u32, position as u64, expected);
+            let outcome = invoke_and_compare(&mut session, &state, &request, expected);
+            assert!(
+                outcome.account_mutations.is_empty()
+                    && outcome.raw_mutations.is_empty()
+                    && outcome.logs.is_empty()
+            );
+        }
+    });
 }
 
 #[test]

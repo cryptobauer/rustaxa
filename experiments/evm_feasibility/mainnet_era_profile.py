@@ -189,6 +189,14 @@ def scenarios():
     recovery.update(name='mainnet_second_distribution_followthrough_recovery',
                     reopen_after=[25706905, 25706999, 25707000, 25707001, 25707002, 25707003, 25707004])
     result.append(recovery)
+    # Add an independent full replay; keep the accepted Magnolia scenario intact.
+    magnolia_full = deepcopy(next(row for row in result if row['name'] == 'magnolia'))
+    magnolia_full.update(
+        name='magnolia_first_full_distribution',
+        periods=list(range(5_729_999, 5_730_102)),
+        api_heads=[5_729_999, 5_730_000, 5_730_001, 5_730_099, 5_730_100, 5_730_101],
+    )
+    result.append(magnolia_full)
     from mainnet_era_historical_actions import legacy_batch_correction_component
     component = legacy_batch_correction_component(
         next(row for row in result if row['name'] == 'claim_all_correction'))

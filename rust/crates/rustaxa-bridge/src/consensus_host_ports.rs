@@ -1,7 +1,7 @@
 //! Thin CXX adapters for the blocking native consensus application runner.
 //! This sole host caller converts exact carriers without retaining CXX references or secret keys.
 
-use crate::application_host_ffi::application_host_ffi::*;
+use crate::application_host_bridge::application_host_ffi::*;
 use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::{
     public_transaction_report_to_ffi, public_transaction_request_to_native,

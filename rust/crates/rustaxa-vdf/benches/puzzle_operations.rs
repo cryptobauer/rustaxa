@@ -34,7 +34,7 @@ fn bench_puzzle_different_input_sizes(c: &mut Criterion) {
     let time_bits = 20u32;
     let modulus = vec![7, 11, 13, 17];
 
-    let input_sizes = vec![
+    let input_sizes = [
         ("tiny", vec![1u8]),
         ("small", vec![1u8, 2u8, 3u8, 4u8]),
         ("medium", vec![1u8; 16]),
@@ -63,7 +63,7 @@ fn bench_puzzle_different_modulus_sizes(c: &mut Criterion) {
     let time_bits = 20u32;
     let input = vec![5, 7, 11];
 
-    let modulus_sizes = vec![
+    let modulus_sizes = [
         ("tiny", vec![13u8]),
         ("small", vec![13u8, 17u8]),
         ("medium", vec![13u8, 17u8, 19u8, 23u8]),
@@ -109,7 +109,7 @@ fn bench_puzzle_accessor_methods(c: &mut Criterion) {
 fn bench_puzzle_edge_cases(c: &mut Criterion) {
     let mut group = c.benchmark_group("puzzle_edge_cases");
 
-    let edge_cases = vec![
+    let edge_cases = [
         ("zero_time_bits", 0u32, vec![1u8], vec![2u8]),
         ("max_time_bits", 63u32, vec![1u8], vec![2u8]),
         ("empty_input", 10u32, vec![], vec![3u8]),
@@ -203,7 +203,7 @@ fn bench_puzzle_modular_arithmetic(c: &mut Criterion) {
     let mut group = c.benchmark_group("puzzle_modular_arithmetic");
 
     // Test cases where modular arithmetic matters
-    let arithmetic_cases = vec![
+    let arithmetic_cases = [
         ("input_less_than_modulus", vec![5u8], vec![17u8]),
         ("input_equal_to_modulus", vec![23u8], vec![23u8]),
         ("input_greater_than_modulus", vec![100u8], vec![7u8]),
@@ -288,7 +288,7 @@ fn bench_puzzle_big_integer_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("puzzle_big_integers");
 
     // Test with very large numbers to stress big integer operations
-    let large_cases = vec![
+    let large_cases = [
         ("large_input", vec![255u8; 64], vec![127u8; 8]),
         ("large_modulus", vec![1u8; 8], vec![255u8; 64]),
         ("both_large", vec![128u8; 32], vec![64u8; 32]),

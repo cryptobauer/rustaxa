@@ -270,6 +270,66 @@ def include_context(
     return "\n".join(context)
 
 
+
+def rust_modules(path: Path) -> list[str]:
+    """Inventory top-level external modules, including explicit path attributes.
+
+    Only simple local .rs filenames are supported by this audit. Unsupported
+    paths fail closed instead of escaping the audited source directory.
+    """
+    source = path.read_text(encoding="utf-8")
+    stripped = strip_comments_and_literals(source)
+    pattern = re.compile(
+        r"(?m)^[ \t]*(?P<attrs>(?:\#\s*\[[^\]]*\]\s*)*)"
+        r"(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?P<name>[a-z0-9_]+)\s*;"
+    )
+    depths = [0] * (len(stripped) + 1)
+    depth = 0
+    for i, char in enumerate(stripped):
+        depths[i] = depth
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("unbalanced Rust module braces")
+    if depth:
+        raise ValueError("unbalanced Rust module braces")
+    records = set()
+    for match in pattern.finditer(stripped):
+        if depths[match.start()] != 0:
+            continue
+        attrs_start, attrs_end = match.span("attrs")
+        attrs_stripped = stripped[attrs_start:attrs_end]
+        attrs_source = source[attrs_start:attrs_end]
+        path_attributes = list(re.finditer(r"#\s*\[\s*path\b[^\]]*\]", attrs_stripped))
+        if len(path_attributes) > 1:
+            raise ValueError("duplicate Rust path attributes")
+        # A path nested inside cfg_attr or another unsupported attribute must
+        # not silently fall back to the module-name filename.
+        path_tokens = list(re.finditer(r"\bpath\s*=", attrs_stripped))
+        if len(path_tokens) != len(path_attributes):
+            raise ValueError("unsupported conditional Rust path attribute")
+        filename = match.group("name") + ".rs"
+        if path_attributes:
+            attribute = path_attributes[0]
+            raw = attrs_source[attribute.start():attribute.end()]
+            parsed = re.fullmatch(r'#\s*\[\s*path\s*=\s*"([a-z0-9_]+\.rs)"\s*\]', raw)
+            if not parsed:
+                raise ValueError("unsupported Rust path attribute")
+            filename = parsed.group(1)
+        module_file = path.parent / filename
+        if module_file.is_symlink():
+            raise ValueError(f"Rust module file is a symlink: {filename}")
+        if not module_file.is_file():
+            raise ValueError(f"Rust module file missing: {filename}")
+        record = f"rust/crates/rustaxa-bridge/src/{filename}"
+        if record in records:
+            raise ValueError(f"duplicate Rust module file: {filename}")
+        records.add(record)
+    return sorted(records)
+
+
 def main() -> None:
     """Parse CLI arguments and emit the requested deterministic inventory."""
 
@@ -277,6 +337,7 @@ def main() -> None:
     parser.add_argument(
         "mode",
         choices=(
+            "rust-modules",
             "ffi-functions",
             "ffi-function-count",
             "ffi-carriers",
@@ -289,6 +350,12 @@ def main() -> None:
     parser.add_argument("--ffi", type=Path)
     parser.add_argument("paths", nargs="+", type=Path)
     args = parser.parse_args()
+
+    if args.mode == "rust-modules":
+        if len(args.paths) != 1:
+            parser.error("rust-modules accepts exactly one Rust source")
+        print("\n".join(rust_modules(args.paths[0])))
+        return
 
     if args.mode.startswith("ffi-"):
         if len(args.paths) != 1:

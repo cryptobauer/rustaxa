@@ -38,7 +38,7 @@ include a generated bridge header.
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 4618 |
+| `bridge_lines` | 4612 |
 | `shim_lines` | 0 |
 | `cxx_functions` | 74 |
 | `cxx_carriers` | 124 |
@@ -48,6 +48,12 @@ include a generated bridge header.
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
 | `non_test_cpp_consumers` | 16 |
+
+Consensus bootstrap facts cross CXX in one owned configuration. Queue capacity
+uses a scalar instead of a separate one-field carrier, so the carrier count stays
+at 124. Direct field conversion preserves native validation order and reduces
+the Rust bridge footprint from 4,618 to 4,612 lines. All three C++ bootstrap
+callers use the same configuration carrier.
 
 The final concrete-state lifetime cut deleted the complete Rust-mode `FinalChain` overlay and the last shim directory.
 One private `ExternalEvmStateOwner` holds StateAPI behind exact operations. Rust retains request identity, ordered native

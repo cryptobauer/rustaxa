@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "scope": "SYNTHETIC_PREMAGNOLIA_ZERO_STAKE_COMPONENT_ONLY",
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "public": {
+    "path": "public.json",
+    "sha256": "dcae2310810cc26e91fe04a069321e2aab7306cab1a66829f83edd77304f6d18"
+  },
+  "local": {
+    "path": "local.json",
+    "sha256": "dcae2310810cc26e91fe04a069321e2aab7306cab1a66829f83edd77304f6d18"
+  }
+}

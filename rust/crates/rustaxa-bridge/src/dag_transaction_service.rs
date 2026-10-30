@@ -134,34 +134,14 @@ fn domain_pbft_config(config: &PbftServiceConfig) -> Result<DomainPbftServiceCon
 }
 
 /// Restores one production application root from complete CXX bootstrap facts.
-#[allow(clippy::too_many_arguments)]
+/// Consumes owned configuration, preserves native validation order, and returns
+/// conversion, storage-open, or restoration errors without returning an owner.
 pub fn create_consensus_application(
-    storage_path: &str,
-    schema_major: u32,
-    schema_minor: u32,
-    storage_genesis: &[u8; 32],
-    dag_genesis: &[u8; 32],
-    dag_expiry_limit: u32,
-    max_levels_per_period: u64,
-    sortition_config: SortitionRuntimeConfig,
-    transaction_queue_config: TransactionQueueConfig,
-    gas_pricer_config: GasPricerConfig,
-    proposal_dag_gas_limit: u64,
-    pbft_config: PbftServiceConfig,
-    signing_identities: Vec<SigningIdentity>,
-    dag_proposer: DagProposerConfig,
-    final_chain_block_gas_limit: u64,
-    final_chain_genesis_timestamp: u64,
-    final_chain_state_api_committed_period: u64,
-    final_chain_state_api_committed_root: [u8; 32],
-    final_chain_bridge_contract_address: [u8; 20],
-    final_chain_genesis_accounts: Vec<GenesisAccount>,
-    final_chain_genesis_validators: Vec<GenesisValidator>,
-    final_chain_genesis_dpos_config: GenesisDposConfig,
-    final_chain_rewards_config: FinalChainRewardsConfig,
+    config: ConsensusApplicationBootstrapConfig,
 ) -> Result<Box<BridgeApp>> {
-    let polling_interval_ms = pbft_config.polling_interval_ms;
-    let signing_identities = signing_identities
+    let polling_interval_ms = config.pbft_config.polling_interval_ms;
+    let signing_identities = config
+        .signing_identities
         .into_iter()
         .map(|identity| rustaxa_consensus::SigningIdentity {
             wallet_index: identity.wallet_index,
@@ -170,46 +150,48 @@ pub fn create_consensus_application(
             vrf_public_key: identity.vrf_public_key,
         })
         .collect();
-    let mut native_pbft_config = domain_pbft_config(&pbft_config)?;
-    native_pbft_config.network_identity.genesis_hash = *storage_genesis;
+    let mut native_pbft_config = domain_pbft_config(&config.pbft_config)?;
+    native_pbft_config.network_identity.genesis_hash = config.storage_genesis;
     let root = ConsensusApplicationBootstrap {
-        storage_path: storage_path.into(),
-        schema_major,
-        schema_minor,
-        storage_genesis_hash: H256::from(*storage_genesis),
+        storage_path: config.storage_path.into(),
+        schema_major: config.schema_major,
+        schema_minor: config.schema_minor,
+        storage_genesis_hash: H256::from(config.storage_genesis),
         final_chain: crate::final_chain::consensus_final_chain_config_from_ffi(
-            final_chain_block_gas_limit,
-            final_chain_genesis_timestamp,
-            final_chain_state_api_committed_period,
-            final_chain_state_api_committed_root,
-            final_chain_bridge_contract_address,
-            final_chain_genesis_accounts,
-            final_chain_genesis_validators,
-            final_chain_genesis_dpos_config,
-            final_chain_rewards_config,
+            crate::final_chain::FinalChainBootstrapInput {
+                block_gas_limit: config.final_chain_block_gas_limit,
+                genesis_timestamp: config.final_chain_genesis_timestamp,
+                state_api_committed_period: config.final_chain_state_api_committed_period,
+                state_api_committed_root: config.final_chain_state_api_committed_root,
+                bridge_contract_address: config.final_chain_bridge_contract_address,
+                genesis_accounts: config.final_chain_genesis_accounts,
+                genesis_validators: config.final_chain_genesis_validators,
+                genesis_dpos_config: config.final_chain_genesis_dpos_config,
+                rewards_config: config.final_chain_rewards_config,
+            },
         )?,
         consensus: ConsensusApplicationConfig {
             dag_transaction: DagTransactionServiceConfig {
                 transaction: TransactionServiceConfig {
-                    queue_max_size: transaction_queue_config.max_size,
-                    gas_pricer_config: domain_gas_pricer_config(gas_pricer_config),
-                    proposal_dag_gas_limit,
+                    queue_max_size: config.transaction_queue_capacity,
+                    gas_pricer_config: domain_gas_pricer_config(config.gas_pricer_config),
+                    proposal_dag_gas_limit: config.proposal_dag_gas_limit,
                 },
                 dag: DagServiceConfig {
-                    genesis_hash: H256::from(*dag_genesis),
-                    dag_expiry_limit,
-                    max_levels_per_period,
+                    genesis_hash: H256::from(config.dag_genesis),
+                    dag_expiry_limit: config.dag_expiry_limit,
+                    max_levels_per_period: config.max_levels_per_period,
                 },
-                sortition: domain_sortition_config(sortition_config),
+                sortition: domain_sortition_config(config.sortition_config),
             },
             dag_proposer: rustaxa_consensus::DagProposerConfig {
-                total_transaction_shards: dag_proposer.total_transaction_shards,
-                proposal_dag_gas_limit: dag_proposer.proposal_dag_gas_limit,
-                default_dag_gas_limit: dag_proposer.default_dag_gas_limit,
-                default_pbft_gas_limit: pbft_config.default_pbft_gas_limit,
-                cornus_activation_period: pbft_config.cornus_activation_period,
-                cornus_dag_gas_limit: dag_proposer.cornus_dag_gas_limit,
-                cornus_pbft_gas_limit: pbft_config.cornus_pbft_gas_limit,
+                total_transaction_shards: config.dag_proposer.total_transaction_shards,
+                proposal_dag_gas_limit: config.dag_proposer.proposal_dag_gas_limit,
+                default_dag_gas_limit: config.dag_proposer.default_dag_gas_limit,
+                default_pbft_gas_limit: config.pbft_config.default_pbft_gas_limit,
+                cornus_activation_period: config.pbft_config.cornus_activation_period,
+                cornus_dag_gas_limit: config.dag_proposer.cornus_dag_gas_limit,
+                cornus_pbft_gas_limit: config.pbft_config.cornus_pbft_gas_limit,
             },
             pbft: native_pbft_config,
             signing_identities,

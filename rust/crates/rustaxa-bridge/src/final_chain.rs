@@ -70,31 +70,41 @@ pub(crate) fn redelegation_corrections_from_ffi(
         .collect()
 }
 
+/// Ordered CXX bootstrap values consumed by the native FinalChain converter.
+/// Token-width checks remain in that converter; native owners validate configuration.
+pub(crate) struct FinalChainBootstrapInput {
+    pub(crate) block_gas_limit: u64,
+    pub(crate) genesis_timestamp: u64,
+    pub(crate) state_api_committed_period: u64,
+    pub(crate) state_api_committed_root: [u8; 32],
+    pub(crate) bridge_contract_address: [u8; 20],
+    pub(crate) genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
+    pub(crate) genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
+    pub(crate) genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
+    pub(crate) rewards_config: rustaxa_ffi::FinalChainRewardsConfig,
+}
+
+/// Converts bootstrap values in the original validation order. Token amounts
+/// wider than U256 return an error before application restoration.
 pub(crate) fn consensus_final_chain_config_from_ffi(
-    block_gas_limit: u64,
-    genesis_timestamp: u64,
-    state_api_committed_period: u64,
-    state_api_committed_root: [u8; 32],
-    bridge_contract_address: [u8; 20],
-    genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
-    genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
-    genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
-    rewards_config: rustaxa_ffi::FinalChainRewardsConfig,
+    input: FinalChainBootstrapInput,
 ) -> Result<ConsensusFinalChainConfig, anyhow::Error> {
-    let genesis_accounts = genesis_accounts
+    let rewards_config = input.rewards_config;
+    let genesis_accounts = input
+        .genesis_accounts
         .into_iter()
         .map(genesis_account_from_ffi)
         .collect::<Result<Vec<_>, _>>()?;
-    let genesis_validators = genesis_validators_from_ffi(genesis_validators);
+    let genesis_validators = genesis_validators_from_ffi(input.genesis_validators);
     Ok(ConsensusFinalChainConfig {
-        block_gas_limit: block_gas_limit.into(),
-        genesis_timestamp,
-        state_api_committed_period,
-        state_api_committed_root: state_api_committed_root.into(),
-        bridge_contract_address,
+        block_gas_limit: input.block_gas_limit.into(),
+        genesis_timestamp: input.genesis_timestamp,
+        state_api_committed_period: input.state_api_committed_period,
+        state_api_committed_root: input.state_api_committed_root.into(),
+        bridge_contract_address: input.bridge_contract_address,
         genesis_accounts,
         genesis_validators,
-        genesis_dpos: genesis_dpos_config_from_ffi(genesis_dpos_config)?,
+        genesis_dpos: genesis_dpos_config_from_ffi(input.genesis_dpos_config)?,
         rewards: rustaxa_consensus::FinalChainRewardsConfig {
             committee_size: rewards_config.committee_size,
             magnolia_period: rewards_config.magnolia_period.into(),

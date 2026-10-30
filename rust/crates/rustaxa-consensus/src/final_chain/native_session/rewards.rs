@@ -597,6 +597,15 @@ impl FinalChainNativeSession<'_> {
         )
     }
 
+    #[cfg(test)]
+    pub(super) fn serialize_deferred_end_block_for_test(
+        &self,
+        snapshot: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_deferred_end_block(snapshot, trace)
+    }
+
     fn serialize_deferred_end_block(
         &self,
         snapshot: &DposSnapshot,

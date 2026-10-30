@@ -88,7 +88,7 @@ extract_audited_non_test_cpp_consumers() {
 }
 
 extract_bridge_modules() {
-  sed -En 's#^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+([a-z0-9_]+)[[:space:]]*;([[:space:]]*(//.*|/\*.*\*/))?$#rust/crates/rustaxa-bridge/src/\3.rs#p' "$1" | sort -u
+  python3 "$inventory_parser" rust-modules "$1"
 }
 
 extract_audited_bridge_modules() {
@@ -572,7 +572,10 @@ check_documented_inventory() {
   missing_values="$temp_dir/${inventory_name}_missing"
   stale_values="$temp_dir/${inventory_name}_stale"
   duplicate_values="$temp_dir/${inventory_name}_duplicates"
-  "$live_extractor" "$live_file" >"$live_values"
+  if ! "$live_extractor" "$live_file" >"$live_values"; then
+    echo "Rust bridge inventory guard failed: cannot extract $inventory_name inventory." >&2
+    return 1
+  fi
   "$audit_extractor" "$audit_file" >"$audit_values"
   uniq -d "$audit_values" >"$duplicate_values"
   if [ -s "$duplicate_values" ]; then
@@ -718,6 +721,9 @@ mod documented_block; /* retained block comment */
   pub mod documented_public;
 pub(crate) mod documented_crate; // visible inside the crate
 EOF
+  for module_fixture_name in documented documented_block documented_public documented_crate; do
+    : >"$temp_dir/$module_fixture_name.rs"
+  done
   mkdir -p "$temp_dir/shims/documented_shim"
   mkdir -p "$temp_dir/consumer_root/libraries" "$temp_dir/consumer_root/programs"
   cat >"$temp_dir/consumer_root/libraries/documented.cpp" <<'EOF'
@@ -762,6 +768,7 @@ EOF
     exit 1
   fi
 
+  : >"$temp_dir/missing.rs"
   echo 'mod missing;' >>"$temp_dir/lib.rs"
   if check_documented_inventory module "$temp_dir/lib.rs" "$temp_dir/full_audit.md" \
     extract_bridge_modules extract_audited_bridge_modules "$temp_dir" 2>/dev/null; then
@@ -989,6 +996,69 @@ EOF
   if check_partial_factory_sites "$temp_dir/factory_ffi.rs" "$temp_dir/factory_audit_wrong_site.md" \
     "$temp_dir/production" "$temp_dir/missing_production_root" "$temp_dir" 2>/dev/null; then
     echo "bridge inventory guard self-test failed: wrong partial-factory call site was accepted" >&2
+    exit 1
+  fi
+
+  mkdir -p "$temp_dir/module_fixture"
+  : >"$temp_dir/module_fixture/ordinary.rs"
+  : >"$temp_dir/module_fixture/actual.rs"
+  cat >"$temp_dir/module_fixture/lib.rs" <<'EOF'
+mod ordinary;
+#[path = "actual.rs"]
+mod renamed;
+EOF
+  cat >"$temp_dir/module_audit.md" <<'EOF'
+## Rust Bridge Modules
+| `rust/crates/rustaxa-bridge/src/ordinary.rs` | ordinary |
+| `rust/crates/rustaxa-bridge/src/actual.rs` | alias |
+EOF
+  check_documented_inventory module "$temp_dir/module_fixture/lib.rs" "$temp_dir/module_audit.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir"
+  sed '/actual.rs/d' "$temp_dir/module_audit.md" >"$temp_dir/module_missing.md"
+  if check_documented_inventory module "$temp_dir/module_fixture/lib.rs" "$temp_dir/module_missing.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: missing module audit was accepted" >&2
+    exit 1
+  fi
+  cp "$temp_dir/module_audit.md" "$temp_dir/module_stale.md"
+  echo '| `rust/crates/rustaxa-bridge/src/stale.rs` | stale |' >>"$temp_dir/module_stale.md"
+  if check_documented_inventory module "$temp_dir/module_fixture/lib.rs" "$temp_dir/module_stale.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: stale module audit was accepted" >&2
+    exit 1
+  fi
+  rm "$temp_dir/module_fixture/actual.rs"
+  if extract_bridge_modules "$temp_dir/module_fixture/lib.rs" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: missing module file was accepted" >&2
+    exit 1
+  fi
+  cat >"$temp_dir/module_fixture/lib.rs" <<'EOF'
+#[path = "../escape.rs"]
+mod renamed;
+EOF
+  if extract_bridge_modules "$temp_dir/module_fixture/lib.rs" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: escaping module path was accepted" >&2
+    exit 1
+  fi
+
+  : >"$temp_dir/outside.rs"
+  ln -s "$temp_dir/outside.rs" "$temp_dir/module_fixture/actual.rs"
+  cat >"$temp_dir/module_fixture/lib.rs" <<'EOF'
+#[path = "actual.rs"]
+mod renamed;
+EOF
+  if extract_bridge_modules "$temp_dir/module_fixture/lib.rs" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: symlink module file was accepted" >&2
+    exit 1
+  fi
+  rm "$temp_dir/module_fixture/actual.rs"
+  : >"$temp_dir/module_fixture/renamed.rs"
+  cat >"$temp_dir/module_fixture/lib.rs" <<'EOF'
+#[cfg_attr(feature = "conditional", path = "actual.rs")]
+mod renamed;
+EOF
+  if extract_bridge_modules "$temp_dir/module_fixture/lib.rs" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: conditional path attribute was accepted" >&2
     exit 1
   fi
 

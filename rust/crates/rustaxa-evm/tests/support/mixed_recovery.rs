@@ -676,12 +676,64 @@ fn recover_period_observing(
     Ok(())
 }
 
+fn validate_distribution_membership(scenario: &str, period: u64, rows: &[Value]) -> Result<()> {
+    let members = rows
+        .iter()
+        .map(|row| row.get("period").and_then(Value::as_u64))
+        .collect::<Option<BTreeSet<_>>>();
+    if scenario == "magnolia" {
+        ensure!(
+            period == 5_730_000 && rows.len() == 1 && members == Some(BTreeSet::from([5_730_000])),
+            "Magnolia first distribution must contain its single activation-period row"
+        );
+    } else {
+        let first = period
+            .checked_sub(99)
+            .context("100-row distribution period")?;
+        ensure!(
+            rows.len() == 100 && members == Some((first..=period).collect()),
+            "recovery must interrupt every row of the qualified 100-row distribution"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn distribution_membership_distinguishes_magnolia_first_batch_from_full_batches() {
+    let row = |period: u64| serde_json::json!({"period": period});
+    let boundary = 5_730_000;
+    assert!(validate_distribution_membership("magnolia", boundary, &[row(boundary)]).is_ok());
+    assert!(validate_distribution_membership("magnolia", boundary, &[]).is_err());
+    assert!(
+        validate_distribution_membership("magnolia", boundary, &[row(boundary), row(boundary)])
+            .is_err()
+    );
+    assert!(validate_distribution_membership("magnolia", boundary, &[row(boundary - 1)]).is_err());
+    assert!(
+        validate_distribution_membership("magnolia", boundary + 1, &[row(boundary + 1)]).is_err()
+    );
+
+    let end = 25_706_900;
+    let full = (end - 99..=end).map(row).collect::<Vec<_>>();
+    assert!(validate_distribution_membership("mainnet_106", end, &full).is_ok());
+    assert!(validate_distribution_membership("mainnet_106", end, &full[..99]).is_err());
+    let mut extra = full.clone();
+    extra.push(row(end + 1));
+    assert!(validate_distribution_membership("mainnet_106", end, &extra).is_err());
+    let mut duplicate = full.clone();
+    duplicate[0] = row(end);
+    assert!(validate_distribution_membership("mainnet_106", end, &duplicate).is_err());
+    let mut wrong = full.clone();
+    wrong[0] = row(end - 100);
+    assert!(validate_distribution_membership("mainnet_106", end, &wrong).is_err());
+}
+
 /// Repeats the full mainnet workload from an independently bootstrapped pair,
 /// interrupting the first distribution at an existing commit callback.
 ///
 /// The caller owns bootstrap and the completed uninterrupted baseline. This
-/// runner accepts only the two existing commit faults and the current-era or
-/// Phalaenopsis window. It executes the exact prefix before the first selected
+/// runner accepts only the two existing commit faults and explicitly qualified
+/// era windows. It executes the exact prefix before the first selected
 /// distribution and retains that committed reader across interruption,
 /// repeated recovery, retry (BeforeCommit only), and the remaining workload.
 /// RecoveryLeaf cannot execute transactions or rewards; run_period checks that
@@ -689,6 +741,8 @@ fn recover_period_observing(
 /// inner Adapter uses mainnet_era::compare_distribution_writes for the terminal
 /// native transcript, including the exact pre-Aspen order. The membership check
 /// here permits that legacy order but no missing or duplicate source period.
+/// Magnolia's first activation distribution contains one activation-period row;
+/// other qualified distribution windows require all 100 source periods.
 /// No expected root enters execution or publication.
 ///
 /// Both inputs must be distinct existing synthetic pairs. The fresh pair must
@@ -721,6 +775,7 @@ pub(super) fn verify_mainnet_recovery_observing(
             (25_706_890, 25_707_005, 25_707_000)
         }
         "magnolia" => (5729995, 5730001, 5730000),
+        "magnolia_first_full_distribution" => (5729995, 5730101, 5730100),
         "aspen_one" => (8_117_995, 8_118_001, 8_118_000),
         "aspen_two" => (8_571_995, 8_572_001, 8_572_000),
         "soleirolia" => (17_379_995, 17_380_001, 17_380_000),
@@ -771,15 +826,11 @@ pub(super) fn verify_mainnet_recovery_observing(
                 .is_empty()
         );
     } else {
-        ensure!(
-            distributions.len() == 100
-                && distributions
-                    .iter()
-                    .map(|row| number(&row["period"]))
-                    .collect::<BTreeSet<_>>()
-                    == (distribution_period - 99..=distribution_period).collect(),
-            "recovery must interrupt every row of the qualified 100-row distribution"
-        );
+        validate_distribution_membership(
+            string(&fixture["scenario"]),
+            distribution_period,
+            distributions,
+        )?;
     }
     if fixture["scenario"] == "mainnet_106" {
         ensure!(
@@ -1048,7 +1099,7 @@ pub(super) fn verify_mainnet_recovery_observing(
     );
     drop(followthrough_readers);
     drop(retained);
-    if legacy_readers {
+    if legacy_readers || fixture["scenario"] == "magnolia_first_full_distribution" {
         verify_physical_rows(&state_path, &fixture["history_rows"])?;
     }
     Ok(())

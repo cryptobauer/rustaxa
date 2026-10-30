@@ -160,13 +160,11 @@ mod hash_to_prime_boundary_tests {
                 input
             );
 
-            if result1.is_ok() && result2.is_ok() {
+            if let (Ok(value1), Ok(value2)) = (result1, result2) {
                 assert_eq!(
-                    result1.unwrap(),
-                    result2.unwrap(),
+                    value1, value2,
                     "Determinism check failed for lambda={}, input={}",
-                    lambda,
-                    input
+                    lambda, input
                 );
             }
         }
@@ -524,7 +522,7 @@ mod stress_and_edge_tests {
         let h2p = HashToPrime::new(64); // Smaller lambda to reduce computation time
 
         // Create progressively larger inputs
-        let large_inputs = vec![
+        let large_inputs = [
             Integer::from(2u32).pow(64),
             Integer::from(2u32).pow(128),
             Integer::from(2u32).pow(256),

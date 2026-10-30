@@ -11,6 +11,32 @@ mod donor_negatives;
 #[path = "legacy_quote_edges.rs"]
 mod legacy_quote_edges;
 
+// Bind the final manifest containing the actual Go streams and C++ estimates.
+const MAGNOLIA_FULL_MANIFEST_SHA256: &str =
+    "f1b57cbcc19e45a84879431540f9de19e14d8fe7a3ff12a9c67ed97c1c62535c";
+
+fn magnolia_full_manifest() -> Result<Value> {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../experiments/evm_feasibility/fixtures/mainnet_era");
+    let bytes = std::fs::read(directory.join("magnolia_first_full_distribution.manifest.json"))?;
+    let manifest = authenticated_magnolia_full_bytes(&bytes)?;
+    ensure!(
+        manifest["references"]["public"] == "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+            && manifest["references"]["local"] == "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+    );
+    Ok(manifest)
+}
+
+fn authenticated_magnolia_full_bytes(bytes: &[u8]) -> Result<Value> {
+    let hash = revm::precompile::hash::sha256_run(bytes, u64::MAX)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    ensure!(
+        hex::encode(hash.bytes) == MAGNOLIA_FULL_MANIFEST_SHA256,
+        "final full-batch manifest identity required"
+    );
+    Ok(serde_json::from_slice(bytes)?)
+}
+
 fn corpus(name: &str) -> Result<Value> {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../experiments/evm_feasibility/fixtures/mainnet_era");
@@ -643,6 +669,10 @@ fn pending_reward_rows(fixture: &Value) -> Result<&[Value]> {
     match fixture.get("pending_reward_facts") {
         Some(Value::Array(rows)) => Ok(rows),
         Some(Value::Null) => {
+            if fixture["scenario"] == "magnolia_first_full_distribution" {
+                let manifest = magnolia_full_manifest()?;
+                return nil_pending_full_distribution_rows(fixture, &manifest["scenario"]);
+            }
             ensure!(fixture["scenario"] == "magnolia", "nil pending facts scope");
             let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
                 "../../../experiments/evm_feasibility/fixtures/mainnet_era/magnolia.manifest.json",
@@ -708,6 +738,51 @@ fn nil_pending_reward_rows<'a>(fixture: &'a Value, scenario: &Value) -> Result<&
             .and_then(Value::as_array)
             .is_some_and(Vec::is_empty),
         "explicit empty producer pending input"
+    );
+    Ok(&[])
+}
+
+fn nil_pending_full_distribution_rows<'a>(
+    fixture: &'a Value,
+    scenario: &Value,
+) -> Result<&'a [Value]> {
+    ensure!(matches!(
+        fixture.get("pending_reward_facts"),
+        Some(Value::Null)
+    ));
+    ensure!(
+        fixture["profile"] == "synthetic_mainnet_era"
+            && fixture["scenario"] == "magnolia_first_full_distribution"
+            && fixture["configuration"]["chain_id"] == 841
+    );
+    ensure!(fixture["head"] == 5_729_998u64 && fixture["seed"]["period"] == 5_729_994u64);
+    let history = fixture["seed"]["history"]
+        .as_array()
+        .context("complete nil pending history")?;
+    ensure!(
+        history.len() == 6
+            && history
+                .iter()
+                .zip(5_729_989u64..=5_729_994)
+                .all(|(row, period)| row.get("period").and_then(Value::as_u64) == Some(period))
+    );
+    ensure!(
+        fixture["configuration"]["hardforks"]["rewards_distribution_frequency"]
+            == serde_json::json!([{"start_period": 5_730_000u64, "frequency": 100u64}])
+    );
+    ensure!(
+        scenario["name"] == "magnolia_first_full_distribution"
+            && scenario["head"] == 5_729_998u64
+            && scenario["first_retained"] == 5_729_994u64
+    );
+    let periods = scenario["periods"]
+        .as_array()
+        .context("declared full window")?;
+    ensure!(periods.iter().map(number).eq(5_729_999u64..=5_730_101));
+    ensure!(
+        scenario["pending_periods"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
     );
     Ok(&[])
 }
@@ -2338,10 +2413,269 @@ fn claim_all_legacy_public_boundary_reopens_history_apis_and_recovers() -> Resul
     )
 }
 
+#[test]
+fn magnolia_first_full_distribution_local_history_and_recovery() -> Result<()> {
+    magnolia_full_manifest()?;
+    let fixture = corpus("magnolia_first_full_distribution")?;
+    verify_magnolia_full_prefix(&fixture, &corpus("magnolia")?)?;
+    historical_workload(fixture, "local")
+}
+
+#[test]
+fn magnolia_first_full_distribution_public_history_and_recovery() -> Result<()> {
+    magnolia_full_manifest()?;
+    let fixture = public_batched_fixture("magnolia_first_full_distribution")?;
+    verify_magnolia_full_prefix(&fixture, &public_batched_fixture("magnolia")?)?;
+    historical_workload(fixture, "public")
+}
+
+fn verify_magnolia_full_prefix(fixture: &Value, prior: &Value) -> Result<()> {
+    ensure!(
+        fixture["scenario"] == "magnolia_first_full_distribution"
+            && prior["scenario"] == "magnolia"
+    );
+    ensure!(
+        fixture["seed"] == prior["seed"] && fixture["configuration"] == prior["configuration"],
+        "accepted Magnolia seed/configuration must be preserved"
+    );
+    let periods = fixture["periods"]
+        .as_array()
+        .context("new full-batch periods")?;
+    let previous = prior["periods"]
+        .as_array()
+        .context("accepted Magnolia periods")?;
+    ensure!(previous.len() == 7);
+    let mut new_periods = BTreeMap::new();
+    for row in periods {
+        ensure!(
+            new_periods.insert(number(&row["number"]), row).is_none(),
+            "duplicate new period identity"
+        );
+    }
+    let mut old_periods = BTreeMap::new();
+    for row in previous {
+        ensure!(
+            old_periods.insert(number(&row["number"]), row).is_none(),
+            "duplicate accepted period identity"
+        );
+    }
+    ensure!(old_periods.keys().copied().eq(5_729_995u64..=5_730_001));
+    // Global cross-capture write interleaving remains OPEN. Compare all other
+    // fields exactly and retain every occurrence in each key's write sequence.
+    for (period, previous) in old_periods {
+        let current = new_periods
+            .get(&period)
+            .context("accepted period identity missing")?;
+        compare_prefix_period_diagnostic(previous, current)?;
+    }
+    let old_api = prior["api_cases"]
+        .as_array()
+        .context("accepted Magnolia API cases")?;
+    let new_api = fixture["api_cases"]
+        .as_array()
+        .context("full-batch API cases")?;
+    ensure!(old_api.len() == 21 && new_api.len() == 42);
+    let mut new_cases = BTreeMap::new();
+    for row in new_api {
+        let name = row["name"].as_str().context("new API case identity")?;
+        ensure!(
+            new_cases.insert(name, row).is_none(),
+            "duplicate new API case identity"
+        );
+    }
+    let mut old_names = BTreeSet::new();
+    let mut heads = BTreeMap::new();
+    for row in old_api {
+        let head = row
+            .get("head")
+            .and_then(Value::as_u64)
+            .context("API head")?;
+        *heads.entry(head).or_insert(0usize) += 1;
+        let name = row["name"].as_str().context("accepted API case identity")?;
+        ensure!(
+            old_names.insert(name),
+            "duplicate accepted API case identity"
+        );
+        let current = *new_cases.get(name).context("accepted API case missing")?;
+        for field in [
+            "name",
+            "head",
+            "request",
+            "call",
+            "repeat_call",
+            "estimates",
+        ] {
+            ensure!(
+                row.get(field).is_some() && row.get(field) == current.get(field),
+                "accepted Magnolia API field changed: {field}"
+            );
+        }
+        let head = row
+            .get("head")
+            .and_then(Value::as_u64)
+            .context("API head")?;
+        match head {
+            5_729_999 | 5_730_000 => ensure!(current == row, "accepted API row changed"),
+            5_730_001 => {
+                // These traces execute at different periods. They are distinct
+                // requests and their cross-tip equivalence remains OPEN.
+                ensure!(row.get("trace_period").and_then(Value::as_u64) == Some(5_730_001));
+                ensure!(current.get("trace_period").and_then(Value::as_u64) == Some(5_730_002));
+            }
+            _ => bail!("unexpected accepted API head"),
+        }
+    }
+    ensure!(heads == BTreeMap::from([(5_729_999, 7), (5_730_000, 7), (5_730_001, 7)]));
+    // The full physical history belongs to different terminal heads. No
+    // cross-head physical-prefix equality is asserted without an independently
+    // authenticated shared-history projection.
+    Ok(())
+}
+
+// Diagnostic only: no claim is made about ordering across different keys.
+fn compare_prefix_period_diagnostic(previous: &Value, current: &Value) -> Result<()> {
+    fn grouped(rows: &Value) -> Result<BTreeMap<(String, String), Vec<Value>>> {
+        let mut groups: BTreeMap<_, Vec<Value>> = BTreeMap::new();
+        for row in rows.as_array().context("reward write list")? {
+            let address = row
+                .get("address")
+                .and_then(Value::as_str)
+                .context("write address")?;
+            let key = row
+                .get("key")
+                .and_then(Value::as_str)
+                .context("write key")?;
+            groups
+                .entry((address.to_owned(), key.to_owned()))
+                .or_default()
+                .push(row.clone());
+        }
+        Ok(groups)
+    }
+    let mut projected = previous.clone();
+    let old_rewards = &previous["ordered_raw_writes"]["rewards"];
+    let new_rewards = &current["ordered_raw_writes"]["rewards"];
+    ensure!(
+        grouped(old_rewards)? == grouped(new_rewards)?,
+        "prefix per-key reward sequences"
+    );
+    projected["ordered_raw_writes"]["rewards"] = new_rewards.clone();
+    let old_parts = previous["distributions"]
+        .as_array()
+        .context("old distributions")?;
+    let new_parts = current["distributions"]
+        .as_array()
+        .context("new distributions")?;
+    ensure!(
+        old_parts.len() == new_parts.len(),
+        "prefix distribution count"
+    );
+    for (index, (old, new)) in old_parts.iter().zip(new_parts).enumerate() {
+        let old_writes = &old["ordered_raw_writes"];
+        let new_writes = &new["ordered_raw_writes"];
+        ensure!(
+            grouped(old_writes)? == grouped(new_writes)?,
+            "prefix distribution per-key sequences"
+        );
+        projected["distributions"][index]["ordered_raw_writes"] = new_writes.clone();
+    }
+    ensure!(&projected == current, "prefix non-write fields changed");
+    Ok(())
+}
+
+fn verify_magnolia_batch_membership(periods: &[Value]) -> Result<()> {
+    let activation = periods
+        .iter()
+        .find(|p| number(&p["number"]) == 5_730_000)
+        .context("activation batch")?;
+    let first_rows = activation["distributions"]
+        .as_array()
+        .context("activation distributions")?;
+    ensure!(first_rows.len() == 1 && number(&first_rows[0]["period"]) == 5_730_000);
+    let full = periods
+        .iter()
+        .find(|p| number(&p["number"]) == 5_730_100)
+        .context("full batch")?;
+    let rows = full["distributions"]
+        .as_array()
+        .context("full batch distributions")?;
+    ensure!(
+        rows.len() == 100
+            && rows
+                .iter()
+                .map(|r| number(&r["period"]))
+                .collect::<BTreeSet<_>>()
+                == (5_730_001u64..=5_730_100).collect(),
+        "actual first full batch must have all 100 source periods"
+    );
+    Ok(())
+}
+
+#[test]
+fn magnolia_first_full_distribution_negative_controls() -> Result<()> {
+    let fixture = corpus("magnolia_first_full_distribution")?;
+    let manifest = magnolia_full_manifest()?;
+    let periods = fixture["periods"].as_array().context("actual periods")?;
+    ensure!(periods.len() == 107);
+    verify_magnolia_batch_membership(periods)?;
+    nil_pending_full_distribution_rows(&fixture, &manifest["scenario"])?;
+    let mut missing = fixture.clone();
+    missing
+        .as_object_mut()
+        .context("fixture object")?
+        .remove("pending_reward_facts");
+    ensure!(nil_pending_full_distribution_rows(&missing, &manifest["scenario"]).is_err());
+    ensure!(authenticated_magnolia_full_bytes(b"incorrect manifest bytes").is_err());
+    let mut duplicate = periods.clone();
+    let batch = duplicate
+        .iter_mut()
+        .find(|p| number(&p["number"]) == 5_730_100)
+        .context("full batch")?;
+    let rows = batch["distributions"]
+        .as_array_mut()
+        .context("batch rows")?;
+    rows[1]["period"] = rows[0]["period"].clone();
+    ensure!(verify_magnolia_batch_membership(&duplicate).is_err());
+    let mut missing_batch = periods.clone();
+    missing_batch
+        .iter_mut()
+        .find(|p| number(&p["number"]) == 5_730_100)
+        .context("full batch")?["distributions"]
+        .as_array_mut()
+        .context("batch rows")?
+        .pop();
+    ensure!(verify_magnolia_batch_membership(&missing_batch).is_err());
+    let old = corpus("magnolia")?;
+    let row = &old["periods"][0];
+    compare_prefix_period_diagnostic(row, row)?;
+    let mut economic = row.clone();
+    economic["final"]["root"] = serde_json::json!("changed");
+    ensure!(compare_prefix_period_diagnostic(row, &economic).is_err());
+    let mut sequence = row.clone();
+    let writes = sequence["ordered_raw_writes"]["rewards"]
+        .as_array_mut()
+        .context("reward writes")?;
+    let mut second = writes[0].clone();
+    second["value"] = serde_json::json!("changed");
+    writes.push(second);
+    let mut reordered = sequence.clone();
+    let writes = reordered["ordered_raw_writes"]["rewards"]
+        .as_array_mut()
+        .context("reward writes")?;
+    let last = writes.len() - 1;
+    writes.swap(0, last);
+    ensure!(compare_prefix_period_diagnostic(&sequence, &reordered).is_err());
+    let mut changed = sequence.clone();
+    changed["ordered_raw_writes"]["rewards"][0]["value"] = serde_json::json!("changed value");
+    ensure!(compare_prefix_period_diagnostic(&sequence, &changed).is_err());
+    Ok(())
+}
+
 fn historical_workload(fixture: Value, pin_label: &str) -> Result<()> {
     let scenario = string(&fixture["scenario"]).to_owned();
     let (first, last, boundary, api_cases) = match scenario.as_str() {
         "magnolia" => (5729995u64, 5730001u64, 5730000u64, 21usize),
+        "magnolia_first_full_distribution" => (5729995, 5730101, 5730000, 42),
         "aspen_one" => (8_117_995, 8_118_001, 8_118_000, 21),
         "aspen_two" => (8_571_995, 8_572_001, 8_572_000, 21),
         "soleirolia" => (17_379_995, 17_380_001, 17_380_000, 21),
@@ -2365,7 +2699,7 @@ fn historical_workload(fixture: Value, pin_label: &str) -> Result<()> {
     );
     if matches!(
         scenario.as_str(),
-        "magnolia" | "aspen_one" | "aspen_two" | "soleirolia"
+        "magnolia" | "magnolia_first_full_distribution" | "aspen_one" | "aspen_two" | "soleirolia"
     ) {
         ensure!(
             fixture["seed"]["donor_document"].is_null(),
@@ -2395,6 +2729,9 @@ fn historical_workload(fixture: Value, pin_label: &str) -> Result<()> {
                 .context("signed boundary transactions")?
                 .is_empty()
         );
+    }
+    if scenario == "magnolia_first_full_distribution" {
+        verify_magnolia_batch_membership(periods)?;
     }
     let base = std::env::var_os("RUN_ARTIFACT_DIR")
         .map(PathBuf::from)
@@ -2446,7 +2783,9 @@ fn historical_workload(fixture: Value, pin_label: &str) -> Result<()> {
         verify_complete_history(&root.join("state_db"), observed.committed, &fixture)?;
     }
     api::verify(&fixture, &root.join("application"), &root.join("state_db"))?;
-    if scenario == "claim_all_legacy_batch_correction" {
+    if scenario == "claim_all_legacy_batch_correction"
+        || scenario == "magnolia_first_full_distribution"
+    {
         verify_physical_rows(&root.join("state_db"), &fixture["history_rows"])?;
     }
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -642,8 +642,10 @@ mod tests {
     use std::sync::RwLock;
 
     // In-memory mock implementation
+    type MemoryColumns = HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>;
+
     struct MockDagStore {
-        data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+        data: RwLock<MemoryColumns>,
     }
 
     enum MockBatchOp {
@@ -660,9 +662,7 @@ mod tests {
 
         fn put(&self, col: Column, key: &[u8], value: &[u8]) {
             let mut data = self.data.write().unwrap();
-            let cf = data
-                .entry(col.name().to_string())
-                .or_insert_with(BTreeMap::new);
+            let cf = data.entry(col.name().to_string()).or_default();
             cf.insert(key.to_vec(), value.to_vec());
         }
 

@@ -10,7 +10,7 @@
 use super::account::StagedDposAccountPort;
 use super::custody::{
     ExpectedRaw, NodeTrace, checked_put, delegation_key, encode_delegation, encode_rewards,
-    map_kernel_error, put_rewards, rewards_key,
+    map_kernel_error, put_rewards, rewards_key, validator_key, validator_owner_key,
 };
 use super::raw::FinalChainNativeRawTrace;
 use super::*;
@@ -32,7 +32,116 @@ impl FinalChainNativeSession<'_> {
         state: &dyn FinalChainNativeStateRead,
     ) -> std::result::Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
         if !self.final_chain.magnolia_active(self.pending_period) {
-            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+            if !self.dpos_state.has_complete_validator_shapes() {
+                return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+            }
+            let mut trace = FinalChainNativeRawTrace::new(state);
+            match &transaction {
+                DposTransaction::ClaimRewards {
+                    delegator,
+                    validator,
+                } => {
+                    let present = self
+                        .dpos_state
+                        .delegations
+                        .get(validator)
+                        .is_some_and(|rows| rows.contains_key(delegator));
+                    let raw = trace.current(
+                        DPOS_CONTRACT_ADDRESS,
+                        delegation_key(*validator, *delegator),
+                    )?;
+                    let expected = if present {
+                        ExpectedRaw::Exact(encode_delegation(
+                            &self.dpos_state,
+                            *validator,
+                            *delegator,
+                        )?)
+                    } else {
+                        ExpectedRaw::Empty
+                    };
+                    if !expected.matches(&raw) {
+                        return Err(FinalChainNativeSessionError::RawIntegrity(
+                            "historical delegation raw/domain facts disagree".into(),
+                        ));
+                    }
+                    if !present {
+                        return Ok(FinalChainNativeInvocationResult::Completed(
+                            FinalChainNativeOutcome {
+                                status: FinalChainNativeStatus::ContractFailure {
+                                    error: DposContractError::NonExistentDelegation
+                                        .legacy_message(),
+                                },
+                                gas_used: quote.required_gas,
+                                output: Vec::new(),
+                                account_mutations: Vec::new(),
+                                raw_mutations: Vec::new(),
+                                logs: Vec::new(),
+                            },
+                        ));
+                    }
+                    if checked_validator_row_shape(&self.dpos_state, *validator)
+                        .map_err(map_kernel_error)?
+                        != Some(ValidatorRowShape::LegacyV1)
+                    {
+                        return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+                    }
+                }
+                DposTransaction::ClaimCommissionRewards { owner, validator } => {
+                    let metadata = self.dpos_state.validator_metadata.get(validator);
+                    let raw_owner =
+                        trace.current(DPOS_CONTRACT_ADDRESS, validator_owner_key(*validator))?;
+                    let expected = match metadata {
+                        Some(row) => ExpectedRaw::Exact(row.owner.to_vec()),
+                        None => ExpectedRaw::Empty,
+                    };
+                    if !expected.matches(&raw_owner) {
+                        return Err(FinalChainNativeSessionError::RawIntegrity(
+                            "historical owner raw/domain facts disagree".into(),
+                        ));
+                    }
+                    if !metadata.is_some_and(|row| row.owner == *owner) {
+                        return Ok(FinalChainNativeInvocationResult::Completed(
+                            FinalChainNativeOutcome {
+                                status: FinalChainNativeStatus::ContractFailure {
+                                    error: DposContractError::WrongOwnerAcc.legacy_message(),
+                                },
+                                gas_used: quote.required_gas,
+                                output: Vec::new(),
+                                account_mutations: Vec::new(),
+                                raw_mutations: Vec::new(),
+                                logs: Vec::new(),
+                            },
+                        ));
+                    }
+                    if checked_validator_row_shape(&self.dpos_state, *validator)
+                        .map_err(map_kernel_error)?
+                        != Some(ValidatorRowShape::LegacyV1)
+                        || !self.dpos_state.total_stakes.contains_key(validator)
+                        || (self
+                            .dpos_state
+                            .total_stakes
+                            .get(validator)
+                            .is_some_and(StoredDposTokenAmount::is_zero)
+                            && self
+                                .dpos_state
+                                .commission_rewards
+                                .get(validator)
+                                .is_none_or(StoredDposTokenAmount::is_zero))
+                    {
+                        return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+                    }
+                    let raw_validator =
+                        trace.current(DPOS_CONTRACT_ADDRESS, validator_key(*validator))?;
+                    if !ExpectedRaw::Exact(self.encode_validator_row(&self.dpos_state, *validator)?)
+                        .matches(&raw_validator)
+                    {
+                        return Err(FinalChainNativeSessionError::RawIntegrity(
+                            "historical validator raw/domain facts disagree".into(),
+                        ));
+                    }
+                }
+                _ => return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported),
+            }
         }
         if let DposTransaction::ClaimCommissionRewards { owner, validator } = &transaction {
             // Preserve the contract's owner-check precedence. Once ownership is

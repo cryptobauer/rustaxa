@@ -209,6 +209,7 @@ fn closeout_registered_adapter_defers_panic_and_live_handle_disposal() {
         std::env::temp_dir().join(format!("retention-adapter-{}-{nonce}", std::process::id())),
         true,
     );
+    clear_before_open(&root).unwrap();
     let data = root.join("live-reader");
     std::fs::write(&data, b"retained through child termination").unwrap();
     let reader = std::fs::File::open(&data).unwrap();
