@@ -50,6 +50,7 @@ impl FinalChainNativeSession<'_> {
             return self.invoke_redelegate(transaction, quote, state);
         }
         if !self.final_chain.magnolia_active(self.pending_period)
+            && !matches!(&transaction, DposTransaction::ConfirmUndelegate { .. })
             && !(matches!(&transaction, DposTransaction::Delegate { .. })
                 && self.dpos_state.has_complete_validator_shapes())
         {
@@ -189,23 +190,6 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
-        if !self.final_chain.magnolia_active(self.pending_period)
-            && let DposTransaction::ConfirmUndelegate {
-                delegator,
-                validator,
-            } = transaction
-        {
-            // The pre-Magnolia reference confirms only the V1 queue; validator
-            // cleanup and Ficus validator writes are nested under Magnolia.
-            return self.serialize_remove_v1_queue(
-                *delegator,
-                *validator,
-                before,
-                trace,
-                "successful V1 confirmation lost its prior queue entry",
-                "confirmed V1 undelegation",
-            );
-        }
         self.serialize_selected_custody(transaction, before, after, trace)
     }
 
@@ -449,6 +433,16 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        if !self.final_chain.magnolia_active(self.pending_period) {
+            return self.serialize_remove_v1_queue(
+                delegator,
+                validator,
+                before,
+                trace,
+                "successful V1 confirmation lost its prior queue entry",
+                "confirmed V1 undelegation",
+            );
+        }
         if before.total_stakes.contains_key(&validator) {
             let observed = trace.current(DPOS_CONTRACT_ADDRESS, validator_key(validator))?;
             if !ExpectedRaw::OneOf(self.validator_input_encodings(before, validator)?)
@@ -1322,7 +1316,7 @@ fn undelegation_v2_key(delegator: [u8; 20], validator: [u8; 20], id: u64) -> Con
     ]))
 }
 
-fn undelegation_v1_key(delegator: [u8; 20], validator: [u8; 20]) -> ConcreteStorageKey {
+pub(super) fn undelegation_v1_key(delegator: [u8; 20], validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[3, 0], &validator, &delegator]))
 }
 

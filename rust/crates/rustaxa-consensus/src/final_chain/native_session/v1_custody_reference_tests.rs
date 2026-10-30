@@ -564,3 +564,194 @@ fn pre_magnolia_fixture_remains_explicitly_outside_staged_custody() {
         );
     });
 }
+
+#[test]
+fn pre_magnolia_v1_confirmation_matches_pinned_boundary_and_isolates_failures() {
+    let fixture = fixture();
+    let scenario = scenario(&fixture, "pre_magnolia_terminal");
+    with_reference_chain(scenario, |chain| {
+        let mut session = chain
+            .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let initial_state = ReferenceState::from_snapshot(&session.dpos_state);
+        let mut accounts = account::StagedDposAccountPort::from_state(&initial_state);
+        let amount = U256::from_dec_str(scenario["amount"].as_str().unwrap()).unwrap();
+        let setup = chain
+            .apply_dpos_undelegate(
+                &mut session.dpos_state,
+                &mut accounts,
+                DELEGATOR,
+                VALIDATOR,
+                amount.to_big_endian().to_vec(),
+                1.into(),
+            )
+            .unwrap();
+        assert_eq!(setup.status_code, 1);
+        assert!(session.dpos_state.has_complete_validator_shapes());
+        let state = ReferenceState::from_snapshot(&session.dpos_state);
+        let before = session.dpos_state.clone();
+        let early = transaction(scenario, "early_confirm");
+        let request = fixture_request(1, 0, 0, scenario, early);
+        let outcome = invoke_and_compare(
+            &mut session,
+            &state,
+            &request,
+            early,
+            fixture["action_gas"]["confirm_undelegate"]
+                .as_u64()
+                .unwrap(),
+        );
+        assert!(outcome.account_mutations.is_empty());
+        assert_eq!(session.dpos_state, before);
+
+        let unlock = scenario["unlock_period"].as_u64().unwrap();
+        session = begin_later_fixture_session(chain, session, unlock);
+        let before = session.dpos_state.clone();
+        let mature = transaction(scenario, "mature_confirm");
+        let mut other = fixture_request(unlock, 0, 0, scenario, mature);
+        other.caller = OWNER;
+        let quote = session.prepare(&other, &state).unwrap();
+        let FinalChainNativeInvocationResult::Completed(outcome) =
+            session.invoke(&other, quote, &state).unwrap()
+        else {
+            panic!("confirmation result")
+        };
+        assert_eq!(
+            outcome.status,
+            FinalChainNativeStatus::ContractFailure {
+                error: "Undelegation does not exist".to_owned(),
+            }
+        );
+        assert!(outcome.account_mutations.is_empty());
+        assert!(outcome.raw_mutations.is_empty());
+        assert_eq!(session.dpos_state, before);
+
+        let request = fixture_request(unlock, 1, 1, scenario, mature);
+        let key = custody::undelegation_v1_key(DELEGATOR, VALIDATOR);
+        let original = state.rows.borrow_mut().insert(
+            (DPOS_CONTRACT_ADDRESS, key.0),
+            ConcreteRead::Present(vec![1]),
+        );
+        let quote = session.prepare(&request, &state).unwrap();
+        assert!(matches!(
+            session.invoke(&request, quote, &state),
+            Err(FinalChainNativeSessionError::RawIntegrity(_))
+        ));
+        assert_eq!(session.dpos_state, before);
+        state
+            .rows
+            .borrow_mut()
+            .insert((DPOS_CONTRACT_ADDRESS, key.0), original.unwrap());
+
+        session.next_sequence = 0;
+        session.prepared = None;
+        session.aborted = false;
+        let request = fixture_request(unlock, 0, 0, scenario, mature);
+        let outcome = invoke_and_compare(
+            &mut session,
+            &state,
+            &request,
+            mature,
+            fixture["action_gas"]["confirm_undelegate"]
+                .as_u64()
+                .unwrap(),
+        );
+        assert_confirm_accounts(&outcome, scenario);
+        state.apply_raw(&outcome);
+        let missing = transaction(scenario, "missing_confirm");
+        let request = fixture_request(unlock, 1, 1, scenario, missing);
+        let outcome = invoke_and_compare(
+            &mut session,
+            &state,
+            &request,
+            missing,
+            fixture["action_gas"]["confirm_undelegate"]
+                .as_u64()
+                .unwrap(),
+        );
+        assert!(outcome.account_mutations.is_empty());
+    });
+}
+
+#[test]
+fn pre_magnolia_v1_confirmation_preserves_surviving_validator_and_account_failures() {
+    let fixture = fixture();
+    for ficus in [false, true] {
+        let mut scenario = scenario(&fixture, "pre_magnolia_terminal").clone();
+        scenario["ficus"] = Value::Bool(ficus);
+        for offset in [0, 1] {
+            for failure in ["none", "missing", "underfunded"] {
+                with_reference_chain(&scenario, |chain| {
+                    let mut session = chain
+                        .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                        .unwrap();
+                    let initial = ReferenceState::from_snapshot(&session.dpos_state);
+                    let mut accounts = account::StagedDposAccountPort::from_state(&initial);
+                    let setup = chain
+                        .apply_dpos_undelegate(
+                            &mut session.dpos_state,
+                            &mut accounts,
+                            DELEGATOR,
+                            VALIDATOR,
+                            U256::from(500_u64).to_big_endian().to_vec(),
+                            1.into(),
+                        )
+                        .unwrap();
+                    assert_eq!(setup.status_code, 1);
+                    let mut state = ReferenceState::from_snapshot(&session.dpos_state);
+                    match failure {
+                        "missing" => {
+                            state.accounts.remove(&DELEGATOR);
+                        }
+                        "underfunded" => {
+                            state
+                                .accounts
+                                .get_mut(&DPOS_CONTRACT_ADDRESS)
+                                .unwrap()
+                                .balance = BigInt::from(0);
+                        }
+                        _ => {}
+                    }
+                    let period = scenario["unlock_period"].as_u64().unwrap() + offset;
+                    session = begin_later_fixture_session(chain, session, period);
+                    let before = session.dpos_state.clone();
+                    let rows = state.rows.borrow().clone();
+                    let request = fixture_request(
+                        period,
+                        0,
+                        0,
+                        &scenario,
+                        transaction(&scenario, "mature_confirm"),
+                    );
+                    let quote = session.prepare(&request, &state).unwrap();
+                    let result = session.invoke(&request, quote, &state);
+                    if failure != "none" {
+                        assert!(result.is_err());
+                        assert_eq!(session.dpos_state, before);
+                        assert_eq!(*state.rows.borrow(), rows);
+                    } else {
+                        let FinalChainNativeInvocationResult::Completed(outcome) = result.unwrap()
+                        else {
+                            panic!("confirmation result")
+                        };
+                        assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                        assert_eq!(outcome.account_mutations.len(), 2);
+                        assert!(
+                            outcome
+                                .raw_mutations
+                                .iter()
+                                .all(|mutation| mutation.key != custody::validator_key(VALIDATOR))
+                        );
+                        assert_eq!(
+                            session.dpos_state.total_stakes.get(&VALIDATOR),
+                            before.total_stakes.get(&VALIDATOR)
+                        );
+                        assert!(
+                            find_undelegation(&session.dpos_state, DELEGATOR, VALIDATOR).is_none()
+                        );
+                    }
+                });
+            }
+        }
+    }
+}
