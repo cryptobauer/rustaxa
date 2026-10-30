@@ -254,6 +254,18 @@ pub(crate) fn compare_raw(outcomes: &[NativeOutcome], expected: &Value) -> Resul
 pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Result<()> {
     let api = fixture_stream("local.observer.traced.api")?;
     let cpp = fixture_stream("cpp.api")?;
+    verify_documents(fixture, application, concrete, &api, &cpp, (622, 933), true)
+}
+
+pub(super) fn verify_documents(
+    fixture: &Value,
+    application: &Path,
+    concrete: &Path,
+    api: &Value,
+    cpp: &Value,
+    counts: (usize, usize),
+    reader_regressions: bool,
+) -> Result<()> {
     let (_storage, chain) = open_chain(application, fixture)?;
     let committed =
         ConcreteStateLifecycle::inspect_existing(concrete, chain.concrete_chain_identity()?)?
@@ -423,7 +435,10 @@ pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Re
             verify_final_reader(&reader, &fixture["periods"][head as usize - 1]["final"])?;
         }
     }
-    ensure!(traces == 622 && probes > 933, "complete API workload");
+    ensure!(
+        traces == counts.0 && probes > counts.1,
+        "complete API workload"
+    );
     for extra in api["interacting_traces"]
         .as_array()
         .context("interacting trace oracle")?
@@ -570,7 +585,9 @@ pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Re
     let reader = ConcreteStateReader::open_read_only(concrete, committed)?;
     verify_final_reader(&reader, &final_period["final"])?;
     drop(reader);
-    concrete_reader_regressions(fixture, concrete, committed)?;
+    if reader_regressions {
+        concrete_reader_regressions(fixture, concrete, committed)?;
+    }
     Ok(())
 }
 

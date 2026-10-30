@@ -86,8 +86,13 @@ pub(super) fn compare_reward_map(
 }
 
 pub(super) fn fixture_stream(stream: &str) -> Result<Value> {
+    fixture_stream_from("native_integration", stream)
+}
+
+fn fixture_stream_from(directory: &str, stream: &str) -> Result<Value> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../experiments/evm_feasibility/fixtures/native_integration");
+        .join("../../../experiments/evm_feasibility/fixtures")
+        .join(directory);
     let manifest: Value = serde_json::from_slice(&std::fs::read(root.join("manifest.json"))?)?;
     ensure!(manifest["registry"].as_array().context("registry")?.len() == 29);
     let pin = &manifest["streams"][stream];
@@ -148,6 +153,26 @@ fn native_integration_cacti_bracket_publish_reopen_and_retain() -> Result<()> {
 }
 fn workload(stream: &str, apis: bool) -> Result<()> {
     let fixture = fixture_stream(stream)?;
+    run_workload(&fixture, apis, false)
+}
+
+#[test]
+fn native_integration_magnolia_cancel_boundary_publish_reopen_and_retain() -> Result<()> {
+    let fixture = fixture_stream_from("native_cancel_boundary", "local.observer.traced")?;
+    let rows = fixture["pending_queue"]
+        .as_array()
+        .context("pending queue")?;
+    ensure!(
+        rows.len() == 3
+            && rows
+                .iter()
+                .all(|row| number(&row["block"]) == 6 && !string(&row["raw"]).is_empty()),
+        "committed queue maturity"
+    );
+    run_workload(&fixture, false, true)
+}
+
+fn run_workload(fixture: &Value, apis: bool, boundary_apis: bool) -> Result<()> {
     let periods = fixture["periods"].as_array().context("periods")?;
     let bound = &fixture["period_bound"];
     ensure!(
@@ -167,20 +192,33 @@ fn workload(stream: &str, apis: bool) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     ));
-    let mut scratch = era_retention::register(&root, &fixture)?;
+    let mut scratch = era_retention::register(&root, fixture)?;
     std::fs::create_dir(&root)?;
     era_retention::created(&mut scratch)?;
     let application = root.join("application");
     let concrete = root.join("concrete");
-    run_segment(&fixture, &periods[..9], &application, &concrete, true)?;
-    run_segment(&fixture, &periods[9..], &application, &concrete, false)?;
+    run_segment(fixture, &periods[..9], &application, &concrete, true)?;
+    run_segment(fixture, &periods[9..], &application, &concrete, false)?;
     if apis {
-        api::verify(&fixture, &application, &concrete)?;
+        api::verify(fixture, &application, &concrete)?;
+    }
+    if boundary_apis {
+        let api = fixture_stream_from("native_cancel_boundary", "local.observer.traced.api")?;
+        let cpp = fixture_stream_from("native_cancel_boundary", "cpp.api")?;
+        api::verify_documents(
+            fixture,
+            &application,
+            &concrete,
+            &api,
+            &cpp,
+            (30, 45),
+            false,
+        )?;
     }
     era_retention::finish(
         scratch,
         era_retention::evidence(
-            &fixture,
+            fixture,
             "complete native integration periods,receipts/native/history,physicalreopen; API branch recorded by test/case ID; all owners closed",
         )?,
         false,
@@ -274,6 +312,16 @@ fn native_integration_reward_map_permutation_rejects_barrier_and_occurrence_chan
 #[test]
 fn native_integration_bounded_recovery_repeats_and_continues() -> Result<()> {
     let fixture = fixture_stream("local.observer.traced")?;
+    run_recovery(&fixture, 9)
+}
+
+#[test]
+fn native_integration_magnolia_cancel_boundary_recovery() -> Result<()> {
+    let fixture = fixture_stream_from("native_cancel_boundary", "local.observer.traced")?;
+    run_recovery(&fixture, 7)
+}
+
+fn run_recovery(fixture: &Value, split: usize) -> Result<()> {
     let periods = fixture["periods"].as_array().unwrap();
     let base = std::env::var_os("RUN_ARTIFACT_DIR")
         .map(PathBuf::from)
@@ -285,26 +333,26 @@ fn native_integration_bounded_recovery_repeats_and_continues() -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     ));
-    let mut scratch = era_retention::register(&parent, &fixture)?;
+    let mut scratch = era_retention::register(&parent, fixture)?;
     std::fs::create_dir(&parent)?;
     era_retention::created(&mut scratch)?;
     let baseline = parent.join("baseline");
     std::fs::create_dir(&baseline)?;
     run_segment(
-        &fixture,
-        &periods[..9],
+        fixture,
+        &periods[..split],
         &baseline.join("application"),
         &baseline.join("state_db"),
         true,
     )?;
     run_segment(
-        &fixture,
-        &periods[9..],
+        fixture,
+        &periods[split..],
         &baseline.join("application"),
         &baseline.join("state_db"),
         false,
     )?;
-    let expected = mixed_recovery::final_facts(&baseline, &fixture)?;
+    let expected = mixed_recovery::final_facts(&baseline, fixture)?;
     for fault in [
         mixed_recovery::Fault::BeforeCommit,
         mixed_recovery::Fault::AfterCommit,
@@ -312,8 +360,8 @@ fn native_integration_bounded_recovery_repeats_and_continues() -> Result<()> {
         let root = parent.join(format!("{fault:?}"));
         std::fs::create_dir(&root)?;
         run_segment_fault(
-            &fixture,
-            &periods[..9],
+            fixture,
+            &periods[..split],
             &root.join("application"),
             &root.join("state_db"),
             true,
@@ -321,35 +369,35 @@ fn native_integration_bounded_recovery_repeats_and_continues() -> Result<()> {
         )?;
         mixed_recovery::recover_period(
             &root,
-            &fixture,
-            8,
+            fixture,
+            split - 1,
             fault == mixed_recovery::Fault::AfterCommit,
         )?;
         if fault == mixed_recovery::Fault::BeforeCommit {
             run_segment(
-                &fixture,
-                &periods[8..9],
+                fixture,
+                &periods[split - 1..split],
                 &root.join("application"),
                 &root.join("state_db"),
                 false,
             )?;
         }
         run_segment(
-            &fixture,
-            &periods[9..],
+            fixture,
+            &periods[split..],
             &root.join("application"),
             &root.join("state_db"),
             false,
         )?;
         ensure!(
-            mixed_recovery::final_facts(&root, &fixture)? == expected,
+            mixed_recovery::final_facts(&root, fixture)? == expected,
             "recovered complete workload facts"
         );
     }
     era_retention::finish(
         scratch,
         era_retention::evidence(
-            &fixture,
+            fixture,
             "uninterrupted baseline plus BeforeCommit/AfterCommit repeatedrecovery/continuation exactfinalfacts; all owners closed",
         )?,
         false,
