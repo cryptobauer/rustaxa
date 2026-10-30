@@ -138,6 +138,7 @@ fn chain_with_economics(
             fix_claim_all_block_num: 0.into(),
             fix_redelegate_block_num: 0.into(),
             cacti_period: 0.into(),
+            cacti_jail_time: 2,
             aspen_part_one_period: 0.into(),
             aspen_part_two_period: activation,
             genesis_balance_sum: Some(
@@ -385,6 +386,124 @@ fn native_integration_slashing_marker_matches_literal_go_key_and_reversal() {
             .proof_key,
         proof.proof_key
     );
+}
+
+#[test]
+fn native_integration_slashing_writes_and_duplicate_match_go() {
+    struct SlashingState(State, std::cell::Cell<usize>);
+    impl FinalChainNativeStateRead for SlashingState {
+        fn account(
+            &self,
+            address: [u8; 20],
+        ) -> Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+            assert_eq!(address, SLASHING_CONTRACT_ADDRESS);
+            self.1.set(self.1.get() + 1);
+            Ok(FinalChainNativeAccount {
+                exists: false,
+                nonce: FinalChainNonce::zero(),
+                balance: BigInt::from(0),
+            })
+        }
+        fn raw_storage(
+            &self,
+            address: [u8; 20],
+            key: &ConcreteStorageKey,
+        ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+            self.0.raw_storage(address, key)
+        }
+    }
+    let fixture = corpus();
+    let rows = fixture["periods"][3]["transactions"].as_array().unwrap();
+    let slash = rows.iter().find(|row| row["name"] == "slash_a").unwrap();
+    let duplicate = rows
+        .iter()
+        .find(|row| row["name"] == "slash_duplicate")
+        .unwrap();
+    let path = Scratch::new();
+    let chain = chain_with_threshold(&path, &fixture, 0.into(), 0, 0);
+    let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+    // Use the fixture's execution period with an independent, empty delayed list.
+    session.pending_period = 4.into();
+    let mut state = SlashingState(State::genesis(&fixture), std::cell::Cell::new(0));
+    let mut call = request(slash, 0);
+    call.period = 4.into();
+    call.contract = SLASHING_CONTRACT_ADDRESS;
+    call.state_address = SLASHING_CONTRACT_ADDRESS;
+    for (at, name) in [
+        "double-voting proof",
+        "validator jail block",
+        "slashing jailed membership",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for malformed in [false, true] {
+            let mut unavailable = SlashingState(State::genesis(&fixture), std::cell::Cell::new(0));
+            unavailable.0.fault = Some((at, malformed));
+            let mut failed_session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+            failed_session.pending_period = 4.into();
+            let before = failed_session.dpos_state.clone();
+            let rows_before = unavailable.0.rows.clone();
+            let quote = failed_session.prepare(&call, &unavailable).unwrap();
+            let expected = if malformed {
+                FinalChainNativeSessionError::RawIntegrity(name.into())
+            } else {
+                FinalChainNativeSessionError::StateRead(FinalChainNativeStateReadError::Invariant(
+                    "native integration consumed read".into(),
+                ))
+            };
+            assert_eq!(
+                failed_session.invoke(&call, quote, &unavailable),
+                Err(expected)
+            );
+            assert_eq!(failed_session.dpos_state, before);
+            assert_eq!(unavailable.0.rows, rows_before);
+            assert_eq!(unavailable.1.get(), 0);
+            assert_eq!(
+                failed_session.prepare(&call, &unavailable),
+                Err(FinalChainNativeSessionError::Aborted)
+            );
+        }
+    }
+    let quote = session.prepare(&call, &state).unwrap();
+    let outcome = completed(session.invoke(&call, quote, &state).unwrap());
+    assert_eq!(
+        outcome.account_mutations,
+        vec![FinalChainNativeOrdinaryMutation::NonceReplace {
+            address: SLASHING_CONTRACT_ADDRESS,
+            expected_exists: false,
+            expected: FinalChainNonce::zero(),
+            replacement: FinalChainNonce::from_u64(1),
+        }]
+    );
+    let mut raw_outcome = outcome.clone();
+    raw_outcome.account_mutations.clear();
+    compare(&raw_outcome, slash);
+    state.0.apply(&outcome);
+    let before = session.dpos_state.clone();
+    let mut call = request(duplicate, 1);
+    call.period = 4.into();
+    call.contract = SLASHING_CONTRACT_ADDRESS;
+    call.state_address = SLASHING_CONTRACT_ADDRESS;
+    let quote = session.prepare(&call, &state).unwrap();
+    let outcome = completed(session.invoke(&call, quote, &state).unwrap());
+    assert_eq!(
+        outcome.gas_used.as_u64()
+            + rustaxa_types::transaction::intrinsic_gas(&decode(&duplicate["input"]), false)
+                .unwrap(),
+        duplicate["gas_used"].as_u64().unwrap()
+    );
+    assert_eq!(
+        outcome.status,
+        FinalChainNativeStatus::ContractFailure {
+            error: duplicate["execution_error"].as_str().unwrap().into()
+        }
+    );
+    assert!(outcome.raw_mutations.is_empty());
+    assert!(outcome.account_mutations.is_empty());
+    assert!(outcome.logs.is_empty());
+    assert_eq!(outcome.output, decode(&duplicate["output"]));
+    assert_eq!(session.dpos_state, before);
 }
 
 #[test]
