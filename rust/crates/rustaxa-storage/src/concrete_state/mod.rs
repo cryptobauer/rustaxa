@@ -42,6 +42,8 @@ pub use lifecycle::{
     ConcreteCommitApproval, ConcreteLifecycleObservation, ConcreteObserverAccountChange,
     ConcreteObserverPhaseOutput, ConcreteStateLifecycle,
 };
+#[cfg(feature = "synthetic-fixtures")]
+pub use lifecycle::{ConcreteCommittedPut, ConcreteCommittedReceipt};
 pub use reader::{
     ConcreteCheckpointReaders, ConcreteStateReader, ConcreteStorageInventory,
     ConcreteStorageInventoryEntry, ConcreteStorageInventoryError, ConcreteStorageInventoryLimits,

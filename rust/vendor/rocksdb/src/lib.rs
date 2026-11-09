@@ -84,13 +84,13 @@
 mod ffi_util;
 
 pub mod backup;
+mod bounded_read;
 pub mod checkpoint;
 mod column_family;
 pub mod compaction_filter;
 pub mod compaction_filter_factory;
 mod comparator;
 mod db;
-mod bounded_read;
 pub use bounded_read::BoundedReadError;
 pub use db::BoundedReadThreadMode;
 mod db_iterator;
@@ -139,7 +139,7 @@ pub use crate::{
     merge_operator::MergeOperands,
     perf::{PerfContext, PerfMetric, PerfStatsLevel},
     slice_transform::SliceTransform,
-    snapshot::{Snapshot, SnapshotWithThreadMode},
+    snapshot::{OwnedSnapshotWithThreadMode, Snapshot, SnapshotWithThreadMode},
     sst_file_writer::SstFileWriter,
     transactions::{
         OptimisticTransactionDB, OptimisticTransactionOptions, Transaction, TransactionDB,

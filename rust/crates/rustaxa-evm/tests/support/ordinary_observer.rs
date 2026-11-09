@@ -71,6 +71,77 @@ impl KnownOrdinaryStorageIdentities {
         Ok(result)
     }
 
+    pub(super) fn from_verified_empty_checkpoint(
+        proof: &super::DurationVerifiedRecoveryCopy,
+    ) -> Result<Self> {
+        ensure!(
+            hex::encode(proof.contract_sha256)
+                == "34d6b8d6551fbb42265c218fd535e97e72707d93064c62cd8afcc71177c0447b"
+                && proof.seed.period.as_u64() == 5_729_994
+                && hex::encode(proof.seed.state_root)
+                    == "f12de5318aff300050ae7ec3709d29bc3295999cdae8efde14654b00cfd490fa"
+                && proof.completed_count == 5_893_460 - 5_729_995 + 1
+                && proof.source_path.is_absolute()
+                && std::fs::canonicalize(&proof.source_path)? == proof.source_path
+                && proof.target != proof.source_path,
+            "checkpoint prefix provenance"
+        );
+        ensure!(
+            matches!(proof.mode, "public" | "local")
+                && proof.rust_binary_sha256 != [0; 32]
+                && proof.prefix_owner_sha256 != [0; 32]
+                && proof.source_manifest != [0; 32]
+                && proof.prefix_rolling != [0; 32]
+                && proof.effects_rolling != [0; 32]
+                && proof.copy_manifest_sha256 != [0; 32],
+            "checkpoint proof binding"
+        );
+        ensure!(
+            matches!(proof.committed.period.as_u64(), 5_893_460 | 5_893_461)
+                && proof.committed.state_root != [0; 32],
+            "checkpoint proof identity"
+        );
+        let path = proof.target.join("state_db");
+        ensure!(
+            path.is_absolute() && std::fs::canonicalize(&path)? == path,
+            "checkpoint observer path"
+        );
+        let mut history = BTreeMap::new();
+        for identity in &proof.historical {
+            ensure!(
+                identity.period <= proof.committed.period && identity.state_root != [0; 32],
+                "checkpoint historical identity"
+            );
+            ensure!(
+                history
+                    .insert(
+                        identity.period.as_u64(),
+                        OrdinarySnapshot {
+                            identity: *identity,
+                            values: BTreeMap::new()
+                        }
+                    )
+                    .is_none(),
+                "duplicate checkpoint history"
+            );
+        }
+        let snapshot = OrdinarySnapshot {
+            identity: proof.committed,
+            values: BTreeMap::new(),
+        };
+        if let Some(existing) = history.insert(proof.committed.period.as_u64(), snapshot.clone()) {
+            ensure!(existing == snapshot, "checkpoint history root mismatch");
+        }
+        Ok(Self {
+            owner: proof.identity,
+            root_path: path,
+            committed: snapshot,
+            generation: proof.generation,
+            staged: None,
+            history,
+        })
+    }
+
     pub(super) fn from_verified_fresh_seed(seed: VerifiedFreshOrdinarySeed) -> Result<Self> {
         ensure!(
             seed.root_path.is_absolute(),

@@ -532,6 +532,24 @@ pub trait ConsensusExecutionPort {
         Ok(None)
     }
 
+    /// Returns trusted lifecycle evidence independently from context claims.
+    fn final_chain_native_lifecycle_authority(
+        &self,
+        _request_id: [u8; 32],
+        _projection_hash: [u8; 32],
+    ) -> Result<Option<crate::native_projection_context::FinalChainLifecycleAuthority>> {
+        Ok(None)
+    }
+
+    fn final_chain_native_delayed_view(
+        &self,
+        _request_id: [u8; 32],
+        _projection_hash: [u8; 32],
+    ) -> Result<Option<std::rc::Rc<crate::native_session::frozen_eligibility::FrozenEligibility>>>
+    {
+        Ok(None)
+    }
+
     fn commit_final_chain_state(
         &self,
         _request: &crate::FinalChainExternalEvmStateCommitIntent,
@@ -604,6 +622,23 @@ impl<T: ConsensusExecutionPort> crate::FinalChainExecutionLeaf for T {
         projection_hash: [u8; 32],
     ) -> Result<Option<crate::native_projection_context::FinalChainNativeProjectionContext>> {
         self.final_chain_native_projection_context(request_id, projection_hash)
+    }
+
+    fn native_lifecycle_authority(
+        &self,
+        request_id: [u8; 32],
+        projection_hash: [u8; 32],
+    ) -> Result<Option<crate::native_projection_context::FinalChainLifecycleAuthority>> {
+        self.final_chain_native_lifecycle_authority(request_id, projection_hash)
+    }
+
+    fn native_delayed_view(
+        &self,
+        request_id: [u8; 32],
+        projection_hash: [u8; 32],
+    ) -> Result<Option<std::rc::Rc<crate::native_session::frozen_eligibility::FrozenEligibility>>>
+    {
+        self.final_chain_native_delayed_view(request_id, projection_hash)
     }
 
     fn commit_staged_state(

@@ -8,9 +8,12 @@ from pathlib import Path
 parser = argparse.ArgumentParser()
 parser.add_argument('--source', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
+parser.add_argument('--build-root', type=Path, default=Path('/build'))
 args = parser.parse_args()
 root, output = args.source.resolve(), args.output.resolve()
-assert output.is_relative_to(Path('/build')) and output != Path('/build')
+build_root = args.build_root.resolve()
+assert output.is_relative_to(build_root) and output != build_root
+assert not output.is_relative_to(root)
 rows = []
 paths = [p for p in (root/'tests/test_util').rglob('*') if p.name != 'AI.md' and p.is_file()]
 paths.append(root/'tests/rpc_test.cpp')

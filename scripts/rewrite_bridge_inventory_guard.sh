@@ -1,6 +1,28 @@
 #!/bin/sh
 set -eu
 
+safe_scan_path() {
+  case "/$1/" in */AI.md/*|*/../*) echo "Excluded scan path" >&2; return 1 ;; esac
+  scan_rest="$1"
+  scan_cursor="."
+  case "$scan_rest" in /*) scan_cursor="/"; scan_rest="${scan_rest#/}" ;; esac
+  while [ -n "$scan_rest" ]; do
+    scan_part="${scan_rest%%/*}"
+    if [ -n "$scan_part" ]; then
+      scan_cursor="${scan_cursor%/}/$scan_part"
+      if [ -L "$scan_cursor" ]; then
+        echo "Symlink scan path is not supported" >&2
+        return 1
+      fi
+    fi
+    if [ "$scan_rest" = "$scan_part" ]; then break; fi
+    scan_rest="${scan_rest#*/}"
+  done
+}
+
+
+safe_scan_path "${TMPDIR:-/tmp}" || exit 1
+
 usage() {
   cat <<'EOF'
 Usage: scripts/rewrite_bridge_inventory_guard.sh [--self-test] [--base-ref REF]
@@ -42,8 +64,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 repo_root="$(git rev-parse --show-toplevel)"
+safe_scan_path "$repo_root" || exit 1
 cd "$repo_root"
 inventory_parser="$repo_root/scripts/rewrite_bridge_inventory.py"
+safe_scan_path "$inventory_parser" || exit 1
+safe_scan_path "$repo_root/doc/consensus_bridge_shim_audit.md" || exit 1
 
 extract_ffi_bridge_types() {
   python3 "$inventory_parser" ffi-handles "$1"
@@ -69,10 +94,13 @@ extract_audited_bridge_types() {
 
 extract_non_test_cpp_consumers() {
   consumer_root="$1"
+  safe_scan_path "$consumer_root/libraries" || return 1
+  safe_scan_path "$consumer_root/programs" || return 1
   {
     rg -l '#include [<"]rustaxa-bridge/(ffi|application_host_ffi)\.rs\.h[>"]' \
       "$consumer_root/libraries" "$consumer_root/programs" \
-      --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' || true
+      --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' \
+      --glob '!AI.md' --glob '!AI.md/**' --glob '!**/AI.md/**' || true
   } | sed "s#^$consumer_root/##" | sort -u
 }
 
@@ -375,7 +403,8 @@ extract_surface_budget() {
 }
 
 count_shim_source_lines() {
-  find "$1" -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \) \
+  safe_scan_path "$1" || return 1
+  find "$1" -name 'AI.md' -prune -o -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \) \
     -exec wc -l {} + | awk '$2 != "total" { total += $1 } END { print total + 0 }'
 }
 
@@ -478,14 +507,23 @@ check_budget_history() {
 
 check_surface_budgets() {
   repo_root="$1"
+  safe_scan_path "$repo_root" || return 1
   audit_file="$2"
+  safe_scan_path "$audit_file" || return 1
+  safe_scan_path "$repo_root/rust/crates/rustaxa-bridge/src/ffi.rs" || return 1
+  safe_scan_path "$repo_root/rust/crates/rustaxa-bridge/src/application_host_ffi.rs" || return 1
+  safe_scan_path "$repo_root/CMakeLists.txt" || return 1
   ffi_file="$(mktemp)"
   cat "$repo_root/rust/crates/rustaxa-bridge/src/ffi.rs" \
     "$repo_root/rust/crates/rustaxa-bridge/src/application_host_ffi.rs" >"$ffi_file"
   bridge_root="$repo_root/rust/crates/rustaxa-bridge/src"
   shim_root="$repo_root/libraries/core_libs/consensus/shims"
+  safe_scan_path "$bridge_root" || return 1
+  safe_scan_path "$shim_root" || return 1
+  safe_scan_path "$repo_root/libraries" || return 1
+  safe_scan_path "$repo_root/programs" || return 1
 
-  bridge_lines="$(find "$bridge_root" -type f -name '*.rs' -exec wc -l {} + |
+  bridge_lines="$(find "$bridge_root" -name 'AI.md' -prune -o -type f -name '*.rs' -exec wc -l {} + |
     awk '$2 != "total" { total += $1 } END { print total + 0 }')"
   shim_lines="$(count_shim_source_lines "$shim_root")"
   cxx_functions="$(count_cxx_function_declarations "$ffi_file")"
@@ -503,7 +541,8 @@ check_surface_budgets() {
     {
       rg -l '#include [<"]rustaxa-bridge/(ffi|application_host_ffi)\.rs\.h[>"]' \
         "$repo_root/libraries" "$repo_root/programs" \
-        --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' || true
+        --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' \
+      --glob '!AI.md' --glob '!AI.md/**' --glob '!**/AI.md/**' || true
     } | wc -l
   )"
 
@@ -1066,6 +1105,8 @@ EOF
   exit 0
 fi
 
+safe_scan_path rust/crates/rustaxa-bridge/src/ffi.rs || exit 1
+safe_scan_path rust/crates/rustaxa-bridge/src/application_host_ffi.rs || exit 1
 missing_file="$(mktemp)"
 stale_file="$(mktemp)"
 ffi_inventory_file="$(mktemp)"

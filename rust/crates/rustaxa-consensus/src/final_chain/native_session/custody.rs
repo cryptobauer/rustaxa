@@ -880,7 +880,7 @@ pub(super) fn checked_put(
     replacement: Vec<u8>,
     label: &str,
 ) -> std::result::Result<(), FinalChainNativeSessionError> {
-    let current = trace.current(DPOS_CONTRACT_ADDRESS, key)?;
+    let current = trace.expectation(DPOS_CONTRACT_ADDRESS, key)?;
     if !expected.matches(&current) {
         return Err(FinalChainNativeSessionError::RawIntegrity(format!(
             "{label} raw/domain facts disagree"
@@ -1364,4 +1364,143 @@ pub(super) fn encode_validator_info(metadata: &DposValidatorMetadata) -> Vec<u8>
     row.append(&metadata.description.as_slice())
         .append(&metadata.endpoint.as_slice());
     row.out().to_vec()
+}
+
+#[cfg(test)]
+mod checked_put_probe_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Event {
+        Read(bool, ConcreteRead<Vec<u8>>),
+        Write,
+    }
+    struct Reader {
+        result: std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError>,
+        calls: Cell<usize>,
+        events: RefCell<Vec<Event>>,
+    }
+    impl FinalChainNativeStateRead for Reader {
+        fn raw_storage(
+            &self,
+            address: [u8; 20],
+            key: &ConcreteStorageKey,
+        ) -> std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+            assert_eq!(address, DPOS_CONTRACT_ADDRESS);
+            assert_eq!(*key, ConcreteStorageKey([7; 32]));
+            self.calls.set(self.calls.get() + 1);
+            self.result.clone()
+        }
+        fn observe_stage(&self, event: FinalChainNativeStageEvent<'_>) {
+            match event {
+                FinalChainNativeStageEvent::RawRead {
+                    address,
+                    key,
+                    value,
+                    semantic,
+                } => {
+                    assert_eq!(address, DPOS_CONTRACT_ADDRESS);
+                    assert_eq!(key, ConcreteStorageKey([7; 32]));
+                    self.events
+                        .borrow_mut()
+                        .push(Event::Read(semantic, value.clone()));
+                }
+                FinalChainNativeStageEvent::RawWrite(_) => {
+                    self.events.borrow_mut().push(Event::Write)
+                }
+                _ => panic!("unexpected stage event"),
+            }
+        }
+    }
+    #[test]
+    fn checked_put_observes_both_actual_probes_and_overlay() {
+        let reader = Reader {
+            result: Ok(ConcreteRead::Present(vec![7])),
+            calls: Cell::new(0),
+            events: RefCell::new(Vec::new()),
+        };
+        let key = ConcreteStorageKey([7; 32]);
+        let mut trace = FinalChainNativeRawTrace::new(&reader);
+        checked_put(
+            &mut trace,
+            key,
+            ExpectedRaw::Exact(vec![7]),
+            vec![8],
+            "first",
+        )
+        .unwrap();
+        checked_put(
+            &mut trace,
+            key,
+            ExpectedRaw::Exact(vec![8]),
+            vec![9],
+            "overlay",
+        )
+        .unwrap();
+        assert_eq!(reader.calls.get(), 1);
+        assert_eq!(trace.mutation_count(), 2);
+        assert_eq!(
+            *reader.events.borrow(),
+            vec![
+                Event::Read(false, ConcreteRead::Present(vec![7])),
+                Event::Read(false, ConcreteRead::Present(vec![7])),
+                Event::Write,
+                Event::Read(false, ConcreteRead::Present(vec![8])),
+                Event::Read(false, ConcreteRead::Present(vec![8])),
+                Event::Write
+            ]
+        );
+        assert!(matches!(
+            checked_put(
+                &mut trace,
+                key,
+                ExpectedRaw::Exact(vec![7]),
+                vec![10],
+                "wrong"
+            ),
+            Err(FinalChainNativeSessionError::RawIntegrity(_))
+        ));
+        assert_eq!(trace.mutation_count(), 2);
+        assert_eq!(
+            reader.events.borrow().last(),
+            Some(&Event::Read(false, ConcreteRead::Present(vec![9])))
+        );
+    }
+    #[test]
+    fn checked_put_preserves_absent_tombstone_and_provider_error() {
+        let key = ConcreteStorageKey([7; 32]);
+        for row in [ConcreteRead::Absent, ConcreteRead::Tombstone] {
+            let reader = Reader {
+                result: Ok(row.clone()),
+                calls: Cell::new(0),
+                events: RefCell::new(Vec::new()),
+            };
+            let mut trace = FinalChainNativeRawTrace::new(&reader);
+            checked_put(&mut trace, key, ExpectedRaw::Empty, vec![1], "empty").unwrap();
+            assert_eq!(
+                *reader.events.borrow(),
+                vec![
+                    Event::Read(false, row.clone()),
+                    Event::Read(false, row),
+                    Event::Write
+                ]
+            );
+        }
+        let reader = Reader {
+            result: Err(FinalChainNativeStateReadError::Invariant(
+                "unavailable".into(),
+            )),
+            calls: Cell::new(0),
+            events: RefCell::new(Vec::new()),
+        };
+        let mut trace = FinalChainNativeRawTrace::new(&reader);
+        assert!(matches!(
+            checked_put(&mut trace, key, ExpectedRaw::Empty, vec![1], "error"),
+            Err(FinalChainNativeSessionError::StateRead(_))
+        ));
+        assert_eq!(reader.calls.get(), 1);
+        assert_eq!(trace.mutation_count(), 0);
+        assert!(reader.events.borrow().is_empty());
+    }
 }

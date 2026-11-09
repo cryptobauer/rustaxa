@@ -251,7 +251,7 @@ fn legacy_quote_edges_actual_signed_top_level_and_transaction_roots() -> Result<
                     let marker_bytes = encode_concrete_execution_marker(&marker);
                     concrete.stage_execution(&marker_bytes)?;
                     let source = FixtureView {
-                        prior: FixturePrior::Committed(concrete.prior_reader()),
+                        prior: FixturePrior::Lifecycle(&concrete),
                         identity: initial.committed,
                     };
                     compare_view(

@@ -8,6 +8,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rlp::{Rlp, RlpStream};
@@ -26,6 +27,7 @@ use super::physical_node::{
     InventoryLimits, PathProof, PhysicalTrieStore, SelectedVersion, TrieSchema,
     inventory_account_trie, inventory_touched_storage_trie, verify_path,
 };
+use super::reader::ConcreteStoragePath;
 use super::trie_writer::{IncrementalTrie, TrieWriteStore};
 
 const DESCRIPTOR_KEY: &[u8] = b"last_committed_descriptor";
@@ -255,6 +257,7 @@ pub struct HistoricalConcretePreparation {
 
 impl HistoricalConcretePreparation {
     /// Opens existing columns read-only and pins current and historical identities.
+    /// No writable owner may be open for this path while this handle exists.
     ///
     /// `committed` must exactly equal the durable descriptor. `historical` may
     /// be older, but cannot be future; when periods match, roots must match.
@@ -292,7 +295,7 @@ impl HistoricalConcretePreparation {
             });
         }
         let writer = ConcreteStateWriter {
-            db,
+            db: Arc::new(db),
             path: path.to_path_buf(),
             prior: historical,
             durable_prior: committed,
@@ -339,6 +342,20 @@ impl HistoricalConcretePreparation {
                 })
                 .collect(),
         })
+    }
+}
+
+impl PreparedConcreteView<'_> {
+    /// Proves one logical storage path in this exact unpublished preparation.
+    /// Missing or invalid proof dependencies fail; raw history stays separate.
+    /// This proof does not publish state or provide committed-reader authority.
+    pub fn verify_storage_path(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteStoragePath, ConcreteReadError> {
+        self.writer
+            .verify_prepared_storage_path(self.prepared, address, key)
     }
 }
 
@@ -398,7 +415,7 @@ pub(super) struct RowKey {
 /// an exact descriptor match. The handle neither creates a database nor
 /// publishes descriptors, provenance, catalogs, or application markers.
 pub struct ConcreteStateWriter {
-    pub(super) db: DB,
+    pub(super) db: Arc<DB>,
     path: PathBuf,
     prior: ConcreteStateIdentity,
     durable_prior: ConcreteStateIdentity,
@@ -424,7 +441,7 @@ impl ConcreteStateWriter {
             });
         }
         Ok(Self {
-            db,
+            db: Arc::new(db),
             path: path.to_path_buf(),
             prior,
             durable_prior: prior,
@@ -1002,14 +1019,22 @@ impl ConcreteStateWriter {
                 .cf_handle(row.column)
                 .ok_or_else(|| corrupt("prepared row column disappeared"))?;
             if row.column == "1" || row.column == "2" || row.column == "4" {
-                if let Some(existing) = self.db.get_cf(&handle, &row.key).map_err(io)?
+                if let Some(existing) = self
+                    .db
+                    .get_cf(&handle, &row.key)
+                    .map_err(|e| diagnostic_io(e, "prepared_row_get", row.column, "prepared_row"))?
                     && existing != *value
                 {
                     return Err(corrupt(
                         "content-addressed row conflicts with existing bytes",
                     ));
                 }
-            } else if self.db.get_cf(&handle, &row.key).map_err(io)?.is_some() {
+            } else if self
+                .db
+                .get_cf(&handle, &row.key)
+                .map_err(|e| diagnostic_io(e, "prepared_row_get", row.column, "prepared_row"))?
+                .is_some()
+            {
                 return Err(corrupt("prepared version row already exists"));
             }
             batch.put_cf(&handle, &row.key, value);
@@ -1091,7 +1116,7 @@ impl ConcreteStateWriter {
 
     pub(super) fn from_fresh_database(db: DB, path: PathBuf) -> Self {
         Self {
-            db,
+            db: Arc::new(db),
             path,
             prior: ConcreteStateIdentity {
                 period: FinalChainBlockNumber::GENESIS,
@@ -1152,6 +1177,97 @@ impl ConcreteStateWriter {
         Ok(())
     }
 
+    fn verify_prepared_storage_path(
+        &self,
+        prepared: &PreparedConcreteState,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteStoragePath, ConcreteReadError> {
+        let root = match self.prepared_account(prepared, address)? {
+            ConcreteRead::Present(record) => record.account.storage_root,
+            ConcreteRead::Absent | ConcreteRead::Tombstone => {
+                return Ok(ConcreteStoragePath::NonMember);
+            }
+        };
+        let Some(root) = root else {
+            return Ok(ConcreteStoragePath::NonMember);
+        };
+        let store = PreparedTrieStore {
+            writer: self,
+            prepared: Some(prepared),
+            identity: prepared.next,
+            node_column: "4",
+            value_column: "5",
+            address: Some(address),
+        };
+        let path = storage_trie_path(key);
+        match verify_path(
+            &store,
+            root,
+            path,
+            "4",
+            "5",
+            |path| storage_prefix_for_path(address, path),
+            TrieSchema::Storage,
+        )? {
+            PathProof::NonMember => Ok(ConcreteStoragePath::NonMember),
+            PathProof::Member(proved) => {
+                let selected = store.value_for_prefix(storage_prefix_for_path(address, path))?;
+                if selected.as_deref() != Some(proved.as_slice()) {
+                    return Err(corrupt(
+                        "prepared storage trie member differs from its physical version",
+                    ));
+                }
+                Ok(ConcreteStoragePath::Member(proved))
+            }
+        }
+    }
+
+    pub(super) fn verify_prior_storage_path(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteStoragePath, ConcreteReadError> {
+        let root = match ConcreteStateRead::account(self, address)? {
+            ConcreteRead::Present(record) => record.account.storage_root,
+            ConcreteRead::Absent | ConcreteRead::Tombstone => {
+                return Ok(ConcreteStoragePath::NonMember);
+            }
+        };
+        let Some(root) = root else {
+            return Ok(ConcreteStoragePath::NonMember);
+        };
+        let store = PreparedTrieStore {
+            writer: self,
+            prepared: None,
+            identity: self.prior,
+            node_column: "4",
+            value_column: "5",
+            address: Some(address),
+        };
+        let path = storage_trie_path(key);
+        match verify_path(
+            &store,
+            root,
+            path,
+            "4",
+            "5",
+            |path| storage_prefix_for_path(address, path),
+            TrieSchema::Storage,
+        )? {
+            PathProof::NonMember => Ok(ConcreteStoragePath::NonMember),
+            PathProof::Member(proved) => {
+                let selected = store.value_for_prefix(storage_prefix_for_path(address, path))?;
+                if selected.as_deref() != Some(proved.as_slice()) {
+                    return Err(corrupt(
+                        "prior storage trie member differs from its physical version",
+                    ));
+                }
+                Ok(ConcreteStoragePath::Member(proved))
+            }
+        }
+    }
+
     fn verify_prior_account(&self, address: [u8; 20]) -> Result<(), ConcreteReadError> {
         self.verify_account_at(None, address)
     }
@@ -1198,7 +1314,9 @@ impl ConcreteStateWriter {
             .db
             .cf_handle(column)
             .ok_or_else(|| corrupt(format!("column family {column:?} is missing")))?;
-        self.db.get_cf(&handle, key).map_err(io)
+        self.db
+            .get_cf(&handle, key)
+            .map_err(|e| diagnostic_io(e, "prior_prepared_get", column, "content"))
     }
 
     fn select_value_at(
@@ -1322,7 +1440,10 @@ impl TrieWriteStore for PreparedTrieStore<'_> {
             .db
             .cf_handle(column)
             .ok_or_else(|| corrupt("trie node column is missing"))?;
-        self.writer.db.get_cf(&handle, hash).map_err(io)
+        self.writer
+            .db
+            .get_cf(&handle, hash)
+            .map_err(|e| diagnostic_io(e, "node_get_prior_prepared", column, "trie_node"))
     }
 
     fn value(&self, key: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError> {
@@ -1371,7 +1492,14 @@ fn select_version(
     let Some(entry) = iterator.next() else {
         return Ok(None);
     };
-    let (key, value) = entry.map_err(io)?;
+    let (key, value) = entry.map_err(|e| {
+        diagnostic_io(
+            e,
+            "history_seek_next_prior_prepared",
+            column,
+            "versioned_value",
+        )
+    })?;
     if key.len() != 40 || key[..32] != prefix {
         return Ok(None);
     }
@@ -1473,7 +1601,7 @@ fn open_existing_database(path: &Path, read_only: bool) -> Result<DB, ConcreteRe
 fn current_identity(db: &DB) -> Result<ConcreteStateIdentity, ConcreteReadError> {
     let bytes = db
         .get(DESCRIPTOR_KEY)
-        .map_err(io)?
+        .map_err(|e| diagnostic_io(e, "descriptor_get_prior_prepared", "default", "descriptor"))?
         .ok_or_else(|| corrupt("concrete descriptor is missing"))?;
     decode_descriptor(&bytes)
 }
@@ -1483,6 +1611,21 @@ pub(super) fn encode_descriptor(identity: ConcreteStateIdentity) -> Vec<u8> {
     stream.append(&identity.period.as_u64());
     stream.append(&identity.state_root.as_slice());
     stream.out().to_vec()
+}
+
+fn diagnostic_io(
+    error: impl std::fmt::Display,
+    operation: &str,
+    column: &str,
+    key: &str,
+) -> ConcreteReadError {
+    #[cfg(feature = "synthetic-fixtures")]
+    if std::env::var_os("RUST_LIB_BACKTRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        eprintln!("sst_diagnostic operation={operation} column={column} key={key} error={error}");
+    }
+    #[cfg(not(feature = "synthetic-fixtures"))]
+    let _ = (operation, column, key);
+    io(error)
 }
 
 fn io(error: impl std::fmt::Display) -> ConcreteReadError {
@@ -1892,6 +2035,334 @@ mod tests {
         assert_eq!(prepared.row_count(), 0);
         writer.persist_contents(&prepared).unwrap();
         assert_eq!(current_identity(&writer.db).unwrap(), genesis);
+    }
+
+    #[test]
+    fn prior_storage_proof_keeps_prepared_state_and_failures_separate() {
+        let database = TestDb::new();
+        let genesis = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::GENESIS,
+            state_root: empty_trie_root(),
+        };
+        let address = [0x41; 20];
+        let member = ConcreteStorageKey([1; 32]);
+        let missing = ConcreteStorageKey([2; 32]);
+        let writer = ConcreteStateWriter::open(&database.path, genesis).unwrap();
+        let first = writer
+            .prepare(
+                1.into(),
+                ConcreteStateMutationBatch {
+                    accounts: vec![ConcreteAccountMutation::Upsert {
+                        address,
+                        record: account(0, 100, None, None, 0),
+                    }],
+                    storage: vec![ConcreteStorageMutation {
+                        address,
+                        key: member,
+                        value: Some(vec![1]),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        writer.persist_contents(&first).unwrap();
+        writer.publish_descriptor_for_reopen_test(&first).unwrap();
+        let prior = first.next_identity();
+        drop(writer);
+        let writer = ConcreteStateWriter::open(&database.path, prior).unwrap();
+        let pending = writer
+            .prepare(
+                2.into(),
+                ConcreteStateMutationBatch {
+                    storage: vec![ConcreteStorageMutation {
+                        address,
+                        key: missing,
+                        value: Some(vec![2]),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let sequence = writer.sequence.get();
+        let persisted_sequence = writer.persisted_sequence.get();
+        let snapshot = |writer: &ConcreteStateWriter| {
+            REQUIRED_COLUMNS
+                .iter()
+                .map(|column| {
+                    let cf = writer.db.cf_handle(column).unwrap();
+                    writer
+                        .db
+                        .iterator_cf(&cf, IteratorMode::Start)
+                        .map(|row| {
+                            let (key, value) = row.unwrap();
+                            (key.to_vec(), value.to_vec())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = snapshot(&writer);
+        assert_eq!(
+            writer.storage(address, member).unwrap(),
+            ConcreteRead::Present(vec![1])
+        );
+        assert_eq!(
+            writer.verify_prior_storage_path(address, member).unwrap(),
+            ConcreteStoragePath::Member(vec![1])
+        );
+        assert_eq!(
+            writer.storage(address, missing),
+            Err(ConcreteReadError::HistoryUnavailable(prior))
+        );
+        assert_eq!(
+            writer.verify_prior_storage_path(address, missing).unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        assert_eq!(
+            writer
+                .verify_prior_storage_path([0x42; 20], missing)
+                .unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        let prepared_view = writer.prepared_view(&pending).unwrap();
+        assert_eq!(
+            rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                &prepared_view,
+                address,
+                missing
+            )
+            .unwrap(),
+            ConcreteRead::Present(vec![2])
+        );
+        assert_eq!(writer.sequence.get(), sequence);
+        assert_eq!(writer.persisted_sequence.get(), persisted_sequence);
+        assert_eq!(snapshot(&writer), before);
+        assert_eq!(current_identity(&writer.db).unwrap(), prior);
+        writer.persist_contents(&pending).unwrap();
+        writer.publish_descriptor_for_reopen_test(&pending).unwrap();
+        let next = pending.next_identity();
+        drop(writer);
+        let writer = ConcreteStateWriter::open(&database.path, next).unwrap();
+        let deleted = writer
+            .prepare(
+                3.into(),
+                ConcreteStateMutationBatch {
+                    storage: vec![ConcreteStorageMutation {
+                        address,
+                        key: member,
+                        value: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        writer.persist_contents(&deleted).unwrap();
+        writer.publish_descriptor_for_reopen_test(&deleted).unwrap();
+        let last = deleted.next_identity();
+        drop(writer);
+        let writer = ConcreteStateWriter::open(&database.path, last).unwrap();
+        assert_eq!(
+            writer.storage(address, member).unwrap(),
+            ConcreteRead::Tombstone
+        );
+        assert_eq!(
+            writer.verify_prior_storage_path(address, member).unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        let ConcreteRead::Present(account) = writer.account(address).unwrap() else {
+            panic!("account missing")
+        };
+        let storage_root = account.account.storage_root.unwrap();
+        let cf4 = writer.db.cf_handle("4").unwrap();
+        assert!(writer.db.get_cf(&cf4, storage_root).unwrap().is_some());
+        writer.db.delete_cf(&cf4, storage_root).unwrap();
+        assert_eq!(
+            writer.verify_prior_storage_path(address, missing),
+            Err(ConcreteReadError::HistoryUnavailable(last))
+        );
+        let cf2 = writer.db.cf_handle("2").unwrap();
+        assert!(writer.db.get_cf(&cf2, last.state_root).unwrap().is_some());
+        writer.db.delete_cf(&cf2, last.state_root).unwrap();
+        assert_eq!(
+            writer.verify_prior_storage_path(address, missing),
+            Err(ConcreteReadError::HistoryUnavailable(last))
+        );
+    }
+
+    #[test]
+    fn prepared_storage_proof_binds_overlay_and_rejects_stale_or_missing_nodes() {
+        use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+        let database = TestDb::new();
+        let genesis = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::GENESIS,
+            state_root: empty_trie_root(),
+        };
+        let address = [0x41; 20];
+        let member = ConcreteStorageKey([1; 32]);
+        let added = ConcreteStorageKey([2; 32]);
+        let unknown = ConcreteStorageKey([3; 32]);
+        let writer = ConcreteStateWriter::open(&database.path, genesis).unwrap();
+        let first = writer
+            .prepare(
+                1.into(),
+                ConcreteStateMutationBatch {
+                    accounts: vec![ConcreteAccountMutation::Upsert {
+                        address,
+                        record: account(0, 100, None, None, 0),
+                    }],
+                    storage: vec![ConcreteStorageMutation {
+                        address,
+                        key: member,
+                        value: Some(vec![1]),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        writer.persist_contents(&first).unwrap();
+        writer.publish_descriptor_for_reopen_test(&first).unwrap();
+        let prior = first.next_identity();
+        drop(writer);
+        let writer = ConcreteStateWriter::open(&database.path, prior).unwrap();
+        let mut pending = writer
+            .prepare(
+                2.into(),
+                ConcreteStateMutationBatch {
+                    storage: vec![
+                        ConcreteStorageMutation {
+                            address,
+                            key: member,
+                            value: None,
+                        },
+                        ConcreteStorageMutation {
+                            address,
+                            key: added,
+                            value: Some(vec![1]),
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let snapshot = |writer: &ConcreteStateWriter| {
+            REQUIRED_COLUMNS
+                .iter()
+                .map(|column| {
+                    let cf = writer.db.cf_handle(column).unwrap();
+                    writer
+                        .db
+                        .iterator_cf(&cf, IteratorMode::Start)
+                        .map(|row| {
+                            let (key, value) = row.unwrap();
+                            (key.to_vec(), value.to_vec())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = snapshot(&writer);
+        let rows_before = pending.rows.clone();
+        let sequence = writer.sequence.get();
+        let persisted = writer.persisted_sequence.get();
+        let view = writer.prepared_view(&pending).unwrap();
+        assert_eq!(
+            view.verify_storage_path(address, unknown).unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        assert_eq!(
+            view.storage(address, unknown),
+            Err(ConcreteReadError::HistoryUnavailable(pending.next))
+        );
+        assert_eq!(
+            view.verify_storage_path(address, added).unwrap(),
+            ConcreteStoragePath::Member(vec![1])
+        );
+        assert_eq!(
+            view.storage(address, added).unwrap(),
+            ConcreteRead::Present(vec![1])
+        );
+        assert_eq!(
+            view.verify_storage_path(address, member).unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        assert_eq!(
+            view.storage(address, member).unwrap(),
+            ConcreteRead::Tombstone
+        );
+        assert_eq!(
+            writer.verify_prior_storage_path(address, added).unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        assert_eq!(
+            writer.verify_prior_storage_path(address, member).unwrap(),
+            ConcreteStoragePath::Member(vec![1])
+        );
+        assert_eq!(snapshot(&writer), before);
+        assert_eq!(pending.rows, rows_before);
+        assert_eq!(writer.sequence.get(), sequence);
+        assert_eq!(writer.persisted_sequence.get(), persisted);
+        assert_eq!(current_identity(&writer.db).unwrap(), prior);
+        let root = match writer.prepared_account(&pending, address).unwrap() {
+            ConcreteRead::Present(record) => record.account.storage_root.unwrap(),
+            _ => panic!("prepared account"),
+        };
+        let overlay = RowKey {
+            column: "4",
+            key: root.to_vec(),
+        };
+        assert!(
+            writer
+                .db
+                .get_cf(&writer.db.cf_handle("4").unwrap(), root)
+                .unwrap()
+                .is_none()
+        );
+        let removed = pending
+            .rows
+            .remove(&overlay)
+            .expect("prepared root dependency");
+        assert!(
+            writer
+                .prepared_view(&pending)
+                .unwrap()
+                .verify_storage_path(address, unknown)
+                .is_err()
+        );
+        pending.rows.insert(overlay, removed);
+        assert_eq!(pending.rows, rows_before);
+        let other_database = TestDb::new();
+        let other = ConcreteStateWriter::open(&other_database.path, genesis).unwrap();
+        assert!(other.prepared_view(&pending).is_err());
+        let newer = writer
+            .prepare(2.into(), ConcreteStateMutationBatch::default())
+            .unwrap();
+        assert!(writer.prepared_view(&pending).is_err());
+        assert!(
+            writer
+                .verify_prepared_storage_path(&pending, [0x99; 20], unknown)
+                .is_err()
+        );
+        let prior_root = match ConcreteStateRead::account(&writer, address).unwrap() {
+            ConcreteRead::Present(record) => record.account.storage_root.unwrap(),
+            _ => panic!("prior account"),
+        };
+        let cf4 = writer.db.cf_handle("4").unwrap();
+        let saved = writer
+            .db
+            .get_cf(&cf4, prior_root)
+            .unwrap()
+            .expect("prior root dependency");
+        writer.db.delete_cf(&cf4, prior_root).unwrap();
+        assert!(
+            writer
+                .prepared_view(&newer)
+                .unwrap()
+                .verify_storage_path(address, unknown)
+                .is_err()
+        );
+        writer.db.put_cf(&cf4, prior_root, saved).unwrap();
+        assert_eq!(snapshot(&writer), before);
+        assert_eq!(current_identity(&writer.db).unwrap(), prior);
     }
 
     #[test]

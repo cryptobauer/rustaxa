@@ -159,6 +159,7 @@ pub fn admit<R: ConcreteExecutionRead>(
         if rules.cornus && transaction.nonce >= sender_nonce {
             journal.set_nonce(sender, transaction.nonce.next())?;
         }
+        crate::journal::duration_journal_admission_terminal(sender, 1);
         return Ok(EnvelopeAdmission::Rejected(consensus_result(
             ConsensusFailure::InsufficientBalanceForGas,
             FinalChainGas::new(
@@ -172,6 +173,7 @@ pub fn admit<R: ConcreteExecutionRead>(
     journal.subtract_balance(sender, &gas_fee)?;
 
     if transaction.nonce < sender_nonce {
+        crate::journal::duration_journal_admission_terminal(sender, 2);
         return Ok(EnvelopeAdmission::Rejected(consensus_result(
             ConsensusFailure::NonceTooLow,
             transaction.gas_limit,
@@ -184,6 +186,14 @@ pub fn admit<R: ConcreteExecutionRead>(
             if rules.cornus {
                 journal.set_nonce(sender, transaction.nonce.next())?;
             }
+            crate::journal::duration_journal_admission_terminal(
+                sender,
+                if error == ConsensusFailure::IntrinsicGasOverflow {
+                    3
+                } else {
+                    255
+                },
+            );
             return Ok(EnvelopeAdmission::Rejected(consensus_result(
                 error,
                 transaction.gas_limit,
@@ -194,6 +204,7 @@ pub fn admit<R: ConcreteExecutionRead>(
         if rules.cornus {
             journal.set_nonce(sender, transaction.nonce.next())?;
         }
+        crate::journal::duration_journal_admission_terminal(sender, 4);
         return Ok(EnvelopeAdmission::Rejected(consensus_result(
             ConsensusFailure::IntrinsicGas,
             transaction.gas_limit,

@@ -1724,6 +1724,7 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit(
         session,
         proposal_period_update,
         None,
+        None,
     )
 }
 
@@ -1738,6 +1739,28 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit_with_nati
     session: &mut FinalChainExecutionSession,
     proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
     native_context: Option<&crate::native_projection_context::FinalChainNativeProjectionContext>,
+    expected_authority: Option<&crate::native_projection_context::FinalChainLifecycleAuthority>,
+) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
+    final_chain_execution_session_prepare_external_evm_state_commit_with_delayed_view(
+        final_chain,
+        session,
+        proposal_period_update,
+        native_context,
+        expected_authority,
+        None,
+    )
+}
+
+/// Prepares a context-bearing publication with independently retained delayed proof authority.
+pub fn final_chain_execution_session_prepare_external_evm_state_commit_with_delayed_view(
+    final_chain: &FinalChain,
+    session: &mut FinalChainExecutionSession,
+    proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
+    native_context: Option<&crate::native_projection_context::FinalChainNativeProjectionContext>,
+    expected_authority: Option<&crate::native_projection_context::FinalChainLifecycleAuthority>,
+    delayed_view: Option<
+        &std::rc::Rc<crate::native_session::frozen_eligibility::FrozenEligibility>,
+    >,
 ) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
     let prepared_rewards_stats_plan = session_external_evm_rewards_stats_plan(session)?.clone();
     let rewards_stats_update = final_chain
@@ -1824,8 +1847,25 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit_with_nati
         .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_PROJECTION_WITHOUT_COMMIT_PLAN"))?
         .total_reward
         .clone();
-    if let Some(context) = native_context {
-        context.validate_binding(evm_request.request_id, &projection)?;
+    match (native_context, expected_authority) {
+        (None, None) => {}
+        (Some(context), Some(authority)) => {
+            let transactions = evm_request
+                .transactions
+                .iter()
+                .map(|tx| (tx.position.as_u32(), tx.hash))
+                .collect::<Vec<_>>();
+            crate::native_projection_context::validate_lifecycle_authority(
+                context,
+                authority,
+                evm_request.request_id,
+                evm_request.state_api_epoch,
+                publication_plan.concrete_projection_hash,
+                &transactions,
+            )?;
+            context.validate_binding(evm_request.request_id, &projection)?;
+        }
+        _ => anyhow::bail!("FINAL_CHAIN_NATIVE_AUTHORITY_REQUIRED"),
     }
     let (dpos_snapshot_rlp, account_snapshot_rlp, scheduler_successor) = final_chain
         .external_evm_concrete_projection(
@@ -1839,7 +1879,7 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit_with_nati
             &projection,
             &prepared_rewards_stats_plan,
             &reported_total_reward,
-            native_context,
+            (native_context, delayed_view),
         )?;
     session.prepared_reward_scheduler_successor = Some(scheduler_successor);
     let concrete_provenance_rlp =
@@ -2633,6 +2673,27 @@ pub trait FinalChainExecutionLeaf {
         Ok(None)
     }
 
+    /// Returns expected lifecycle evidence before the context is consumed.
+    fn native_lifecycle_authority(
+        &self,
+        _request_id: [u8; 32],
+        _projection_hash: [u8; 32],
+    ) -> Result<Option<crate::native_projection_context::FinalChainLifecycleAuthority>, anyhow::Error>
+    {
+        Ok(None)
+    }
+
+    fn native_delayed_view(
+        &self,
+        _request_id: [u8; 32],
+        _projection_hash: [u8; 32],
+    ) -> Result<
+        Option<std::rc::Rc<crate::native_session::frozen_eligibility::FrozenEligibility>>,
+        anyhow::Error,
+    > {
+        Ok(None)
+    }
+
     /// Attempts the already-approved concrete commit and reports the exact
     /// descriptor observed afterward. It must not publish FinalChain storage.
     fn commit_staged_state(
@@ -3402,6 +3463,34 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
             ),
         ));
     }
+    let native_authority = match leaf.native_lifecycle_authority(
+        bound_evm_request.request_id,
+        commit_plan.concrete_projection_hash,
+    ) {
+        Ok(authority) => authority,
+        Err(error) => {
+            return Err(discard_concrete_after_failure(
+                final_chain,
+                leaf,
+                &bound_evm_request,
+                error,
+            ));
+        }
+    };
+    let delayed_view = match leaf.native_delayed_view(
+        bound_evm_request.request_id,
+        commit_plan.concrete_projection_hash,
+    ) {
+        Ok(view) => view,
+        Err(error) => {
+            return Err(discard_concrete_after_failure(
+                final_chain,
+                leaf,
+                &bound_evm_request,
+                error,
+            ));
+        }
+    };
     let native_context = match leaf.native_projection_context(
         bound_evm_request.request_id,
         commit_plan.concrete_projection_hash,
@@ -3417,11 +3506,13 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
         }
     };
     let intent =
-        match final_chain_execution_session_prepare_external_evm_state_commit_with_native_context(
+        match final_chain_execution_session_prepare_external_evm_state_commit_with_delayed_view(
             final_chain,
             &mut session,
             proposal_period_update,
             native_context.as_ref(),
+            native_authority.as_ref(),
+            delayed_view.as_ref(),
         ) {
             Ok(intent) => intent,
             Err(error) => {

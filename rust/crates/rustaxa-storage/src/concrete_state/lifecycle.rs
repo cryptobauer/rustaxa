@@ -22,10 +22,11 @@ use rustaxa_types::concrete_lifecycle::{
 };
 use rustaxa_types::concrete_state::{
     ConcreteAccountRecord, ConcreteRead, ConcreteReadError, ConcreteStateIdentity,
-    ConcreteStateRead,
+    ConcreteStateRead, ConcreteStorageKey,
 };
 
 use super::codec::{corrupt, decode_descriptor};
+use super::reader::ConcreteStoragePath;
 use super::writer::{
     ConcreteObserverPhaseDelta, ConcreteStateMutationBatch, ConcreteStateWriter,
     PreparedConcreteState, PreparedConcreteView, REQUIRED_COLUMNS, RowKey, encode_descriptor,
@@ -47,6 +48,88 @@ pub struct ConcreteLifecycleObservation {
     pub provenance_rlp: Vec<u8>,
     pub catalog_rlp: Vec<u8>,
     pub pending_marker_rlp: Vec<u8>,
+}
+
+/// One physical put emitted by a successful concrete commit.
+#[cfg(feature = "synthetic-fixtures")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConcreteCommittedPut {
+    column: &'static str,
+    key: Vec<u8>,
+    value: Vec<u8>,
+    intermediate: bool,
+}
+#[cfg(feature = "synthetic-fixtures")]
+impl ConcreteCommittedPut {
+    pub fn column(&self) -> &str {
+        self.column
+    }
+    pub fn key(&self) -> &[u8] {
+        &self.key
+    }
+    pub fn value(&self) -> &[u8] {
+        &self.value
+    }
+    pub fn intermediate(&self) -> bool {
+        self.intermediate
+    }
+}
+/// Sealed observations of the batch that completed its synchronous write.
+#[cfg(feature = "synthetic-fixtures")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConcreteCommittedReceipt {
+    identity: FinalChainConcreteIdentity,
+    prior: ConcreteStateIdentity,
+    next: ConcreteStateIdentity,
+    generation: u64,
+    puts: Vec<ConcreteCommittedPut>,
+}
+#[cfg(feature = "synthetic-fixtures")]
+impl ConcreteCommittedReceipt {
+    pub fn identity(&self) -> FinalChainConcreteIdentity {
+        self.identity
+    }
+    pub fn prior(&self) -> ConcreteStateIdentity {
+        self.prior
+    }
+    pub fn next(&self) -> ConcreteStateIdentity {
+        self.next
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn puts(&self) -> &[ConcreteCommittedPut] {
+        &self.puts
+    }
+}
+
+#[cfg(feature = "synthetic-fixtures")]
+fn concrete_committed_receipt(
+    identity: FinalChainConcreteIdentity,
+    prior: ConcreteStateIdentity,
+    next: ConcreteStateIdentity,
+    generation: u64,
+    intermediate: &BTreeMap<RowKey, Vec<u8>>,
+    rows: &BTreeMap<RowKey, Vec<u8>>,
+) -> ConcreteCommittedReceipt {
+    let puts = intermediate
+        .iter()
+        .map(|(row, value)| (row, value, true))
+        .chain(rows.iter().map(|(row, value)| (row, value, false)))
+        .map(|(row, value, intermediate)| ConcreteCommittedPut {
+            column: row.column,
+            key: row.key.clone(),
+            value: value.clone(),
+            intermediate,
+        })
+        .collect();
+    ConcreteCommittedReceipt {
+        identity,
+        prior,
+        next,
+        generation,
+        puts,
+    }
 }
 
 /// Application-approved facts required for one atomic concrete database commit.
@@ -326,7 +409,8 @@ impl ConcreteStateLifecycle {
     }
 
     /// Inspects an existing concrete database through RocksDB's read-only API
-    /// without requiring an application-supplied expected root. The observed
+    /// without requiring an application-supplied expected root.
+    /// No writable owner may be open for this path during inspection. The observed
     /// descriptor must pair exactly with canonical provenance and catalog for
     /// `expected_chain_id`; any pending marker must extend that descriptor.
     /// This reports recovery facts only and never creates, repairs, adopts, or
@@ -383,6 +467,46 @@ impl ConcreteStateLifecycle {
     /// handle. It never exposes prepared overlay rows.
     pub fn prior_reader(&self) -> &dyn ConcreteStateRead {
         &self.writer
+    }
+
+    /// Opens retained logical-proof access while pinning the durable descriptor.
+    /// The caller must independently bind the historical identity to a finalized header.
+    pub fn open_retained_checkpoint(
+        &self,
+        historical: ConcreteStateIdentity,
+    ) -> Result<super::reader::ConcreteCheckpointReaders, ConcreteReadError> {
+        self.ensure_usable()?;
+        let owner = super::reader::ReadOwner::snapshot(self.writer.db.clone())?;
+        let committed = concrete_identity(self.provenance.committed_state);
+        let loaded = load_lifecycle_with(
+            |key| owner.get(key),
+            self.provenance.identity.chain_id,
+            Some(committed),
+        )?;
+        if loaded.provenance_rlp != self.provenance_rlp
+            || loaded.catalog_rlp != self.catalog_rlp
+            || loaded.pending_rlp != self.pending_rlp
+        {
+            return Err(corrupt("concrete lifecycle snapshot metadata mismatch"));
+        }
+        let retained = if historical == committed {
+            vec![committed]
+        } else {
+            vec![committed, historical]
+        };
+        super::reader::ConcreteCheckpointReaders::from_owner(owner, committed, retained)
+    }
+
+    /// Verifies logical storage membership at the lifecycle's prior identity.
+    ///
+    /// Prepared overlay rows are excluded. This result is separate from raw
+    /// storage history. Missing or invalid proof dependencies return errors.
+    pub fn verify_prior_storage_path(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteStoragePath, ConcreteReadError> {
+        self.writer.verify_prior_storage_path(address, key)
     }
 
     /// Applies one settled observer phase to the latest unpublished prepared
@@ -472,7 +596,7 @@ impl ConcreteStateLifecycle {
             .writer
             .db
             .put_opt(PENDING_KEY, marker_rlp, &options)
-            .map_err(io)
+            .map_err(|e| diagnostic_io(e, "marker_write", "default", "pending_marker"))
         {
             self.poisoned = true;
             return Err(error);
@@ -595,11 +719,120 @@ impl ConcreteStateLifecycle {
             .map_err(Error::Read)
     }
 
+    /// Commits one ordered observer state and returns its successful batch receipt.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn commit_observer_approved_with_receipt(
+        mut self,
+        output: ConcreteObserverPhaseOutput,
+        approval: ConcreteCommitApproval,
+    ) -> Result<(ConcreteLifecycleObservation, ConcreteCommittedReceipt), ConcreteReadError> {
+        self.ensure_usable()?;
+        let prepared = self
+            .observer_prepared
+            .take()
+            .ok_or_else(|| corrupt("no ordered observer phase is prepared"))?;
+        let (writer_id, sequence) = self.writer.prepared_token(&prepared)?;
+        if output.writer_id != writer_id
+            || output.sequence != sequence
+            || output.identity != prepared.next_identity()
+        {
+            return Err(corrupt("ordered observer phase output is stale or foreign"));
+        }
+        let mut receipt = None;
+        let observation = self.commit_prepared_inner(
+            prepared,
+            approval,
+            |identity, prior, next, generation, intermediate, rows| {
+                receipt = Some(concrete_committed_receipt(
+                    identity,
+                    prior,
+                    next,
+                    generation,
+                    intermediate,
+                    rows,
+                ));
+            },
+        )?;
+        Ok((
+            observation,
+            receipt.expect("commit callback follows successful write"),
+        ))
+    }
+
+    /// Commits final trie nodes and returns the successful physical batch receipt.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn commit_observer_final_trie_nodes_with_receipt(
+        mut self,
+        output: ConcreteObserverPhaseOutput,
+        approval: ConcreteCommitApproval,
+        limits: super::reader::ConcreteStorageInventoryLimits,
+    ) -> Result<
+        (ConcreteLifecycleObservation, ConcreteCommittedReceipt),
+        super::reader::ConcreteStorageInventoryError,
+    > {
+        use super::reader::ConcreteStorageInventoryError as Error;
+        self.ensure_usable().map_err(Error::Read)?;
+        let mut prepared = self
+            .observer_prepared
+            .take()
+            .ok_or_else(|| Error::Read(corrupt("no ordered observer phase is prepared")))?;
+        let (writer_id, sequence) = self.writer.prepared_token(&prepared).map_err(Error::Read)?;
+        if output.writer_id != writer_id
+            || output.sequence != sequence
+            || output.identity != prepared.next_identity()
+        {
+            return Err(Error::Read(corrupt(
+                "ordered observer phase output is stale or foreign",
+            )));
+        }
+        self.writer.retain_final_trie_nodes(&mut prepared, limits)?;
+        let mut receipt = None;
+        let observation = self
+            .commit_prepared_inner(
+                prepared,
+                approval,
+                |identity, prior, next, generation, intermediate, rows| {
+                    receipt = Some(concrete_committed_receipt(
+                        identity,
+                        prior,
+                        next,
+                        generation,
+                        intermediate,
+                        rows,
+                    ));
+                },
+            )
+            .map_err(Error::Read)?;
+        Ok((
+            observation,
+            receipt.expect("commit callback follows successful write"),
+        ))
+    }
+
     fn commit_prepared(
         self,
         prepared: PreparedConcreteState,
         approval: ConcreteCommitApproval,
     ) -> Result<ConcreteLifecycleObservation, ConcreteReadError> {
+        self.commit_prepared_inner(prepared, approval, |_, _, _, _, _, _| {})
+    }
+
+    fn commit_prepared_inner<F>(
+        self,
+        prepared: PreparedConcreteState,
+        approval: ConcreteCommitApproval,
+        on_commit: F,
+    ) -> Result<ConcreteLifecycleObservation, ConcreteReadError>
+    where
+        F: FnOnce(
+            FinalChainConcreteIdentity,
+            ConcreteStateIdentity,
+            ConcreteStateIdentity,
+            u64,
+            &BTreeMap<RowKey, Vec<u8>>,
+            &BTreeMap<RowKey, Vec<u8>>,
+        ),
+    {
         self.ensure_usable()?;
         let marker = self
             .pending
@@ -662,8 +895,9 @@ impl ConcreteStateLifecycle {
                 .db
                 .cf_handle(row.column)
                 .ok_or_else(|| corrupt("intermediate content column disappeared"))?;
-            if let Some(existing) = self.writer.db.get_cf(&handle, &row.key).map_err(io)?
-                && existing != *value
+            if let Some(existing) = self.writer.db.get_cf(&handle, &row.key).map_err(|e| {
+                diagnostic_io(e, "prior_prepared_get", row.column, "intermediate_content")
+            })? && existing != *value
             {
                 return Err(corrupt(
                     "intermediate content row conflicts with durable bytes",
@@ -677,7 +911,21 @@ impl ConcreteStateLifecycle {
         batch.put(PROVENANCE_KEY, &approval.provenance_rlp);
         batch.put(CATALOG_KEY, &approval.catalog_rlp);
         batch.delete(PENDING_KEY);
-        write_sync(&self.writer.db, batch)?;
+        write_sync(&self.writer.db, batch).map_err(|e| {
+            #[cfg(feature = "synthetic-fixtures")]
+            if std::env::var_os("RUST_LIB_BACKTRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+                eprintln!("sst_diagnostic operation=commit_write column=multiple key=commit_batch error={e:?}");
+            }
+            e
+        })?;
+        on_commit(
+            provenance.identity,
+            concrete_identity(self.provenance.committed_state),
+            prepared.next_identity(),
+            provenance.generation,
+            &self.intermediate_content,
+            &prepared.rows,
+        );
         Ok(ConcreteLifecycleObservation {
             identity: provenance.identity,
             committed: prepared.next_identity(),
@@ -759,7 +1007,15 @@ fn load_lifecycle(
     expected_chain_id: [u8; 32],
     expected_committed: Option<ConcreteStateIdentity>,
 ) -> Result<LoadedLifecycle, ConcreteReadError> {
-    let descriptor_rlp = required_default(db, DESCRIPTOR_KEY, "descriptor")?;
+    load_lifecycle_with(|key| db.get(key), expected_chain_id, expected_committed)
+}
+
+fn load_lifecycle_with(
+    get: impl Fn(&[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error>,
+    expected_chain_id: [u8; 32],
+    expected_committed: Option<ConcreteStateIdentity>,
+) -> Result<LoadedLifecycle, ConcreteReadError> {
+    let descriptor_rlp = required_default(&get, DESCRIPTOR_KEY, "descriptor")?;
     let committed = decode_descriptor(&descriptor_rlp)?;
     if encode_descriptor(committed) != descriptor_rlp {
         return Err(corrupt(
@@ -775,7 +1031,7 @@ fn load_lifecycle(
         });
     }
 
-    let provenance_rlp = required_default(db, PROVENANCE_KEY, "provenance")?;
+    let provenance_rlp = required_default(&get, PROVENANCE_KEY, "provenance")?;
     let provenance = decode_concrete_state_provenance(&provenance_rlp).map_err(corrupt)?;
     if provenance.identity.chain_id != expected_chain_id {
         return Err(corrupt("concrete lifecycle chain identity mismatch"));
@@ -786,13 +1042,13 @@ fn load_lifecycle(
         ));
     }
 
-    let catalog_rlp = required_default(db, CATALOG_KEY, "storage catalog")?;
+    let catalog_rlp = required_default(&get, CATALOG_KEY, "storage catalog")?;
     let catalog = decode_concrete_storage_catalog(&catalog_rlp).map_err(corrupt)?;
     if concrete_storage_slot_catalog_hash(catalog.iter().copied()) != provenance.catalog_hash {
         return Err(corrupt("concrete lifecycle storage catalog hash mismatch"));
     }
 
-    let (pending, pending_rlp) = match db.get(PENDING_KEY).map_err(io)? {
+    let (pending, pending_rlp) = match get(PENDING_KEY).map_err(io)? {
         None => (None, Vec::new()),
         Some(bytes) => {
             let marker = decode_concrete_execution_marker(&bytes).map_err(corrupt)?;
@@ -812,8 +1068,12 @@ fn load_lifecycle(
     })
 }
 
-fn required_default(db: &DB, key: &[u8], label: &str) -> Result<Vec<u8>, ConcreteReadError> {
-    db.get(key)
+fn required_default(
+    get: &impl Fn(&[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error>,
+    key: &[u8],
+    label: &str,
+) -> Result<Vec<u8>, ConcreteReadError> {
+    get(key)
         .map_err(io)?
         .ok_or_else(|| corrupt(format!("concrete lifecycle {label} is missing")))
 }
@@ -831,6 +1091,21 @@ fn write_sync(db: &DB, batch: WriteBatch) -> Result<(), ConcreteReadError> {
     let mut options = WriteOptions::default();
     options.set_sync(true);
     db.write_opt(batch, &options).map_err(io)
+}
+
+fn diagnostic_io(
+    error: impl std::fmt::Display,
+    operation: &str,
+    column: &str,
+    key: &str,
+) -> ConcreteReadError {
+    #[cfg(feature = "synthetic-fixtures")]
+    if std::env::var_os("RUST_LIB_BACKTRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        eprintln!("sst_diagnostic operation={operation} column={column} key={key} error={error}");
+    }
+    #[cfg(not(feature = "synthetic-fixtures"))]
+    let _ = (operation, column, key);
+    io(error)
 }
 
 fn io(error: impl std::fmt::Display) -> ConcreteReadError {
@@ -877,6 +1152,95 @@ mod tests {
                 std::fs::remove_dir_all(&self.0).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn retained_snapshot_keeps_code_absence_and_owner_lifetime() {
+        let path = TestPath::new();
+        let chain = [0x36; 32];
+        let mut lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let committed = lifecycle.observation().unwrap().committed;
+        let old = lifecycle.open_retained_checkpoint(committed).unwrap();
+        let code = b"future snapshot code";
+        let hash = super::super::codec::keccak256(code);
+        assert!(matches!(
+            old.code_at(committed, hash),
+            Err(ConcreteReadError::HistoryUnavailable(_))
+        ));
+        let cf = lifecycle.writer.db.cf_handle("1").unwrap();
+        lifecycle.writer.db.put_cf(&cf, hash, code).unwrap();
+        lifecycle.writer.db.flush_cf(&cf).unwrap();
+        lifecycle
+            .writer
+            .db
+            .compact_range_cf::<&[u8], &[u8]>(&cf, None, None);
+        let fresh = lifecycle.open_retained_checkpoint(committed).unwrap();
+        assert!(matches!(
+            old.code_at(committed, hash),
+            Err(ConcreteReadError::HistoryUnavailable(_))
+        ));
+        assert_eq!(
+            fresh.code_at(committed, hash).unwrap(),
+            ConcreteRead::Present(code.to_vec())
+        );
+        let catalog = lifecycle.catalog_rlp.clone();
+        lifecycle.writer.db.put(CATALOG_KEY, [0xff]).unwrap();
+        assert!(lifecycle.open_retained_checkpoint(committed).is_err());
+        assert!(matches!(
+            old.code_at(committed, hash),
+            Err(ConcreteReadError::HistoryUnavailable(_))
+        ));
+        assert_eq!(
+            fresh.code_at(committed, hash).unwrap(),
+            ConcreteRead::Present(code.to_vec())
+        );
+        lifecycle.writer.db.put(CATALOG_KEY, catalog).unwrap();
+        let owner = super::super::reader::ReadOwner::snapshot(lifecycle.writer.db.clone()).unwrap();
+        assert!(
+            super::super::reader::ConcreteCheckpointReaders::from_owner(
+                owner,
+                committed,
+                [committed, committed]
+            )
+            .is_err()
+        );
+        let owner = super::super::reader::ReadOwner::snapshot(lifecycle.writer.db.clone()).unwrap();
+        assert!(
+            super::super::reader::ConcreteCheckpointReaders::from_owner(owner, committed, [])
+                .is_err()
+        );
+        let future = ConcreteStateIdentity {
+            period: 1.into(),
+            state_root: committed.state_root,
+        };
+        assert!(lifecycle.open_retained_checkpoint(future).is_err());
+        let wrong = ConcreteStateIdentity {
+            period: committed.period,
+            state_root: [0x77; 32],
+        };
+        assert!(lifecycle.open_retained_checkpoint(wrong).is_err());
+        lifecycle.poisoned = true;
+        assert!(lifecycle.open_retained_checkpoint(committed).is_err());
+        drop(lifecycle);
+        assert!(matches!(
+            old.code_at(committed, hash),
+            Err(ConcreteReadError::HistoryUnavailable(_))
+        ));
+        drop(old);
+        drop(fresh);
+        assert_eq!(
+            ConcreteStateLifecycle::inspect_existing(&path.0, chain)
+                .unwrap()
+                .committed,
+            committed
+        );
+        drop(ConcreteStateLifecycle::open(&path.0, chain, committed).unwrap());
     }
 
     #[cfg(feature = "synthetic-fixtures")]
@@ -1052,6 +1416,9 @@ mod tests {
             marker_rlp
         );
         assert!(lifecycle.discard_execution(&[0xc0]).is_err());
+        let retained = lifecycle
+            .open_retained_checkpoint(genesis_observed.committed)
+            .unwrap();
         let intermediate = lifecycle
             .prepare(
                 FinalChainBlockNumber::new(1),
@@ -1108,7 +1475,180 @@ mod tests {
             projection_hash,
             catalog_hash,
         };
+        assert_eq!(
+            retained
+                .storage_at(genesis_observed.committed, address, key)
+                .unwrap(),
+            ConcreteRead::Present(vec![0x11])
+        );
+        let old_account = retained
+            .account_at(genesis_observed.committed, address)
+            .unwrap();
+        assert!(matches!(old_account, ConcreteRead::Present(_)));
+        assert_eq!(
+            retained
+                .account_at(genesis_observed.committed, [0x99; 20])
+                .unwrap(),
+            ConcreteRead::Absent
+        );
+        assert_eq!(
+            retained
+                .verify_storage_path_at(genesis_observed.committed, address, key)
+                .unwrap(),
+            ConcreteStoragePath::Member(vec![0x11])
+        );
+        let limits = super::super::reader::ConcreteStorageInventoryLimits {
+            max_nodes: 100,
+            max_leaves: 100,
+            max_value_bytes: 1000,
+        };
+        let ConcreteRead::Present(old_inventory) = retained
+            .storage_inventory_at(genesis_observed.committed, address, limits)
+            .unwrap()
+        else {
+            panic!("old inventory is absent");
+        };
+        assert_eq!(old_inventory.entries.len(), 1);
+        assert_eq!(old_inventory.entries[0].value, vec![0x11]);
+        let db = lifecycle.writer.db.clone();
         let committed = lifecycle.commit_approved(prepared, approval).unwrap();
+        let cf = db.cf_handle("5").unwrap();
+        db.flush_cf(&cf).unwrap();
+        db.compact_range_cf::<&[u8], &[u8]>(&cf, None, None);
+        let owner = super::super::reader::ReadOwner::snapshot(db.clone()).unwrap();
+        let fresh = super::super::reader::ConcreteCheckpointReaders::from_owner(
+            owner,
+            committed.committed,
+            [committed.committed],
+        )
+        .unwrap();
+        assert_eq!(
+            retained
+                .storage_at(genesis_observed.committed, address, key)
+                .unwrap(),
+            ConcreteRead::Present(vec![0x11])
+        );
+        assert_eq!(
+            fresh.storage_at(committed.committed, address, key).unwrap(),
+            ConcreteRead::Present(vec![0, 0x44])
+        );
+        assert_eq!(
+            retained
+                .account_at(genesis_observed.committed, address)
+                .unwrap(),
+            old_account
+        );
+        let ConcreteRead::Present(fresh_account) =
+            fresh.account_at(committed.committed, address).unwrap()
+        else {
+            panic!("fresh account is absent");
+        };
+        assert_eq!(
+            fresh
+                .verify_storage_path_at(committed.committed, address, key)
+                .unwrap(),
+            ConcreteStoragePath::Member(vec![0, 0x44])
+        );
+        assert_eq!(
+            retained
+                .verify_storage_path_at(genesis_observed.committed, address, key)
+                .unwrap(),
+            ConcreteStoragePath::Member(vec![0x11])
+        );
+        assert_eq!(
+            retained
+                .storage_inventory_at(genesis_observed.committed, address, limits)
+                .unwrap(),
+            ConcreteRead::Present(old_inventory)
+        );
+        let ConcreteRead::Present(inventory) = fresh
+            .storage_inventory_at(committed.committed, address, limits)
+            .unwrap()
+        else {
+            panic!("fresh inventory is absent");
+        };
+        assert_eq!(inventory.entries.len(), 1);
+        assert_eq!(inventory.entries[0].value, vec![0, 0x44]);
+        let forged = ConcreteStateIdentity {
+            period: genesis_observed.committed.period,
+            state_root: [0x77; 32],
+        };
+        let owner = super::super::reader::ReadOwner::snapshot(db.clone()).unwrap();
+        assert!(
+            super::super::reader::ConcreteCheckpointReaders::from_owner(
+                owner,
+                committed.committed,
+                [committed.committed, forged]
+            )
+            .is_err()
+        );
+
+        let absent_key = ConcreteStorageKey([0x99; 32]);
+        let tombstone_key = super::super::codec::versioned_key(
+            super::super::codec::storage_version_prefix(address, absent_key),
+            committed.committed.period,
+        );
+        let values = db.cf_handle("5").unwrap();
+        db.put_cf(&values, tombstone_key, []).unwrap();
+        let owner = super::super::reader::ReadOwner::snapshot(db.clone()).unwrap();
+        let tombstone = super::super::reader::ConcreteCheckpointReaders::from_owner(
+            owner,
+            committed.committed,
+            [committed.committed],
+        )
+        .unwrap();
+        assert_eq!(
+            tombstone
+                .storage_at(committed.committed, address, absent_key)
+                .unwrap(),
+            ConcreteRead::Tombstone
+        );
+        assert_eq!(
+            tombstone
+                .verify_storage_path_at(committed.committed, address, absent_key)
+                .unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        assert!(matches!(
+            fresh.storage_at(committed.committed, address, absent_key),
+            Err(ConcreteReadError::HistoryUnavailable(_))
+        ));
+        drop(tombstone);
+        db.delete_cf(&values, tombstone_key).unwrap();
+
+        let storage_root = fresh_account.account.storage_root.unwrap();
+        let nodes = db.cf_handle("4").unwrap();
+        let node = db.get_cf(&nodes, storage_root).unwrap().unwrap();
+        db.delete_cf(&nodes, storage_root).unwrap();
+        let owner = super::super::reader::ReadOwner::snapshot(db.clone()).unwrap();
+        let missing = super::super::reader::ConcreteCheckpointReaders::from_owner(
+            owner,
+            committed.committed,
+            [committed.committed],
+        )
+        .unwrap();
+        assert!(matches!(
+            missing.verify_storage_path_at(committed.committed, address, key),
+            Err(ConcreteReadError::HistoryUnavailable(_))
+        ));
+        drop(missing);
+        db.put_cf(&nodes, storage_root, [0xff]).unwrap();
+        let owner = super::super::reader::ReadOwner::snapshot(db.clone()).unwrap();
+        let corrupt = super::super::reader::ConcreteCheckpointReaders::from_owner(
+            owner,
+            committed.committed,
+            [committed.committed],
+        )
+        .unwrap();
+        assert!(matches!(
+            corrupt.verify_storage_path_at(committed.committed, address, key),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+        drop(corrupt);
+        db.put_cf(&nodes, storage_root, node).unwrap();
+        drop(retained);
+        drop(fresh);
+        drop(db);
         assert_eq!(committed.generation, 1);
         assert!(committed.pending_marker_rlp.is_empty());
         assert_eq!(
@@ -1606,6 +2146,98 @@ mod tests {
             reopened.prior_reader().storage(address, key_two).unwrap(),
             ConcreteRead::Present(vec![0x22])
         );
+    }
+
+    #[cfg(feature = "synthetic-fixtures")]
+    #[test]
+    fn committed_receipt_is_returned_only_after_exact_success() {
+        let path = TestPath::new();
+        let chain = [0x51; 32];
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let prior = owner.observation().unwrap();
+        let (marker, marker_rlp) = marker(&prior, 0x52);
+        owner.stage_execution(&marker_rlp).unwrap();
+        let output = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let next = output.identity();
+        let (committed, receipt) = owner
+            .commit_observer_approved_with_receipt(
+                output,
+                approval(&marker, &marker_rlp, next, &[]),
+            )
+            .unwrap();
+        assert_eq!(receipt.identity(), committed.identity);
+        assert_eq!(receipt.prior(), prior.committed);
+        assert_eq!(receipt.next(), committed.committed);
+        assert_eq!(receipt.generation(), committed.generation);
+        let reopened = ConcreteStateLifecycle::open(&path.0, chain, committed.committed).unwrap();
+        assert_eq!(reopened.observation().unwrap(), committed);
+
+        let bad_path = TestPath::new();
+        let mut bad = staged_empty_lifecycle(&bad_path, [0x53; 32], 0x54);
+        let pending = bad.pending.as_ref().unwrap().clone();
+        let marker_rlp = bad.pending_rlp.clone();
+        let stale = bad
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let latest = bad
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        assert!(
+            bad.commit_observer_approved_with_receipt(
+                stale,
+                approval(&pending, &marker_rlp, latest.identity(), &[])
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(feature = "synthetic-fixtures")]
+    #[test]
+    fn committed_receipt_is_not_released_on_actual_write_error() {
+        let path = TestPath::new();
+        let spare = TestPath::new();
+        let chain = [0x57; 32];
+        let mut owner = staged_empty_lifecycle(&path, chain, 0x58);
+        let prior = owner.observation().unwrap();
+        let pending = owner.pending.as_ref().unwrap().clone();
+        let marker_rlp = owner.pending_rlp.clone();
+        let output = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let approval = approval(&pending, &marker_rlp, output.identity(), &[]);
+        let prepared = owner.observer_prepared.take().unwrap();
+        assert_eq!(std::sync::Arc::strong_count(&owner.writer.db), 1);
+        let spare_db = DB::open_default(&spare.0).unwrap();
+        let old = std::mem::replace(&mut owner.writer.db, std::sync::Arc::new(spare_db));
+        drop(old);
+        let options = Options::default();
+        let columns = DB::list_cf(&options, &path.0).unwrap();
+        let descriptors = columns
+            .iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
+        let read_only =
+            DB::open_cf_descriptors_read_only(&options, &path.0, descriptors, false).unwrap();
+        let spare_db = std::mem::replace(&mut owner.writer.db, std::sync::Arc::new(read_only));
+        drop(spare_db);
+        let called = std::cell::Cell::new(false);
+        let error = owner
+            .commit_prepared_inner(prepared, approval, |_, _, _, _, _, _| called.set(true))
+            .unwrap_err();
+        assert!(
+            matches!(error, ConcreteReadError::Io(_)),
+            "expected actual RocksDB write error: {error:?}"
+        );
+        assert!(!called.get());
+        let after = ConcreteStateLifecycle::inspect_existing(&path.0, chain).unwrap();
+        assert_eq!(after, prior);
     }
 
     #[test]

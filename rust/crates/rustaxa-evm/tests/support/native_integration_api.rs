@@ -251,22 +251,97 @@ pub(crate) fn compare_raw(outcomes: &[NativeOutcome], expected: &Value) -> Resul
     );
     Ok(())
 }
+#[path = "native_integration_trace_checks.rs"]
+mod trace_checks;
+
+type ApplicationRow = (String, Vec<u8>, Vec<u8>);
+
+fn application_rows(storage: &Storage) -> Result<Vec<ApplicationRow>> {
+    let mut rows = Vec::new();
+    for column in rustaxa_storage::Column::all() {
+        for entry in storage.iter(*column) {
+            let (key, value) = entry?;
+            rows.push((column.name().to_owned(), key.to_vec(), value.to_vec()));
+        }
+    }
+    Ok(rows)
+}
+
+#[path = "native_integration_packet.rs"]
+mod packet;
+
+pub(super) fn validate_case_documents(
+    fixture: &Value,
+    case_name: &str,
+    api: &Value,
+    cpp: &Value,
+    roster: &Value,
+    rules: &Value,
+) -> Result<()> {
+    packet::validate_case_packet(fixture, case_name, api, cpp, roster, rules)?;
+    packet::mutation_controls(fixture, case_name, api, cpp, roster, rules)
+}
+
+pub(super) fn verify_case_documents(
+    fixture: &Value,
+    case_name: &str,
+    paths: (&Path, &Path),
+    api: &Value,
+    cpp: &Value,
+    roster: &Value,
+    rules: &Value,
+) -> Result<()> {
+    validate_case_documents(fixture, case_name, api, cpp, roster, rules)?;
+    let cases = roster["cases"]
+        .as_array()
+        .context("reviewed request roster")?;
+    let mut estimates = 0usize;
+    let mut probes = 0usize;
+    for row in cases {
+        for estimate in row["estimates"].as_array().context("reviewed estimates")? {
+            estimates += 1;
+            probes += estimate["probe_gases"]
+                .as_array()
+                .context("reviewed probes")?
+                .len();
+        }
+    }
+    verify_documents(
+        fixture,
+        paths,
+        api,
+        cpp,
+        (cases.len() * 2, estimates),
+        true,
+        Some(probes),
+    )
+}
+
 pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Result<()> {
     let api = fixture_stream("local.observer.traced.api")?;
     let cpp = fixture_stream("cpp.api")?;
-    verify_documents(fixture, application, concrete, &api, &cpp, (622, 933), true)
+    verify_documents(
+        fixture,
+        (application, concrete),
+        &api,
+        &cpp,
+        (622, 933),
+        true,
+        None,
+    )
 }
 
 pub(super) fn verify_documents(
     fixture: &Value,
-    application: &Path,
-    concrete: &Path,
+    paths: (&Path, &Path),
     api: &Value,
     cpp: &Value,
     counts: (usize, usize),
     reader_regressions: bool,
+    exact_probes: Option<usize>,
 ) -> Result<()> {
-    let (_storage, chain) = open_chain(application, fixture)?;
+    let (application, concrete) = paths;
+    let (storage, chain) = open_chain(application, fixture)?;
     let committed =
         ConcreteStateLifecycle::inspect_existing(concrete, chain.concrete_chain_identity()?)?
             .committed;
@@ -275,112 +350,309 @@ pub(super) fn verify_documents(
     let mut traces = 0usize;
     let mut estimate_index = 0usize;
     for case in api["cases"].as_array().context("API cases")? {
-        let head = number(&case["head"]);
-        let selected = ConcreteStateIdentity {
-            period: head.into(),
-            state_root: if head == 0 {
-                fixed(&fixture["genesis"]["root"])
-            } else {
-                fixed(&fixture["periods"][head as usize - 1]["final"]["root"])
-            },
-        };
-        let known = inventory(
-            if head == 0 {
-                &fixture["genesis"]
-            } else {
-                &fixture["periods"][head as usize - 1]["final"]
-            },
-            head,
-        )?;
-        let reader = CompleteReader {
-            inner: ConcreteStateReader::open_historical_read_only(concrete, committed, selected)?,
-            known,
-        };
-        let call = |probe: &Value| -> Result<EstimateProbe> {
-            let req = request(&case["request"], number(&probe["gas"]), 0);
-            let original = req.clone();
-            let outcomes = Rc::new(RefCell::new(Vec::new()));
-            let result = simulate_with_native(
-                &reader,
-                &ChainHashes(&chain),
-                &AllNatives(TaraxaProfile::new(false), &chain),
-                &ConsensusNatives(&chain),
-                |identity| {
-                    assert_eq!(identity, selected);
-                    Ok(Port {
-                        inner: mixed_native::SimulationNativeExecutionPort::new(
-                            chain
-                                .begin_native_simulation(identity.period)
-                                .map_err(|e| NativePortError::Domain(e.to_string()))?,
-                        ),
-                        outcomes: outcomes.clone(),
-                    })
-                },
-                &block(head, fixture),
-                &req,
-                EnvelopeRules { cornus: true },
-                TaraxaProfile::new(false),
-            )
-            .map_err(|e| anyhow::anyhow!("{e:?}"))
-            .with_context(|| format!("historical call {} gas {}", case["name"], probe["gas"]))?;
-            ensure!(
-                result.state == selected && req == original,
-                "API state/request identity"
-            );
-            compare_raw(&outcomes.borrow(), &probe["ordered_raw_writes"]).with_context(|| {
-                format!(
-                    "call {} selector {} gas {}",
-                    case["name"],
-                    &string(&case["request"]["input"])[..8],
-                    probe["gas"]
-                )
-            })?;
-            compare(&result.execution, &probe["output"])
-        };
-        call(&case["call"])?;
-        for estimate in case["estimates"].as_array().unwrap() {
-            let rows = estimate["probes"].as_array().unwrap();
-            let mut at = 0;
-            let result = estimate_gas(number(&estimate["cap"]), |gas| {
-                let row = rows
-                    .get(at)
-                    .context("complete estimator probe transcript")?;
-                at += 1;
-                ensure!(gas == number(&row["gas"]), "estimator probe gas");
-                call(row)
-            });
-            ensure!(at == rows.len(), "all estimator probes consumed");
-            probes += at;
-            // The C++ transcript is checked by the producer; the Rust search
-            // must consume exactly the same probes and terminate identically.
-            let expected = cpp["cases"]
-                .as_array()
-                .unwrap()
-                .get(estimate_index)
-                .context("ordered C++ estimate case")?;
-            estimate_index += 1;
-            ensure!(
-                expected["name"] == estimate["name"],
-                "C++ transcript identity"
-            );
-            match result {
-                Ok(value) => ensure!(
-                    expected["result"] == value,
-                    "C++ estimate value {} actual {value} expected {}",
-                    estimate["name"],
-                    expected
-                ),
-                Err(rustaxa_evm::estimate::EstimateError::CodeFailure { error })
-                | Err(rustaxa_evm::estimate::EstimateError::ConsensusFailure { error }) => ensure!(
-                    expected["error"] == error,
-                    "C++ estimate error {} {error}",
-                    expected["error"]
-                ),
-                Err(e) => bail!("estimation {e:?}"),
-            }
+        if exact_probes.is_some() {
+            verify_physical_rows(concrete, &final_period["final"]["rows"])?;
         }
-        for name in ["trace", "trace_sequence"] {
-            let trace = &case[name];
+        let application_before = if exact_probes.is_some() {
+            Some(application_rows(&storage)?)
+        } else {
+            None
+        };
+        let lifecycle_before = if exact_probes.is_some() {
+            Some(ConcreteStateLifecycle::inspect_existing(
+                concrete,
+                chain.concrete_chain_identity()?,
+            )?)
+        } else {
+            None
+        };
+        let head_before = if exact_probes.is_some() {
+            Some(chain.last_block_number_typed()?)
+        } else {
+            None
+        };
+        let status_before = if exact_probes.is_some() {
+            Some(chain.execution_status()?)
+        } else {
+            None
+        };
+        let pending_before = if exact_probes.is_some() {
+            Some(
+                storage
+                    .final_chain()
+                    .external_evm_pending_publication_raw()?,
+            )
+        } else {
+            None
+        };
+        let group = (|| -> Result<()> {
+            let head = number(&case["head"]);
+            let selected = ConcreteStateIdentity {
+                period: head.into(),
+                state_root: if head == 0 {
+                    fixed(&fixture["genesis"]["root"])
+                } else {
+                    fixed(&fixture["periods"][head as usize - 1]["final"]["root"])
+                },
+            };
+            let known = inventory(
+                if head == 0 {
+                    &fixture["genesis"]
+                } else {
+                    &fixture["periods"][head as usize - 1]["final"]
+                },
+                head,
+            )?;
+            let reader = CompleteReader {
+                inner: ConcreteStateReader::open_historical_read_only(
+                    concrete, committed, selected,
+                )?,
+                known,
+            };
+            let call = |probe: &Value| -> Result<EstimateProbe> {
+                let req = request(&case["request"], number(&probe["gas"]), 0);
+                let original = req.clone();
+                let outcomes = Rc::new(RefCell::new(Vec::new()));
+                let result = simulate_with_native(
+                    &reader,
+                    &ChainHashes(&chain),
+                    &AllNatives(TaraxaProfile::new(false), &chain),
+                    &ConsensusNatives(&chain),
+                    |identity| {
+                        assert_eq!(identity, selected);
+                        Ok(Port {
+                            inner: mixed_native::SimulationNativeExecutionPort::new(
+                                chain
+                                    .begin_native_simulation(identity.period)
+                                    .map_err(|e| NativePortError::Domain(e.to_string()))?,
+                            ),
+                            outcomes: outcomes.clone(),
+                        })
+                    },
+                    &block(head, fixture),
+                    &req,
+                    EnvelopeRules { cornus: true },
+                    TaraxaProfile::new(false),
+                )
+                .map_err(|e| anyhow::anyhow!("{e:?}"))
+                .with_context(|| {
+                    format!("historical call {} gas {}", case["name"], probe["gas"])
+                })?;
+                ensure!(
+                    result.state == selected && req == original,
+                    "API state/request identity"
+                );
+                compare_raw(&outcomes.borrow(), &probe["ordered_raw_writes"]).with_context(
+                    || {
+                        format!(
+                            "call {} selector {} gas {}",
+                            case["name"],
+                            &string(&case["request"]["input"])[..8],
+                            probe["gas"]
+                        )
+                    },
+                )?;
+                compare(&result.execution, &probe["output"])
+            };
+            call(&case["call"])?;
+            for estimate in case["estimates"].as_array().unwrap() {
+                let rows = estimate["probes"].as_array().unwrap();
+                let mut at = 0;
+                let result = estimate_gas(number(&estimate["cap"]), |gas| {
+                    let row = rows
+                        .get(at)
+                        .context("complete estimator probe transcript")?;
+                    at += 1;
+                    ensure!(gas == number(&row["gas"]), "estimator probe gas");
+                    call(row)
+                });
+                ensure!(at == rows.len(), "all estimator probes consumed");
+                probes += at;
+                // The C++ transcript is checked by the producer; the Rust search
+                // must consume exactly the same probes and terminate identically.
+                let expected = cpp["cases"]
+                    .as_array()
+                    .unwrap()
+                    .get(estimate_index)
+                    .context("ordered C++ estimate case")?;
+                estimate_index += 1;
+                ensure!(
+                    expected["name"] == estimate["name"],
+                    "C++ transcript identity"
+                );
+                match result {
+                    Ok(value) => ensure!(
+                        expected["result"] == value,
+                        "C++ estimate value {} actual {value} expected {}",
+                        estimate["name"],
+                        expected
+                    ),
+                    Err(rustaxa_evm::estimate::EstimateError::CodeFailure { error })
+                    | Err(rustaxa_evm::estimate::EstimateError::ConsensusFailure { error }) => {
+                        ensure!(
+                            expected["error"] == error,
+                            "C++ estimate error {} {error}",
+                            expected["error"]
+                        )
+                    }
+                    Err(e) => bail!("estimation {e:?}"),
+                }
+            }
+            for name in ["trace", "trace_sequence"] {
+                let trace = &case[name];
+                let prefix = trace["prefix"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| request(r, 500_000, i))
+                    .collect::<Vec<_>>();
+                let targets = [request(&trace["request"], 500_000, prefix.len())];
+                let outcomes = Rc::new(RefCell::new(Vec::new()));
+                let result = run_structured_trace_with_native(
+                    &reader,
+                    &ChainHashes(&chain),
+                    &AllNatives(TaraxaProfile::new(false), &chain),
+                    &ConsensusNatives(&chain),
+                    |identity, execution| {
+                        assert_eq!(identity, selected);
+                        Ok(Port {
+                            inner: mixed_native::SimulationNativeExecutionPort::new(
+                                chain
+                                    .begin_native_trace(identity.period, execution)
+                                    .map_err(|e| NativePortError::Domain(e.to_string()))?,
+                            ),
+                            outcomes: outcomes.clone(),
+                        })
+                    },
+                    &block(head + 1, fixture),
+                    &prefix,
+                    &targets,
+                    EnvelopeRules { cornus: true },
+                    TaraxaProfile::new(false),
+                )
+                .with_context(|| format!("historical trace {} {name}", case["name"]))?;
+                ensure!(result.state == selected);
+                ensure!(
+                    serde_json::from_slice::<Value>(&result.output)? == trace["result"],
+                    "default trace {} {name}: actual {} expected {}",
+                    case["name"],
+                    String::from_utf8_lossy(&result.output),
+                    trace["result"]
+                );
+                let expected = trace["calls"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|c| c["ordered_raw_writes"].as_array().unwrap().iter().cloned())
+                    .collect::<Vec<_>>();
+                compare_raw(&outcomes.borrow(), &Value::Array(expected))
+                    .with_context(|| format!("trace {} {name}", case["name"]))?;
+                if exact_probes.is_some() {
+                    trace_checks::verify(&reader, &chain, fixture, head, trace)?;
+                }
+                traces += 1;
+            }
+            if head > 0 {
+                verify_complete_final_reader(
+                    &reader,
+                    &fixture["periods"][head as usize - 1]["final"],
+                )?;
+            } else if exact_probes.is_some() {
+                verify_complete_final_reader(&reader, &fixture["genesis"])?;
+            }
+            Ok(())
+        })();
+        if exact_probes.is_some() {
+            verify_physical_rows(concrete, &final_period["final"]["rows"])?;
+            ensure!(
+                Some(application_rows(&storage)?) == application_before,
+                "application persisted rows unchanged"
+            );
+            ensure!(
+                Some(ConcreteStateLifecycle::inspect_existing(
+                    concrete,
+                    chain.concrete_chain_identity()?
+                )?) == lifecycle_before,
+                "concrete lifecycle unchanged"
+            );
+            ensure!(
+                Some(chain.last_block_number_typed()?) == head_before
+                    && Some(chain.execution_status()?) == status_before,
+                "application lifecycle unchanged"
+            );
+            ensure!(
+                Some(
+                    storage
+                        .final_chain()
+                        .external_evm_pending_publication_raw()?
+                ) == pending_before,
+                "publication unchanged"
+            );
+        }
+        group?;
+    }
+    ensure!(
+        estimate_index == cpp["cases"].as_array().context("C++ cases")?.len(),
+        "all C++ estimates consumed"
+    );
+    ensure!(
+        traces == counts.0 && exact_probes.map_or(probes > counts.1, |expected| probes == expected),
+        "complete API workload"
+    );
+    for extra in api["interacting_traces"]
+        .as_array()
+        .context("interacting trace oracle")?
+    {
+        if exact_probes.is_some() {
+            verify_physical_rows(concrete, &final_period["final"]["rows"])?;
+        }
+        let application_before = if exact_probes.is_some() {
+            Some(application_rows(&storage)?)
+        } else {
+            None
+        };
+        let lifecycle_before = if exact_probes.is_some() {
+            Some(ConcreteStateLifecycle::inspect_existing(
+                concrete,
+                chain.concrete_chain_identity()?,
+            )?)
+        } else {
+            None
+        };
+        let head_before = if exact_probes.is_some() {
+            Some(chain.last_block_number_typed()?)
+        } else {
+            None
+        };
+        let status_before = if exact_probes.is_some() {
+            Some(chain.execution_status()?)
+        } else {
+            None
+        };
+        let pending_before = if exact_probes.is_some() {
+            Some(
+                storage
+                    .final_chain()
+                    .external_evm_pending_publication_raw()?,
+            )
+        } else {
+            None
+        };
+        let group = (|| -> Result<()> {
+            let head = number(&extra["head"]);
+            let state = &fixture["periods"][head as usize - 1]["final"];
+            let selected = ConcreteStateIdentity {
+                period: head.into(),
+                state_root: fixed(&state["root"]),
+            };
+            let reader = CompleteReader {
+                inner: ConcreteStateReader::open_historical_read_only(
+                    concrete, committed, selected,
+                )?,
+                known: inventory(state, head)?,
+            };
+            let trace = &extra["trace"];
             let prefix = trace["prefix"]
                 .as_array()
                 .unwrap()
@@ -412,12 +684,11 @@ pub(super) fn verify_documents(
                 EnvelopeRules { cornus: true },
                 TaraxaProfile::new(false),
             )
-            .with_context(|| format!("historical trace {} {name}", case["name"]))?;
-            ensure!(result.state == selected);
+            .with_context(|| format!("interacting trace {}", extra["name"]))?;
             ensure!(
                 serde_json::from_slice::<Value>(&result.output)? == trace["result"],
-                "default trace {} {name}: actual {} expected {}",
-                case["name"],
+                "interacting trace result {}: actual {} expected {}",
+                extra["name"],
                 String::from_utf8_lossy(&result.output),
                 trace["result"]
             );
@@ -428,159 +699,120 @@ pub(super) fn verify_documents(
                 .flat_map(|c| c["ordered_raw_writes"].as_array().unwrap().iter().cloned())
                 .collect::<Vec<_>>();
             compare_raw(&outcomes.borrow(), &Value::Array(expected))
-                .with_context(|| format!("trace {} {name}", case["name"]))?;
-            traces += 1;
-        }
-        if head > 0 {
-            verify_final_reader(&reader, &fixture["periods"][head as usize - 1]["final"])?;
-        }
-    }
-    ensure!(
-        traces == counts.0 && probes > counts.1,
-        "complete API workload"
-    );
-    for extra in api["interacting_traces"]
-        .as_array()
-        .context("interacting trace oracle")?
-    {
-        let head = number(&extra["head"]);
-        let state = &fixture["periods"][head as usize - 1]["final"];
-        let selected = ConcreteStateIdentity {
-            period: head.into(),
-            state_root: fixed(&state["root"]),
-        };
-        let reader = CompleteReader {
-            inner: ConcreteStateReader::open_historical_read_only(concrete, committed, selected)?,
-            known: inventory(state, head)?,
-        };
-        let trace = &extra["trace"];
-        let prefix = trace["prefix"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .enumerate()
-            .map(|(i, r)| request(r, 500_000, i))
-            .collect::<Vec<_>>();
-        let targets = [request(&trace["request"], 500_000, prefix.len())];
-        let outcomes = Rc::new(RefCell::new(Vec::new()));
-        let result = run_structured_trace_with_native(
-            &reader,
-            &ChainHashes(&chain),
-            &AllNatives(TaraxaProfile::new(false), &chain),
-            &ConsensusNatives(&chain),
-            |identity, execution| {
-                assert_eq!(identity, selected);
-                Ok(Port {
+                .with_context(|| format!("interacting trace {}", extra["name"]))?;
+            if exact_probes.is_some() {
+                trace_checks::verify(&reader, &chain, fixture, head, trace)?;
+            }
+            if extra["creation_prefix"] != true {
+                ensure!(
+                    outcomes.borrow().len() == trace["calls"].as_array().unwrap().len(),
+                    "complete prefix/target outcomes"
+                );
+                for (out, row) in outcomes
+                    .borrow()
+                    .iter()
+                    .zip(trace["calls"].as_array().unwrap())
+                {
+                    let error = match &out.status {
+                        rustaxa_evm::contracts::NativeStatus::Success => "",
+                        rustaxa_evm::contracts::NativeStatus::ContractFailure(e) => &e.error,
+                    };
+                    ensure!(error == string(&row["result"]["execution_error"]));
+                    ensure!(out.output == bytes(&row["result"]["output"]));
+                }
+            } else {
+                ensure!(
+                    outcomes.borrow().len()
+                        == extra["native_invocations"].as_u64().unwrap_or(1) as usize,
+                    "measured nested native invocation count"
+                );
+            }
+            if extra["untraced"] == true {
+                let mut journal = ExecutionJournal::new(&reader);
+                let mut sequence = PeriodConsensusSequence::new((head + 1).into());
+                let untraced_outcomes = Rc::new(RefCell::new(Vec::new()));
+                let mut port = Port {
                     inner: mixed_native::SimulationNativeExecutionPort::new(
-                        chain
-                            .begin_native_trace(identity.period, execution)
-                            .map_err(|e| NativePortError::Domain(e.to_string()))?,
+                        chain.begin_native_trace(selected.period, (head + 1).into())?,
                     ),
-                    outcomes: outcomes.clone(),
-                })
-            },
-            &block(head + 1, fixture),
-            &prefix,
-            &targets,
-            EnvelopeRules { cornus: true },
-            TaraxaProfile::new(false),
-        )
-        .with_context(|| format!("interacting trace {}", extra["name"]))?;
-        ensure!(
-            serde_json::from_slice::<Value>(&result.output)? == trace["result"],
-            "interacting trace result {}: actual {} expected {}",
-            extra["name"],
-            String::from_utf8_lossy(&result.output),
-            trace["result"]
-        );
-        let expected = trace["calls"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|c| c["ordered_raw_writes"].as_array().unwrap().iter().cloned())
-            .collect::<Vec<_>>();
-        compare_raw(&outcomes.borrow(), &Value::Array(expected))
-            .with_context(|| format!("interacting trace {}", extra["name"]))?;
-        if extra["creation_prefix"] != true {
-            ensure!(
-                outcomes.borrow().len() == trace["calls"].as_array().unwrap().len(),
-                "complete prefix/target outcomes"
-            );
-            for (out, row) in outcomes
-                .borrow()
-                .iter()
-                .zip(trace["calls"].as_array().unwrap())
-            {
-                let error = match &out.status {
-                    rustaxa_evm::contracts::NativeStatus::Success => "",
-                    rustaxa_evm::contracts::NativeStatus::ContractFailure(e) => &e.error,
+                    outcomes: untraced_outcomes.clone(),
                 };
-                ensure!(error == string(&row["result"]["execution_error"]));
-                ensure!(out.output == bytes(&row["result"]["output"]));
+                let requests = prefix
+                    .iter()
+                    .chain(targets.iter())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let original = requests.clone();
+                for (req, row) in requests.iter().zip(trace["calls"].as_array().unwrap()) {
+                    let out = match req.kind {
+                        ExecutionTransactionKind::Call => execute_top_level_call_with_native(
+                            &mut journal,
+                            &ChainHashes(&chain),
+                            &AllNatives(TaraxaProfile::new(false), &chain),
+                            &ConsensusNatives(&chain),
+                            &mut port,
+                            &mut sequence,
+                            &block(head + 1, fixture),
+                            req,
+                            EnvelopeRules { cornus: true },
+                            TaraxaProfile::new(false),
+                        ),
+                        ExecutionTransactionKind::Create => execute_top_level_create_with_native(
+                            &mut journal,
+                            &ChainHashes(&chain),
+                            &AllNatives(TaraxaProfile::new(false), &chain),
+                            &ConsensusNatives(&chain),
+                            &mut port,
+                            &mut sequence,
+                            &block(head + 1, fixture),
+                            req,
+                            EnvelopeRules { cornus: true },
+                            TaraxaProfile::new(false),
+                        ),
+                        _ => unreachable!(),
+                    }?;
+                    compare(&out, &row["result"])?;
+                }
+                ensure!(requests == original, "canonical caller input is immutable");
+                let expected = trace["calls"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|c| c["ordered_raw_writes"].as_array().unwrap().iter().cloned())
+                    .collect::<Vec<_>>();
+                compare_raw(&untraced_outcomes.borrow(), &Value::Array(expected))?;
             }
-        } else {
+            verify_complete_final_reader(&reader, state)?;
+            Ok(())
+        })();
+        if exact_probes.is_some() {
+            verify_physical_rows(concrete, &final_period["final"]["rows"])?;
             ensure!(
-                outcomes.borrow().len()
-                    == extra["native_invocations"].as_u64().unwrap_or(1) as usize,
-                "measured nested native invocation count"
+                Some(application_rows(&storage)?) == application_before,
+                "application persisted rows unchanged"
+            );
+            ensure!(
+                Some(ConcreteStateLifecycle::inspect_existing(
+                    concrete,
+                    chain.concrete_chain_identity()?
+                )?) == lifecycle_before,
+                "concrete lifecycle unchanged"
+            );
+            ensure!(
+                Some(chain.last_block_number_typed()?) == head_before
+                    && Some(chain.execution_status()?) == status_before,
+                "application lifecycle unchanged"
+            );
+            ensure!(
+                Some(
+                    storage
+                        .final_chain()
+                        .external_evm_pending_publication_raw()?
+                ) == pending_before,
+                "publication unchanged"
             );
         }
-        if extra["untraced"] == true {
-            let mut journal = ExecutionJournal::new(&reader);
-            let mut sequence = PeriodConsensusSequence::new((head + 1).into());
-            let untraced_outcomes = Rc::new(RefCell::new(Vec::new()));
-            let mut port = Port {
-                inner: mixed_native::SimulationNativeExecutionPort::new(
-                    chain.begin_native_trace(selected.period, (head + 1).into())?,
-                ),
-                outcomes: untraced_outcomes.clone(),
-            };
-            let requests = prefix
-                .iter()
-                .chain(targets.iter())
-                .cloned()
-                .collect::<Vec<_>>();
-            let original = requests.clone();
-            for (req, row) in requests.iter().zip(trace["calls"].as_array().unwrap()) {
-                let out = match req.kind {
-                    ExecutionTransactionKind::Call => execute_top_level_call_with_native(
-                        &mut journal,
-                        &ChainHashes(&chain),
-                        &AllNatives(TaraxaProfile::new(false), &chain),
-                        &ConsensusNatives(&chain),
-                        &mut port,
-                        &mut sequence,
-                        &block(head + 1, fixture),
-                        req,
-                        EnvelopeRules { cornus: true },
-                        TaraxaProfile::new(false),
-                    ),
-                    ExecutionTransactionKind::Create => execute_top_level_create_with_native(
-                        &mut journal,
-                        &ChainHashes(&chain),
-                        &AllNatives(TaraxaProfile::new(false), &chain),
-                        &ConsensusNatives(&chain),
-                        &mut port,
-                        &mut sequence,
-                        &block(head + 1, fixture),
-                        req,
-                        EnvelopeRules { cornus: true },
-                        TaraxaProfile::new(false),
-                    ),
-                    _ => unreachable!(),
-                }?;
-                compare(&out, &row["result"])?;
-            }
-            ensure!(requests == original, "canonical caller input is immutable");
-            let expected = trace["calls"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .flat_map(|c| c["ordered_raw_writes"].as_array().unwrap().iter().cloned())
-                .collect::<Vec<_>>();
-            compare_raw(&untraced_outcomes.borrow(), &Value::Array(expected))?;
-        }
-        verify_final_reader(&reader, state)?;
+        group?;
     }
     let reader = ConcreteStateReader::open_read_only(concrete, committed)?;
     verify_final_reader(&reader, &final_period["final"])?;
@@ -796,6 +1028,69 @@ fn concrete_reader_regressions(
             .context("base never-written proof")?
     );
     ensure!(reader.storage(native, never) == Ok(ConcreteRead::Absent));
+    let absent_final = |address: [u8; 20], key: ConcreteStorageKey| {
+        serde_json::json!({"accounts": [], "native_catalog": {"slots": [{
+            "address": hex::encode(address), "key": hex::encode(key.0),
+            "present": false, "value": ""
+        }]}})
+    };
+    verify_complete_final_reader(&reader, &absent_final(native, never))?;
+    let raw_reader = ConcreteStateReader::open_read_only(path, committed)?;
+    let absent_account = [0xa8; 20];
+    ensure!(matches!(
+        raw_reader.account(absent_account)?,
+        ConcreteRead::Absent | ConcreteRead::Tombstone
+    ));
+    ensure!(
+        raw_reader.storage(absent_account, never)
+            == Err(ConcreteReadError::HistoryUnavailable(committed))
+    );
+    let raw_view = FixtureView {
+        prior: FixturePrior::Committed(&raw_reader),
+        identity: committed,
+    };
+    ensure!(
+        rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+            &raw_view,
+            absent_account,
+            never
+        ) == Ok(ConcreteRead::Absent)
+    );
+    let wrong_view = FixtureView {
+        prior: FixturePrior::Committed(&raw_reader),
+        identity: ConcreteStateIdentity {
+            period: committed.period,
+            state_root: [3; 32],
+        },
+    };
+    ensure!(
+        rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+            &wrong_view,
+            absent_account,
+            never
+        ) == Err(ConcreteReadError::HistoryUnavailable(committed))
+    );
+    let empty_root = fixture["periods"][head as usize - 1]["final"]["accounts"]
+        .as_array()
+        .context("final accounts")?
+        .iter()
+        .find(|row| row["present"] == true && row["storage_root"].is_null())
+        .context("present account with empty storage root")?;
+    let empty_address = fixed(&empty_root["address"]);
+    ensure!(
+        matches!(raw_reader.account(empty_address)?, ConcreteRead::Present(record) if record.account.storage_root.is_none())
+    );
+    ensure!(
+        raw_reader.storage(empty_address, never)
+            == Err(ConcreteReadError::HistoryUnavailable(committed))
+    );
+    ensure!(
+        rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+            &raw_view,
+            empty_address,
+            never
+        ) == Ok(ConcreteRead::Absent)
+    );
     drop(reader);
     let parent = path.parent().unwrap().join("reader-faults");
     std::fs::create_dir(&parent)?;
@@ -805,6 +1100,7 @@ fn concrete_reader_regressions(
         (ordinary, ConcreteStorageKey([0xb1; 32])),
         (native, ConcreteStorageKey([0xb2; 32])),
         (native, ConcreteStorageKey([0xb3; 32])),
+        (absent_account, ConcreteStorageKey([0xb4; 32])),
     ];
     let mut extended = known.clone();
     edit_owned_database(&owned, |db| {
@@ -868,7 +1164,53 @@ fn concrete_reader_regressions(
                 .context("missing empty/orphan proof")?
         );
         ensure!(broken.storage(a, k) == Err(ConcreteReadError::HistoryUnavailable(committed)));
+        let error = verify_complete_final_reader(&broken, &absent_final(a, k))
+            .expect_err("known missing physical history must fail final verification");
+        ensure!(
+            error.root_cause().downcast_ref::<ConcreteReadError>()
+                == Some(&ConcreteReadError::HistoryUnavailable(committed))
+        );
     }
+    let raw_missing = ConcreteStateReader::open_read_only(&missing, committed)?;
+    let absent_key = ConcreteStorageKey([0xb4; 32]);
+    ensure!(
+        broken
+            .known
+            .contains(&rustaxa_storage::storage_version_prefix(
+                absent_account,
+                absent_key
+            ))
+    );
+    let raw_view = FixtureView {
+        prior: FixturePrior::Committed(&raw_missing),
+        identity: committed,
+    };
+    ensure!(
+        rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+            &raw_view,
+            absent_account,
+            absent_key
+        ) == Ok(ConcreteRead::Absent)
+    );
+    ensure!(
+        matches!(raw_missing.account(ordinary)?, ConcreteRead::Present(record) if record.account.storage_root.is_some())
+    );
+    let missing_under_nonempty_root = ConcreteStorageKey([0xb1; 32]);
+    ensure!(
+        raw_missing.storage(ordinary, missing_under_nonempty_root)
+            == Err(ConcreteReadError::HistoryUnavailable(committed))
+    );
+    ensure!(
+        raw_missing.verify_storage_path(ordinary, missing_under_nonempty_root)?
+            == rustaxa_storage::ConcreteStoragePath::NonMember
+    );
+    ensure!(
+        rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+            &raw_view,
+            ordinary,
+            missing_under_nonempty_root
+        ) == Ok(ConcreteRead::Absent)
+    );
     drop(broken);
     // An actual ordinary trie member whose physical version bytes disappear.
     let member = parent.join("member-missing");
@@ -902,6 +1244,79 @@ fn concrete_reader_regressions(
         broken.storage(ordinary, slot) == Err(ConcreteReadError::HistoryUnavailable(committed))
     );
     drop(broken);
+    let account_proof = parent.join("account-proof-missing");
+    copy_owned_database(path, &account_proof)?;
+    let mut account_copy_files = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        use std::os::unix::fs::MetadataExt;
+        let entry = entry?;
+        let source = entry.metadata()?;
+        let copy = std::fs::metadata(account_proof.join(entry.file_name()))?;
+        ensure!(source.is_file() && copy.is_file());
+        ensure!(source.len() == copy.len());
+        ensure!(source.dev() != copy.dev() || source.ino() != copy.ino());
+        account_copy_files.push(serde_json::json!({
+            "name": entry.file_name().to_string_lossy(),
+            "bytes": copy.len(),
+            "source_device": source.dev(),
+            "source_inode": source.ino(),
+            "copy_device": copy.dev(),
+            "copy_inode": copy.ino()
+        }));
+    }
+    account_copy_files.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    std::fs::write(
+        parent.join("account-proof-missing-manifest.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "source": path, "copy": account_proof,
+            "period": committed.period.as_u64(), "root": hex::encode(committed.state_root),
+            "copy_method": "std::fs::copy", "files": account_copy_files
+        }))?,
+    )?;
+    {
+        let baseline = ConcreteStateReader::open_read_only(&account_proof, committed)?;
+        ensure!(matches!(
+            baseline.account(absent_account)?,
+            ConcreteRead::Absent | ConcreteRead::Tombstone
+        ));
+        ensure!(
+            baseline.storage(absent_account, never)
+                == Err(ConcreteReadError::HistoryUnavailable(committed))
+        );
+    }
+    ensure!(committed.state_root != [0_u8; 32]);
+    edit_owned_database(&account_proof, |db| {
+        let cf = db.cf_handle("2").context("account trie CF2")?;
+        ensure!(
+            db.get_cf(cf, committed.state_root)?.is_some(),
+            "account root node exists before fault"
+        );
+        db.delete_cf(cf, committed.state_root)?;
+        Ok(())
+    })?;
+    {
+        let broken_account = ConcreteStateReader::open_read_only(&account_proof, committed)?;
+        ensure!(
+            broken_account.account(absent_account)
+                == Err(ConcreteReadError::HistoryUnavailable(committed))
+        );
+        ensure!(
+            broken_account
+                .verify_storage_path(absent_account, never)
+                .is_err()
+        );
+        let raw_view = FixtureView {
+            prior: FixturePrior::Committed(&broken_account),
+            identity: committed,
+        };
+        ensure!(
+            rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                &raw_view,
+                absent_account,
+                never
+            ) == Err(ConcreteReadError::HistoryUnavailable(committed))
+        );
+    }
     let proof = parent.join("proof-missing");
     copy_owned_database(path, &proof)?;
     edit_owned_database(&proof, |db| {
@@ -919,17 +1334,40 @@ fn concrete_reader_regressions(
         inner: ConcreteStateReader::open_read_only(&proof, committed)?,
         known: known.clone(),
     };
+    let raw_proof_view = FixtureView {
+        prior: FixturePrior::Committed(&broken.inner),
+        identity: committed,
+    };
+    ensure!(
+        rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+            &raw_proof_view,
+            native,
+            never
+        ) == Err(ConcreteReadError::HistoryUnavailable(committed))
+    );
     let error = broken
         .inner
         .nonmember(native, never)
         .expect_err("actual missing proof dependency");
-    ensure!(broken.storage(native, never) == Err(error));
+    ensure!(broken.storage(native, never) == Err(error.clone()));
+    let propagated = verify_complete_final_reader(&broken, &absent_final(native, never))
+        .expect_err("missing proof must fail final verification");
+    ensure!(propagated.root_cause().downcast_ref::<ConcreteReadError>() == Some(&error));
     drop(broken);
     let fresh = CompleteReader {
         inner: ConcreteStateReader::open_read_only(path, committed)?,
         known,
     };
     ensure!(fresh.storage(native, never) == Ok(ConcreteRead::Absent));
+    verify_complete_final_reader(&fresh, &absent_final(native, never))?;
+    let present_one = fixture["periods"][head as usize - 1]["final"]["native_catalog"]["slots"]
+        .as_array()
+        .context("final native slots")?
+        .iter()
+        .find(|row| row["present"] == true && row["value"] == "01")
+        .context("actual present one-byte slot")?;
+    let one_final = serde_json::json!({"accounts": [], "native_catalog": {"slots": [present_one]}});
+    verify_complete_final_reader(&fresh, &one_final)?;
     ensure!(!fresh.inner.nonmember(ordinary, slot)?);
     ensure!(matches!(
         fresh.storage(ordinary, slot)?,

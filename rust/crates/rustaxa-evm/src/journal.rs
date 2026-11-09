@@ -8,6 +8,154 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Test-only observations of the existing slashing-list read branch.
+#[cfg(feature = "synthetic-fixtures")]
+pub mod cleanup_diagnostic_observer {
+    use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
+    use std::cell::Cell;
+    use std::fmt::{self, Write};
+    use std::marker::PhantomData;
+    use std::rc::Rc;
+
+    const MAX_DETAIL: usize = 1024;
+    const MAX_VALUE: usize = 128;
+    #[derive(Clone, Copy)]
+    struct Hooks {
+        active: fn() -> bool,
+        event: fn(&str, &str),
+        overflow: fn(),
+        origin: bool,
+    }
+    thread_local! { static HOOKS: Cell<Option<Hooks>> = const { Cell::new(None) }; }
+    /// Removes one thread-local observer when dropped.
+    pub struct Guard {
+        _same_thread: PhantomData<Rc<()>>,
+    }
+    /// Install one observer on the current thread while its collector is active.
+    pub fn install(
+        active: fn() -> bool,
+        event: fn(&str, &str),
+        overflow: fn(),
+        origin: bool,
+    ) -> Result<Guard, &'static str> {
+        if !active() {
+            return Err("diagnostic collector is not active");
+        }
+        HOOKS.with(|slot| {
+            if slot.get().is_some() {
+                return Err("diagnostic observer already installed");
+            }
+            slot.set(Some(Hooks {
+                active,
+                event,
+                overflow,
+                origin,
+            }));
+            Ok(Guard {
+                _same_thread: PhantomData,
+            })
+        })
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HOOKS.with(|slot| slot.set(None));
+        }
+    }
+    struct Bounded {
+        text: String,
+    }
+    impl Write for Bounded {
+        fn write_str(&mut self, value: &str) -> fmt::Result {
+            if value.len() > MAX_DETAIL - self.text.len() {
+                return Err(fmt::Error);
+            }
+            self.text.push_str(value);
+            Ok(())
+        }
+    }
+    pub(super) fn target(address: [u8; 20], key: ConcreteStorageKey) -> bool {
+        address[..19] == [0_u8; 19]
+            && address[19] == 0xee
+            && key.0[..31] == [0_u8; 31]
+            && key.0[31] == 2
+    }
+    fn active_hooks() -> Option<Hooks> {
+        HOOKS
+            .with(|slot| slot.get())
+            .filter(|hooks| (hooks.active)())
+    }
+    fn write_result(hooks: Hooks, branch: &str, result: &impl fmt::Debug) {
+        let mut output = Bounded {
+            text: String::with_capacity(MAX_DETAIL),
+        };
+        if write!(&mut output, "scope=active address=00000000000000000000000000000000000000ee key=0000000000000000000000000000000000000000000000000000000000000002 branch={branch} result={result:?}").is_err() {
+            (hooks.overflow)();
+        } else {
+            (hooks.event)("evm_raw_storage", &output.text);
+        }
+    }
+    pub(super) fn value(branch: &str, value: &ConcreteRead<Vec<u8>>) {
+        let Some(hooks) = active_hooks() else {
+            return;
+        };
+        if matches!(value, ConcreteRead::Present(bytes) if bytes.len() > MAX_VALUE) {
+            (hooks.overflow)();
+            return;
+        }
+        write_result(hooks, branch, value);
+    }
+    pub(super) fn origin(branch: &str, value: &impl fmt::Debug) {
+        if let Some(hooks) = active_hooks().filter(|hooks| hooks.origin) {
+            write_result(hooks, branch, value);
+        }
+    }
+    pub(super) fn active() -> bool {
+        active_hooks().is_some()
+    }
+    pub(super) fn absent_account_raw(overlay: bool, operation: Option<&super::NativeRawOperation>) {
+        let Some(hooks) = active_hooks() else {
+            return;
+        };
+        let source = if overlay { "overlay" } else { "backing" };
+        let mut output = Bounded {
+            text: String::with_capacity(MAX_DETAIL),
+        };
+        let result = match operation {
+            Some(super::NativeRawOperation::Put(value)) => {
+                let bytes = value.as_bytes();
+                if bytes.len() > MAX_VALUE {
+                    (hooks.overflow)();
+                    return;
+                }
+                write!(
+                    &mut output,
+                    "source={source} exists=false raw=put bytes={bytes:?}"
+                )
+            }
+            Some(super::NativeRawOperation::Delete) => {
+                write!(&mut output, "source={source} exists=false raw=delete")
+            }
+            None => write!(&mut output, "source={source} exists=false raw=missing"),
+        };
+        if result.is_err() {
+            (hooks.overflow)();
+        } else {
+            (hooks.event)("evm_absent_account_raw", &output.text);
+        }
+    }
+    pub(super) fn error(branch: &str, error: &ConcreteReadError) {
+        let Some(hooks) = active_hooks() else {
+            return;
+        };
+        if matches!(error, ConcreteReadError::Corrupt(message) | ConcreteReadError::Io(message) if message.len() > MAX_VALUE)
+        {
+            (hooks.overflow)();
+            return;
+        }
+        write_result(hooks, branch, error);
+    }
+}
+
 use num_bigint::{BigInt, BigUint};
 use rustaxa_types::{
     FinalChainNonce,
@@ -24,6 +172,611 @@ use crate::contracts::{
 
 /// Unhashed EVM account address.
 pub type JournalAddress = [u8; 20];
+/// One bounded observation of an actual ordinary journal mutation or restore.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurationJournalEvent {
+    pub kind: &'static str,
+    pub address: JournalAddress,
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
+}
+struct DurationJournalCapture {
+    events: Vec<DurationJournalEvent>,
+    charge: usize,
+    cap: usize,
+    overflow: bool,
+}
+thread_local! {
+    static DURATION_JOURNAL_CAPTURE: std::cell::RefCell<Option<DurationJournalCapture>> = const { std::cell::RefCell::new(None) };
+}
+/// Arms one synchronous owner observation with a finite charge cap.
+pub fn duration_journal_arm(cap: usize) -> Result<(), &'static str> {
+    if cap == 0 {
+        return Err("zero journal capture cap");
+    }
+    DURATION_JOURNAL_CAPTURE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_some() {
+            return Err("journal capture already armed");
+        }
+        *slot = Some(DurationJournalCapture {
+            events: Vec::new(),
+            charge: 0,
+            cap,
+            overflow: false,
+        });
+        Ok(())
+    })
+}
+/// Takes complete observations; overflow and missing ownership fail closed.
+pub fn duration_journal_take() -> Result<Vec<DurationJournalEvent>, &'static str> {
+    DURATION_JOURNAL_CAPTURE.with(|cell| {
+        let capture = cell
+            .borrow_mut()
+            .take()
+            .ok_or("journal capture not armed")?;
+        if capture.overflow {
+            return Err("journal capture cap exceeded");
+        }
+        Ok(capture.events)
+    })
+}
+fn duration_journal_event(kind: &'static str, address: JournalAddress, key: &[u8], value: &[u8]) {
+    DURATION_JOURNAL_CAPTURE.with(|cell| {
+        if let Some(capture) = cell.borrow_mut().as_mut() {
+            let Some(charge) = key
+                .len()
+                .checked_add(value.len())
+                .and_then(|n| n.checked_add(256))
+                .and_then(|n| n.checked_add(capture.charge))
+            else {
+                capture.overflow = true;
+                return;
+            };
+            if charge > capture.cap {
+                capture.overflow = true;
+                return;
+            }
+            if capture.events.try_reserve_exact(1).is_err() {
+                capture.overflow = true;
+                return;
+            }
+            let unused = capture
+                .events
+                .capacity()
+                .saturating_sub(capture.events.len().saturating_add(1));
+            let Some(peak) = unused
+                .checked_mul(std::mem::size_of::<DurationJournalEvent>())
+                .and_then(|n| charge.checked_add(n))
+            else {
+                capture.overflow = true;
+                return;
+            };
+            if peak > capture.cap {
+                capture.overflow = true;
+                return;
+            }
+            capture.charge = charge;
+            capture.events.push(DurationJournalEvent {
+                kind,
+                address,
+                key: key.to_vec(),
+                value: value.to_vec(),
+            });
+        }
+    });
+}
+/// Reports whether a bounded duration observation is active on this thread.
+pub fn duration_journal_is_armed() -> bool {
+    DURATION_JOURNAL_CAPTURE.with(|cell| cell.borrow().is_some())
+}
+fn duration_native_field(out: &mut Vec<u8>, value: &[u8]) {
+    out.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    out.extend_from_slice(value);
+}
+fn duration_native_signed(out: &mut Vec<u8>, value: &BigInt) {
+    let (sign, magnitude) = value.to_bytes_be();
+    out.push(match sign {
+        num_bigint::Sign::Minus => 0,
+        num_bigint::Sign::NoSign => 1,
+        num_bigint::Sign::Plus => 2,
+    });
+    duration_native_field(
+        out,
+        if sign == num_bigint::Sign::NoSign {
+            &[]
+        } else {
+            &magnitude
+        },
+    );
+}
+pub(crate) fn duration_native_insufficient_gas() {
+    duration_journal_event("outcome_insufficient_gas", [0; 20], &[], &[]);
+}
+pub(crate) fn duration_native_outcome_status(
+    invocation: &crate::contracts::NativeInvocation,
+    status: &crate::contracts::NativeStatus,
+) {
+    if !duration_journal_is_armed() {
+        return;
+    }
+    let tag = match status {
+        crate::contracts::NativeStatus::Success => 0,
+        crate::contracts::NativeStatus::ContractFailure(_) => 1,
+    };
+    duration_journal_event(
+        "outcome_status",
+        [0; 20],
+        &duration_native_identity(invocation),
+        &[1, tag],
+    );
+}
+
+/// Marks the limits of one native outcome record.
+pub fn duration_native_outcome_boundary(begin: bool) {
+    duration_journal_event(
+        if begin {
+            "outcome_begin"
+        } else {
+            "outcome_end"
+        },
+        [0; 20],
+        &[],
+        &[],
+    );
+}
+fn duration_native_account_encoding(
+    mutation: &NativeOrdinaryAccountMutation,
+) -> (JournalAddress, Vec<u8>) {
+    let mut value = Vec::new();
+    let address = match mutation {
+        NativeOrdinaryAccountMutation::Nonce {
+            address,
+            expected_exists,
+            expected,
+            replacement,
+        } => {
+            value.extend([0, u8::from(*expected_exists)]);
+            duration_native_field(&mut value, &expected.to_bytes());
+            duration_native_field(&mut value, &replacement.to_bytes());
+            *address
+        }
+        NativeOrdinaryAccountMutation::EnsureExists {
+            address,
+            expected_exists,
+        } => {
+            value.extend([1, u8::from(*expected_exists)]);
+            *address
+        }
+        NativeOrdinaryAccountMutation::Touch {
+            address,
+            expected_exists,
+        } => {
+            value.extend([2, u8::from(*expected_exists)]);
+            *address
+        }
+        NativeOrdinaryAccountMutation::Balance {
+            address,
+            expected_exists,
+            expected,
+            replacement,
+        } => {
+            value.extend([3, u8::from(*expected_exists)]);
+            duration_native_signed(&mut value, expected.value());
+            duration_native_signed(&mut value, replacement.value());
+            *address
+        }
+    };
+    (address, value)
+}
+
+/// Records an exact native account outcome or successful application.
+pub fn duration_native_account_event(kind: &'static str, mutation: &NativeOrdinaryAccountMutation) {
+    if !duration_journal_is_armed() {
+        return;
+    }
+    let (address, value) = duration_native_account_encoding(mutation);
+    duration_journal_event(kind, address, &[], &value);
+}
+
+fn duration_native_raw_encoding(mutation: &crate::contracts::NativeRawMutation) -> Vec<u8> {
+    let mut value = Vec::new();
+    match &mutation.expected {
+        ConcreteRead::Absent => value.push(0),
+        ConcreteRead::Tombstone => value.push(1),
+        ConcreteRead::Present(v) => {
+            value.push(2);
+            duration_native_field(&mut value, v);
+        }
+    }
+    match &mutation.operation {
+        NativeRawOperation::Delete => value.push(0),
+        NativeRawOperation::Put(v) => {
+            value.push(1);
+            duration_native_field(&mut value, v.as_bytes());
+        }
+    }
+    value
+}
+
+/// Records an exact native raw outcome or successful application.
+pub fn duration_native_raw_event(
+    kind: &'static str,
+    mutation: &crate::contracts::NativeRawMutation,
+) {
+    if !duration_journal_is_armed() {
+        return;
+    }
+    let value = duration_native_raw_encoding(mutation);
+    duration_journal_event(kind, mutation.address, &mutation.key.0, &value);
+}
+
+fn duration_native_application_header(
+    invocation: &crate::contracts::NativeInvocation,
+    ordinal: u64,
+) -> Vec<u8> {
+    let mut value = vec![1];
+    value.extend_from_slice(&duration_native_identity(invocation));
+    value.extend_from_slice(&ordinal.to_be_bytes());
+    value
+}
+
+/// Records the boundary of one actual native account application.
+/// The native invocation and vector position identify the operation. The end
+/// record is emitted only after its successful applied-account record.
+pub(crate) fn duration_native_apply_account_event(
+    begin: bool,
+    invocation: &crate::contracts::NativeInvocation,
+    ordinal: u64,
+    mutation: &NativeOrdinaryAccountMutation,
+) {
+    if !duration_journal_is_armed() {
+        return;
+    }
+    let (address, body) = duration_native_account_encoding(mutation);
+    let mut value = duration_native_application_header(invocation, ordinal);
+    value.extend_from_slice(&body);
+    duration_journal_event(
+        if begin {
+            "native_apply_account_begin"
+        } else {
+            "native_apply_account_end"
+        },
+        address,
+        &[],
+        &value,
+    );
+}
+
+/// Records the boundary of one actual native raw application.
+/// Begin precedes the expected-value read. End follows the successful raw write
+/// and applied-raw record; failed operations retain only their partial trace.
+pub(crate) fn duration_native_apply_raw_event(
+    begin: bool,
+    invocation: &crate::contracts::NativeInvocation,
+    ordinal: u64,
+    mutation: &crate::contracts::NativeRawMutation,
+) {
+    if !duration_journal_is_armed() {
+        return;
+    }
+    let body = duration_native_raw_encoding(mutation);
+    let mut value = duration_native_application_header(invocation, ordinal);
+    value.extend_from_slice(&body);
+    duration_journal_event(
+        if begin {
+            "native_apply_raw_begin"
+        } else {
+            "native_apply_raw_end"
+        },
+        mutation.address,
+        &mutation.key.0,
+        &value,
+    );
+}
+
+/// Marks the actual terminal rewards operation for duration observation.
+pub fn duration_journal_reward_boundary(begin: bool, period: u64) {
+    duration_journal_event(
+        if begin {
+            "reward_stage_begin"
+        } else {
+            "reward_stage_end"
+        },
+        [0; 20],
+        &period.to_be_bytes(),
+        &[],
+    );
+}
+/// Records one actual native staging observation while duration capture is armed.
+pub fn duration_journal_stage_event(
+    kind: &'static str,
+    address: JournalAddress,
+    key: &[u8],
+    value: &[u8],
+) {
+    assert!(matches!(
+        kind,
+        "reward_disabled"
+            | "reward_phase"
+            | "reward_map"
+            | "reward_fee_source"
+            | "reward_validator_exists"
+            | "prepare_begin"
+            | "prepare_end"
+            | "invoke_begin"
+            | "invoke_end"
+            | "stage_account_read"
+            | "stage_account_probe"
+            | "stage_account_write"
+            | "stage_raw_read"
+            | "stage_raw_probe"
+            | "stage_raw_write"
+            | "slashing_delayed_list"
+            | "slashing_current_get"
+    ));
+    duration_journal_event(kind, address, key, value);
+}
+/// Records an exact delta supplied to one unpublished observer phase.
+pub fn duration_journal_plan_event(
+    kind: &'static str,
+    address: JournalAddress,
+    key: &[u8],
+    value: &[u8],
+) {
+    assert!(matches!(
+        kind,
+        "source_account"
+            | "source_storage"
+            | "source_code"
+            | "plan_begin"
+            | "plan_end"
+            | "plan_account"
+            | "plan_storage"
+            | "plan_code"
+            | "prepared_plan_account"
+            | "prepared_storage"
+            | "prepared_code"
+    ));
+    duration_journal_event(kind, address, key, value);
+}
+pub(crate) fn duration_journal_read_role(begin: bool, role: u8, address: JournalAddress) {
+    duration_journal_event(
+        if begin {
+            "read_role_begin"
+        } else {
+            "read_role_end"
+        },
+        address,
+        &[role],
+        &[],
+    );
+}
+
+pub(crate) fn duration_journal_ordinary_metadata(
+    kind: &'static str,
+    sender: JournalAddress,
+    target: JournalAddress,
+    amount: &BigUint,
+) {
+    if !duration_journal_is_armed() {
+        return;
+    }
+    let mut key = 0_u64.to_be_bytes().to_vec();
+    key.push(0xf1);
+    key.extend_from_slice(&target);
+    key.extend_from_slice(&target);
+    let mut value = sender.to_vec();
+    value.extend_from_slice(amount.to_string().as_bytes());
+    duration_journal_event(kind, target, &key, &value);
+}
+
+pub(crate) fn duration_journal_admission_terminal(sender: JournalAddress, reason: u8) {
+    duration_journal_event("admission_terminal", sender, &[reason], &[]);
+}
+
+pub(crate) struct DurationTransferDecisionObservation<'a> {
+    pub depth: u64,
+    pub opcode: u8,
+    pub sender: JournalAddress,
+    pub target: JournalAddress,
+    pub state_target: JournalAddress,
+    pub amount: &'a BigUint,
+    pub balance: Option<&'a BigInt>,
+    pub checked: bool,
+    pub allowed: bool,
+}
+
+pub(crate) fn duration_journal_transfer_decision(
+    observation: DurationTransferDecisionObservation<'_>,
+) {
+    if !duration_journal_is_armed() {
+        return;
+    }
+    let mut key = observation.depth.to_be_bytes().to_vec();
+    key.push(observation.opcode);
+    key.extend_from_slice(&observation.target);
+    key.extend_from_slice(&observation.state_target);
+    let value = format!(
+        "{}|{}|{}|{}",
+        observation.amount,
+        observation.checked,
+        observation
+            .balance
+            .map_or_else(|| "-".to_owned(), ToString::to_string),
+        observation.allowed
+    );
+    duration_journal_event(
+        "transfer_decision",
+        observation.sender,
+        &key,
+        value.as_bytes(),
+    );
+}
+
+/// Records a validated unpublished observer phase boundary.
+pub fn duration_journal_prepared_stage(begin: bool, root: [u8; 32]) {
+    duration_journal_event(
+        if begin {
+            "prepared_begin"
+        } else {
+            "prepared_end"
+        },
+        [0; 20],
+        &root,
+        &[],
+    );
+}
+/// Records one exact account row emitted by the unpublished observer phase.
+pub fn duration_journal_prepared_account(
+    address: JournalAddress,
+    root: [u8; 32],
+    class: u8,
+    row: &[u8],
+) {
+    let mut value = vec![class];
+    value.extend_from_slice(row);
+    duration_journal_event("prepared_account", address, &root, &value);
+}
+pub(crate) fn duration_journal_no_refund(checkpoint: JournalCheckpoint, success: bool, reason: u8) {
+    duration_journal_event(
+        "no_refund_frame",
+        [0; 20],
+        &checkpoint.0.to_be_bytes(),
+        &[u8::from(success), reason],
+    );
+}
+pub(crate) fn duration_journal_refund_root(checkpoint: JournalCheckpoint, delta: i64) {
+    duration_journal_event(
+        "root_refund",
+        [0; 20],
+        &checkpoint.0.to_be_bytes(),
+        &delta.to_be_bytes(),
+    );
+}
+pub(crate) fn duration_journal_refund_frame(
+    begin: bool,
+    depth: usize,
+    checkpoint: JournalCheckpoint,
+    parent_before: i64,
+    child: i64,
+    parent_after: i64,
+    success: bool,
+) {
+    let mut key = (depth as u64).to_be_bytes().to_vec();
+    key.extend_from_slice(&checkpoint.0.to_be_bytes());
+    let mut value = parent_before.to_be_bytes().to_vec();
+    value.extend_from_slice(&child.to_be_bytes());
+    value.extend_from_slice(&parent_after.to_be_bytes());
+    value.push(u8::from(success));
+    duration_journal_event(
+        if begin { "frame_begin" } else { "frame_end" },
+        [0; 20],
+        &key,
+        &value,
+    );
+}
+pub(crate) fn duration_journal_storage_consumer(
+    original: bool,
+    address: JournalAddress,
+    key: ConcreteStorageKey,
+    value: &BigUint,
+) {
+    let key_bytes = key
+        .0
+        .iter()
+        .position(|byte| *byte != 0)
+        .map_or(&key.0[32..], |first| &key.0[first..]);
+    let bytes = if *value == BigUint::default() {
+        Vec::new()
+    } else {
+        value.to_bytes_be()
+    };
+    duration_journal_event(
+        if original {
+            "consume_storage_original"
+        } else {
+            "consume_storage_current"
+        },
+        address,
+        key_bytes,
+        &bytes,
+    );
+}
+pub(crate) struct DurationNativeScope {
+    key: Vec<u8>,
+}
+impl Drop for DurationNativeScope {
+    fn drop(&mut self) {
+        duration_journal_event("native_end", [0; 20], &self.key, &[]);
+    }
+}
+fn duration_native_identity(invocation: &crate::contracts::NativeInvocation) -> Vec<u8> {
+    let mut key = u64::from(invocation.id.transaction.as_u32())
+        .to_be_bytes()
+        .to_vec();
+    key.extend_from_slice(&invocation.id.sequence.to_be_bytes());
+    key.extend_from_slice(&invocation.depth.to_be_bytes());
+    key
+}
+pub(crate) fn duration_journal_native_scope(
+    invocation: &crate::contracts::NativeInvocation,
+) -> DurationNativeScope {
+    let key = duration_native_identity(invocation);
+    duration_journal_event("native_begin", [0; 20], &key, &[]);
+    DurationNativeScope { key }
+}
+pub(crate) fn duration_journal_consumer(begin: bool, depth: usize, pc: u64, opcode: u8) {
+    let mut key = (depth as u64).to_be_bytes().to_vec();
+    key.extend_from_slice(&pc.to_be_bytes());
+    key.push(opcode);
+    duration_journal_event(
+        if begin {
+            "consumer_begin"
+        } else {
+            "consumer_end"
+        },
+        [0; 20],
+        &key,
+        &[],
+    );
+}
+pub(crate) fn duration_journal_refund_opcode(
+    depth: usize,
+    pc: u64,
+    opcode: u8,
+    before: i64,
+    after: i64,
+    step_ok: bool,
+) {
+    let mut key = (depth as u64).to_be_bytes().to_vec();
+    key.extend_from_slice(&pc.to_be_bytes());
+    key.push(opcode);
+    let mut value = before.to_be_bytes().to_vec();
+    value.extend_from_slice(&after.to_be_bytes());
+    value.push(u8::from(step_ok));
+    duration_journal_event("refund_opcode", [0; 20], &key, &value);
+}
+fn duration_journal_log(log: &ExecutionLog) -> Vec<u8> {
+    let mut out = (log.topics.len() as u32).to_be_bytes().to_vec();
+    for topic in &log.topics {
+        out.extend_from_slice(topic);
+    }
+    out.extend_from_slice(&log.data);
+    out
+}
+fn duration_journal_signed(value: &BigInt) -> Vec<u8> {
+    let (sign, bytes) = value.to_bytes_be();
+    let mut out = vec![match sign {
+        num_bigint::Sign::Minus => 0,
+        num_bigint::Sign::NoSign => 1,
+        num_bigint::Sign::Plus => 2,
+    }];
+    if sign != num_bigint::Sign::NoSign {
+        out.extend(bytes);
+    }
+    out
+}
 
 /// Opaque token for the current top frame checkpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +785,8 @@ pub struct JournalCheckpoint(u64);
 /// Failure to read, mutate, settle or flush journal state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JournalError {
+    /// Lifecycle evidence was incomplete or inconsistent.
+    InvalidLifecycleReceipt,
     /// Immutable concrete state could not be read safely.
     State(ConcreteReadError),
     /// A checkpoint was committed/reverted out of stack order.
@@ -212,6 +967,8 @@ pub struct SettledTransaction {
     /// Ordered consensus-native facts, including rolled-back attempts/logs.
     /// These are observations, not a committed-state projection or replay permit.
     pub native_invocations: Vec<ConsensusNativeObservation>,
+    /// Executor-owned lifecycle evidence, sealed at settlement.
+    pub lifecycle_receipt: Option<JournalLifecycleReceipt>,
 }
 
 #[derive(Clone, Debug)]
@@ -228,6 +985,31 @@ struct JournalAccount {
     code: Option<Vec<u8>>,
 }
 
+fn duration_journal_account_facts(account: &JournalAccount) -> Vec<u8> {
+    if !account.exists {
+        return vec![0];
+    }
+    let mut out = vec![1];
+    fn append_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+        out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        out.extend_from_slice(bytes);
+    }
+    append_bytes(&mut out, &account.nonce.to_bytes());
+    append_bytes(&mut out, &duration_journal_signed(account.balance.value()));
+    out.extend_from_slice(&account.code_size.to_be_bytes());
+    for value in [account.code_hash, account.storage_root] {
+        match value {
+            Some(bytes) => {
+                out.push(1);
+                out.extend_from_slice(&bytes);
+            }
+            None => out.push(0),
+        }
+    }
+    out.push(u8::from(account.suicided));
+    out
+}
+
 impl JournalAccount {
     fn empty(&self) -> bool {
         self.nonce.is_zero() && self.balance.value() == &BigInt::default() && self.code_size == 0
@@ -241,6 +1023,172 @@ struct StorageCell {
     dirty: bool,
 }
 
+/// One journal-owned lifecycle fact. Event positions identify frames and creations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum JournalLifecycleEvent {
+    /// A new checkpoint was opened.
+    FrameOpened { parent: Option<usize> },
+    /// An absent account was created in the current frame, if any.
+    AccountCreated {
+        address: JournalAddress,
+        frame: Option<usize>,
+        saved_absent: bool,
+    },
+    /// Native preparation and application have started.
+    NativeStarted {
+        id: crate::contracts::NativeInvocationId,
+    },
+    /// A completed native observation was retained.
+    NativeObserved {
+        id: crate::contracts::NativeInvocationId,
+    },
+    /// All frame checkpoints were closed at transaction settlement.
+    TransactionEnd { observations: usize },
+    /// Creation was undone and its raw overlay was cleared.
+    AccountReset {
+        address: JournalAddress,
+        creation: usize,
+        rollback_frame: usize,
+    },
+}
+
+/// Process-local identity for one receipt-producing execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JournalReceiptToken(u64);
+
+static NEXT_RECEIPT_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Journal-owned lifecycle evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalLifecycleReceipt {
+    token: JournalReceiptToken,
+    events: Vec<JournalLifecycleEvent>,
+}
+
+/// Checks the token saved before execution against a sealed receipt.
+pub fn validate_lifecycle_receipt_token(
+    expected: JournalReceiptToken,
+    receipt: &JournalLifecycleReceipt,
+) -> Result<(), JournalError> {
+    if receipt.token != expected {
+        return Err(JournalError::InvalidLifecycleReceipt);
+    }
+    Ok(())
+}
+
+impl JournalLifecycleReceipt {
+    /// Returns the immutable execution token.
+    pub fn token(&self) -> JournalReceiptToken {
+        self.token
+    }
+
+    /// Returns the process-local receipt identity.
+    pub fn token_value(&self) -> u64 {
+        self.token.0
+    }
+
+    /// Returns the immutable event stream.
+    pub fn events(&self) -> &[JournalLifecycleEvent] {
+        &self.events
+    }
+    fn seal(
+        token: JournalReceiptToken,
+        events: Vec<JournalLifecycleEvent>,
+        observations: &[ConsensusNativeObservation],
+    ) -> Result<Self, JournalError> {
+        let mut frames = BTreeMap::new();
+        let mut creations = BTreeMap::new();
+        let mut consumed = BTreeSet::new();
+        let mut active = None;
+        let mut seen = 0usize;
+        let mut last_id = None;
+        let mut ended = false;
+        for (ordinal, event) in events.iter().enumerate() {
+            if ended {
+                return Err(JournalError::InvalidLifecycleReceipt);
+            }
+            match event {
+                JournalLifecycleEvent::FrameOpened { parent } => {
+                    if active.is_some() {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                    if parent.is_some_and(|id| !frames.contains_key(&id)) {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                    frames.insert(ordinal, *parent);
+                }
+                JournalLifecycleEvent::AccountCreated {
+                    address,
+                    frame,
+                    saved_absent,
+                } => {
+                    if !saved_absent || frame.is_some_and(|id| !frames.contains_key(&id)) {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                    creations.insert(ordinal, (*address, *frame));
+                }
+                JournalLifecycleEvent::AccountReset {
+                    address,
+                    creation,
+                    rollback_frame,
+                } => {
+                    if active.is_some() || !consumed.insert(*creation) {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                    let Some((owner, mut frame)) = creations.get(creation).copied() else {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    };
+                    if owner != *address || !frames.contains_key(rollback_frame) {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                    while let Some(id) = frame {
+                        if id == *rollback_frame {
+                            break;
+                        }
+                        frame = frames.get(&id).copied().flatten();
+                    }
+                    if frame != Some(*rollback_frame) {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                }
+                JournalLifecycleEvent::NativeStarted { id } => {
+                    if active.is_some() || last_id.is_some_and(|previous| previous >= *id) {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                    active = Some(*id);
+                }
+                JournalLifecycleEvent::NativeObserved { id } => {
+                    if active.take() != Some(*id)
+                        || observations
+                            .get(seen)
+                            .is_none_or(|o| o.invocation.id != *id)
+                    {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                    seen += 1;
+                    last_id = Some(*id);
+                }
+                JournalLifecycleEvent::TransactionEnd {
+                    observations: count,
+                } => {
+                    if active.is_some()
+                        || *count != seen
+                        || seen != observations.len()
+                        || ordinal + 1 != events.len()
+                    {
+                        return Err(JournalError::InvalidLifecycleReceipt);
+                    }
+                    ended = true;
+                }
+            }
+        }
+        if !ended {
+            return Err(JournalError::InvalidLifecycleReceipt);
+        }
+        Ok(Self { token, events })
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Undo {
     Suicide {
@@ -251,6 +1199,7 @@ enum Undo {
     Creation {
         address: JournalAddress,
         previous: Option<JournalAccount>,
+        lifecycle_creation: usize,
     },
     Touch {
         address: JournalAddress,
@@ -279,6 +1228,7 @@ struct CheckpointState {
     undo_len: usize,
     logs_len: usize,
     native_invocations_len: usize,
+    lifecycle_frame: usize,
     refund: u64,
 }
 
@@ -295,6 +1245,8 @@ pub struct ExecutionJournal<R> {
     undo: Vec<Undo>,
     checkpoints: Vec<CheckpointState>,
     next_checkpoint: u64,
+    lifecycle_events: Vec<JournalLifecycleEvent>,
+    lifecycle_token: Option<JournalReceiptToken>,
 }
 
 impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
@@ -312,7 +1264,26 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             undo: Vec::new(),
             checkpoints: Vec::new(),
             next_checkpoint: 0,
+            lifecycle_events: Vec::new(),
+            lifecycle_token: None,
         }
+    }
+
+    /// Starts receipt capture and returns the expected identity before execution.
+    pub fn begin_lifecycle_receipt(&mut self) -> Result<JournalReceiptToken, JournalError> {
+        if self.lifecycle_token.is_some() || !self.lifecycle_events.is_empty() {
+            return Err(JournalError::InvalidLifecycleReceipt);
+        }
+        let value = NEXT_RECEIPT_TOKEN
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |value| value.checked_add(1),
+            )
+            .map_err(|_| JournalError::InvalidLifecycleReceipt)?;
+        let token = JournalReceiptToken(value);
+        self.lifecycle_token = Some(token);
+        Ok(token)
     }
 
     /// Borrows the immutable reader fixed for this journal.
@@ -323,12 +1294,21 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
     /// Starts a nested frame checkpoint.
     pub fn checkpoint(&mut self) -> JournalCheckpoint {
         let id = JournalCheckpoint(self.next_checkpoint);
+        let mut saved = (self.logs.len() as u64).to_be_bytes().to_vec();
+        saved.extend_from_slice(&self.refund.to_be_bytes());
+        duration_journal_event("snapshot", [0; 20], &id.0.to_be_bytes(), &saved);
         self.next_checkpoint = self.next_checkpoint.wrapping_add(1);
+        let lifecycle_frame = self.lifecycle_events.len();
+        self.lifecycle_events
+            .push(JournalLifecycleEvent::FrameOpened {
+                parent: self.checkpoints.last().map(|frame| frame.lifecycle_frame),
+            });
         self.checkpoints.push(CheckpointState {
             id,
             undo_len: self.undo.len(),
             logs_len: self.logs.len(),
             native_invocations_len: self.native_invocations.len(),
+            lifecycle_frame,
             refund: self.refund,
         });
         id
@@ -336,7 +1316,15 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 
     /// Commits the current frame while retaining undo records for its parent.
     pub fn commit_checkpoint(&mut self, checkpoint: JournalCheckpoint) -> Result<(), JournalError> {
-        self.take_top(checkpoint)?;
+        let state = self.take_top(checkpoint)?;
+        let mut saved = (state.logs_len as u64).to_be_bytes().to_vec();
+        saved.extend_from_slice(&state.refund.to_be_bytes());
+        duration_journal_event(
+            "checkpoint_commit",
+            [0; 20],
+            &checkpoint.0.to_be_bytes(),
+            &saved,
+        );
         if self.checkpoints.is_empty() {
             self.undo.clear();
         }
@@ -350,9 +1338,46 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
     /// reference account-lifecycle undo callback.
     pub fn revert_checkpoint(&mut self, checkpoint: JournalCheckpoint) -> Result<(), JournalError> {
         let state = self.take_top(checkpoint)?;
+        let mut saved = (state.logs_len as u64).to_be_bytes().to_vec();
+        saved.extend_from_slice(&state.refund.to_be_bytes());
+        duration_journal_event(
+            "checkpoint_revert_begin",
+            [0; 20],
+            &checkpoint.0.to_be_bytes(),
+            &saved,
+        );
         while self.undo.len() > state.undo_len {
             match self.undo.pop().expect("undo length checked") {
-                Undo::Creation { address, previous } => {
+                Undo::Creation {
+                    address,
+                    previous,
+                    lifecycle_creation,
+                } => {
+                    #[cfg(feature = "synthetic-fixtures")]
+                    {
+                        let mut raw_key = [0_u8; 32];
+                        raw_key[31] = 2;
+                        let raw_key = ConcreteStorageKey(raw_key);
+                        if cleanup_diagnostic_observer::target(address, raw_key) {
+                            let before = self
+                                .accounts
+                                .get(&address)
+                                .map(|a| (a.exists, a.suicided, a.mod_count, a.times_touched));
+                            let saved = previous.as_ref().map(|a| a.exists);
+                            cleanup_diagnostic_observer::origin(
+                                "origin_undo_before",
+                                &(
+                                    checkpoint,
+                                    self.checkpoints.len() + 1,
+                                    saved,
+                                    before,
+                                    self.raw.get(&(address, raw_key)),
+                                ),
+                            );
+                        }
+                    }
+                    duration_journal_event("restore_create", address, &[], &[]);
+                    duration_journal_event("delete", address, &[], &[]);
                     match previous {
                         Some(account) => {
                             self.accounts.insert(address, account);
@@ -362,9 +1387,37 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                         }
                     }
                     self.raw.retain(|(owner, _), _| owner != &address);
+                    self.lifecycle_events
+                        .push(JournalLifecycleEvent::AccountReset {
+                            address,
+                            creation: lifecycle_creation,
+                            rollback_frame: state.lifecycle_frame,
+                        });
+                    #[cfg(feature = "synthetic-fixtures")]
+                    {
+                        let mut raw_key = [0_u8; 32];
+                        raw_key[31] = 2;
+                        let raw_key = ConcreteStorageKey(raw_key);
+                        if cleanup_diagnostic_observer::target(address, raw_key) {
+                            let after = self
+                                .accounts
+                                .get(&address)
+                                .map(|a| (a.exists, a.suicided, a.mod_count, a.times_touched));
+                            cleanup_diagnostic_observer::origin(
+                                "origin_undo_after",
+                                &(
+                                    checkpoint,
+                                    self.checkpoints.len() + 1,
+                                    after,
+                                    self.raw.get(&(address, raw_key)),
+                                ),
+                            );
+                        }
+                    }
                     self.ordinary.retain(|(owner, _), _| owner != &address);
                 }
                 Undo::Touch { address } => {
+                    duration_journal_event("restore_touch", address, &[], &[]);
                     let account = self
                         .accounts
                         .get_mut(&address)
@@ -373,6 +1426,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                     account.times_touched = account.times_touched.saturating_sub(1);
                 }
                 Undo::Nonce { address, previous } => {
+                    duration_journal_event("restore_nonce", address, &[], &previous.to_bytes());
                     let account = self
                         .accounts
                         .get_mut(&address)
@@ -381,6 +1435,12 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                     account.mod_count = account.mod_count.saturating_sub(1);
                 }
                 Undo::Balance { address, previous } => {
+                    duration_journal_event(
+                        "restore_balance",
+                        address,
+                        &[],
+                        &duration_journal_signed(previous.value()),
+                    );
                     let account = self
                         .accounts
                         .get_mut(&address)
@@ -397,11 +1457,18 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                         .accounts
                         .get_mut(&address)
                         .expect("suicide account exists");
+                    duration_journal_event(
+                        "restore_suicide",
+                        address,
+                        &[u8::from(previous)],
+                        &duration_journal_signed(balance.value()),
+                    );
                     account.suicided = previous;
                     account.balance = balance;
                     account.mod_count = account.mod_count.saturating_sub(1);
                 }
                 Undo::Code { address } => {
+                    duration_journal_event("restore_code", address, &[], &[]);
                     let account = self
                         .accounts
                         .get_mut(&address)
@@ -416,6 +1483,17 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                     key,
                     previous,
                 } => {
+                    let key_bytes = key
+                        .0
+                        .iter()
+                        .position(|byte| *byte != 0)
+                        .map_or(&key.0[32..], |first| &key.0[first..]);
+                    let previous_bytes = if previous.current == BigUint::default() {
+                        Vec::new()
+                    } else {
+                        previous.current.to_bytes_be()
+                    };
+                    duration_journal_event("restore_storage", address, key_bytes, &previous_bytes);
                     // Go restores the value in StorageDirty, even when the
                     // first write was reverted. Emit it only if this account
                     // later flushes for some surviving mutation.
@@ -430,6 +1508,21 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                 }
             }
         }
+        for i in (state.logs_len..self.logs.len()).rev() {
+            let log = &self.logs[i];
+            duration_journal_event(
+                "log_restore",
+                log.address,
+                &(i as u64).to_be_bytes(),
+                &duration_journal_log(log),
+            );
+        }
+        duration_journal_event(
+            "refund_restore",
+            [0; 20],
+            &self.refund.to_be_bytes(),
+            &state.refund.to_be_bytes(),
+        );
         self.logs.truncate(state.logs_len);
         for invocation in &mut self.native_invocations[state.native_invocations_len..] {
             if invocation.disposition == ConsensusNativeDisposition::Normal {
@@ -437,6 +1530,14 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             }
         }
         self.refund = state.refund;
+        let mut restored = (self.logs.len() as u64).to_be_bytes().to_vec();
+        restored.extend_from_slice(&self.refund.to_be_bytes());
+        duration_journal_event(
+            "checkpoint_revert_end",
+            [0; 20],
+            &checkpoint.0.to_be_bytes(),
+            &restored,
+        );
         if self.checkpoints.is_empty() {
             self.undo.clear();
         }
@@ -445,7 +1546,16 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 
     /// Retains one validated native fact before its caller settles the frame.
     /// Only the consensus adapter can append; stateless helpers have no access.
+    pub(crate) fn begin_native_invocation(&mut self, id: crate::contracts::NativeInvocationId) {
+        self.lifecycle_events
+            .push(JournalLifecycleEvent::NativeStarted { id });
+    }
+
     pub(crate) fn record_native_invocation(&mut self, observation: ConsensusNativeObservation) {
+        self.lifecycle_events
+            .push(JournalLifecycleEvent::NativeObserved {
+                id: observation.invocation.id,
+            });
         self.native_invocations.push(observation);
     }
 
@@ -478,10 +1588,13 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
     pub fn account_code(&self, address: JournalAddress) -> Result<Vec<u8>, JournalError> {
         let account = self.current_account_state(address)?;
         if !account.exists || account.code_size == 0 {
+            duration_journal_event("read_code", address, &[], &[]);
             return Ok(Vec::new());
         }
         if let Some(code) = account.code {
-            return validate_code(address, account.code_hash, account.code_size, code);
+            let result = validate_code(address, account.code_hash, account.code_size, code)?;
+            duration_journal_event("read_code", address, &[], &result);
+            return Ok(result);
         }
         let code_hash = account
             .code_hash
@@ -492,7 +1605,9 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                 return Err(JournalError::ReferencedCodeMissing { address, code_hash });
             }
         };
-        validate_code(address, Some(code_hash), account.code_size, code)
+        let result = validate_code(address, Some(code_hash), account.code_size, code)?;
+        duration_journal_event("read_code", address, &[], &result);
+        Ok(result)
     }
 
     /// Creates/touches an account through the ordinary rollback lane.
@@ -502,6 +1617,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         if !current.empty() {
             return Ok(());
         }
+        duration_journal_event("touch", address, &[], &[]);
         self.undo.push(Undo::Touch { address });
         let account = self
             .accounts
@@ -521,30 +1637,49 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         address: JournalAddress,
         nonce: FinalChainNonce,
     ) -> Result<(), JournalError> {
-        self.ensure_account(address)?;
-        if self
-            .accounts
-            .get(&address)
-            .expect("account was ensured")
-            .nonce
-            > nonce
-        {
-            return Err(JournalError::NonceDecrease);
+        let helper_argument = duration_journal_is_armed().then(|| {
+            duration_journal_signed(&BigInt::from_bytes_be(
+                num_bigint::Sign::Plus,
+                &nonce.to_bytes(),
+            ))
+        });
+        if let Some(argument) = &helper_argument {
+            duration_journal_event("helper_begin", address, &[3], argument);
+            duration_journal_event("helper_operation", address, &[3], argument);
         }
-        let previous = self
-            .accounts
-            .get(&address)
-            .expect("account was ensured")
-            .nonce
-            .clone();
-        self.undo.push(Undo::Nonce { address, previous });
-        let account = self
-            .accounts
-            .get_mut(&address)
-            .expect("account was touched");
-        account.nonce = nonce;
-        account.mod_count = account.mod_count.saturating_add(1);
-        Ok(())
+        let result = (|| -> Result<(), JournalError> {
+            self.ensure_account(address)?;
+            if self
+                .accounts
+                .get(&address)
+                .expect("account was ensured")
+                .nonce
+                > nonce
+            {
+                return Err(JournalError::NonceDecrease);
+            }
+            let previous = self
+                .accounts
+                .get(&address)
+                .expect("account was ensured")
+                .nonce
+                .clone();
+            duration_journal_event("nonce", address, &[], &nonce.to_bytes());
+            self.undo.push(Undo::Nonce { address, previous });
+            let account = self
+                .accounts
+                .get_mut(&address)
+                .expect("account was touched");
+            account.nonce = nonce;
+            account.mod_count = account.mod_count.saturating_add(1);
+            Ok(())
+        })();
+        if let Some(argument) = &helper_argument {
+            let mut terminal = argument.clone();
+            terminal.push(u8::from(result.is_ok()));
+            duration_journal_event("helper_end", address, &[3], &terminal);
+        }
+        result
     }
 
     /// Replaces a signed balance through the ordinary rollback lane.
@@ -560,6 +1695,12 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             .expect("account was ensured")
             .balance
             .clone();
+        duration_journal_event(
+            "balance",
+            address,
+            &[],
+            &duration_journal_signed(balance.value()),
+        );
         self.undo.push(Undo::Balance { address, previous });
         let account = self
             .accounts
@@ -579,15 +1720,29 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         address: JournalAddress,
         amount: &BigUint,
     ) -> Result<(), JournalError> {
-        self.ensure_account(address)?;
-        if amount == &BigUint::default() {
-            return Ok(());
+        let helper_argument = duration_journal_is_armed()
+            .then(|| duration_journal_signed(&BigInt::from(amount.clone())));
+        if let Some(argument) = &helper_argument {
+            duration_journal_event("helper_begin", address, &[2], argument);
+            duration_journal_event("helper_operation", address, &[2], argument);
         }
-        let current = self.account(address)?.balance;
-        self.set_balance(
-            address,
-            ExecutionBalance::new(current.value().clone() - BigInt::from(amount.clone())),
-        )
+        let result = (|| -> Result<(), JournalError> {
+            self.ensure_account(address)?;
+            if amount == &BigUint::default() {
+                return Ok(());
+            }
+            let current = self.account(address)?.balance;
+            self.set_balance(
+                address,
+                ExecutionBalance::new(current.value().clone() - BigInt::from(amount.clone())),
+            )
+        })();
+        if let Some(argument) = &helper_argument {
+            let mut terminal = argument.clone();
+            terminal.push(u8::from(result.is_ok()));
+            duration_journal_event("helper_end", address, &[2], &terminal);
+        }
+        result
     }
 
     /// Adds a non-negative amount with the reference's zero-amount touch behavior.
@@ -596,15 +1751,29 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         address: JournalAddress,
         amount: &BigUint,
     ) -> Result<(), JournalError> {
-        if amount == &BigUint::default() {
-            return self.touch_account(address);
+        let helper_argument = duration_journal_is_armed()
+            .then(|| duration_journal_signed(&BigInt::from(amount.clone())));
+        if let Some(argument) = &helper_argument {
+            duration_journal_event("helper_begin", address, &[1], argument);
+            duration_journal_event("helper_operation", address, &[1], argument);
         }
-        self.ensure_account(address)?;
-        let current = self.account(address)?.balance;
-        self.set_balance(
-            address,
-            ExecutionBalance::new(current.value().clone() + BigInt::from(amount.clone())),
-        )
+        let result = (|| -> Result<(), JournalError> {
+            if amount == &BigUint::default() {
+                return self.touch_account(address);
+            }
+            self.ensure_account(address)?;
+            let current = self.account(address)?.balance;
+            self.set_balance(
+                address,
+                ExecutionBalance::new(current.value().clone() + BigInt::from(amount.clone())),
+            )
+        })();
+        if let Some(argument) = &helper_argument {
+            let mut terminal = argument.clone();
+            terminal.push(u8::from(result.is_ok()));
+            duration_journal_event("helper_end", address, &[1], &terminal);
+        }
+        result
     }
 
     /// Applies the historical account suicide after opcode gas admission.
@@ -637,6 +1806,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             return Ok(());
         }
         let account = self.accounts.get_mut(&address).expect("source was loaded");
+        duration_journal_event("suicide", address, &beneficiary, &[]);
         self.undo.push(Undo::Suicide {
             address,
             previous: account.suicided,
@@ -658,6 +1828,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         if code.is_empty() {
             return Ok(());
         }
+        duration_journal_event("code", address, &[], &code);
         self.undo.push(Undo::Code { address });
         let account = self
             .accounts
@@ -746,6 +1917,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                     self.set_nonce(*address, replacement.clone())?;
                 }
             }
+            duration_native_account_event("applied_account", mutation);
         }
         Ok(())
     }
@@ -756,14 +1928,32 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         address: JournalAddress,
         key: ConcreteStorageKey,
     ) -> Result<(BigUint, BigUint), JournalError> {
-        if !self.current_account(address)?.exists {
-            return Ok((BigUint::default(), BigUint::default()));
-        }
-        if let Some(cell) = self.ordinary.get(&(address, key)) {
-            return Ok((cell.original.clone(), cell.current.clone()));
-        }
-        let value = self.committed_ordinary_value(address, key)?;
-        Ok((value.clone(), value))
+        let result = if !self.current_account(address)?.exists {
+            (BigUint::default(), BigUint::default())
+        } else if let Some(cell) = self.ordinary.get(&(address, key)) {
+            (cell.original.clone(), cell.current.clone())
+        } else {
+            let value = self.committed_ordinary_value(address, key)?;
+            (value.clone(), value)
+        };
+        let key_bytes = key
+            .0
+            .iter()
+            .position(|byte| *byte != 0)
+            .map_or(&key.0[32..], |first| &key.0[first..]);
+        let value = if result.1 == BigUint::default() {
+            Vec::new()
+        } else {
+            result.1.to_bytes_be()
+        };
+        let original = if result.0 == BigUint::default() {
+            Vec::new()
+        } else {
+            result.0.to_bytes_be()
+        };
+        duration_journal_event("read_storage_original", address, key_bytes, &original);
+        duration_journal_event("read_storage_current", address, key_bytes, &value);
+        Ok(result)
     }
 
     /// Replaces current ordinary storage while retaining its first-read original value.
@@ -799,6 +1989,17 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             .get_mut(&address)
             .expect("account was ensured");
         account.mod_count = account.mod_count.saturating_add(1);
+        let key_bytes = key
+            .0
+            .iter()
+            .position(|byte| *byte != 0)
+            .map_or(&key.0[32..], |first| &key.0[first..]);
+        let value_bytes = if value == BigUint::default() {
+            Vec::new()
+        } else {
+            value.to_bytes_be()
+        };
+        duration_journal_event("storage", address, key_bytes, &value_bytes);
         self.undo.push(Undo::Storage {
             address,
             key,
@@ -816,18 +2017,72 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         address: JournalAddress,
         key: ConcreteStorageKey,
     ) -> Result<ConcreteRead<Vec<u8>>, JournalError> {
-        if !self.current_account(address)?.exists {
+        let result = self.duration_raw_storage_inner(address, key);
+        if let Ok(read) = &result {
+            match read {
+                ConcreteRead::Absent => {
+                    duration_journal_event("read_raw_absent", address, &key.0, &[])
+                }
+                ConcreteRead::Tombstone => {
+                    duration_journal_event("read_raw_tombstone", address, &key.0, &[])
+                }
+                ConcreteRead::Present(value) => {
+                    duration_journal_event("read_raw_present", address, &key.0, value)
+                }
+            }
+        }
+        result
+    }
+
+    fn duration_raw_storage_inner(
+        &self,
+        address: JournalAddress,
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, JournalError> {
+        let account = self.current_account(address);
+        #[cfg(feature = "synthetic-fixtures")]
+        if cleanup_diagnostic_observer::target(address, key)
+            && let Err(error) = &account
+        {
+            cleanup_diagnostic_observer::error("account_error", error);
+        }
+        if !account?.exists {
+            #[cfg(feature = "synthetic-fixtures")]
+            if cleanup_diagnostic_observer::target(address, key) {
+                if cleanup_diagnostic_observer::active() {
+                    cleanup_diagnostic_observer::absent_account_raw(
+                        self.accounts.contains_key(&address),
+                        self.raw.get(&(address, key)),
+                    );
+                }
+                cleanup_diagnostic_observer::value("account_absent", &ConcreteRead::Absent);
+            }
             return Ok(ConcreteRead::Absent);
         }
         if let Some(operation) = self.raw.get(&(address, key)) {
-            return Ok(match operation {
+            let value = match operation {
                 NativeRawOperation::Put(value) => ConcreteRead::Present(value.as_bytes().to_vec()),
                 NativeRawOperation::Delete => ConcreteRead::Present(Vec::new()),
-            });
+            };
+            #[cfg(feature = "synthetic-fixtures")]
+            if cleanup_diagnostic_observer::target(address, key) {
+                let branch = match operation {
+                    NativeRawOperation::Put(_) => "staged_put",
+                    NativeRawOperation::Delete => "staged_delete",
+                };
+                cleanup_diagnostic_observer::value(branch, &value);
+            }
+            return Ok(value);
         }
-        self.reader
-            .storage(address, key)
-            .map_err(JournalError::from)
+        let result = self.reader.storage(address, key);
+        #[cfg(feature = "synthetic-fixtures")]
+        if cleanup_diagnostic_observer::target(address, key) {
+            match &result {
+                Ok(value) => cleanup_diagnostic_observer::value("backing", value),
+                Err(error) => cleanup_diagnostic_observer::error("backing_error", error),
+            }
+        }
+        result.map_err(JournalError::from)
     }
 
     /// Applies an irreversible native raw operation for an existing account.
@@ -838,6 +2093,23 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         operation: NativeRawOperation,
     ) -> Result<(), JournalError> {
         self.ensure_account(address)?;
+        #[cfg(feature = "synthetic-fixtures")]
+        if cleanup_diagnostic_observer::target(address, key) {
+            cleanup_diagnostic_observer::origin(
+                "origin_set",
+                &(
+                    self.checkpoints.last().map(|c| c.id),
+                    self.checkpoints.len(),
+                    &operation,
+                ),
+            );
+        }
+        match &operation {
+            NativeRawOperation::Put(value) => {
+                duration_journal_event("raw_write", address, &key.0, value.as_bytes())
+            }
+            NativeRawOperation::Delete => duration_journal_event("raw_write", address, &key.0, &[]),
+        }
         self.raw.insert((address, key), operation);
         let account = self
             .accounts
@@ -871,6 +2143,12 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 
     /// Appends a log through the ordinary frame rollback lane.
     pub fn push_log(&mut self, log: ExecutionLog) {
+        duration_journal_event(
+            "log_add",
+            log.address,
+            &(self.logs.len() as u64).to_be_bytes(),
+            &duration_journal_log(&log),
+        );
         self.logs.push(log);
     }
 
@@ -886,10 +2164,23 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 
     /// Adds to the refund counter with checked arithmetic.
     pub fn add_refund(&mut self, refund: u64) -> Result<(), JournalError> {
-        self.refund = self
-            .refund
-            .checked_add(refund)
-            .ok_or(JournalError::RefundOverflow)?;
+        let before = self.refund;
+        let Some(after) = before.checked_add(refund) else {
+            duration_journal_event(
+                "refund_add_failed",
+                [0; 20],
+                &before.to_be_bytes(),
+                &refund.to_be_bytes(),
+            );
+            return Err(JournalError::RefundOverflow);
+        };
+        duration_journal_event(
+            "refund_add",
+            [0; 20],
+            &before.to_be_bytes(),
+            &refund.to_be_bytes(),
+        );
+        self.refund = after;
         Ok(())
     }
 
@@ -900,11 +2191,36 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
     /// Underflow/overflow leaves the counter unchanged. Frame checkpoints still
     /// own rollback, and ordinary transaction settlement still resets it.
     pub(crate) fn apply_refund_delta(&mut self, delta: i64) -> Result<(), JournalError> {
-        self.refund = self.refund.checked_add_signed(delta).ok_or(if delta < 0 {
-            JournalError::RefundUnderflow
-        } else {
-            JournalError::RefundOverflow
-        })?;
+        let before = self.refund;
+        let amount = delta.unsigned_abs();
+        let Some(after) = before.checked_add_signed(delta) else {
+            duration_journal_event(
+                if delta < 0 {
+                    "refund_sub_failed"
+                } else {
+                    "refund_add_failed"
+                },
+                [0; 20],
+                &before.to_be_bytes(),
+                &amount.to_be_bytes(),
+            );
+            return Err(if delta < 0 {
+                JournalError::RefundUnderflow
+            } else {
+                JournalError::RefundOverflow
+            });
+        };
+        duration_journal_event(
+            if delta < 0 {
+                "refund_sub"
+            } else {
+                "refund_add"
+            },
+            [0; 20],
+            &before.to_be_bytes(),
+            &amount.to_be_bytes(),
+        );
+        self.refund = after;
         Ok(())
     }
 
@@ -922,11 +2238,24 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 
         let mut writes = JournalWritePlan::default();
         let mut updated = BTreeSet::new();
+        duration_journal_event(
+            "settlement_begin",
+            [0; 20],
+            &(self.accounts.len() as u64).to_be_bytes(),
+            &[],
+        );
         for (address, account) in &self.accounts {
             if !account.exists {
                 continue;
             }
+            duration_journal_event(
+                "settle_before",
+                *address,
+                &[],
+                &duration_journal_account_facts(account),
+            );
             if account.mod_count != 0 && (account.suicided || account.empty()) {
+                duration_journal_event("settle_delete", *address, &[], &[]);
                 writes.accounts.push(JournalAccountWrite {
                     address: *address,
                     operation: JournalAccountOperation::Delete,
@@ -954,6 +2283,8 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             }
         }
 
+        duration_journal_event("settlement_end", [0; 20], &[], &[]);
+
         for ((address, key), cell) in &self.ordinary {
             if cell.dirty && updated.contains(address) {
                 writes.ordinary_storage.push(JournalStorageWrite {
@@ -973,11 +2304,49 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             }
         }
 
+        #[cfg(feature = "synthetic-fixtures")]
+        {
+            let mut address = [0_u8; 20];
+            address[19] = 0xee;
+            let mut key = [0_u8; 32];
+            key[31] = 2;
+            let key = ConcreteStorageKey(key);
+            let account = self.accounts.get(&address);
+            let facts = account.map(|a| {
+                (
+                    a.exists,
+                    a.suicided,
+                    a.empty(),
+                    a.mod_count,
+                    a.times_touched,
+                )
+            });
+            cleanup_diagnostic_observer::origin(
+                "origin_settlement",
+                &(
+                    facts,
+                    updated.contains(&address),
+                    self.raw.get(&(address, key)),
+                ),
+            );
+        }
+
+        self.lifecycle_events
+            .push(JournalLifecycleEvent::TransactionEnd {
+                observations: self.native_invocations.len(),
+            });
+        let events = std::mem::take(&mut self.lifecycle_events);
+        let lifecycle_receipt = self
+            .lifecycle_token
+            .take()
+            .map(|token| JournalLifecycleReceipt::seal(token, events, &self.native_invocations))
+            .transpose()?;
         let settled = SettledTransaction {
             logs: std::mem::take(&mut self.logs),
             refund: std::mem::take(&mut self.refund),
             writes,
             native_invocations: std::mem::take(&mut self.native_invocations),
+            lifecycle_receipt,
         };
         self.accounts.clear();
         self.ordinary.clear();
@@ -1013,9 +2382,21 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 
     fn load_account(&mut self, address: JournalAddress) -> Result<JournalAccount, JournalError> {
         if let Some(account) = self.accounts.get(&address) {
+            duration_journal_event(
+                "read_account",
+                address,
+                &[],
+                &duration_journal_account_facts(account),
+            );
             return Ok(account.clone());
         }
         let account = read_account(self.reader.account(address)?);
+        duration_journal_event(
+            "read_account",
+            address,
+            &[],
+            &duration_journal_account_facts(&account),
+        );
         self.accounts.insert(address, account.clone());
         Ok(account)
     }
@@ -1026,7 +2407,37 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             return Ok(());
         }
         let previous = self.accounts.get(&address).cloned();
-        self.undo.push(Undo::Creation { address, previous });
+        #[cfg(feature = "synthetic-fixtures")]
+        {
+            let mut raw_key = [0_u8; 32];
+            raw_key[31] = 2;
+            let raw_key = ConcreteStorageKey(raw_key);
+            if cleanup_diagnostic_observer::target(address, raw_key) {
+                cleanup_diagnostic_observer::origin(
+                    "origin_creation",
+                    &(
+                        self.checkpoints.last().map(|c| c.id),
+                        self.checkpoints.len(),
+                        self.undo.len(),
+                        previous.as_ref().map(|a| a.exists),
+                        self.raw.get(&(address, raw_key)),
+                    ),
+                );
+            }
+        }
+        let lifecycle_creation = self.lifecycle_events.len();
+        self.lifecycle_events
+            .push(JournalLifecycleEvent::AccountCreated {
+                address,
+                frame: self.checkpoints.last().map(|frame| frame.lifecycle_frame),
+                saved_absent: !current.exists,
+            });
+        duration_journal_event("create", address, &[], &[]);
+        self.undo.push(Undo::Creation {
+            address,
+            previous,
+            lifecycle_creation,
+        });
         self.accounts.insert(
             address,
             JournalAccount {
@@ -1079,10 +2490,17 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         &self,
         address: JournalAddress,
     ) -> Result<JournalAccount, ConcreteReadError> {
-        Ok(match self.accounts.get(&address) {
+        let account = match self.accounts.get(&address) {
             Some(account) => account.clone(),
             None => read_account(self.reader.account(address)?),
-        })
+        };
+        duration_journal_event(
+            "read_account",
+            address,
+            &[],
+            &duration_journal_account_facts(&account),
+        );
+        Ok(account)
     }
 }
 

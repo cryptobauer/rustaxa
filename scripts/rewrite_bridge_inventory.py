@@ -11,6 +11,7 @@ functions do not establish a production bridge caller.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from pathlib import Path
 from typing import Iterable
@@ -192,17 +193,38 @@ def ffi_functions(module: str) -> list[tuple[str, str]]:
     return records
 
 
+def safe_scan_path(path: Path) -> None:
+    if "AI.md" in path.parts or ".." in path.parts:
+        raise ValueError("excluded scan path")
+    current = Path(path.anchor) if path.is_absolute() else Path(".")
+    for part in path.parts:
+        if part in (path.anchor, "."):
+            continue
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"symlink scan path is not supported: {current}")
+
+
 def cpp_files(roots: Iterable[Path]) -> Iterable[Path]:
     """Yield source/header files below roots in stable path order."""
 
     files: set[Path] = set()
     for root in roots:
+        if "AI.md" in root.parts:
+            continue
+        safe_scan_path(root)
         if not root.exists():
             continue
         if root.is_file() and root.suffix in CPP_SUFFIXES:
             files.add(root)
         elif root.is_dir():
-            files.update(path for path in root.rglob("*") if path.suffix in CPP_SUFFIXES)
+            for directory, subdirs, names in os.walk(root, followlinks=False):
+                subdirs[:] = [name for name in subdirs if name != "AI.md"]
+                for name in (*subdirs, *names):
+                    if name != "AI.md" and Path(name).suffix in CPP_SUFFIXES:
+                        candidate = Path(directory) / name
+                        safe_scan_path(candidate)
+                        files.add(candidate)
     yield from sorted(files)
 
 
@@ -350,6 +372,12 @@ def main() -> None:
     parser.add_argument("--ffi", type=Path)
     parser.add_argument("paths", nargs="+", type=Path)
     args = parser.parse_args()
+    if any("AI.md" in path.parts for path in args.paths) or (
+        args.ffi is not None and "AI.md" in args.ffi.parts
+    ):
+        parser.error("excluded path component")
+    for path in (*args.paths, *((args.ffi,) if args.ffi is not None else ())):
+        safe_scan_path(path)
 
     if args.mode == "rust-modules":
         if len(args.paths) != 1:

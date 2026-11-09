@@ -175,6 +175,15 @@ impl Case {
     /// Explicit finish is called only after the complete scoped case returned
     /// successfully and every owner/reader/recovery dependency has closed.
     pub(super) fn finish(self, comparisons: Value, retain: bool) -> Result<()> {
+        self.finish_with_scope(comparisons, retain, None)
+    }
+
+    fn finish_with_scope(
+        self,
+        comparisons: Value,
+        retain: bool,
+        qualification: Option<bool>,
+    ) -> Result<()> {
         ensure!(
             self.dependencies.get() == 0 && !comparisons.is_null(),
             "unfinished dependency or missing comparisons"
@@ -195,7 +204,7 @@ impl Case {
             "scratch containment changed"
         );
         let before = bytes(&self.root)?;
-        let witness = serde_json::json!({"schema":1,"root":self.root,"inode":self.inode,"launch":self.launch["identity"],"source_manifest":self.launch["source_manifest"],"input":self.input,"comparisons_completed":comparisons,"all_handles_and_dependencies_closed":true,"bytes":before,"disposition":if retain {"retain"}else{"dispose"}});
+        let witness = serde_json::json!({"schema":1,"root":self.root,"inode":self.inode,"launch":self.launch["identity"],"source_manifest":self.launch["source_manifest"],"input":self.input,"comparisons_completed":comparisons,"caller_qualification_flag":qualification,"all_handles_and_dependencies_closed":true,"bytes":before,"disposition":if retain {"retain"}else{"dispose"}});
         let encoded = serde_json::to_vec(&witness)?;
         let hash = revm::primitives::keccak256(&encoded);
         let witness_path = self
@@ -241,11 +250,14 @@ pub(super) fn created(case: &mut Option<Case>) -> Result<()> {
     }
     Ok(())
 }
+fn retention_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("qualification"))
+}
+
 pub(super) fn finish(case: Option<Case>, comparisons: Value, qualification: bool) -> Result<()> {
     if let Some(case) = case {
-        let retain =
-            qualification && std::env::var("RUSTAXA_ERA_RETAIN").as_deref() == Ok("qualification");
-        case.finish(comparisons, retain)?;
+        let retain = retention_requested(std::env::var_os("RUSTAXA_ERA_RETAIN").as_deref());
+        case.finish_with_scope(comparisons, retain, Some(qualification))?;
     }
     Ok(())
 }
@@ -397,4 +409,96 @@ fn retention_rejects_unsafe_completion_and_preserves_panics() -> Result<()> {
         &serde_json::json!({"launch":launch["identity"],"all_ownership_completion_and_witness_negative_assertions_passed":true,"unsafe_roots_retained":true}),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod retention_scope_controls {
+    use super::*;
+
+    fn case(parent: &Path) -> Result<Case> {
+        std::fs::create_dir(parent)?;
+        let root = parent.join("case");
+        std::fs::create_dir(&root)?;
+        let meta = std::fs::metadata(parent)?;
+        let mut case = Case {
+            root,
+            parent: parent.to_owned(),
+            ledger: parent.join("ledger.jsonl"),
+            launch: serde_json::json!({"identity":"control","source_manifest":"control",
+                "resources":{"run":parent,"corpus":parent,"baseline_actual_bytes":0,
+                    "prior_charged_bytes":0,"retained_live_cap_bytes":u64::MAX}}),
+            input: serde_json::json!({"scenario":"retention-control"}),
+            inode: None,
+            parent_inode: (meta.dev(), meta.ino()),
+            dependencies: Default::default(),
+        };
+        case.created()?;
+        Ok(case)
+    }
+
+    #[test]
+    fn retention_request_is_separate_from_qualification_scope() -> Result<()> {
+        use std::ffi::OsStr;
+        ensure!(
+            retention_requested(Some(OsStr::new("qualification"))),
+            "retain request missing"
+        );
+        ensure!(
+            !retention_requested(None) && !retention_requested(Some(OsStr::new("other"))),
+            "unexpected retain request"
+        );
+        let base = std::env::var_os("RUN_ARTIFACT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let parent = base.join(format!(
+            "retention-scope-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir(&parent)?;
+        let retained = case(&parent.join("retain"))?;
+        let retained_root = retained.root.clone();
+        std::fs::write(retained_root.join("owned-data"), b"actual control bytes")?;
+        retained.finish_with_scope(
+            serde_json::json!({"checks":"recovery only"}),
+            true,
+            Some(false),
+        )?;
+        ensure!(
+            std::fs::read(retained_root.join("owned-data"))? == b"actual control bytes",
+            "retained data missing"
+        );
+        let witnesses = std::fs::read_dir(parent.join("retain"))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("case-"))
+            .collect::<Vec<_>>();
+        ensure!(witnesses.len() == 1, "retention witness count");
+        let witness: Value = serde_json::from_slice(&std::fs::read(witnesses[0].path())?)?;
+        ensure!(
+            witness["caller_qualification_flag"] == false && witness["disposition"] == "retain",
+            "scope and disposition conflated"
+        );
+        let disposed = case(&parent.join("dispose"))?;
+        let disposed_root = disposed.root.clone();
+        disposed.finish_with_scope(serde_json::json!({"checks":"complete"}), false, Some(true))?;
+        ensure!(!disposed_root.exists(), "unrequested retention");
+        let unfinished = case(&parent.join("unfinished"))?;
+        let unfinished_root = unfinished.root.clone();
+        let dependency = unfinished.dependent();
+        ensure!(
+            unfinished
+                .finish_with_scope(
+                    serde_json::json!({"checks":"incomplete"}),
+                    false,
+                    Some(false)
+                )
+                .is_err(),
+            "open dependency accepted"
+        );
+        drop(dependency);
+        ensure!(unfinished_root.exists(), "unfinished case removed");
+        Ok(())
+    }
 }

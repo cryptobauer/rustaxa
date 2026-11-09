@@ -22,10 +22,15 @@
 use super::account::{DposAccountPort, StagedDposAccountPort};
 use super::raw::FinalChainNativeRawTrace;
 use super::*;
+use crate::native_projection_context::{
+    FinalChainNativeRewardsBoundary, FinalChainNativeRewardsPhase,
+};
 
 /// Complete output of one bound session's terminal rewards/end-block phase.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FinalChainNativeRewardsOutcome {
+    /// Actual terminal phase boundaries, in execution order.
+    pub boundaries: Vec<FinalChainNativeRewardsBoundary>,
     /// Minted reward encoded into the FinalChain block header.
     pub total_reward: DposTokenAmount,
     /// Ordered ordinary custody effects for the execution journal.
@@ -69,7 +74,17 @@ impl FinalChainNativeSession<'_> {
         state: &dyn FinalChainNativeStateRead,
     ) -> std::result::Result<FinalChainNativeRewardsOutcome, FinalChainNativeSessionError> {
         let result = self.finish_rewards_inner(plan, state);
-        match result {
+        #[cfg(feature = "synthetic-fixtures")]
+        if self.pending_period.as_u64() == 5 {
+            cleanup_diagnostic::record(format_args!(
+                "finish_before pending={:?} outcome={} aborted={} finished={}",
+                self.pending_period,
+                if result.is_ok() { "OK" } else { "ERROR" },
+                self.aborted,
+                self.finished_rewards
+            ));
+        }
+        let returned = match result {
             Ok(outcome) => {
                 self.finished_rewards = true;
                 self.dpos_state = outcome.dpos_snapshot.clone();
@@ -86,7 +101,18 @@ impl FinalChainNativeSession<'_> {
                 self.aborted = true;
                 Err(error)
             }
+        };
+        #[cfg(feature = "synthetic-fixtures")]
+        if self.pending_period.as_u64() == 5 {
+            cleanup_diagnostic::record(format_args!(
+                "finish_after pending={:?} outcome={} aborted={} finished={} publication=NOT_OBSERVED",
+                self.pending_period,
+                if returned.is_ok() { "OK" } else { "ERROR" },
+                self.aborted,
+                self.finished_rewards
+            ));
         }
+        returned
     }
 
     fn finish_rewards_inner(
@@ -137,6 +163,7 @@ impl FinalChainNativeSession<'_> {
         let rewards_enabled = self.final_chain.rewards_config.yield_percentage != 0;
 
         let mut trace = FinalChainNativeRawTrace::new(state);
+        trace.reward_phase(0, self.pending_period.as_u64(), 0, true);
         self.validate_deferred_origins(&mut trace)?;
         let mut next = self.dpos_state.clone();
         let mut accounts = if !rewards_enabled || distributions.is_empty() {
@@ -147,15 +174,48 @@ impl FinalChainNativeSession<'_> {
                 state.account(DPOS_CONTRACT_ADDRESS)?,
             )])
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
+            .with_observer(state)
         };
 
+        trace.reward_phase(0, self.pending_period.as_u64(), 0, false);
         let planned = self
             .final_chain
             .plan_minted_rewards(self.pending_period, &distributions, &self.dpos_state)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        if trace.mutation_count() != 0 || accounts.mutation_count() != 0 {
+            return Err(domain("reward preparation emitted mutations"));
+        }
+        let mut boundaries = Vec::new();
         let reconstruction = if rewards_enabled {
-            self.reconstruct_rewards(&distributions, &mut next, &mut trace, &mut accounts)?
+            self.reconstruct_rewards(
+                &distributions,
+                &mut next,
+                &mut trace,
+                &mut accounts,
+                &mut boundaries,
+            )?
         } else {
+            let sources = distributions
+                .iter()
+                .map(|stats| stats.period)
+                .collect::<Vec<_>>();
+            state.observe_stage(FinalChainNativeStageEvent::RewardDisabled {
+                period: self.pending_period.as_u64(),
+                sources: &sources,
+            });
+            for (ordinal, stats) in distributions.iter().enumerate() {
+                boundaries.push(FinalChainNativeRewardsBoundary {
+                    phase: FinalChainNativeRewardsPhase::Distribution {
+                        source_period: stats.period,
+                        ordinal,
+                        executed: false,
+                    },
+                    raw_start: trace.mutation_count(),
+                    raw_end: trace.mutation_count(),
+                    ordinary_start: accounts.mutation_count(),
+                    ordinary_end: accounts.mutation_count(),
+                });
+            }
             DposTokenAmount::zero()
         };
         if reconstruction != planned.total_minted_reward {
@@ -170,9 +230,31 @@ impl FinalChainNativeSession<'_> {
                     .to_owned(),
             ));
         }
+        let raw_start = trace.mutation_count();
+        let ordinary_start = accounts.mutation_count();
+        trace.reward_phase(2, self.pending_period.as_u64(), 0, true);
         self.serialize_deferred_end_block(&next, &mut trace)?;
+        trace.reward_phase(2, self.pending_period.as_u64(), 0, false);
+        boundaries.push(FinalChainNativeRewardsBoundary {
+            phase: FinalChainNativeRewardsPhase::DeferredEndBlock,
+            raw_start,
+            raw_end: trace.mutation_count(),
+            ordinary_start,
+            ordinary_end: accounts.mutation_count(),
+        });
+        let raw_start = trace.mutation_count();
+        let ordinary_start = accounts.mutation_count();
+        trace.reward_phase(3, self.pending_period.as_u64(), 0, true);
         let (cleanup_ran, scheduler_successor) =
             self.serialize_slashing_cleanup(&mut next, &mut trace)?;
+        trace.reward_phase(3, self.pending_period.as_u64(), 0, false);
+        boundaries.push(FinalChainNativeRewardsBoundary {
+            phase: FinalChainNativeRewardsPhase::SlashingCleanup,
+            raw_start,
+            raw_end: trace.mutation_count(),
+            ordinary_start,
+            ordinary_end: accounts.mutation_count(),
+        });
 
         let mut expected = self.dpos_state.clone();
         let mut expected_rewards = planned.dpos_rewards;
@@ -199,6 +281,7 @@ impl FinalChainNativeSession<'_> {
         }
 
         Ok(FinalChainNativeRewardsOutcome {
+            boundaries,
             total_reward: reconstruction,
             account_mutations: accounts.into_mutations(),
             raw_mutations: trace.finish(),
@@ -213,6 +296,7 @@ impl FinalChainNativeSession<'_> {
         snapshot: &mut DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
         accounts: &mut StagedDposAccountPort,
+        boundaries: &mut Vec<FinalChainNativeRewardsBoundary>,
     ) -> std::result::Result<DposTokenAmount, FinalChainNativeSessionError> {
         let mut total_reward = DposTokenAmount::zero();
         let mut dynamic_total_supply = snapshot
@@ -220,7 +304,15 @@ impl FinalChainNativeSession<'_> {
             .total_supply()
             .map(StoredDposTokenAmount::amount);
 
-        for stats in distributions {
+        for (ordinal, stats) in distributions.iter().enumerate() {
+            let raw_start = trace.mutation_count();
+            let ordinary_start = accounts.mutation_count();
+            trace.reward_phase(
+                1,
+                stats.period,
+                u64::try_from(ordinal).map_err(|_| domain("reward ordinal overflow"))?,
+                true,
+            );
             let reward_context = self
                 .final_chain
                 .minted_block_reward(self.pending_period, stats, snapshot, dynamic_total_supply)
@@ -264,6 +356,23 @@ impl FinalChainNativeSession<'_> {
             } else if self.pending_period >= self.final_chain.rewards_config.aspen_part_one_period {
                 self.serialize_legacy_minted_distribution(snapshot, minted, trace)?;
             }
+            trace.reward_phase(
+                1,
+                stats.period,
+                u64::try_from(ordinal).map_err(|_| domain("reward ordinal overflow"))?,
+                false,
+            );
+            boundaries.push(FinalChainNativeRewardsBoundary {
+                phase: FinalChainNativeRewardsPhase::Distribution {
+                    source_period: stats.period,
+                    ordinal,
+                    executed: true,
+                },
+                raw_start,
+                raw_end: trace.mutation_count(),
+                ordinary_start,
+                ordinary_end: accounts.mutation_count(),
+            });
         }
         Ok(total_reward)
     }
@@ -336,7 +445,15 @@ impl FinalChainNativeSession<'_> {
                 .ok_or_else(|| domain("total minted reward overflow"))?;
         }
 
-        for (validator, validator_stats) in &stats.validators_stats {
+        trace.reward_map(true, true, [0; 20], 0);
+        for (ordinal, (validator, validator_stats)) in stats.validators_stats.iter().enumerate() {
+            let ordinal =
+                u64::try_from(ordinal).map_err(|_| domain("reward validator ordinal overflow"))?;
+            trace.reward_map(true, false, *validator, ordinal);
+            trace.reward_fee_source(
+                *validator,
+                validator_stats.fees_rewards.as_u256().to_big_endian(),
+            );
             let mut validator_reward = U256::zero();
             if validator_stats.dag_blocks_count > 0 {
                 if stats.total_dag_blocks_count == 0 {
@@ -362,7 +479,9 @@ impl FinalChainNativeSession<'_> {
                     )
                     .ok_or_else(|| domain("validator reward overflow"))?;
             }
-            if snapshot.total_stakes.contains_key(validator) {
+            let validator_exists = snapshot.total_stakes.contains_key(validator);
+            trace.reward_validator_exists(*validator, validator_exists);
+            if validator_exists {
                 let before = encode_reward_row(snapshot, *validator);
                 let fee = validator_stats.fees_rewards.as_u256();
                 if !fee.is_zero() {
@@ -381,7 +500,15 @@ impl FinalChainNativeSession<'_> {
                     .checked_add(validator_reward)
                     .ok_or_else(|| domain("total minted reward overflow"))?;
             }
+            trace.reward_map(false, false, *validator, ordinal);
         }
+        trace.reward_map(
+            false,
+            true,
+            [0; 20],
+            u64::try_from(stats.validators_stats.len())
+                .map_err(|_| domain("reward validator count overflow"))?,
+        );
         // Go performs this AddBalance even when total is zero; the staged port
         // therefore emits Touch rather than dropping the lifecycle operation.
         accounts
@@ -427,7 +554,7 @@ impl FinalChainNativeSession<'_> {
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
         let key = ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &validator]));
-        let current = trace.current(DPOS_CONTRACT_ADDRESS, key)?;
+        let current = trace.expectation(DPOS_CONTRACT_ADDRESS, key)?;
         validate_raw_value(&current, expected, "validator rewards")?;
         trace.put(
             DPOS_CONTRACT_ADDRESS,
@@ -444,7 +571,7 @@ impl FinalChainNativeSession<'_> {
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
         let total_key = ConcreteStorageKey(concrete_storage_key(&[&[7]]));
-        let total_current = trace.current(DPOS_CONTRACT_ADDRESS, total_key)?;
+        let total_current = trace.expectation(DPOS_CONTRACT_ADDRESS, total_key)?;
         match &snapshot.aspen_supply_state {
             AspenSupplyState::Unmigrated { minted_tokens } => {
                 validate_raw_value(&total_current, &[], "Aspen total supply")?;
@@ -454,7 +581,7 @@ impl FinalChainNativeSession<'_> {
                     concrete_u256_bytes(total_supply_before.as_u256()),
                 )?;
                 let minted_key = ConcreteStorageKey(concrete_storage_key(&[&[6]]));
-                let minted_current = trace.current(DPOS_CONTRACT_ADDRESS, minted_key)?;
+                let minted_current = trace.expectation(DPOS_CONTRACT_ADDRESS, minted_key)?;
                 validate_raw_value(
                     &minted_current,
                     &concrete_u256_bytes(minted_tokens.as_u256()),
@@ -478,7 +605,7 @@ impl FinalChainNativeSession<'_> {
                 )?;
                 let yield_key = ConcreteStorageKey(concrete_storage_key(&[&[8]]));
                 validate_raw_value(
-                    &trace.current(DPOS_CONTRACT_ADDRESS, yield_key)?,
+                    &trace.expectation(DPOS_CONTRACT_ADDRESS, yield_key)?,
                     &concrete_rlp_u64(previous_yield.as_u64()),
                     "Aspen current yield",
                 )?;
@@ -490,7 +617,7 @@ impl FinalChainNativeSession<'_> {
             AspenSupplyState::Unmigrated { .. }
         ) {
             validate_raw_value(
-                &trace.current(DPOS_CONTRACT_ADDRESS, yield_key)?,
+                &trace.expectation(DPOS_CONTRACT_ADDRESS, yield_key)?,
                 &[],
                 "Aspen current yield",
             )?;
@@ -517,7 +644,7 @@ impl FinalChainNativeSession<'_> {
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
         let key = ConcreteStorageKey(concrete_storage_key(&[&[7]]));
         validate_raw_value(
-            &trace.current(DPOS_CONTRACT_ADDRESS, key)?,
+            &trace.expectation(DPOS_CONTRACT_ADDRESS, key)?,
             &concrete_u256_bytes(total_supply_before.as_u256()),
             "Aspen total supply",
         )?;
@@ -550,7 +677,7 @@ impl FinalChainNativeSession<'_> {
             .ok_or_else(|| domain("Aspen minted-token counter overflow"))?;
         let key = ConcreteStorageKey(concrete_storage_key(&[&[6]]));
         validate_raw_value(
-            &trace.current(DPOS_CONTRACT_ADDRESS, key)?,
+            &trace.expectation(DPOS_CONTRACT_ADDRESS, key)?,
             &concrete_u256_bytes(before.as_u256()),
             "minted rewards",
         )?;
@@ -581,7 +708,7 @@ impl FinalChainNativeSession<'_> {
                 .validator_order
                 .is_empty();
         validate_raw_value(
-            &trace.current(DPOS_CONTRACT_ADDRESS, vote_key)?,
+            &trace.expectation(DPOS_CONTRACT_ADDRESS, vote_key)?,
             &if empty_genesis {
                 Vec::new()
             } else {
@@ -591,7 +718,7 @@ impl FinalChainNativeSession<'_> {
         )?;
         let amount_key = ConcreteStorageKey(concrete_storage_key(&[&[5]]));
         validate_raw_value(
-            &trace.current(DPOS_CONTRACT_ADDRESS, amount_key)?,
+            &trace.expectation(DPOS_CONTRACT_ADDRESS, amount_key)?,
             &concrete_u256_bytes(self.period_start_amount_delegated),
             "amount delegated",
         )
@@ -666,6 +793,74 @@ impl FinalChainNativeSession<'_> {
                 &visible.slashing_jail_blocks,
             )
         });
+        #[cfg(feature = "synthetic-fixtures")]
+        if self.pending_period.as_u64() == 5 && cleanup_diagnostic::is_active() {
+            let states = [
+                ("snapshot", &*snapshot),
+                ("visible", visible),
+                ("eligibility", &self.eligibility_state),
+                ("session", &self.dpos_state),
+            ];
+            if states.iter().any(|(_, state)| {
+                state.slashing_jailed_validators.len() > 64 || state.slashing_jail_blocks.len() > 64
+            }) || scheduled
+                .as_ref()
+                .is_some_and(|plan| plan.retained_validators.len() > 64)
+            {
+                cleanup_diagnostic::overflow();
+            } else {
+                cleanup_diagnostic::record(format_args!(
+                    "decision pending={:?} parent={} request={:?} origin={:?} eligibility_period={:?} visible_batched={}",
+                    self.pending_period,
+                    parent,
+                    self.request_id,
+                    self.origin,
+                    self.eligibility_period,
+                    batched_parent.is_some()
+                ));
+                cleanup_diagnostic::record(format_args!(
+                    "scheduler basis={:?}",
+                    self.reward_scheduler_basis
+                ));
+                match &scheduled {
+                    Some(plan) => {
+                        cleanup_diagnostic::record(format_args!(
+                            "plan present=true ran={} retained_count={} successor={:?}",
+                            plan.ran,
+                            plan.retained_validators.len(),
+                            plan.successor
+                        ));
+                        for (index, address) in plan.retained_validators.iter().enumerate() {
+                            cleanup_diagnostic::record(format_args!(
+                                "retained index={} address={:?}",
+                                index, address
+                            ));
+                        }
+                    }
+                    None => cleanup_diagnostic::record(format_args!("plan present=false")),
+                }
+                for (role, state) in states {
+                    cleanup_diagnostic::record(format_args!(
+                        "state_counts role={} list={} blocks={}",
+                        role,
+                        state.slashing_jailed_validators.len(),
+                        state.slashing_jail_blocks.len()
+                    ));
+                    for (index, address) in state.slashing_jailed_validators.iter().enumerate() {
+                        cleanup_diagnostic::record(format_args!(
+                            "state_list role={} index={} address={:?}",
+                            role, index, address
+                        ));
+                    }
+                    for (address, block) in &state.slashing_jail_blocks {
+                        cleanup_diagnostic::record(format_args!(
+                            "state_block role={} address={:?} block={}",
+                            role, address, block
+                        ));
+                    }
+                }
+            }
+        }
         if let Some(plan) = &scheduled {
             if !plan.ran {
                 return Ok((false, Some(plan.successor)));
@@ -686,18 +881,53 @@ impl FinalChainNativeSession<'_> {
         }
         let key = ConcreteStorageKey(slashing_jailed_validators_key());
         let before = encode_slashing_jailed_list(snapshot);
-        validate_raw_value(
-            &trace.current(SLASHING_CONTRACT_ADDRESS, key)?,
-            &before,
-            "slashing jailed validators",
-        )?;
+        let actual = trace.current(SLASHING_CONTRACT_ADDRESS, key);
+        #[cfg(feature = "synthetic-fixtures")]
+        if self.pending_period.as_u64() == 5 {
+            if before.len() > 1024
+                || matches!(&actual, Ok(ConcreteRead::Present(value)) if value.len() > 1024)
+            {
+                cleanup_diagnostic::overflow();
+            } else {
+                cleanup_diagnostic::record(format_args!(
+                    "compare pending={:?} address={:?} key={:?} expected={:?} actual={:?} trace_cache=UNKNOWN authority=UNKNOWN",
+                    self.pending_period, SLASHING_CONTRACT_ADDRESS, key, before, actual
+                ));
+            }
+        }
+        let actual = actual?;
+        if batched_parent.is_none()
+            && matches!(actual, ConcreteRead::Absent)
+            && scheduled.is_some()
+            && !trace.account(SLASHING_CONTRACT_ADDRESS)?.exists
+        {
+            let basis = self
+                .reward_scheduler_basis
+                .expect("scheduled cleanup has a basis");
+            let empty = basis.plan_cleanup(&[], &Default::default());
+            debug_assert!(!empty.ran);
+            #[cfg(feature = "synthetic-fixtures")]
+            if cleanup_diagnostic::is_active() {
+                cleanup_diagnostic::record(format_args!(
+                    "cleanup_final ran=false authority=account_absent successor={:?}",
+                    empty.successor
+                ));
+            }
+            return Ok((false, Some(empty.successor)));
+        }
+        let validation = validate_raw_value(&actual, &before, "slashing jailed validators");
+        #[cfg(feature = "synthetic-fixtures")]
+        if self.pending_period.as_u64() == 5 {
+            cleanup_diagnostic::record(format_args!("validation result={:?}", validation));
+        }
+        validation?;
         let mut expires = false;
         for validator in &snapshot.slashing_jailed_validators {
             let jail_key = ConcreteStorageKey(concrete_storage_key(&[&[0], validator]));
             let jail_block = snapshot.slashing_jail_blocks.get(validator).copied();
             let expected = jail_block.map(concrete_rlp_u64).unwrap_or_default();
             validate_raw_value(
-                &trace.current(SLASHING_CONTRACT_ADDRESS, jail_key)?,
+                &trace.expectation(SLASHING_CONTRACT_ADDRESS, jail_key)?,
                 &expected,
                 "slashing validator jail block",
             )?;
@@ -2576,6 +2806,21 @@ mod tests {
             assert_eq!(outcome.total_reward, DposTokenAmount::zero());
             assert!(outcome.account_mutations.is_empty());
             assert_eq!(outcome.raw_mutations.len(), 2);
+            assert!(matches!(
+                outcome.boundaries.last().unwrap().phase,
+                FinalChainNativeRewardsPhase::SlashingCleanup
+            ));
+            let mut raw = 0;
+            let mut ordinary = 0;
+            for boundary in &outcome.boundaries {
+                assert_eq!(boundary.raw_start, raw);
+                assert_eq!(boundary.ordinary_start, ordinary);
+                assert!(boundary.raw_end >= raw && boundary.ordinary_end >= ordinary);
+                raw = boundary.raw_end;
+                ordinary = boundary.ordinary_end;
+            }
+            assert_eq!(raw, outcome.raw_mutations.len());
+            assert_eq!(ordinary, outcome.account_mutations.len());
             let expected = fixture["end_block_ordered_raw_writes"].as_array().unwrap();
             for (actual, expected) in outcome.raw_mutations.iter().zip(expected) {
                 assert_eq!(hex_bytes(actual.address), expected["address"]);
@@ -2879,6 +3124,184 @@ mod tests {
             assert!(outcome.dpos_snapshot.slashing_jailed_validators.is_empty());
             assert_eq!(outcome.raw_mutations.len(), 1);
             assert!(outcome.scheduler_successor.is_some());
+        });
+    }
+
+    struct CleanupAccountRead<'a> {
+        state: &'a RewardState,
+        mode: u8,
+    }
+
+    impl FinalChainNativeStateRead for CleanupAccountRead<'_> {
+        fn account(
+            &self,
+            address: [u8; 20],
+        ) -> std::result::Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+            if address != SLASHING_CONTRACT_ADDRESS {
+                return self.state.account(address);
+            }
+            match self.mode {
+                0 => Ok(FinalChainNativeAccount {
+                    exists: false,
+                    nonce: FinalChainNonce::zero(),
+                    balance: BigInt::default(),
+                }),
+                1 => Ok(FinalChainNativeAccount {
+                    exists: true,
+                    nonce: FinalChainNonce::zero(),
+                    balance: BigInt::default(),
+                }),
+                _ => Err(FinalChainNativeStateReadError::State(
+                    ConcreteReadError::IdentityMismatch {
+                        expected: ConcreteStateIdentity {
+                            period: 1.into(),
+                            state_root: [1; 32],
+                        },
+                        observed: ConcreteStateIdentity {
+                            period: 1.into(),
+                            state_root: [2; 32],
+                        },
+                    },
+                )),
+            }
+        }
+
+        fn raw_storage(
+            &self,
+            address: [u8; 20],
+            key: &ConcreteStorageKey,
+        ) -> std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+            if self.mode == 3
+                && address == SLASHING_CONTRACT_ADDRESS
+                && key.0 == slashing_jailed_validators_key()
+            {
+                return Err(FinalChainNativeStateReadError::State(
+                    ConcreteReadError::HistoryUnavailable(ConcreteStateIdentity {
+                        period: 1.into(),
+                        state_root: [1; 32],
+                    }),
+                ));
+            }
+            self.state.raw_storage(address, key)
+        }
+    }
+
+    #[cfg(feature = "synthetic-fixtures")]
+    #[test]
+    fn batched_cleanup_keeps_committed_visibility_policy() {
+        with_owned_reward_chain_setup(
+            1,
+            FinalChainBlockNumber::MAX,
+            0,
+            0,
+            1,
+            FinalChainBlockNumber::GENESIS,
+            |mut chain| {
+                Arc::get_mut(&mut chain)
+                    .unwrap()
+                    .configure_synthetic_batched_lifecycle();
+                seed_committed_jail(&chain, 3);
+                let committed = chain
+                    .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let visible = chain
+                    .reward_cleanup_visible_snapshot(
+                        FinalChainBlockNumber::GENESIS,
+                        &committed,
+                        None,
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    visible.slashing_jailed_validators,
+                    committed.slashing_jailed_validators
+                );
+                assert_eq!(visible.slashing_jail_blocks, committed.slashing_jail_blocks);
+                let mut changed = committed.clone();
+                changed.slashing_jailed_validators.clear();
+                assert!(
+                    chain
+                        .reward_cleanup_visible_snapshot(
+                            FinalChainBlockNumber::GENESIS,
+                            &changed,
+                            None
+                        )
+                        .is_err()
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn due_cleanup_uses_only_account_gated_absence_for_empty_source() {
+        with_current_reward_chain(|chain| {
+            seed_committed_jail(chain, 3);
+            let reward_plan = plan(Vec::new());
+            chain
+                .authorize_reward_scheduler_joint_startup(17, FinalChainBlockNumber::GENESIS)
+                .unwrap();
+            chain.complete_reward_scheduler_recovery(17).unwrap();
+            for mode in 0..4 {
+                let mut session = chain
+                    .begin_native_session_bound_at_state_api_epoch(
+                        reward_plan.request_id,
+                        17,
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                let original = session.dpos_state.slashing_jailed_validators.clone();
+                let state = RewardState::from_snapshot(&session.dpos_state);
+                state
+                    .rows
+                    .borrow_mut()
+                    .remove(&(SLASHING_CONTRACT_ADDRESS, slashing_jailed_validators_key()));
+                let result = session.finish_rewards(
+                    &reward_plan,
+                    &CleanupAccountRead {
+                        state: &state,
+                        mode,
+                    },
+                );
+                match mode {
+                    0 => {
+                        let result = result.unwrap();
+                        assert_eq!(result.dpos_snapshot.slashing_jailed_validators, original);
+                        assert!(
+                            result
+                                .raw_mutations
+                                .iter()
+                                .all(|row| row.address != SLASHING_CONTRACT_ADDRESS)
+                        );
+                        assert_eq!(
+                            result.scheduler_successor,
+                            session
+                                .reward_scheduler_basis
+                                .map(|basis| basis.successor(0))
+                        );
+                    }
+                    1 => assert!(matches!(
+                        result,
+                        Err(FinalChainNativeSessionError::RawIntegrity(_))
+                    )),
+                    2 => assert!(matches!(
+                        result,
+                        Err(FinalChainNativeSessionError::StateRead(
+                            FinalChainNativeStateReadError::State(
+                                ConcreteReadError::IdentityMismatch { .. }
+                            )
+                        ))
+                    )),
+                    _ => assert!(matches!(
+                        result,
+                        Err(FinalChainNativeSessionError::StateRead(
+                            FinalChainNativeStateReadError::State(
+                                ConcreteReadError::HistoryUnavailable(_)
+                            )
+                        ))
+                    )),
+                }
+            }
         });
     }
 

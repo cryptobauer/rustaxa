@@ -132,13 +132,35 @@ mod native_admission;
 pub mod native_session;
 pub(crate) mod reward_scheduler;
 use native_session::context_replay::{
-    validate_native_context_final_storage, validate_native_context_reward_accounts,
-    validate_native_context_transaction_storage,
+    absent_slashing_cleanup_input, validate_native_context_final_storage,
+    validate_native_context_reward_accounts, validate_native_context_transaction_storage,
 };
 use reward_scheduler::{
     FinalChainPreparedRewardSchedulerSuccessor, FinalChainRewardSchedulerPublicationBinding,
     FinalChainRewardSchedulerRuntime,
 };
+
+type CleanupBatch<'a> = (&'a [[u8; 20]], &'a BTreeMap<[u8; 20], u64>);
+
+fn plan_bound_cleanup(
+    basis: reward_scheduler::FinalChainRewardSchedulerBasis,
+    jailed: &[[u8; 20]],
+    blocks: &BTreeMap<[u8; 20], u64>,
+    batched: Option<CleanupBatch<'_>>,
+    accounts: &HashMap<[u8; 20], Account>,
+    context: Option<&crate::native_projection_context::FinalChainNativeProjectionContext>,
+) -> Result<reward_scheduler::FinalChainRewardSchedulerCleanupPlan> {
+    let (list, blocks) = batched.unwrap_or((jailed, blocks));
+    let ordinary = basis.plan_cleanup(list, blocks);
+    if ordinary.ran
+        && batched.is_none()
+        && let Some(context) = context
+        && absent_slashing_cleanup_input(accounts, context)?.is_some()
+    {
+        return Ok(basis.plan_cleanup(&[], &BTreeMap::new()));
+    }
+    Ok(ordinary)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StoredDposTokenAmountEncoding {
@@ -847,6 +869,106 @@ mod concrete_projection_tests {
     }
 
     #[test]
+    fn pending_jail_direct_envelope_rejects_empty_transcript_without_view() {
+        use crate::final_chain_execution::{
+            FinalChainExternalEvmRewardsStatsUpdate, FinalChainPreparedExternalEvmRewardsStatsPlan,
+        };
+        use crate::native_projection_context::FinalChainNativeProjectionContext;
+        let path = temp_db_path("pending-jail-empty-transcript");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 1.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        chain
+            .authorize_reward_scheduler_joint_startup(91, 0.into())
+            .unwrap();
+        chain.complete_reward_scheduler_recovery(91).unwrap();
+        let request_id = [0x39; 32];
+        let plan = FinalChainPreparedExternalEvmRewardsStatsPlan {
+            request_id,
+            period: 1.into(),
+            expected_prior_head: 0.into(),
+            expected_runtime_generation: 0,
+            distribution_stats: vec![],
+            storage_update: FinalChainExternalEvmRewardsStatsUpdate {
+                current_period: 1.into(),
+                cache_current_period: false,
+                clear_cached_stats: false,
+                current_block_stats_rlp: vec![],
+            },
+        };
+        let context = FinalChainNativeProjectionContext {
+            request_id,
+            projection_hash: [0; 32],
+            invocations: vec![],
+            rewards: Default::default(),
+            lifecycle: vec![],
+        };
+        for data in [SLASHING_GET_JAILED_VALIDATORS_SELECTOR.to_vec(), {
+            let mut input = SLASHING_GET_JAIL_BLOCK_SELECTOR.to_vec();
+            input.extend([0; 32]);
+            input
+        }] {
+            let transaction = FinalChainEvmTransactionInput {
+                position: 0_u32.into(),
+                hash: [0; 32],
+                sender: [1; 20],
+                receiver: Some(SLASHING_CONTRACT_ADDRESS),
+                nonce: Default::default(),
+                value: Default::default(),
+                gas_price: Default::default(),
+                gas_limit: 100_000.into(),
+                data,
+                rlp: vec![],
+                kind: FINAL_CHAIN_EXECUTION_TX_KIND_SLASHING_CONTRACT,
+                is_system: false,
+            };
+            let projection = FinalChainConcreteStateProjection {
+                transaction_effects: vec![crate::FinalChainConcreteTransactionEffect {
+                    index: 0,
+                    transaction_rlp: encode_concrete_evm_transaction(&transaction),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let error = chain
+                .external_evm_concrete_projection(
+                    FinalChainProjectionIdentity {
+                        request_id,
+                        state_api_epoch: 91,
+                        block_number: 1.into(),
+                        block_author: [0; 20],
+                    },
+                    &[transaction],
+                    &projection,
+                    &plan,
+                    &[],
+                    (Some(&context), None),
+                )
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("FINAL_CHAIN_DELAYED_VIEW_REQUIRED")
+            );
+        }
+        drop(chain);
+        drop(storage);
+        crate::closeout_test_scratch::dispose(path).unwrap();
+    }
+
+    #[test]
     fn concrete_nested_parent_reverted_eligibility_read_uses_frozen_snapshot() {
         let path = temp_db_path("concrete-nested-eligibility-read");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -1548,6 +1670,105 @@ struct DposSnapshot {
     /// same-validator redelegation cannot silently mutate legacy-corruption
     /// history.
     redelegate_same_validator_corruption: BTreeSet<[u8; 20]>,
+}
+
+#[cfg(feature = "synthetic-fixtures")]
+fn reward_mismatch_diagnostic(
+    before: (&DposSnapshot, &DposSnapshot),
+    after: (&DposSnapshot, &DposSnapshot),
+    equality: (bool, bool),
+    rewards: (&DposTokenAmount, &DposTokenAmount),
+    scheduler: (
+        &Option<FinalChainPreparedRewardSchedulerSuccessor>,
+        &reward_scheduler::FinalChainRewardSchedulerCleanupPlan,
+    ),
+    distribution_input: &impl std::fmt::Debug,
+    fee_input: &impl std::fmt::Debug,
+) {
+    let (replay_before, independent_before) = before;
+    let (replay_after, independent_after) = after;
+    let (reward_equal, scheduler_equal) = equality;
+    let (replay_reward, independent_reward) = rewards;
+    let (replay_scheduler, independent_cleanup) = scheduler;
+    struct Limited {
+        text: String,
+        truncated: bool,
+    }
+    impl std::fmt::Write for Limited {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            for c in s.chars() {
+                if self.text.len() + c.len_utf8() > 256 {
+                    self.truncated = true;
+                    break;
+                }
+                self.text.push(c);
+            }
+            Ok(())
+        }
+    }
+    fn bounded(value: &impl std::fmt::Debug) -> (String, bool) {
+        use std::fmt::Write;
+        let mut out = Limited {
+            text: String::new(),
+            truncated: false,
+        };
+        let _ = write!(&mut out, "{value:?}");
+        (out.text, out.truncated)
+    }
+    eprintln!(
+        "REWARD_MISMATCH_DIAGNOSTIC period=5 snapshot_equal={} reward_equal={} scheduler_equal={} replay_reward={:?} independent_reward={:?} replay_scheduler={:?} cleanup={:?}",
+        replay_after == independent_after,
+        reward_equal,
+        scheduler_equal,
+        bounded(replay_reward),
+        bounded(independent_reward),
+        bounded(replay_scheduler),
+        bounded(independent_cleanup)
+    );
+    eprintln!(
+        "REWARD_MISMATCH_INPUT distribution={:?} fees={:?}",
+        bounded(distribution_input),
+        bounded(fee_input)
+    );
+    let mut unequal = 0usize;
+    macro_rules! field {
+        ($name:ident) => {
+            if replay_after.$name != independent_after.$name {
+                unequal += 1;
+                eprintln!("REWARD_MISMATCH_FIELD name={} replay_before={:?} independent_before={:?} replay_after={:?} independent_after={:?}",
+                    stringify!($name), bounded(&replay_before.$name), bounded(&independent_before.$name),
+                    bounded(&replay_after.$name), bounded(&independent_after.$name));
+            }
+        };
+    }
+    field!(total_stakes);
+    field!(commission_rewards);
+    field!(delegator_rewards);
+    field!(validator_metadata);
+    field!(vrf_keys);
+    field!(vote_counts);
+    field!(total_vote_count);
+    field!(delegations);
+    field!(validator_order);
+    field!(delegator_validators);
+    field!(delegation_ledger_history_complete);
+    field!(delegation_reward_cursors);
+    field!(validator_reward_per_stake);
+    field!(aspen_supply_state);
+    field!(undelegations_v2);
+    field!(undelegations);
+    field!(retained_undelegation_counts);
+    field!(validator_row_authority);
+    field!(undelegation_v2_last_ids);
+    field!(slashing_jail_blocks);
+    field!(slashing_jailed_validators);
+    field!(slashing_double_voting_proofs);
+    field!(reward_reference_graph);
+    field!(redelegate_same_validator_history_complete);
+    field!(redelegate_same_validator_corruption);
+    eprintln!(
+        "REWARD_MISMATCH_FIELDS_COMPLETE checked=25 unequal={unequal} values_truncation_reported=true"
+    );
 }
 
 impl DposSnapshot {
@@ -5509,10 +5730,33 @@ impl FinalChain {
         &self,
         block_number: FinalChainBlockNumber,
         transactions: &[FinalizationTransaction],
+        accounts: HashMap<[u8; 20], Account>,
+        dpos_snapshot: DposSnapshot,
+        cleanup_slashing: bool,
+    ) -> Result<NativeExecution, anyhow::Error> {
+        self.execute_native_transactions_from_state_with_delayed(
+            block_number,
+            transactions,
+            accounts,
+            dpos_snapshot,
+            cleanup_slashing,
+            (None, false),
+        )
+    }
+
+    fn execute_native_transactions_from_state_with_delayed(
+        &self,
+        block_number: FinalChainBlockNumber,
+        transactions: &[FinalizationTransaction],
         mut accounts: HashMap<[u8; 20], Account>,
         mut dpos_snapshot: DposSnapshot,
         cleanup_slashing: bool,
+        delayed: (
+            Option<&crate::native_session::frozen_eligibility::FrozenEligibility>,
+            bool,
+        ),
     ) -> Result<NativeExecution, anyhow::Error> {
+        let (delayed_view, pending_context) = delayed;
         let mut receipts = Vec::with_capacity(transactions.len());
         let mut transaction_fees = Vec::with_capacity(transactions.len());
         let mut cumulative_gas_used = FinalChainGas::ZERO;
@@ -5851,6 +6095,9 @@ impl FinalChain {
                                     | DposTransaction::GetValidatorEligibleVotesCount(
                                         Ok(_),
                                     )) => {
+                                        if let Some(view) = delayed_view {
+                                            self.apply_physical_eligibility_read(view, delayed_snapshot_block, eligibility_tx)?
+                                        } else {
                                         if dpos_eligibility_read_snapshot.is_none() {
                                             let effective_block = head_block_number
                                                 .saturating_sub_distance(self.dpos_delegation_delay);
@@ -5868,6 +6115,7 @@ impl FinalChain {
                                             *effective_block,
                                             eligibility_tx,
                                         )?
+                                        }
                                     }
                                     _ => unreachable!(
                                         "DPoS transaction classifier routed a mutation as a read"
@@ -5876,24 +6124,50 @@ impl FinalChain {
                             }
                         }
                         NativeContractTransaction::Slashing(slashing_tx) => {
-                            let needs_read_snapshot = matches!(
-                                &slashing_tx,
-                                SlashingTransaction::GetJailBlock(Ok(_))
-                                    | SlashingTransaction::GetJailedValidators
-                            );
-                            if needs_read_snapshot && slashing_read_snapshot.is_none() {
-                                // Legacy slashing reads use the delayed reader
-                                // published after the preceding block committed.
-                                slashing_read_snapshot =
-                                    Some(self.dpos_snapshot(head_block_number)?);
+                            let physical = match (&slashing_tx, delayed_view) {
+                                (SlashingTransaction::GetJailBlock(Ok(validator)), Some(view)) => {
+                                    Some(DposApplyOutcome::success_with_return(
+                                        abi_word_from_u64(
+                                            view.jail_block(*validator)?.unwrap_or_default(),
+                                        )
+                                        .to_vec(),
+                                    ))
+                                }
+                                (SlashingTransaction::GetJailedValidators, Some(view)) => {
+                                    Some(DposApplyOutcome::success_with_return(
+                                        encode_abi_address_array(&view.jailed_validators()?),
+                                    ))
+                                }
+                                _ => None,
+                            };
+                            if let Some(outcome) = physical {
+                                outcome
+                            } else {
+                                let needs_read_snapshot = matches!(
+                                    &slashing_tx,
+                                    SlashingTransaction::GetJailBlock(Ok(_))
+                                        | SlashingTransaction::GetJailedValidators
+                                );
+                                anyhow::ensure!(
+                                    !pending_context
+                                        || !needs_read_snapshot
+                                        || delayed_view.is_some(),
+                                    "FINAL_CHAIN_DELAYED_VIEW_REQUIRED"
+                                );
+                                if needs_read_snapshot && slashing_read_snapshot.is_none() {
+                                    // Legacy slashing reads use the delayed reader
+                                    // published after the preceding block committed.
+                                    slashing_read_snapshot =
+                                        Some(self.dpos_snapshot(head_block_number)?);
+                                }
+                                self.apply_slashing_transaction(
+                                    &mut dpos_snapshot,
+                                    slashing_validator_snapshot.as_ref(),
+                                    slashing_read_snapshot.as_ref(),
+                                    block_number,
+                                    slashing_tx,
+                                )?
                             }
-                            self.apply_slashing_transaction(
-                                &mut dpos_snapshot,
-                                slashing_validator_snapshot.as_ref(),
-                                slashing_read_snapshot.as_ref(),
-                                block_number,
-                                slashing_tx,
-                            )?
                         }
                     });
                     if let Some(outcome) = contract_outcome.as_mut() {
@@ -6053,10 +6327,12 @@ impl FinalChain {
         projection: &FinalChainConcreteStateProjection,
         rewards_plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
         reported_total_reward: &[u8],
-        native_context: Option<
-            &crate::native_projection_context::FinalChainNativeProjectionContext,
-        >,
+        native: (
+            Option<&crate::native_projection_context::FinalChainNativeProjectionContext>,
+            Option<&std::rc::Rc<crate::native_session::frozen_eligibility::FrozenEligibility>>,
+        ),
     ) -> Result<(Vec<u8>, Vec<u8>, FinalChainPreparedRewardSchedulerSuccessor), anyhow::Error> {
+        let (native_context, delayed_view) = native;
         let FinalChainProjectionIdentity {
             request_id,
             state_api_epoch,
@@ -6081,6 +6357,21 @@ impl FinalChain {
                 )
             })
             .transpose()?;
+        if let Some(view) = delayed_view {
+            let context = native_context
+                .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_DELAYED_VIEW_WITHOUT_CONTEXT"))?;
+            view.validate_binding(
+                context.request_id,
+                state_api_epoch,
+                projection.generation,
+                head.as_u64(),
+                block_number.as_u64(),
+            )?;
+            native_replay
+                .as_mut()
+                .expect("context creates native replay")
+                .install_pending_delayed_view(std::rc::Rc::clone(view))?;
+        }
         let mut accounts = self.current_account_snapshot()?;
         // Go applies these protocol-owned SetCode operations before the first
         // transaction, including blocks with no transactions. Preserve every
@@ -6147,18 +6438,44 @@ impl FinalChain {
 
         for (transaction, effect) in transactions.iter().zip(&projection.transaction_effects) {
             let dpos_before_effect = dpos_snapshot.clone();
+            let mut semantic_changes = BTreeMap::new();
+            let mut replay_boundary = None;
             anyhow::ensure!(
                 transaction.position.as_u32() as u64 == effect.index
                     && encode_concrete_evm_transaction(transaction) == effect.transaction_rlp,
                 "FINAL_CHAIN_CONCRETE_TRANSACTION_EFFECT_IDENTITY_MISMATCH"
             );
             if let (Some(replay), Some(context)) = (&mut native_replay, native_context) {
+                let extended = !self.pre_magnolia_fee_reward_period(block_number);
+                replay_boundary = Some(canonical_concrete_precompile_storage(
+                    &replay.projection_snapshot(),
+                    extended,
+                )?);
                 for invocation in &effect.invocations {
                     let index = usize::try_from(invocation.sequence)?;
                     let context = context.invocations.get(index).ok_or_else(|| {
                         anyhow::anyhow!("FINAL_CHAIN_NATIVE_CONTEXT_SEQUENCE_MISSING")
                     })?;
+                    let before = canonical_concrete_precompile_storage(
+                        &replay.projection_snapshot(),
+                        extended,
+                    )?;
                     replay.replay_context(context, invocation)?;
+                    let after = canonical_concrete_precompile_storage(
+                        &replay.projection_snapshot(),
+                        extended,
+                    )?;
+                    for key in before
+                        .keys()
+                        .chain(after.keys())
+                        .copied()
+                        .collect::<BTreeSet<_>>()
+                    {
+                        if !concrete_storage_values_equivalent(before.get(&key), after.get(&key)) {
+                            semantic_changes
+                                .insert(key, (invocation.sequence, after.get(&key).cloned()));
+                        }
+                    }
                 }
             }
             // The marker-bound kind is a calldata/address planning hint. Empty
@@ -6180,12 +6497,16 @@ impl FinalChain {
                     data: transaction.data.clone(),
                     rlp: transaction.rlp.clone(),
                 };
-                let execution = self.execute_native_transactions_from_state(
+                let execution = self.execute_native_transactions_from_state_with_delayed(
                     block_number,
                     std::slice::from_ref(&native_transaction),
                     accounts_before.clone(),
                     dpos_before.clone(),
                     false,
+                    (
+                        delayed_view.map(|view| view.as_ref()),
+                        native_context.is_some(),
+                    ),
                 )?;
                 let mut expected_accounts = execution.accounts.clone();
                 if self.pre_magnolia_fee_reward_period(block_number) {
@@ -6273,6 +6594,25 @@ impl FinalChain {
             }
             if let Some(context) = native_context {
                 let transient_rows = validate_native_context_transaction_storage(context, effect)?;
+                let mut reset_covered = BTreeSet::new();
+                let mut reset_provenance = BTreeMap::new();
+                let extended = !self.pre_magnolia_fee_reward_period(block_number);
+                let start = canonical_concrete_precompile_storage(&dpos_before_effect, extended)?;
+                if replay_boundary.as_ref() == Some(&start) {
+                    let fold = crate::native_projection_context::fold_lifecycle_raw(context)?;
+                    let delta = fold
+                        .transactions
+                        .get(&(effect.index as u32))
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("FINAL_CHAIN_NATIVE_LIFECYCLE_TRANSACTION_MISSING")
+                        })?;
+                    reset_provenance = delta.erased.clone();
+                    for (key, (sequence, after)) in &semantic_changes {
+                        if reset_covers_semantic_change(delta, *key, *sequence, after.as_ref()) {
+                            reset_covered.insert(*key);
+                        }
+                    }
+                }
                 validate_concrete_precompile_storage_transition_with_deferred_counters(
                     &dpos_before_effect,
                     &dpos_snapshot,
@@ -6280,6 +6620,12 @@ impl FinalChain {
                     &effect.storage,
                     "TRANSACTION",
                     Some(&transient_rows),
+                    Some((
+                        &reset_covered,
+                        effect.index,
+                        &semantic_changes,
+                        &reset_provenance,
+                    )),
                 )?;
             } else {
                 validate_concrete_precompile_storage_transition(
@@ -6294,6 +6640,19 @@ impl FinalChain {
         if let Some(context) = native_context {
             validate_native_context_reward_accounts(&accounts, &context.rewards.accounts)?;
         }
+        #[cfg(feature = "synthetic-fixtures")]
+        let diagnostic_replay_before = if block_number.as_u64() == 5
+            && request_id
+                == [
+                    47, 218, 7, 96, 10, 152, 147, 158, 108, 134, 7, 13, 129, 113, 29, 107, 147,
+                    197, 65, 122, 250, 206, 64, 229, 227, 120, 194, 90, 112, 115, 211, 136,
+                ] {
+            native_replay
+                .as_ref()
+                .map(|replay| replay.projection_snapshot())
+        } else {
+            None
+        };
         let replayed_rewards = match (native_replay, native_context) {
             (Some(replay), Some(context)) => {
                 Some(replay.replay_rewards_context(rewards_plan, &context.rewards)?)
@@ -6304,11 +6663,19 @@ impl FinalChain {
         let dpos_before_rewards = dpos_snapshot.clone();
         let cleanup_visible =
             self.reward_cleanup_visible_snapshot(head, &dpos_snapshot, Some(scheduler_basis))?;
-        let cleanup_source = cleanup_visible.as_ref().unwrap_or(&dpos_snapshot);
-        let cleanup_plan = scheduler_basis.plan_cleanup(
-            &cleanup_source.slashing_jailed_validators,
-            &cleanup_source.slashing_jail_blocks,
-        );
+        let cleanup_plan = plan_bound_cleanup(
+            scheduler_basis,
+            &dpos_snapshot.slashing_jailed_validators,
+            &dpos_snapshot.slashing_jail_blocks,
+            cleanup_visible.as_ref().map(|visible| {
+                (
+                    visible.slashing_jailed_validators.as_slice(),
+                    &visible.slashing_jail_blocks,
+                )
+            }),
+            &accounts,
+            native_context,
+        )?;
         if cleanup_plan.ran {
             dpos_snapshot.slashing_jailed_validators = cleanup_plan.retained_validators.clone();
         }
@@ -6331,6 +6698,25 @@ impl FinalChain {
         self.apply_dpos_reward_deltas(&mut dpos_snapshot, reward_deltas, supply_after)?;
         self.apply_redelegate_hardfork_corrections(&mut dpos_snapshot, block_number)?;
         if let Some(replayed) = &replayed_rewards {
+            #[cfg(feature = "synthetic-fixtures")]
+            if let Some(replay_before) = &diagnostic_replay_before
+                && (replayed.dpos_snapshot != dpos_snapshot
+                    || replayed.total_reward != total_minted_reward
+                    || replayed.scheduler_successor != Some(cleanup_plan.successor))
+            {
+                reward_mismatch_diagnostic(
+                    (replay_before, &dpos_before_rewards),
+                    (&replayed.dpos_snapshot, &dpos_snapshot),
+                    (
+                        replayed.total_reward == total_minted_reward,
+                        replayed.scheduler_successor == Some(cleanup_plan.successor),
+                    ),
+                    (&replayed.total_reward, &total_minted_reward),
+                    (&replayed.scheduler_successor, &cleanup_plan),
+                    &rewards_plan.distribution_stats,
+                    &fee_rewards,
+                );
+            }
             anyhow::ensure!(
                 replayed.dpos_snapshot == dpos_snapshot
                     && replayed.total_reward == total_minted_reward
@@ -7320,6 +7706,44 @@ impl FinalChain {
         })
     }
 
+    fn apply_physical_eligibility_read(
+        &self,
+        view: &crate::native_session::frozen_eligibility::FrozenEligibility,
+        period: FinalChainBlockNumber,
+        transaction: DposTransaction,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        use crate::native_session::frozen_eligibility::EligibilityPolicy;
+        let policy = EligibilityPolicy {
+            period: period.as_u64(),
+            cacti: self.cacti_active(period),
+            magnolia: self.magnolia_active(period),
+            aspen: period >= self.rewards_config.aspen_part_one_period,
+            threshold: self.dpos_eligibility_balance_threshold.as_u256(),
+            step: self.dpos_vote_eligibility_balance_step.as_u256(),
+            maximum: self.dpos_validator_maximum_stake.as_u256(),
+        };
+        Ok(match transaction {
+            DposTransaction::IsValidatorEligible(Ok(validator)) => {
+                DposApplyOutcome::success_with_return(
+                    abi_word_from_bool(view.eligible(validator, &policy)?).to_vec(),
+                )
+            }
+            DposTransaction::GetValidatorEligibleVotesCount(Ok(validator)) => {
+                DposApplyOutcome::success_with_return(
+                    abi_word_from_u64(view.validator_votes(validator, &policy)?).to_vec(),
+                )
+            }
+            DposTransaction::GetTotalEligibleVotesCount => DposApplyOutcome::success_with_return(
+                abi_word_from_u64(view.total_votes(&policy)?).to_vec(),
+            ),
+            DposTransaction::IsValidatorEligible(Err(_))
+            | DposTransaction::GetValidatorEligibleVotesCount(Err(_)) => {
+                DposApplyOutcome::contract_failure()
+            }
+            _ => anyhow::bail!("FINAL_CHAIN_DELAYED_QUERY_KIND"),
+        })
+    }
+
     /// Executes `getTotalDelegation(address)` against live block-local DPoS state.
     ///
     /// Valid reads return one ABI `uint256` without logs or mutation. A malformed
@@ -7461,15 +7885,13 @@ impl FinalChain {
     fn dpos_effective_total_vote_count(
         &self,
         snapshot: &DposSnapshot,
-        block_number: FinalChainBlockNumber,
+        _block_number: FinalChainBlockNumber,
     ) -> Result<u64, anyhow::Error> {
         let mut total = snapshot.total_vote_count;
         for validator in &snapshot.slashing_jailed_validators {
-            if self.slashing_is_jailed(snapshot, block_number, *validator) {
-                total = total
-                    .checked_sub(*snapshot.vote_counts.get(validator).unwrap_or(&0))
-                    .ok_or_else(|| anyhow::anyhow!("DPoS jailed vote subtraction underflow"))?;
-            }
+            total = total
+                .checked_sub(*snapshot.vote_counts.get(validator).unwrap_or(&0))
+                .ok_or_else(|| anyhow::anyhow!("DPoS jailed vote subtraction underflow"))?;
         }
         Ok(total)
     }
@@ -11615,6 +12037,123 @@ fn concrete_storage_values_equivalent(
     }
 }
 
+fn reset_covers_semantic_change(
+    delta: &crate::native_projection_context::LifecycleTransactionRaw,
+    key: ([u8; 20], [u8; 32]),
+    sequence: u64,
+    after: Option<&Vec<Vec<u8>>>,
+) -> bool {
+    let raw_key = (
+        key.0,
+        rustaxa_types::concrete_state::ConcreteStorageKey(key.1),
+    );
+    !delta.values.contains_key(&raw_key)
+        && delta.erased.get(&raw_key).is_some_and(|items| {
+            items.iter().any(|item| {
+                item.sequence == sequence
+                    && item.observed < item.reset
+                    && concrete_storage_values_equivalent(Some(&vec![item.value.clone()]), after)
+            })
+        })
+}
+
+#[cfg(test)]
+mod reset_semantic_row_tests {
+    use super::*;
+    use crate::native_projection_context::{LifecycleErasedMutation, LifecycleTransactionRaw};
+    use rustaxa_types::concrete_state::ConcreteStorageKey;
+
+    fn erased() -> LifecycleTransactionRaw {
+        let mut delta = LifecycleTransactionRaw::default();
+        delta.erased.insert(
+            ([1; 20], ConcreteStorageKey([2; 32])),
+            vec![LifecycleErasedMutation {
+                sequence: 7,
+                observed: 3,
+                reset: 4,
+                value: vec![9],
+            }],
+        );
+        delta
+    }
+
+    #[test]
+    fn exact_key_invocation_value_and_reset_are_required() {
+        let delta = erased();
+        let key = ([1; 20], [2; 32]);
+        assert!(reset_covers_semantic_change(
+            &delta,
+            key,
+            7,
+            Some(&vec![vec![9]])
+        ));
+        assert!(!reset_covers_semantic_change(
+            &delta,
+            key,
+            8,
+            Some(&vec![vec![9]])
+        ));
+        assert!(!reset_covers_semantic_change(
+            &delta,
+            ([1; 20], [3; 32]),
+            7,
+            Some(&vec![vec![9]])
+        ));
+        assert!(!reset_covers_semantic_change(
+            &delta,
+            ([4; 20], [2; 32]),
+            7,
+            Some(&vec![vec![9]])
+        ));
+        assert!(!reset_covers_semantic_change(
+            &delta,
+            key,
+            7,
+            Some(&vec![vec![8]])
+        ));
+    }
+
+    #[test]
+    fn later_put_or_delete_requires_a_surviving_row() {
+        let key = ([1; 20], [2; 32]);
+        for value in [vec![1], vec![]] {
+            let mut delta = erased();
+            delta
+                .values
+                .insert((key.0, ConcreteStorageKey(key.1)), value);
+            assert!(!reset_covers_semantic_change(
+                &delta,
+                key,
+                7,
+                Some(&vec![vec![9]])
+            ));
+        }
+    }
+
+    #[test]
+    fn reset_before_observation_and_unmatched_later_change_do_not_cover() {
+        let key = ([1; 20], [2; 32]);
+        let mut delta = erased();
+        delta
+            .erased
+            .get_mut(&(key.0, ConcreteStorageKey(key.1)))
+            .unwrap()[0]
+            .reset = 2;
+        assert!(!reset_covers_semantic_change(
+            &delta,
+            key,
+            7,
+            Some(&vec![vec![9]])
+        ));
+        assert!(!reset_covers_semantic_change(
+            &erased(),
+            key,
+            8,
+            Some(&vec![vec![9]])
+        ));
+    }
+}
+
 fn insert_concrete_iterable_map(
     storage: &mut ConcreteRawStorageMap,
     prefix: &[u8],
@@ -12007,8 +12546,22 @@ fn validate_concrete_precompile_storage_transition(
         rows,
         boundary,
         None,
+        None,
     )
 }
+
+type ResetSlot = ([u8; 20], [u8; 32]);
+type ResetHistory = BTreeMap<ResetSlot, (u64, Option<Vec<Vec<u8>>>)>;
+type ErasedHistory = BTreeMap<
+    ([u8; 20], rustaxa_types::concrete_state::ConcreteStorageKey),
+    Vec<crate::native_projection_context::LifecycleErasedMutation>,
+>;
+type ResetEvidence<'a> = (
+    &'a BTreeSet<ResetSlot>,
+    u64,
+    &'a ResetHistory,
+    &'a ErasedHistory,
+);
 
 /// Validates selected staged-native transitions with the two Go end-block
 /// aggregate counters kept in their raw period-start state until rewards finish.
@@ -12020,6 +12573,7 @@ fn validate_concrete_precompile_storage_transition_with_deferred_counters(
     rows: &[FinalChainConcreteStorageProjection],
     boundary: &str,
     transient_rows: Option<&BTreeSet<([u8; 20], [u8; 32])>>,
+    reset_evidence: Option<ResetEvidence<'_>>,
 ) -> Result<(), anyhow::Error> {
     let before_iterable_count_keys = canonical_concrete_iterable_count_keys(before);
     let before = canonical_concrete_precompile_storage(before, extended_validator_active)?;
@@ -12069,8 +12623,18 @@ fn validate_concrete_precompile_storage_transition_with_deferred_counters(
         }
         let changed = !concrete_storage_values_equivalent(before.get(key), after.get(key));
         anyhow::ensure!(
-            !changed || actual.contains_key(key),
-            "FINAL_CHAIN_CONCRETE_STORAGE_ROW_MISSING:{boundary}"
+            !changed
+                || actual.contains_key(key)
+                || reset_evidence.is_some_and(|(keys, _, _, _)| keys.contains(key)),
+            "FINAL_CHAIN_CONCRETE_STORAGE_ROW_MISSING:{boundary}:transaction={:?}:address={:?}:key={:?}:last_semantic={:?}:raw_reset={:?}",
+            reset_evidence.map(|(_, transaction, _, _)| transaction),
+            key.0,
+            key.1,
+            reset_evidence.and_then(|(_, _, changes, _)| changes.get(key)),
+            reset_evidence.and_then(|(_, _, _, provenance)| provenance.get(&(
+                key.0,
+                rustaxa_types::concrete_state::ConcreteStorageKey(key.1)
+            )))
         );
     }
     Ok(())
@@ -23119,6 +23683,387 @@ mod tests {
         );
 
         drop(final_chain);
+        drop(storage);
+        let _ = crate::closeout_test_scratch::dispose(path);
+    }
+
+    #[test]
+    fn total_eligibility_uses_delayed_jailed_list_after_expiry() {
+        let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../rustaxa-evm/tests/support/actual-source108-aggregate-boundary.json"
+        ))
+        .unwrap();
+        let decode = |s: &str| -> Vec<u8> {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        let rows = fixture["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 9);
+        let first_facts = &rows[0]["planner_facts"];
+        let votes = first_facts["certificate_votes"].as_array().unwrap();
+        let counts = first_facts["eligible_votes_by_validator"]
+            .as_array()
+            .unwrap();
+        let validators: Vec<[u8; 20]> = votes
+            .iter()
+            .map(|v| decode(v["validator"].as_str().unwrap()).try_into().unwrap())
+            .collect();
+        let proof: [u8; 32] = decode(fixture["proof_marker_slot"]["key"].as_str().unwrap())
+            .try_into()
+            .unwrap();
+        let jail = fixture["jail_scalar_slot"]["period"].as_u64().unwrap();
+        let scalar_bytes = decode(fixture["jail_scalar_slot"]["value"].as_str().unwrap());
+        assert_eq!(rlp::Rlp::new(&scalar_bytes).as_val::<u64>().unwrap(), jail);
+        let list_bytes = decode(fixture["list_slot"]["nonempty"].as_str().unwrap());
+        let list = rlp::Rlp::new(&list_bytes);
+        assert_eq!(list.item_count().unwrap(), 1);
+        assert_eq!(list.val_at::<Vec<u8>>(0).unwrap(), validators[0]);
+        assert_eq!(
+            decode(fixture["list_slot"]["cleaned"].as_str().unwrap()),
+            vec![0xc0]
+        );
+        let path = temp_db_path("total-eligibility-delayed-list");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let component_validators: Vec<_> = validators
+            .iter()
+            .zip(counts)
+            .map(|(validator, count)| {
+                genesis_validator(*validator, U256::from(count.as_u64().unwrap()))
+            })
+            .collect();
+        let component_config = GenesisDposConfig {
+            eligibility_balance_threshold: DposTokenAmount::from(U256::one()),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::one()),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(100_000u64)),
+            delegation_delay: 5,
+            ..Default::default()
+        };
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: 0.into(),
+            cacti_period: 5_893_465u64.into(),
+            ..Default::default()
+        };
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            vec![],
+            component_validators.clone(),
+            component_config.clone(),
+            rewards.clone(),
+        )
+        .unwrap();
+        let mut retained = final_chain.dpos_snapshot(0.into()).unwrap();
+        retained.vote_counts.clear();
+        for (index, validator) in validators.iter().enumerate() {
+            retained
+                .vote_counts
+                .insert(*validator, counts[index].as_u64().unwrap());
+        }
+        retained.total_vote_count =
+            rows.last().unwrap()["planner_facts"]["total_eligible_vote_count"]
+                .as_u64()
+                .unwrap();
+        retained.slashing_jailed_validators = vec![validators[0]];
+        retained.slashing_jail_blocks.insert(validators[0], jail);
+        retained.slashing_double_voting_proofs.insert(proof);
+        let mut before_expiry = retained.clone();
+        cleanup_slashing_jailed_validators(&mut before_expiry, (jail - 1).into());
+        assert_eq!(before_expiry, retained);
+        let mut expected_cleaned = retained.clone();
+        expected_cleaned.slashing_jailed_validators.clear();
+        let mut cleaned = retained.clone();
+        cleanup_slashing_jailed_validators(&mut cleaned, jail.into());
+        assert_eq!(cleaned, expected_cleaned);
+        let retained_expected = retained.clone();
+        let retained_raw = encode_dpos_snapshot_rlp(&retained).unwrap();
+        let cleaned_raw = encode_dpos_snapshot_rlp(&cleaned).unwrap();
+        {
+            let mut snapshots = final_chain.dpos_snapshots.lock().unwrap();
+            for period in 5_893_454u64..=5_893_468 {
+                let snapshot = if period < jail { &retained } else { &cleaned };
+                snapshots.insert(period.into(), snapshot.clone());
+                let raw = if period < jail {
+                    &retained_raw
+                } else {
+                    &cleaned_raw
+                };
+                let header = StoredFinalChainBlockHeader {
+                    parent_hash: H256::zero(),
+                    state_root: H256::zero(),
+                    transactions_root: empty_trie_root(),
+                    receipts_root: empty_trie_root(),
+                    log_bloom: FinalChainLogBloom::ZERO,
+                    gas_used: 0.into(),
+                    total_reward: DposTokenAmount::zero(),
+                };
+                let encoded_header = StoredBlockHeaderRlpOwned::from(&header);
+                storage
+                    .final_chain()
+                    .write_block_header_with_dpos_snapshot(
+                        period,
+                        H256::from_low_u64_be(period),
+                        encoded_header.as_bytes(),
+                        empty_receipts_rlp().as_slice(),
+                        Some(raw),
+                    )
+                    .unwrap();
+            }
+        }
+        let snapshots_before = final_chain.dpos_snapshots.lock().unwrap().clone();
+        for row in rows {
+            let planner = row["period"].as_u64().unwrap();
+            let reader = &row["planner_facts"]["eligibility_reader"];
+            let request = reader["request_period"].as_u64().unwrap();
+            let delayed = reader["factory_periods"][0].as_u64().unwrap();
+            assert_eq!(request + 1, planner);
+            assert_eq!(request - 5, delayed);
+            let expected = row["planner_facts"]["total_eligible_vote_count"]
+                .as_u64()
+                .unwrap();
+            assert_eq!(
+                final_chain
+                    .dpos_eligible_total_vote_count(request.into())
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(
+                final_chain
+                    .pbft_dpos_eligible_total_vote_count(request)
+                    .unwrap(),
+                Some(expected)
+            );
+            let outcome = final_chain
+                .call(dpos_call_request(
+                    request,
+                    DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR.to_vec(),
+                ))
+                .unwrap();
+            assert_eq!(outcome.code_err, "");
+            assert_eq!(
+                u256_from_big_endian(&outcome.code_retval),
+                U256::from(expected)
+            );
+            let selected = final_chain.dpos_snapshot(request.into()).unwrap();
+            assert_eq!(
+                selected.slashing_jailed_validators.is_empty(),
+                delayed >= jail
+            );
+            assert_eq!(
+                selected.slashing_jail_blocks.get(&validators[0]),
+                Some(&jail)
+            );
+            assert!(selected.slashing_double_voting_proofs.contains(&proof));
+        }
+        assert_eq!(
+            *final_chain.dpos_snapshots.lock().unwrap(),
+            snapshots_before
+        );
+        assert!(final_chain.slashing_is_jailed(&retained, (jail - 1).into(), validators[0]));
+        assert!(final_chain.slashing_is_jailed(&retained, jail.into(), validators[0]));
+        assert!(!final_chain.slashing_is_jailed(&retained, (jail + 1).into(), validators[0]));
+        for fact in fixture["reader_facts"].as_array().unwrap() {
+            let head = fact["head"].as_u64().unwrap();
+            let direct = final_chain
+                .dpos_snapshot_at_finalized_block(head.into())
+                .unwrap();
+            let delayed = final_chain.dpos_snapshot(head.into()).unwrap();
+            assert_eq!(
+                direct.slashing_jailed_validators.is_empty(),
+                fact["direct_list"].as_array().unwrap().is_empty()
+            );
+            assert_eq!(
+                delayed.slashing_jailed_validators.is_empty(),
+                fact["delayed_list"].as_array().unwrap().is_empty()
+            );
+            assert_eq!(
+                final_chain.slashing_is_jailed(&direct, head.into(), validators[0]),
+                fact["direct_is_jailed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                final_chain.slashing_is_jailed(&delayed, head.into(), validators[0]),
+                fact["delayed_is_jailed"].as_bool().unwrap()
+            );
+            assert_eq!(direct.slashing_jail_blocks.get(&validators[0]), Some(&jail));
+            assert!(direct.slashing_double_voting_proofs.contains(&proof));
+        }
+        for head in (jail - 1)..=(jail + 5) {
+            let expected = head <= jail;
+            let direct = final_chain
+                .dpos_snapshot_at_finalized_block(head.into())
+                .unwrap();
+            let delayed = final_chain.dpos_snapshot(head.into()).unwrap();
+            assert_eq!(
+                final_chain.slashing_is_jailed(&direct, head.into(), validators[0]),
+                expected
+            );
+            assert_eq!(
+                final_chain.slashing_is_jailed(&delayed, head.into(), validators[0]),
+                expected
+            );
+        }
+        let at_expiry = final_chain.dpos_snapshot((jail + 5).into()).unwrap();
+        assert!(at_expiry.slashing_jailed_validators.is_empty());
+        assert!(!final_chain.slashing_is_jailed(&at_expiry, (jail + 5).into(), validators[0]));
+        assert!(!final_chain.slashing_is_jailed(&at_expiry, (jail + 6).into(), validators[0]));
+        assert_eq!(
+            final_chain.dpos_effective_vote_count(&retained, jail.into(), validators[0]),
+            counts[0].as_u64().unwrap()
+        );
+        let failed = &rows[3];
+        assert_eq!(failed["period"], 5_893_463);
+        let request = failed["planner_facts"]["eligibility_reader"]["request_period"]
+            .as_u64()
+            .unwrap();
+        let expected = failed["planner_facts"]["total_eligible_vote_count"]
+            .as_u64()
+            .unwrap();
+        let mut former_total = retained.total_vote_count;
+        for validator in &retained.slashing_jailed_validators {
+            if final_chain.slashing_is_jailed(&retained, request.into(), *validator) {
+                former_total = former_total
+                    .checked_sub(*retained.vote_counts.get(validator).unwrap_or(&0))
+                    .unwrap();
+            }
+        }
+        assert_eq!(expected, 2000);
+        assert_eq!(former_total, 3003);
+        assert_ne!(former_total, expected);
+        assert_eq!(
+            final_chain
+                .dpos_eligible_total_vote_count(request.into())
+                .unwrap(),
+            expected
+        );
+        retained
+            .slashing_jail_blocks
+            .insert(validators[0], 5_893_466);
+        assert_eq!(
+            final_chain.dpos_effective_vote_count(&retained, 5_893_466u64.into(), validators[0]),
+            0
+        );
+        retained.slashing_jail_blocks.remove(&validators[0]);
+        assert_eq!(
+            final_chain
+                .dpos_effective_total_vote_count(&retained, 5_893_466u64.into())
+                .unwrap(),
+            2000
+        );
+        retained.slashing_jailed_validators.push([0x20; 20]);
+        assert_eq!(
+            final_chain
+                .dpos_effective_total_vote_count(&retained, 5_893_466u64.into())
+                .unwrap(),
+            2000
+        );
+        retained.slashing_jailed_validators.push(validators[0]);
+        assert_eq!(
+            final_chain
+                .dpos_effective_total_vote_count(&retained, 5_893_466u64.into())
+                .unwrap(),
+            997
+        );
+        retained.total_vote_count = 1002;
+        assert!(
+            final_chain
+                .dpos_effective_total_vote_count(&retained, 5_893_466u64.into())
+                .unwrap_err()
+                .to_string()
+                .contains("underflow")
+        );
+        drop(final_chain);
+        drop(storage);
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let reopened = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            vec![],
+            component_validators,
+            component_config,
+            rewards,
+        )
+        .unwrap();
+        assert_eq!(
+            reopened
+                .dpos_snapshot_at_finalized_block((jail - 1).into())
+                .unwrap(),
+            retained_expected
+        );
+        assert_eq!(
+            reopened
+                .dpos_snapshot_at_finalized_block(jail.into())
+                .unwrap(),
+            cleaned
+        );
+        assert_eq!(
+            storage.final_chain().dpos_snapshot_raw(jail - 1).unwrap(),
+            Some(retained_raw)
+        );
+        assert_eq!(
+            storage.final_chain().dpos_snapshot_raw(jail).unwrap(),
+            Some(cleaned_raw)
+        );
+        for row in rows {
+            let request = row["planner_facts"]["eligibility_reader"]["request_period"]
+                .as_u64()
+                .unwrap();
+            let expected = row["planner_facts"]["total_eligible_vote_count"]
+                .as_u64()
+                .unwrap();
+            assert_eq!(
+                reopened
+                    .dpos_eligible_total_vote_count(request.into())
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(
+                reopened
+                    .pbft_dpos_eligible_total_vote_count(request)
+                    .unwrap(),
+                Some(expected)
+            );
+            let outcome = reopened
+                .call(dpos_call_request(
+                    request,
+                    DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR.to_vec(),
+                ))
+                .unwrap();
+            assert_eq!(outcome.code_err, "");
+            assert_eq!(
+                u256_from_big_endian(&outcome.code_retval),
+                U256::from(expected)
+            );
+            let selected = reopened.dpos_snapshot(request.into()).unwrap();
+            assert_eq!(
+                selected.slashing_jail_blocks.get(&validators[0]),
+                Some(&jail)
+            );
+            assert!(selected.slashing_double_voting_proofs.contains(&proof));
+        }
+        for head in (jail - 1)..=(jail + 5) {
+            let expected = head <= jail;
+            let direct = reopened
+                .dpos_snapshot_at_finalized_block(head.into())
+                .unwrap();
+            let delayed = reopened.dpos_snapshot(head.into()).unwrap();
+            assert_eq!(
+                reopened.slashing_is_jailed(&direct, head.into(), validators[0]),
+                expected
+            );
+            assert_eq!(
+                reopened.slashing_is_jailed(&delayed, head.into(), validators[0]),
+                expected
+            );
+        }
+        assert!(!reopened.slashing_is_jailed(
+            &reopened.dpos_snapshot((jail + 5).into()).unwrap(),
+            (jail + 5).into(),
+            validators[0]
+        ));
+        drop(reopened);
         drop(storage);
         let _ = crate::closeout_test_scratch::dispose(path);
     }

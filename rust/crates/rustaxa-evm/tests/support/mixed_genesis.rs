@@ -28,6 +28,39 @@ use rustaxa_types::{
 };
 use serde_json::Value;
 
+pub(super) fn duration_active_rules(fixture: &Value, period: u64) -> Result<Option<(u64, bool)>> {
+    if fixture["profile"] != "synthetic_mainnet_era" || fixture["scenario"] != "magnolia_duration" {
+        return Ok(None);
+    }
+    let config = &fixture["configuration"];
+    let cornus = &config["hardforks"]["cornus"];
+    ensure!(
+        config["block_gas_limit"] == 2_100_000_000_u64
+            && cornus["block"] == 15_610_000_u64
+            && cornus["pbft_gas_limit"] == 2_100_000_000_u64,
+        "duration gas configuration"
+    );
+    ensure!(
+        (5_729_994..=5_893_468).contains(&period),
+        "duration gas period"
+    );
+    let cornus_block = cornus["block"].as_u64().context("Cornus block")?;
+    ensure!(5_893_468 < cornus_block, "duration crosses Cornus");
+    Ok(Some(historical_gas_rules(
+        period,
+        cornus_block,
+        2_100_000_000,
+    )))
+}
+
+pub(super) fn historical_gas_rules(period: u64, cornus: u64, configured: u64) -> (u64, bool) {
+    if period < cornus {
+        (315_000_000, false)
+    } else {
+        (configured, true)
+    }
+}
+
 const DPOS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
 ];
@@ -260,7 +293,9 @@ pub(super) fn open_chain(path: &Path, fixture: &Value) -> Result<(Arc<Storage>, 
     }
     let mut chain = FinalChain::new_with_genesis_state_root_and_ficus_activation(
         storage.clone(),
-        number(configuration, "block_gas_limit")?.into(),
+        duration_active_rules(fixture, 5_729_994)?
+            .map_or(number(configuration, "block_gas_limit")?, |rules| rules.0)
+            .into(),
         0,
         H256(fixed_hex(genesis, "root")?),
         true,

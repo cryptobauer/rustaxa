@@ -334,11 +334,7 @@ impl Fixture {
         f
     }
     fn empty() -> Self {
-        let parent = if std::env::var_os("RUSTAXA_ERA_LAUNCH_MANIFEST").is_some() {
-            std::env::temp_dir()
-        } else {
-            std::path::PathBuf::from("/home/fry/artifacts/n4-binding-resume-20261011")
-        };
+        let parent = std::env::temp_dir();
         let base = parent.join(format!(
             "synthetic-storage-{}-{}",
             std::process::id(),

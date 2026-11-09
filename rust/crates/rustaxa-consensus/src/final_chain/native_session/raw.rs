@@ -88,6 +88,48 @@ pub(super) struct FinalChainNativeRawTrace<'a> {
     mutations: Vec<FinalChainNativeRawMutation>,
 }
 
+#[cfg(feature = "synthetic-fixtures")]
+fn cleanup_trace_target(address: [u8; 20], key: ConcreteStorageKey) -> bool {
+    address[..19] == [0_u8; 19]
+        && address[19] == 0xee
+        && key.0[..31] == [0_u8; 31]
+        && key.0[31] == 2
+}
+
+#[cfg(feature = "synthetic-fixtures")]
+fn cleanup_trace_value_bounded(value: &ConcreteRead<Vec<u8>>) -> bool {
+    !matches!(value, ConcreteRead::Present(bytes) if bytes.len() > 128)
+}
+
+#[cfg(feature = "synthetic-fixtures")]
+fn cleanup_trace_error_bounded(error: &FinalChainNativeStateReadError) -> bool {
+    match error {
+        FinalChainNativeStateReadError::Invariant(message) => message.len() <= 128,
+        FinalChainNativeStateReadError::State(
+            ConcreteReadError::Corrupt(message) | ConcreteReadError::Io(message),
+        ) => message.len() <= 128,
+        FinalChainNativeStateReadError::State(_) => true,
+    }
+}
+
+#[cfg(feature = "synthetic-fixtures")]
+fn cleanup_trace_record(
+    branch: &str,
+    result: &Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError>,
+) {
+    let bounded = match result {
+        Ok(value) => cleanup_trace_value_bounded(value),
+        Err(error) => cleanup_trace_error_bounded(error),
+    };
+    if !bounded {
+        cleanup_diagnostic::overflow();
+        return;
+    }
+    cleanup_diagnostic::record(format_args!(
+        "trace_current scope=active address=00000000000000000000000000000000000000ee key=0000000000000000000000000000000000000000000000000000000000000002 branch={branch} result={result:?}"
+    ));
+}
+
 impl<'a> FinalChainNativeRawTrace<'a> {
     /// Starts an empty trace against the authoritative current journal view.
     pub(super) fn new(state: &'a dyn FinalChainNativeStateRead) -> Self {
@@ -98,18 +140,125 @@ impl<'a> FinalChainNativeRawTrace<'a> {
         }
     }
 
+    #[cfg(feature = "synthetic-fixtures")]
+    pub(super) fn slashing_current_get(
+        &self,
+        begin: bool,
+        purpose: u8,
+        key: ConcreteStorageKey,
+        expected: &[u8],
+    ) {
+        self.state
+            .observe_stage(FinalChainNativeStageEvent::SlashingCurrentGet {
+                begin,
+                purpose,
+                key,
+                expected,
+            });
+    }
+
+    pub(super) fn reward_phase(&self, kind: u8, period: u64, ordinal: u64, begin: bool) {
+        self.state
+            .observe_stage(FinalChainNativeStageEvent::RewardPhase {
+                kind,
+                period,
+                ordinal,
+                begin,
+            });
+    }
+
+    pub(super) fn reward_map(&self, begin: bool, map_scope: bool, address: [u8; 20], ordinal: u64) {
+        self.state
+            .observe_stage(FinalChainNativeStageEvent::RewardMap {
+                begin,
+                map_scope,
+                address,
+                ordinal,
+            });
+    }
+
+    pub(super) fn reward_validator_exists(&self, address: [u8; 20], exists: bool) {
+        self.state
+            .observe_stage(FinalChainNativeStageEvent::RewardValidatorExists { address, exists });
+    }
+
+    pub(super) fn reward_fee_source(&self, address: [u8; 20], value: [u8; 32]) {
+        self.state
+            .observe_stage(FinalChainNativeStageEvent::RewardFeeSource { address, value });
+    }
+
     /// Returns the current logical raw value, loading each key at most once.
     pub(super) fn current(
         &mut self,
         address: [u8; 20],
         key: ConcreteStorageKey,
     ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeSessionError> {
+        self.current_with_purpose(address, key, true)
+    }
+
+    pub(super) fn expectation(
+        &mut self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeSessionError> {
+        self.current_with_purpose(address, key, false)
+    }
+
+    fn current_with_purpose(
+        &mut self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+        semantic: bool,
+    ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeSessionError> {
         if let Some(current) = self.current.get(&(address, key)) {
+            #[cfg(feature = "synthetic-fixtures")]
+            if cleanup_trace_target(address, key) && cleanup_diagnostic::is_active() {
+                if cleanup_trace_value_bounded(current) {
+                    cleanup_diagnostic::record(format_args!(
+                        "trace_current scope=active address=00000000000000000000000000000000000000ee key=0000000000000000000000000000000000000000000000000000000000000002 branch=cache result={current:?}"
+                    ));
+                } else {
+                    cleanup_diagnostic::overflow();
+                }
+            }
+            self.state
+                .observe_stage(FinalChainNativeStageEvent::RawRead {
+                    address,
+                    key,
+                    value: current,
+                    semantic,
+                });
             return Ok(current.clone());
         }
-        let current = self.state.raw_storage(address, &key)?;
+        let observed = self.state.raw_storage(address, &key);
+        #[cfg(feature = "synthetic-fixtures")]
+        if cleanup_trace_target(address, key) && cleanup_diagnostic::is_active() {
+            cleanup_trace_record("reader", &observed);
+        }
+        let current = observed?;
+        self.state
+            .observe_stage(FinalChainNativeStageEvent::RawRead {
+                address,
+                key,
+                value: &current,
+                semantic,
+            });
         self.current.insert((address, key), current.clone());
         Ok(current)
+    }
+
+    pub(super) fn account(
+        &self,
+        address: [u8; 20],
+    ) -> Result<FinalChainNativeAccount, FinalChainNativeSessionError> {
+        let account = self.state.account(address)?;
+        self.state
+            .observe_stage(FinalChainNativeStageEvent::AccountProbe {
+                address,
+                account: &account,
+                purpose: 0,
+            });
+        Ok(account)
     }
 
     /// Appends one reference `Put`, converting empty bytes to explicit delete.
@@ -119,7 +268,7 @@ impl<'a> FinalChainNativeRawTrace<'a> {
         key: ConcreteStorageKey,
         value: Vec<u8>,
     ) -> Result<(), FinalChainNativeSessionError> {
-        let expected = self.current(address, key)?;
+        let expected = self.current_with_purpose(address, key, false)?;
         let operation = if value.is_empty() {
             FinalChainNativeRawOperation::Delete
         } else {
@@ -128,15 +277,22 @@ impl<'a> FinalChainNativeRawTrace<'a> {
                     .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?,
             )
         };
-        self.mutations.push(FinalChainNativeRawMutation {
+        let mutation = FinalChainNativeRawMutation {
             address,
             key,
             expected,
             operation,
-        });
+        };
+        self.state
+            .observe_stage(FinalChainNativeStageEvent::RawWrite(&mutation));
+        self.mutations.push(mutation);
         self.current
             .insert((address, key), ConcreteRead::Present(value));
         Ok(())
+    }
+
+    pub(super) fn mutation_count(&self) -> usize {
+        self.mutations.len()
     }
 
     /// Completes the trace without collapsing repeated-key operations.

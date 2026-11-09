@@ -83,6 +83,8 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
     port: &mut N,
     invocation: &NativeInvocation,
 ) -> Result<NativeFrameOutcome, NativeAdapterError> {
+    let _duration_scope = crate::journal::duration_journal_native_scope(invocation);
+    journal.begin_native_invocation(invocation.id);
     let quote = port
         .prepare(invocation, journal)
         .map_err(NativeAdapterError::Port)?;
@@ -98,6 +100,7 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
         .validate(invocation, quote)
         .map_err(NativeAdapterError::InvalidResult)?;
     let NativeInvocationResult::Completed(outcome) = result else {
+        crate::journal::duration_native_insufficient_gas();
         journal.record_native_invocation(ConsensusNativeObservation {
             invocation: invocation.clone(),
             required_gas: quote.required_gas,
@@ -115,14 +118,43 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
             output: Vec::new(),
         });
     };
+    crate::journal::duration_native_outcome_boundary(true);
+    crate::journal::duration_native_outcome_status(invocation, &outcome.status);
+    for mutation in &outcome.account_mutations {
+        crate::journal::duration_native_account_event("outcome_account", mutation);
+    }
+    for mutation in &outcome.raw_mutations {
+        crate::journal::duration_native_raw_event("outcome_raw", mutation);
+    }
+    crate::journal::duration_native_outcome_boundary(false);
     let input_mutations = port
         .input_mutations(invocation.id)
         .map_err(NativeAdapterError::Port)?;
     validate_input_mutations(&invocation.input, &input_mutations)?;
-    journal
-        .apply_native_account_mutations(&outcome.account_mutations)
-        .map_err(NativeAdapterError::Journal)?;
-    for mutation in outcome.raw_mutations {
+    for (ordinal, mutation) in outcome.account_mutations.iter().enumerate() {
+        crate::journal::duration_native_apply_account_event(
+            true,
+            invocation,
+            ordinal as u64,
+            mutation,
+        );
+        journal
+            .apply_native_account_mutations(std::slice::from_ref(mutation))
+            .map_err(NativeAdapterError::Journal)?;
+        crate::journal::duration_native_apply_account_event(
+            false,
+            invocation,
+            ordinal as u64,
+            mutation,
+        );
+    }
+    for (ordinal, mutation) in outcome.raw_mutations.into_iter().enumerate() {
+        crate::journal::duration_native_apply_raw_event(
+            true,
+            invocation,
+            ordinal as u64,
+            &mutation,
+        );
         let observed = journal
             .raw_storage(mutation.address, mutation.key)
             .map_err(NativeAdapterError::Journal)?;
@@ -134,9 +166,19 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
                 observed,
             });
         }
+        let evidence = crate::journal::duration_journal_is_armed().then(|| mutation.clone());
         journal
             .set_raw_storage(mutation.address, mutation.key, mutation.operation)
             .map_err(NativeAdapterError::Journal)?;
+        if let Some(evidence) = &evidence {
+            crate::journal::duration_native_raw_event("applied_raw", evidence);
+            crate::journal::duration_native_apply_raw_event(
+                false,
+                invocation,
+                ordinal as u64,
+                evidence,
+            );
+        }
     }
     let status = match outcome.status {
         NativeStatus::Success => CodeExecutionStatus::Success,

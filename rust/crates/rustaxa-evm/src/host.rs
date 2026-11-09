@@ -323,6 +323,10 @@ impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> 
             Ok(values) => values,
             Err(error) => return self.fail(HostError::Journal(error)),
         };
+        crate::journal::duration_journal_storage_consumer(false, address, key, &present);
+        if present != big_uint(value) {
+            crate::journal::duration_journal_storage_consumer(true, address, key, &original);
+        }
         if let Err(error) = self
             .journal
             .set_ordinary_storage(address, key, big_uint(value))
@@ -341,11 +345,14 @@ impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> 
         key: StorageKey,
         _skip_cold_load: bool,
     ) -> Result<StateLoad<StorageValue>, LoadError> {
-        let values = self
-            .journal
-            .ordinary_storage(address.into_array(), ConcreteStorageKey(key.to_be_bytes()));
+        let owner = address.into_array();
+        let slot = ConcreteStorageKey(key.to_be_bytes());
+        let values = self.journal.ordinary_storage(owner, slot);
         match values {
-            Ok((_, current)) => Ok(StateLoad::new(low_word(current), false)),
+            Ok((_, current)) => {
+                crate::journal::duration_journal_storage_consumer(false, owner, slot, &current);
+                Ok(StateLoad::new(low_word(current), false))
+            }
             Err(error) => self.fail(HostError::Journal(error)),
         }
     }

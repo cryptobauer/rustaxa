@@ -792,6 +792,8 @@ fn execute_admitted_create<
     mut native: Option<NativeExecution<'_>>,
     observer: Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    crate::journal::duration_journal_read_role(true, 5, transaction.sender);
+    crate::journal::duration_journal_read_role(false, 5, transaction.sender);
     let attempted = create_address(
         transaction.sender,
         &CreateScheme::Create {
@@ -874,12 +876,14 @@ fn execute_admitted_create<
                 }
                 Err(error) => {
                     gas_left = 0;
+                    crate::journal::duration_journal_no_refund(checkpoint, false, 2);
                     journal.revert_checkpoint(checkpoint)?;
                     FrameSettlementStatus::CodeFailure(error)
                 }
             }
         }
         Ok(Some(error)) => {
+            crate::journal::duration_journal_no_refund(checkpoint, false, 2);
             journal.revert_checkpoint(checkpoint)?;
             if error != CodeExecutionError::Revert {
                 gas_left = 0;
@@ -932,7 +936,46 @@ pub(crate) fn execute_admitted_call<
     if route == NativeRoute::Unsupported {
         return Err(ExecutionDriverError::NativeCallUnavailable { address: target });
     }
-    let target_metadata = journal.account_metadata(target)?;
+    if route != NativeRoute::Ordinary {
+        crate::journal::duration_journal_read_role(true, 1, target);
+    }
+    let ordinary_probe = route == NativeRoute::Ordinary
+        && transaction.value.value() != &num_bigint::BigUint::default();
+    if ordinary_probe {
+        crate::journal::duration_journal_ordinary_metadata(
+            "ordinary_probe_entry",
+            transaction.sender,
+            target,
+            transaction.value.value(),
+        );
+        crate::journal::duration_journal_ordinary_metadata(
+            "ordinary_probe_begin",
+            transaction.sender,
+            target,
+            transaction.value.value(),
+        );
+    }
+    let target_metadata = journal.account_metadata(target);
+    if ordinary_probe {
+        crate::journal::duration_journal_ordinary_metadata(
+            "ordinary_probe_end",
+            transaction.sender,
+            target,
+            transaction.value.value(),
+        );
+    }
+    if route != NativeRoute::Ordinary {
+        crate::journal::duration_journal_read_role(false, 1, target);
+    }
+    let target_metadata = target_metadata?;
+    if ordinary_probe {
+        crate::journal::duration_journal_ordinary_metadata(
+            "ordinary_probe_terminal",
+            transaction.sender,
+            target,
+            transaction.value.value(),
+        );
+    }
     if route == NativeRoute::Ordinary
         && !target_metadata.exists
         && transaction.value.value() == &num_bigint::BigUint::default()
@@ -952,12 +995,30 @@ pub(crate) fn execute_admitted_call<
     }
     let checkpoint = journal.checkpoint();
 
-    let sender = journal.account(transaction.sender)?;
-    if transaction.sender != [0_u8; 20]
-        && sender.balance.value() < &BigInt::from(transaction.value.value().clone())
-    {
+    crate::journal::duration_journal_read_role(true, 2, transaction.sender);
+    let sender = journal.account(transaction.sender);
+    crate::journal::duration_journal_read_role(false, 2, transaction.sender);
+    let sender = sender?;
+    let checked = transaction.sender != [0_u8; 20];
+    let insufficient =
+        checked && sender.balance.value() < &BigInt::from(transaction.value.value().clone());
+    crate::journal::duration_journal_transfer_decision(
+        crate::journal::DurationTransferDecisionObservation {
+            depth: 0,
+            opcode: 0xf1,
+            sender: transaction.sender,
+            target,
+            state_target: target,
+            amount: transaction.value.value(),
+            balance: Some(sender.balance.value()),
+            checked,
+            allowed: !insufficient,
+        },
+    );
+    if insufficient {
+        crate::journal::duration_journal_no_refund(checkpoint, false, 2);
         journal.revert_checkpoint(checkpoint)?;
-        return settle(
+        let result: Result<TransactionExecutionResult, ExecutionDriverError> = settle(
             journal,
             transaction,
             admitted,
@@ -969,6 +1030,15 @@ pub(crate) fn execute_admitted_call<
             },
         )
         .map_err(Into::into);
+        if ordinary_probe && result.is_ok() {
+            crate::journal::duration_journal_ordinary_metadata(
+                "ordinary_probe_failed",
+                transaction.sender,
+                target,
+                transaction.value.value(),
+            );
+        }
+        return result;
     }
     journal.subtract_balance(transaction.sender, transaction.value.value())?;
     journal.add_balance(target, transaction.value.value())?;
@@ -1040,6 +1110,11 @@ pub(crate) fn execute_admitted_call<
             }
         };
         let status = native_frame_status(&outcome);
+        crate::journal::duration_journal_no_refund(
+            checkpoint,
+            outcome.status == CodeExecutionStatus::Success,
+            0,
+        );
         if outcome.status == CodeExecutionStatus::Success {
             journal.commit_checkpoint(checkpoint)?;
         } else {
@@ -1086,6 +1161,7 @@ pub(crate) fn execute_admitted_call<
             FrameSettlementStatus::Success
         }
         Ok(Some(error)) => {
+            crate::journal::duration_journal_no_refund(checkpoint, false, 2);
             journal.revert_checkpoint(checkpoint)?;
             FrameSettlementStatus::CodeFailure(error)
         }
@@ -1122,6 +1198,7 @@ fn commit_root_refund<R: ConcreteExecutionRead>(
     checkpoint: JournalCheckpoint,
     delta: i64,
 ) -> Result<(), ExecutionDriverError> {
+    crate::journal::duration_journal_refund_root(checkpoint, delta);
     if let Err(error) = journal.apply_refund_delta(delta) {
         journal.revert_checkpoint(checkpoint)?;
         return Err(if error == JournalError::RefundUnderflow {
@@ -1364,6 +1441,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
         match action {
             InterpreterAction::Return(result) => {
                 let active = frames.pop().expect("returning frame exists");
+                let frame_depth = active.interpreter.input.depth;
                 match active.insertion {
                     ParentInsertion::Root => return Ok((result, active.last_opcode)),
                     ParentInsertion::Call {
@@ -1378,7 +1456,19 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                         }
                         let parent = frames.last_mut().expect("child call has parent");
                         parent.interpreter.memory.free_child_context();
+                        let before = parent.interpreter.gas.refunded();
+                        let child = result.gas.refunded();
+                        let success = result.result.is_ok();
                         insert_call_result(&mut parent.interpreter, result, return_memory);
+                        crate::journal::duration_journal_refund_frame(
+                            false,
+                            frame_depth,
+                            checkpoint,
+                            before,
+                            child,
+                            parent.interpreter.gas.refunded(),
+                            success,
+                        );
                     }
                     ParentInsertion::Create {
                         checkpoint,
@@ -1398,7 +1488,19 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                         };
                         let parent = frames.last_mut().expect("child creation has parent");
                         parent.interpreter.memory.free_child_context();
+                        let before = parent.interpreter.gas.refunded();
+                        let child = result.gas.refunded();
+                        let success = result.result.is_ok();
                         insert_create_result(&mut parent.interpreter, attempted_address, result);
+                        crate::journal::duration_journal_refund_frame(
+                            false,
+                            frame_depth,
+                            checkpoint,
+                            before,
+                            child,
+                            parent.interpreter.gas.refunded(),
+                            success,
+                        );
                     }
                 }
             }
@@ -1420,6 +1522,26 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                     }
                 };
                 if let Some(child) = child {
+                    let checkpoint = match &child.insertion {
+                        ParentInsertion::Call { checkpoint, .. }
+                        | ParentInsertion::Create { checkpoint, .. } => *checkpoint,
+                        ParentInsertion::Root => unreachable!("child cannot be root"),
+                    };
+                    let parent = frames
+                        .last()
+                        .expect("child frame has parent")
+                        .interpreter
+                        .gas
+                        .refunded();
+                    crate::journal::duration_journal_refund_frame(
+                        true,
+                        child.interpreter.input.depth,
+                        checkpoint,
+                        parent,
+                        0,
+                        parent,
+                        false,
+                    );
                     frames.push(child);
                 }
             }
@@ -1437,6 +1559,26 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                     }
                 };
                 if let Some(child) = child {
+                    let checkpoint = match &child.insertion {
+                        ParentInsertion::Call { checkpoint, .. }
+                        | ParentInsertion::Create { checkpoint, .. } => *checkpoint,
+                        ParentInsertion::Root => unreachable!("child cannot be root"),
+                    };
+                    let parent = frames
+                        .last()
+                        .expect("child frame has parent")
+                        .interpreter
+                        .gas
+                        .refunded();
+                    crate::journal::duration_journal_refund_frame(
+                        true,
+                        child.interpreter.input.depth,
+                        checkpoint,
+                        parent,
+                        0,
+                        parent,
+                        false,
+                    );
                     frames.push(child);
                 }
             }
@@ -1481,7 +1623,22 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
             stack: trace_stack(&interpreter.stack),
             memory: interpreter.memory.context_memory().to_vec(),
         });
+        let refund_before = interpreter.gas.refunded();
+        let refund_pc = interpreter.bytecode.pc() as u64;
+        let refund_depth = interpreter.input.depth;
+        crate::journal::duration_journal_consumer(true, refund_depth, refund_pc, *last_opcode);
         let step = interpreter.step(&table, &costs, &mut host);
+        crate::journal::duration_journal_consumer(false, refund_depth, refund_pc, *last_opcode);
+        if matches!(*last_opcode, 0x55 | 0xff) {
+            crate::journal::duration_journal_refund_opcode(
+                refund_depth,
+                refund_pc,
+                *last_opcode,
+                refund_before,
+                interpreter.gas.refunded(),
+                matches!(&step, Ok(()) | Err(InstructionResult::SelfDestruct)),
+            );
+        }
         if let Some(before) = trace_before {
             if let Some(error) = host.take_error() {
                 return Err(ExecutionDriverError::Host(error));
@@ -1551,16 +1708,46 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     if matches!(
         inputs.scheme,
         RevmCallScheme::Call | RevmCallScheme::CallCode
-    ) && inputs.caller != Address::ZERO
-        && journal.account(inputs.caller.into_array())?.balance.value()
-            < &BigInt::from(value.clone())
-    {
-        insert_call_result(
-            &mut parent.interpreter,
-            immediate_result(InstructionResult::OutOfFunds, inputs.gas_limit),
-            inputs.return_memory_offset,
+    ) {
+        let caller = inputs.caller.into_array();
+        let checked = inputs.caller != Address::ZERO;
+        let balance = if checked {
+            crate::journal::duration_journal_read_role(true, 2, caller);
+            let account = journal.account(caller);
+            crate::journal::duration_journal_read_role(false, 2, caller);
+            Some(account?.balance)
+        } else {
+            None
+        };
+        let insufficient = balance
+            .as_ref()
+            .is_some_and(|balance| balance.value() < &BigInt::from(value.clone()));
+        let opcode = if inputs.scheme == RevmCallScheme::Call {
+            0xf1
+        } else {
+            0xf2
+        };
+        crate::journal::duration_journal_transfer_decision(
+            crate::journal::DurationTransferDecisionObservation {
+                depth: child_depth as u64,
+                opcode,
+                sender: caller,
+                target: inputs.bytecode_address.into_array(),
+                state_target: inputs.target_address.into_array(),
+                amount: &value,
+                balance: balance.as_ref().map(|balance| balance.value()),
+                checked,
+                allowed: !insufficient,
+            },
         );
-        return Ok(None);
+        if insufficient {
+            insert_call_result(
+                &mut parent.interpreter,
+                immediate_result(InstructionResult::OutOfFunds, inputs.gas_limit),
+                inputs.return_memory_offset,
+            );
+            return Ok(None);
+        }
     }
 
     let code_address = inputs.bytecode_address.into_array();
@@ -1576,7 +1763,14 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
             address: code_address,
         });
     }
-    let metadata = journal.account_metadata(code_address)?;
+    if route != NativeRoute::Ordinary {
+        crate::journal::duration_journal_read_role(true, 1, code_address);
+    }
+    let metadata = journal.account_metadata(code_address);
+    if route != NativeRoute::Ordinary {
+        crate::journal::duration_journal_read_role(false, 1, code_address);
+    }
+    let metadata = metadata?;
     if route == NativeRoute::Ordinary
         && inputs.scheme == RevmCallScheme::Call
         && value == num_bigint::BigUint::default()
@@ -1714,6 +1908,11 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
                 memory[offset] = replacement;
             }
         }
+        crate::journal::duration_journal_no_refund(
+            checkpoint,
+            outcome.status == CodeExecutionStatus::Success,
+            0,
+        );
         if outcome.status == CodeExecutionStatus::Success {
             journal.commit_checkpoint(checkpoint)?;
         } else {
@@ -1735,6 +1934,7 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         }
     };
     if code.is_empty() {
+        crate::journal::duration_journal_no_refund(checkpoint, true, 1);
         journal.commit_checkpoint(checkpoint)?;
         insert_call_result(
             &mut parent.interpreter,
@@ -1790,6 +1990,8 @@ fn prepare_create_frame<R: ConcreteExecutionRead>(
     }
 
     let creator = inputs.caller().into_array();
+    crate::journal::duration_journal_read_role(true, 5, creator);
+    crate::journal::duration_journal_read_role(false, 5, creator);
     let value = big_uint(inputs.value());
     if creator != [0_u8; 20]
         && journal.account(creator)?.balance.value() < &BigInt::from(value.clone())

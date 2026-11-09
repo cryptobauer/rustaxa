@@ -986,3 +986,90 @@ fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../experiments/evm_feasibility/fixtures/local.json")
 }
+
+#[cfg(feature = "synthetic-fixtures")]
+#[test]
+fn ordinary_nonzero_metadata_probe_observes_real_driver_routes() {
+    for (value, target_present, sender_balance, failed) in [
+        (1_u64, true, 50_u64, false),
+        (1, false, 50, false),
+        (0, true, 50, false),
+        (0, false, 50, false),
+        (100, true, 50, true),
+    ] {
+        let mut accounts = BTreeMap::new();
+        accounts.insert(
+            SENDER,
+            ReaderAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::new(BigUint::from(sender_balance)),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+        );
+        if target_present {
+            accounts.insert(
+                TARGET,
+                ReaderAccount {
+                    nonce: FinalChainNonce::zero(),
+                    balance: ConcreteAccountBalance::default(),
+                    storage_root: None,
+                    code_hash: None,
+                    code_size: 0,
+                },
+            );
+        }
+        let mut journal = ExecutionJournal::new(MemoryReader {
+            accounts,
+            storage: BTreeMap::new(),
+            codes: BTreeMap::new(),
+            code_error: None,
+            code_reads: Cell::new(0),
+        });
+        let mut tx = call_transaction(TARGET);
+        tx.gas_price = ExecutionGasPrice::new(BigUint::default());
+        tx.value = ExecutionValue::new(BigUint::from(value));
+        rustaxa_evm::journal::duration_journal_arm(65_536).unwrap();
+        let result = execute_top_level_call(
+            &mut journal,
+            &BlockHashes,
+            &NoNative,
+            &test_block(),
+            &tx,
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap();
+        let events = rustaxa_evm::journal::duration_journal_take().unwrap();
+        let markers = events
+            .iter()
+            .filter(|event| event.kind.starts_with("ordinary_probe_"))
+            .collect::<Vec<_>>();
+        if value == 0 {
+            assert!(markers.is_empty());
+        } else {
+            let mut expected = vec![
+                "ordinary_probe_entry",
+                "ordinary_probe_begin",
+                "ordinary_probe_end",
+                "ordinary_probe_terminal",
+            ];
+            if failed {
+                expected.push("ordinary_probe_failed");
+            }
+            assert_eq!(
+                markers.iter().map(|event| event.kind).collect::<Vec<_>>(),
+                expected
+            );
+            assert!(markers.iter().all(|event| event.address == TARGET));
+            assert!(events.iter().any(|event| event.kind == "transfer_decision"));
+            if failed {
+                assert!(matches!(
+                    result,
+                    TransactionExecutionResult::ConsensusFailure(_)
+                ));
+            }
+        }
+    }
+}

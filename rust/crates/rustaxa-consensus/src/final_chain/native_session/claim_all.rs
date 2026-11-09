@@ -889,13 +889,11 @@ impl FinalChainNativeSession<'_> {
         let mut accounts = StagedDposAccountPort::from_state(state);
         if !zero_trace
             && (!accounts
-                .account(prepared.caller)
+                .account_exists_probe(prepared.caller)
                 .map_err(map_kernel_error)?
-                .exists
                 || !accounts
-                    .account(DPOS_CONTRACT_ADDRESS)
-                    .map_err(map_kernel_error)?
-                    .exists)
+                    .account_exists_probe(DPOS_CONTRACT_ADDRESS)
+                    .map_err(map_kernel_error)?)
         {
             return scope();
         }

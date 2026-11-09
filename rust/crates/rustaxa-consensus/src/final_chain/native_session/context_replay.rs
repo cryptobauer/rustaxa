@@ -8,7 +8,8 @@
 
 use super::*;
 use crate::native_projection_context::{
-    FinalChainNativeInvocationContext, FinalChainNativeRawRead, FinalChainNativeRewardsContext,
+    FinalChainNativeInvocationContext, FinalChainNativeProjectionContext, FinalChainNativeRawRead,
+    FinalChainNativeRewardsContext,
 };
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -197,33 +198,22 @@ impl FinalChainNativeSession<'_> {
     }
 }
 
-/// Binds each transaction's touched raw rows to the last ordered setter call.
-/// This is specific to the preexisting DPoS account in the bounded CALL route.
+/// Checks the surviving ordered raw effects for one transaction.
 pub(in crate::final_chain) fn validate_native_context_transaction_storage(
     context: &crate::native_projection_context::FinalChainNativeProjectionContext,
     effect: &crate::concrete_state_projection::FinalChainConcreteTransactionEffect,
 ) -> anyhow::Result<BTreeSet<([u8; 20], [u8; 32])>> {
-    let mut expected = BTreeMap::new();
-    let mut initially_absent = BTreeSet::new();
-    let mut created = BTreeSet::new();
-    for invocation in &context.invocations {
-        if u64::from(invocation.request.id.transaction.as_u32()) == effect.index {
-            for mutation in &invocation.raw_mutations {
-                let key = (mutation.address, mutation.key.0);
-                let absent = match &mutation.expected {
-                    ConcreteRead::Present(value) => value.is_empty(),
-                    ConcreteRead::Absent | ConcreteRead::Tombstone => true,
-                };
-                if !expected.contains_key(&key) && absent {
-                    initially_absent.insert(key);
-                }
-                if matches!(mutation.operation, FinalChainNativeRawOperation::Put(_)) {
-                    created.insert(key);
-                }
-                collect_raw_values(&mut expected, std::slice::from_ref(mutation));
-            }
-        }
-    }
+    let fold = crate::native_projection_context::fold_lifecycle_raw(context)?;
+    let transaction = u32::try_from(effect.index)?;
+    let delta = fold
+        .transactions
+        .get(&transaction)
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_NATIVE_LIFECYCLE_TRANSACTION_MISSING"))?;
+    let expected = delta
+        .values
+        .iter()
+        .map(|((address, key), value)| ((*address, key.0), value.clone()))
+        .collect::<BTreeMap<_, _>>();
     let actual = effect
         .storage
         .iter()
@@ -233,46 +223,41 @@ pub(in crate::final_chain) fn validate_native_context_transaction_storage(
         expected == actual,
         "FINAL_CHAIN_NATIVE_CONTEXT_TRANSACTION_STORAGE_MISMATCH"
     );
-    Ok(initially_absent
-        .into_iter()
-        .filter(|key| created.contains(key) && expected.get(key).is_some_and(Vec::is_empty))
+    Ok(delta
+        .initially_absent
+        .iter()
+        .filter(|key| {
+            delta.created.contains(key) && delta.values.get(key).is_some_and(Vec::is_empty)
+        })
+        .map(|(address, key)| (*address, key.0))
         .collect())
 }
 
-/// Requires every native/reward setter's final value in the complete final catalog.
+/// Checks final values and the absence baseline of each reset account.
 pub(in crate::final_chain) fn validate_native_context_final_storage(
     context: &crate::native_projection_context::FinalChainNativeProjectionContext,
     rows: &[FinalChainConcreteStorageProjection],
 ) -> anyhow::Result<()> {
-    let mut expected = BTreeMap::new();
-    for invocation in &context.invocations {
-        collect_raw_values(&mut expected, &invocation.raw_mutations);
-    }
-    collect_raw_values(&mut expected, &context.rewards.raw_mutations);
+    let fold = crate::native_projection_context::fold_lifecycle_raw(context)?;
     let actual = rows
         .iter()
-        .map(|row| ((row.contract, row.key), &row.value))
+        .map(|row| ((row.contract, ConcreteStorageKey(row.key)), &row.value))
         .collect::<BTreeMap<_, _>>();
-    for (key, value) in &expected {
+    for (key, value) in &fold.final_values {
         anyhow::ensure!(
             actual.get(key).is_some_and(|actual| *actual == value),
             "FINAL_CHAIN_NATIVE_CONTEXT_FINAL_STORAGE_MISMATCH"
         );
     }
-    Ok(())
-}
-
-fn collect_raw_values(
-    values: &mut BTreeMap<([u8; 20], [u8; 32]), Vec<u8>>,
-    mutations: &[FinalChainNativeRawMutation],
-) {
-    for mutation in mutations {
-        let value = match &mutation.operation {
-            FinalChainNativeRawOperation::Put(value) => value.as_bytes().to_vec(),
-            FinalChainNativeRawOperation::Delete => Vec::new(),
-        };
-        values.insert((mutation.address, mutation.key.0), value);
+    for (key, value) in &actual {
+        anyhow::ensure!(
+            !fold.absent_accounts.contains(&key.0)
+                || fold.final_values.contains_key(key)
+                || value.is_empty(),
+            "FINAL_CHAIN_NATIVE_CONTEXT_FINAL_STORAGE_RESET_MISMATCH"
+        );
     }
+    Ok(())
 }
 
 /// Binds terminal reward reads to the independently validated post-transaction
@@ -300,6 +285,58 @@ pub(in crate::final_chain) fn validate_native_context_reward_accounts(
         );
     }
     Ok(())
+}
+
+/// Evidence for the non-batched empty-list scheduler input.
+pub(in crate::final_chain) struct AbsentSlashingCleanupInput;
+
+pub(in crate::final_chain) fn absent_slashing_cleanup_input(
+    accounts: &HashMap<[u8; 20], Account>,
+    context: &FinalChainNativeProjectionContext,
+) -> anyhow::Result<Option<AbsentSlashingCleanupInput>> {
+    validate_native_context_reward_accounts(accounts, &context.rewards.accounts)?;
+    crate::native_projection_context::fold_lifecycle_raw(context)?;
+    if accounts.contains_key(&SLASHING_CONTRACT_ADDRESS) {
+        return Ok(None);
+    }
+    let mut account_reads = context
+        .rewards
+        .accounts
+        .iter()
+        .filter(|(address, _)| *address == SLASHING_CONTRACT_ADDRESS);
+    let Some((_, account)) = account_reads.next() else {
+        return Ok(None);
+    };
+    if account_reads.next().is_some()
+        || account.exists
+        || account.nonce != rustaxa_types::FinalChainNonce::default()
+        || account.balance != Default::default()
+    {
+        return Ok(None);
+    }
+    let mut list_key = [0_u8; 32];
+    list_key[31] = 2;
+    let list_key = ConcreteStorageKey(list_key);
+    let mut reads = context
+        .rewards
+        .raw_reads
+        .iter()
+        .filter(|read| read.address == SLASHING_CONTRACT_ADDRESS && read.key == list_key);
+    let Some(read) = reads.next() else {
+        return Ok(None);
+    };
+    if reads.next().is_some() || !matches!(read.value, ConcreteRead::Absent) {
+        return Ok(None);
+    }
+    if context
+        .rewards
+        .raw_mutations
+        .iter()
+        .any(|mutation| mutation.address == SLASHING_CONTRACT_ADDRESS && mutation.key == list_key)
+    {
+        return Ok(None);
+    }
+    Ok(Some(AbsentSlashingCleanupInput))
 }
 
 #[cfg(test)]
@@ -364,6 +401,10 @@ mod tests {
         let mut context = FinalChainNativeProjectionContext {
             request_id: [0; 32],
             projection_hash: [0; 32],
+            lifecycle: vec![crate::native_projection_context::FinalChainLifecycleReceipt {
+                transaction_position: 0, transaction_hash: [0; 32], token: 1, event_count: 3,
+                events: vec![crate::native_projection_context::FinalChainLifecycleEvent::NativeStarted { transaction: 0, sequence: 0 }, crate::native_projection_context::FinalChainLifecycleEvent::NativeObserved { transaction: 0, sequence: 0 }, crate::native_projection_context::FinalChainLifecycleEvent::TransactionEnd { observations: 1 }],
+            }],
             rewards: Default::default(),
             invocations: vec![FinalChainNativeInvocationContext {
                 request: FinalChainNativeRequest {
@@ -383,7 +424,7 @@ mod tests {
                     supplied_gas: 100_000_u64.into(),
                 },
                 accounts: Vec::new(),
-                raw_reads: Vec::new(),
+                raw_reads: vec![FinalChainNativeRawRead { address: DPOS_CONTRACT_ADDRESS, key, value: ConcreteRead::Absent }],
                 ordinary_mutations: Vec::new(),
                 raw_mutations: vec![put.clone(), delete.clone()],
             }],
@@ -401,6 +442,7 @@ mod tests {
             BTreeSet::from([(DPOS_CONTRACT_ADDRESS, key.0)])
         );
         // An isolated delete and deleting a preexisting row are not transient creation proofs.
+        context.invocations[0].raw_reads[0].value = ConcreteRead::Present(vec![9]);
         context.invocations[0].raw_mutations = vec![delete.clone()];
         assert!(
             validate_native_context_transaction_storage(&context, &effect)
@@ -409,6 +451,7 @@ mod tests {
         );
         context.invocations[0].raw_mutations = vec![put, delete];
         context.invocations[0].raw_mutations[0].expected = ConcreteRead::Present(vec![8]);
+        context.invocations[0].raw_reads[0].value = ConcreteRead::Present(vec![8]);
         assert!(
             validate_native_context_transaction_storage(&context, &effect)
                 .unwrap()
@@ -417,5 +460,45 @@ mod tests {
         let mut wrong = effect;
         wrong.storage[0].value = vec![9];
         assert!(validate_native_context_transaction_storage(&context, &wrong).is_err());
+    }
+    #[test]
+    fn reset_baseline_rejects_old_catalog_rows() {
+        use crate::native_projection_context::{
+            FinalChainLifecycleEvent as E, FinalChainLifecycleReceipt,
+        };
+        let address = DPOS_CONTRACT_ADDRESS;
+        let context = FinalChainNativeProjectionContext {
+            request_id: [0; 32],
+            projection_hash: [0; 32],
+            invocations: Vec::new(),
+            rewards: Default::default(),
+            lifecycle: vec![FinalChainLifecycleReceipt {
+                transaction_position: 0,
+                transaction_hash: [0; 32],
+                token: 1,
+                event_count: 4,
+                events: vec![
+                    E::FrameOpened { parent: None },
+                    E::AccountCreated {
+                        address,
+                        frame: Some(0),
+                        saved_absent: true,
+                    },
+                    E::AccountReset {
+                        address,
+                        creation: 1,
+                        rollback_frame: 0,
+                    },
+                    E::TransactionEnd { observations: 0 },
+                ],
+            }],
+        };
+        assert!(validate_native_context_final_storage(&context, &[]).is_ok());
+        let row = FinalChainConcreteStorageProjection {
+            contract: address,
+            key: [2; 32],
+            value: vec![9],
+        };
+        assert!(validate_native_context_final_storage(&context, &[row]).is_err());
     }
 }

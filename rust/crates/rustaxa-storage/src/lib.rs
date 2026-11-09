@@ -26,6 +26,8 @@ pub use concrete_state::{
     PreparedConcreteView, account_commitment_rlp, account_version_prefix, decode_physical_account,
     replay_storage_witness, storage_version_prefix, versioned_key,
 };
+#[cfg(feature = "synthetic-fixtures")]
+pub use concrete_state::{ConcreteCommittedPut, ConcreteCommittedReceipt};
 pub use concrete_state::{
     ConcreteDiagnosticCapture, ConcreteDiagnosticFailure, ConcreteDiagnosticOutcome,
     ConcreteDiagnosticPhase, ConcreteDiagnosticPlan, ConcreteDiagnosticRead,

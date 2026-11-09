@@ -45,6 +45,74 @@ impl FinalChainNativeSession<'_> {
         state: &dyn FinalChainNativeStateRead,
     ) -> std::result::Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
         let diagnostic = query_failure_diagnostic(&transaction, abi_data_len);
+        if self.origin == NativeSessionOrigin::PendingPeriod
+            && matches!(
+                transaction,
+                DposTransaction::IsValidatorEligible(Ok(_))
+                    | DposTransaction::GetTotalEligibleVotesCount
+                    | DposTransaction::GetValidatorEligibleVotesCount(Ok(_))
+            )
+        {
+            let view = self.delayed_physical.as_ref().ok_or_else(|| {
+                FinalChainNativeSessionError::Domain("FINAL_CHAIN_DELAYED_VIEW_REQUIRED".into())
+            })?;
+            let period = self.eligibility_period;
+            let policy = super::frozen_eligibility::EligibilityPolicy {
+                period: period.as_u64(),
+                cacti: self.final_chain.cacti_active(period),
+                magnolia: self.final_chain.magnolia_active(period),
+                aspen: period >= self.final_chain.rewards_config.aspen_part_one_period,
+                threshold: self
+                    .final_chain
+                    .dpos_eligibility_balance_threshold
+                    .as_u256(),
+                step: self
+                    .final_chain
+                    .dpos_vote_eligibility_balance_step
+                    .as_u256(),
+                maximum: self.final_chain.dpos_validator_maximum_stake.as_u256(),
+            };
+            let output = match transaction {
+                DposTransaction::IsValidatorEligible(Ok(validator)) => Some(
+                    abi_word_from_bool(
+                        view.eligible(validator, &policy)
+                            .map_err(|e| FinalChainNativeSessionError::Domain(e.to_string()))?,
+                    )
+                    .to_vec(),
+                ),
+                DposTransaction::GetValidatorEligibleVotesCount(Ok(validator)) => Some(
+                    abi_word_from_u64(
+                        view.validator_votes(validator, &policy)
+                            .map_err(|e| FinalChainNativeSessionError::Domain(e.to_string()))?,
+                    )
+                    .to_vec(),
+                ),
+                DposTransaction::GetTotalEligibleVotesCount => Some(
+                    abi_word_from_u64(
+                        view.total_votes(&policy)
+                            .map_err(|e| FinalChainNativeSessionError::Domain(e.to_string()))?,
+                    )
+                    .to_vec(),
+                ),
+                _ => None,
+            };
+            return Ok(FinalChainNativeInvocationResult::Completed(
+                FinalChainNativeOutcome {
+                    status: if output.is_some() {
+                        FinalChainNativeStatus::Success
+                    } else {
+                        FinalChainNativeStatus::ContractFailure {
+                            error: diagnostic.unwrap_or_default(),
+                        }
+                    },
+                    gas_used: quote.required_gas,
+                    output: output.unwrap_or_default(),
+                    account_mutations: Vec::new(),
+                    raw_mutations: Vec::new(),
+                    logs: Vec::new(),
+                },
+            ));
+        }
         if self.origin == NativeSessionOrigin::CurrentHistoricalTrace
             && matches!(
                 transaction,

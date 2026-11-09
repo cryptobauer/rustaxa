@@ -3917,6 +3917,11 @@ impl ReadOptions {
         }
     }
 
+    // The caller must keep this snapshot live and use it only with its owning DB.
+    pub(crate) unsafe fn set_snapshot_raw(&mut self, snapshot: *const ffi::rocksdb_snapshot_t) {
+        unsafe { ffi::rocksdb_readoptions_set_snapshot(self.inner, snapshot) };
+    }
+
     /// Sets the lower bound for an iterator.
     pub fn set_iterate_lower_bound<K: Into<Vec<u8>>>(&mut self, key: K) {
         self.set_lower_bound_impl(Some(key.into()));

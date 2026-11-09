@@ -680,7 +680,6 @@ mod tests {
     use super::*;
     use rlp::{Rlp, RlpStream};
     use rustaxa_storage::{Config, Storage};
-    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn addr(byte: u8) -> H160 {
@@ -740,8 +739,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = PathBuf::from(format!(
-            "/tmp/rustaxa_rewards_stats_{name}_{}_{}",
+        let dir = std::env::temp_dir().join(format!(
+            "rustaxa_rewards_stats_{name}_{}_{}",
             std::process::id(),
             nonce
         ));

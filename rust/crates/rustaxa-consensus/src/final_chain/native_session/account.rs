@@ -8,7 +8,7 @@
 //! execution records exact `BigInt` replacements without narrowing them.
 
 use super::super::{Account, DPOS_CONTRACT_ADDRESS, FinalChainNonce, empty_account};
-use super::FinalChainNativeStateRead;
+use super::{FinalChainNativeStageEvent, FinalChainNativeStateRead};
 use anyhow::{Result, anyhow, bail};
 use ethereum_types::U256;
 use num_bigint::{BigInt, BigUint, Sign};
@@ -88,6 +88,10 @@ pub(in crate::final_chain) trait DposAccountPort {
     /// Returns current working facts, materializing a legacy map account exactly
     /// where the former `entry(...).or_insert_with(empty_account)` read did so.
     fn account(&mut self, address: [u8; 20]) -> Result<FinalChainNativeAccount>;
+    /// Checks source-path account existence without claiming a balance consumer.
+    fn account_exists_probe(&mut self, address: [u8; 20]) -> Result<bool> {
+        Ok(self.account(address)?.exists)
+    }
 
     /// Applies the reference's `SubBalance` semantics for a non-negative amount.
     fn subtract_balance(&mut self, address: [u8; 20], amount: &BigUint) -> Result<()>;
@@ -104,6 +108,7 @@ pub(in crate::final_chain) trait DposAccountPort {
 /// account source or as publication authority.
 pub(super) struct StagedDposAccountPort<'a> {
     state: Option<&'a dyn FinalChainNativeStateRead>,
+    observer: Option<&'a dyn FinalChainNativeStateRead>,
     accounts: BTreeMap<[u8; 20], FinalChainNativeAccount>,
     mutations: Vec<FinalChainNativeOrdinaryMutation>,
 }
@@ -137,6 +142,7 @@ impl<'a> StagedDposAccountPort<'a> {
         }
         Ok(Self {
             state: None,
+            observer: None,
             accounts: indexed,
             mutations: Vec::new(),
         })
@@ -150,14 +156,32 @@ impl<'a> StagedDposAccountPort<'a> {
     pub(super) fn from_state(state: &'a dyn FinalChainNativeStateRead) -> Self {
         Self {
             state: Some(state),
+            observer: Some(state),
             accounts: BTreeMap::new(),
             mutations: Vec::new(),
         }
     }
 
+    /// Retains an observer for preloaded accounts without changing their lookup rules.
+    pub(super) fn with_observer(mut self, observer: &'a dyn FinalChainNativeStateRead) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    pub(super) fn mutation_count(&self) -> usize {
+        self.mutations.len()
+    }
+
     /// Consumes the scratch overlay and returns effects in reference call order.
     pub(super) fn into_mutations(self) -> Vec<FinalChainNativeOrdinaryMutation> {
         self.mutations
+    }
+
+    fn record_mutation(&mut self, mutation: FinalChainNativeOrdinaryMutation) {
+        if let Some(state) = self.observer {
+            state.observe_stage(FinalChainNativeStageEvent::AccountWrite(&mutation));
+        }
+        self.mutations.push(mutation);
     }
 
     fn current_mut(&mut self, address: [u8; 20]) -> Result<&mut FinalChainNativeAccount> {
@@ -169,36 +193,71 @@ impl<'a> StagedDposAccountPort<'a> {
             validate_account_fact(address, &account)?;
             self.accounts.insert(address, account);
         }
-        self.accounts
+        let account = self
+            .accounts
             .get_mut(&address)
-            .ok_or_else(|| anyhow!("staged native account context missing: {address:?}"))
+            .ok_or_else(|| anyhow!("staged native account context missing: {address:?}"))?;
+        Ok(account)
+    }
+
+    fn observed_account(
+        &mut self,
+        address: [u8; 20],
+        semantic: bool,
+    ) -> Result<FinalChainNativeAccount> {
+        let account = self.current_mut(address)?.clone();
+        if let Some(state) = self.observer {
+            if semantic {
+                state.observe_stage(FinalChainNativeStageEvent::AccountRead {
+                    address,
+                    account: &account,
+                });
+            } else {
+                state.observe_stage(FinalChainNativeStageEvent::AccountProbe {
+                    address,
+                    account: &account,
+                    purpose: 2,
+                });
+            }
+        }
+        Ok(account)
     }
 }
 
 impl DposAccountPort for StagedDposAccountPort<'_> {
     fn account(&mut self, address: [u8; 20]) -> Result<FinalChainNativeAccount> {
-        Ok(self.current_mut(address)?.clone())
+        self.observed_account(address, true)
+    }
+
+    fn account_exists_probe(&mut self, address: [u8; 20]) -> Result<bool> {
+        let account = self.current_mut(address)?.clone();
+        if let Some(observer) = self.observer {
+            observer.observe_stage(FinalChainNativeStageEvent::AccountProbe {
+                address,
+                account: &account,
+                purpose: 1,
+            });
+        }
+        Ok(account.exists)
     }
 
     fn subtract_balance(&mut self, address: [u8; 20], amount: &BigUint) -> Result<()> {
-        let current = self.current_mut(address)?.clone();
+        let current = self.observed_account(address, false)?;
         if amount == &BigUint::default() {
-            self.mutations
-                .push(FinalChainNativeOrdinaryMutation::EnsureExists {
-                    address,
-                    expected_exists: current.exists,
-                });
+            self.record_mutation(FinalChainNativeOrdinaryMutation::EnsureExists {
+                address,
+                expected_exists: current.exists,
+            });
             self.current_mut(address)?.exists = true;
             return Ok(());
         }
         let replacement = &current.balance - BigInt::from(amount.clone());
-        self.mutations
-            .push(FinalChainNativeOrdinaryMutation::BalanceReplace {
-                address,
-                expected_exists: current.exists,
-                expected: current.balance,
-                replacement: replacement.clone(),
-            });
+        self.record_mutation(FinalChainNativeOrdinaryMutation::BalanceReplace {
+            address,
+            expected_exists: current.exists,
+            expected: current.balance,
+            replacement: replacement.clone(),
+        });
         let account = self.current_mut(address)?;
         account.exists = true;
         account.balance = replacement;
@@ -206,24 +265,22 @@ impl DposAccountPort for StagedDposAccountPort<'_> {
     }
 
     fn add_balance(&mut self, address: [u8; 20], amount: &BigUint) -> Result<()> {
-        let current = self.current_mut(address)?.clone();
+        let current = self.observed_account(address, false)?;
         if amount == &BigUint::default() {
-            self.mutations
-                .push(FinalChainNativeOrdinaryMutation::Touch {
-                    address,
-                    expected_exists: current.exists,
-                });
+            self.record_mutation(FinalChainNativeOrdinaryMutation::Touch {
+                address,
+                expected_exists: current.exists,
+            });
             self.current_mut(address)?.exists = true;
             return Ok(());
         }
         let replacement = &current.balance + BigInt::from(amount.clone());
-        self.mutations
-            .push(FinalChainNativeOrdinaryMutation::BalanceReplace {
-                address,
-                expected_exists: current.exists,
-                expected: current.balance,
-                replacement: replacement.clone(),
-            });
+        self.record_mutation(FinalChainNativeOrdinaryMutation::BalanceReplace {
+            address,
+            expected_exists: current.exists,
+            expected: current.balance,
+            replacement: replacement.clone(),
+        });
         let account = self.current_mut(address)?;
         account.exists = true;
         account.balance = replacement;

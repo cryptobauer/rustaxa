@@ -16,6 +16,36 @@ new transaction format or Ethereum fork activation is included. If a concrete im
 layout change, document the smallest exception and its migration/rollback consequences for task-owner review before
 making it. Existing compatibility bugs are reproduced under historical rules, not silently corrected.
 
+## Required defect fixes after parity
+
+Owner requirement recorded 2026-11-08: prove and accept historical Rust/Go parity first. Fix the known Go defects
+in Rust only at the end, after parity is proved and before final Rust EVM cutover acceptance. This is a required
+closeout gate. Keep the accepted parity source and evidence so that the later corrections can be checked separately.
+
+- [ ] Fix transient-storage rollback: writes in a reverted frame must not survive under the corrected rules.
+  Historical behavior and the current Rust implementation are recorded in
+  [the journal evidence](journal_contract_evidence.md) and `rustaxa-evm/src/journal.rs`.
+- [ ] Fix repeated SELFDESTRUCT refunds: the destroyed-account check must prevent repeated refunds under the
+  corrected rules. See [the SELFDESTRUCT evidence](s3_selfdestruct.md) and `rustaxa-evm/src/host.rs`.
+- [ ] Close the RETURNDATACOPY arithmetic and slice-panic defect. Rust currently reports an explicit reference-panic
+  error. Define and test the corrected execution outcome; an error that only aborts the session does not by itself
+  close the defect. See [the RETURNDATACOPY evidence](s3_returndatacopy.md).
+- [ ] Close the Falcon ABI bounds and allocation-panic defects. Check the existing Rust guards against the intended
+  corrected behavior, including wrapped lengths and allocation failure. See [the Falcon evidence](s5_falcon.md).
+- [ ] Close the malformed slashing vote/sortition RLP panic defect. Check the existing fallible Rust decoder and
+  its callers for controlled rejection and no partial state publication. The local Go reference already has patch
+  `edccf3919`; the public reference differs. See `rustaxa-consensus/src/slashing.rs`.
+
+For each item, record the intended behavior, implementation, regression tests and review result. Existing guards
+can satisfy an item if the evidence proves the corrected behavior. Define and approve the network/configuration
+activation boundary for changes to execution rules, gas, refunds, receipts or state roots. Preserve historical
+replay under the old rules; keep corrected-rule fixtures separate from the accepted parity corpus. Run the affected
+execution, native, persistence and integration checks for the final corrected source before cutover acceptance.
+Also add any further Go defects found before parity closure to this list. These fixes do not waive other cutover
+gates or authorize live activation.
+
+## Execution and state scope
+
 Retain Rust consensus, DAG/PBFT ordering, FinalChain sequencing/publication, rewards planning and native business
 kernels. Replace Go concrete execution/state behind the existing execution boundary. Preserve arbitrary-width account
 nonces, exact native bytes, gas/fee/error ordering, receipts, roots and public query behavior. Physical compatibility

@@ -8,7 +8,7 @@ if(RUSTAXA_ENABLE)
         "${CMAKE_SOURCE_DIR}/scripts/era_cpp_test_overlay.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/rpc_test.cpp" ${RUSTAXA_TEST_OVERLAY_INPUTS})
     execute_process(COMMAND python3 "${CMAKE_SOURCE_DIR}/scripts/era_cpp_test_overlay.py"
-        --source "${CMAKE_SOURCE_DIR}" --output "${RUSTAXA_TEST_OVERLAY_DIR}"
+        --source "${CMAKE_SOURCE_DIR}" --output "${RUSTAXA_TEST_OVERLAY_DIR}" --build-root "${CMAKE_BINARY_DIR}"
         RESULT_VARIABLE RUSTAXA_TEST_OVERLAY_STATUS)
     if(NOT RUSTAXA_TEST_OVERLAY_STATUS EQUAL 0)
         message(FATAL_ERROR "Rust closeout test overlay failed")

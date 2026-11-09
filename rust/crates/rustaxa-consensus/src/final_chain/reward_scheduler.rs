@@ -694,6 +694,295 @@ impl FinalChainRewardSchedulerRuntime {
 mod tests {
     use super::*;
 
+    fn reset_cleanup_context() -> crate::native_projection_context::FinalChainNativeProjectionContext
+    {
+        use crate::native_projection_context::{
+            FinalChainLifecycleEvent as E, FinalChainLifecycleReceipt,
+            FinalChainNativeInvocationContext, FinalChainNativeProjectionContext,
+            FinalChainNativeRawRead, FinalChainNativeRewardsContext,
+        };
+        use crate::native_session::{
+            FinalChainNativeAccount, FinalChainNativeCallKind, FinalChainNativeInvocationId,
+            FinalChainNativeRawMutation, FinalChainNativeRawOperation, FinalChainNativeRawValue,
+            FinalChainNativeRequest, FinalChainNativeValue,
+        };
+        use rustaxa_types::concrete_state::{ConcreteRead, ConcreteStorageKey};
+        let address = super::super::SLASHING_CONTRACT_ADDRESS;
+        let mut key = [0; 32];
+        key[31] = 2;
+        let key = ConcreteStorageKey(key);
+        let events = vec![
+            E::FrameOpened { parent: None },
+            E::NativeStarted {
+                transaction: 0,
+                sequence: 0,
+            },
+            E::AccountCreated {
+                address,
+                frame: Some(0),
+                saved_absent: true,
+            },
+            E::NativeObserved {
+                transaction: 0,
+                sequence: 0,
+            },
+            E::AccountReset {
+                address,
+                creation: 2,
+                rollback_frame: 0,
+            },
+            E::TransactionEnd { observations: 1 },
+        ];
+        let receipt = FinalChainLifecycleReceipt {
+            transaction_position: 0,
+            transaction_hash: [8; 32],
+            token: 7,
+            event_count: events.len(),
+            events,
+        };
+        let read = FinalChainNativeRawRead {
+            address,
+            key,
+            value: ConcreteRead::Absent,
+        };
+        FinalChainNativeProjectionContext {
+            request_id: [1; 32],
+            projection_hash: [2; 32],
+            lifecycle: vec![receipt],
+            invocations: vec![FinalChainNativeInvocationContext {
+                request: FinalChainNativeRequest {
+                    id: FinalChainNativeInvocationId {
+                        transaction: 0_u32.into(),
+                        sequence: 0,
+                    },
+                    period: 5_u64.into(),
+                    depth: 1,
+                    kind: FinalChainNativeCallKind::Call,
+                    is_static: false,
+                    caller: [3; 20],
+                    contract: address,
+                    state_address: address,
+                    value: FinalChainNativeValue::new(0_u8.into()),
+                    input: Vec::new(),
+                    supplied_gas: 100_000_u64.into(),
+                },
+                accounts: Vec::new(),
+                raw_reads: vec![read.clone()],
+                ordinary_mutations: Vec::new(),
+                raw_mutations: vec![FinalChainNativeRawMutation {
+                    address,
+                    key,
+                    expected: ConcreteRead::Absent,
+                    operation: FinalChainNativeRawOperation::Put(
+                        FinalChainNativeRawValue::new(vec![9]).unwrap(),
+                    ),
+                }],
+            }],
+            rewards: FinalChainNativeRewardsContext {
+                accounts: vec![(
+                    address,
+                    FinalChainNativeAccount {
+                        exists: false,
+                        nonce: Default::default(),
+                        balance: 0.into(),
+                    },
+                )],
+                raw_reads: vec![read],
+                ..Default::default()
+            },
+        }
+    }
+
+    fn due_basis() -> FinalChainRewardSchedulerBasis {
+        FinalChainRewardSchedulerBasis {
+            source_instance_id: 1,
+            state_api_epoch: 11,
+            expected_runtime_generation: 2,
+            expected_parent: 4.into(),
+            period: 5.into(),
+            request_id: [1; 32],
+            next_cleanup_block: 3,
+        }
+    }
+
+    #[test]
+    fn absent_reset_cleanup_preserves_semantics_and_nonzero_due_timer() {
+        use crate::native_projection_context::{
+            FinalChainLifecycleAuthority, validate_lifecycle_authority,
+        };
+        let context = reset_cleanup_context();
+        let authority = FinalChainLifecycleAuthority {
+            request_id: [1; 32],
+            state_api_epoch: 11,
+            projection_hash: [2; 32],
+            receipts: context.lifecycle.clone(),
+        };
+        validate_lifecycle_authority(&context, &authority, [1; 32], 11, [2; 32], &[(0, [8; 32])])
+            .unwrap();
+        let basis = due_basis();
+        let validator = [4; 20];
+        let jailed = vec![validator];
+        let blocks = BTreeMap::from([(validator, 7)]);
+        let ordinary = basis.plan_cleanup(&jailed, &blocks);
+        assert!(ordinary.ran);
+        let plan = super::super::plan_bound_cleanup(
+            basis,
+            &jailed,
+            &blocks,
+            None,
+            &Default::default(),
+            Some(&context),
+        )
+        .unwrap();
+        assert!(!plan.ran);
+        assert_eq!(plan.successor, basis.successor(3));
+        assert_eq!(jailed, vec![validator]);
+        assert_ne!(plan.successor, ordinary.successor);
+        let mut forged = authority.clone();
+        forged.receipts[0].token += 1;
+        assert!(
+            validate_lifecycle_authority(&context, &forged, [1; 32], 11, [2; 32], &[(0, [8; 32])])
+                .is_err()
+        );
+        assert!(
+            validate_lifecycle_authority(
+                &context,
+                &authority,
+                [1; 32],
+                12,
+                [2; 32],
+                &[(0, [8; 32])]
+            )
+            .is_err()
+        );
+        assert!(
+            validate_lifecycle_authority(
+                &context,
+                &authority,
+                [9; 32],
+                11,
+                [2; 32],
+                &[(0, [8; 32])]
+            )
+            .is_err()
+        );
+        assert!(
+            validate_lifecycle_authority(
+                &context,
+                &authority,
+                [1; 32],
+                11,
+                [9; 32],
+                &[(0, [8; 32])]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn cleanup_requires_exact_absence_and_keeps_ordinary_branches() {
+        use rustaxa_types::concrete_state::ConcreteRead;
+        let context = reset_cleanup_context();
+        let basis = due_basis();
+        let validator = [4; 20];
+        let jailed = vec![validator];
+        let blocks = BTreeMap::from([(validator, 7)]);
+        let ordinary = basis.plan_cleanup(&jailed, &blocks);
+        let plan = |ctx: &crate::native_projection_context::FinalChainNativeProjectionContext| {
+            super::super::plan_bound_cleanup(
+                basis,
+                &jailed,
+                &blocks,
+                None,
+                &Default::default(),
+                Some(ctx),
+            )
+        };
+        for value in [ConcreteRead::Tombstone, ConcreteRead::Present(Vec::new())] {
+            let mut bad = context.clone();
+            bad.rewards.raw_reads[0].value = value;
+            assert!(plan(&bad).is_err());
+        }
+        let mut missing = context.clone();
+        missing.rewards.raw_reads.clear();
+        assert_eq!(plan(&missing).unwrap(), ordinary);
+        let mut wrong = context.clone();
+        wrong.rewards.raw_reads[0].key.0[31] = 3;
+        assert_eq!(plan(&wrong).unwrap(), ordinary);
+        let mut wrong_address = context.clone();
+        wrong_address.rewards.raw_reads[0].address = [9; 20];
+        assert_eq!(plan(&wrong_address).unwrap(), ordinary);
+        let mut missing_account = context.clone();
+        missing_account.rewards.accounts.clear();
+        assert_eq!(plan(&missing_account).unwrap(), ordinary);
+        let mut invalid_expected = context.clone();
+        invalid_expected.invocations[0].raw_mutations[0].expected = ConcreteRead::Present(vec![1]);
+        assert!(plan(&invalid_expected).is_err());
+        let mut reward_write = context.clone();
+        let mut write = reward_write.invocations[0].raw_mutations[0].clone();
+        write.expected = ConcreteRead::Absent;
+        reward_write.rewards.raw_mutations.push(write);
+        assert_eq!(plan(&reward_write).unwrap(), ordinary);
+        let mut present = std::collections::HashMap::new();
+        present.insert(
+            super::super::SLASHING_CONTRACT_ADDRESS,
+            super::super::empty_account(),
+        );
+        assert!(
+            super::super::plan_bound_cleanup(
+                basis,
+                &jailed,
+                &blocks,
+                None,
+                &present,
+                Some(&context)
+            )
+            .is_err()
+        );
+        let mut recreated = context.clone();
+        recreated.rewards.accounts[0].1.exists = true;
+        assert_eq!(
+            super::super::plan_bound_cleanup(
+                basis,
+                &jailed,
+                &blocks,
+                None,
+                &present,
+                Some(&recreated)
+            )
+            .unwrap(),
+            ordinary
+        );
+        assert_eq!(
+            super::super::plan_bound_cleanup(
+                basis,
+                &jailed,
+                &blocks,
+                Some((&jailed, &blocks)),
+                &Default::default(),
+                Some(&context)
+            )
+            .unwrap(),
+            ordinary
+        );
+        let mut not_due = basis;
+        not_due.next_cleanup_block = 9;
+        let mut no_reads = context.clone();
+        no_reads.rewards.accounts.clear();
+        no_reads.rewards.raw_reads.clear();
+        let plan = super::super::plan_bound_cleanup(
+            not_due,
+            &jailed,
+            &blocks,
+            None,
+            &Default::default(),
+            Some(&no_reads),
+        )
+        .unwrap();
+        assert!(!plan.ran);
+        assert_eq!(plan.successor, not_due.successor(9));
+    }
+
     fn binding(
         basis: FinalChainRewardSchedulerBasis,
     ) -> FinalChainRewardSchedulerPublicationBinding {

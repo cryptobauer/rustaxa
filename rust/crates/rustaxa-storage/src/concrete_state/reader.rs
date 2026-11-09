@@ -2,8 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Arc;
 
-use rocksdb::{ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options};
+use rocksdb::{
+    ColumnFamilyDescriptor, DB, DBIteratorWithThreadMode, Direction, IteratorMode, Options,
+    OwnedSnapshotWithThreadMode,
+};
 use rustaxa_types::FinalChainBlockNumber;
 use rustaxa_types::concrete_state::{
     ConcreteAccountRecord, ConcreteRead, ConcreteReadError, ConcreteStateIdentity,
@@ -36,7 +40,7 @@ const REQUIRED_COLUMNS: &[&str] = &["default", "1", "2", "3", "4", "5", "6", "7"
 /// dependency is `HistoryUnavailable`; without explicit pruning evidence this
 /// reader never reports `Pruned`.
 pub struct ConcreteStateReader {
-    db: DB,
+    db: ReadOwner,
     identity: ConcreteStateIdentity,
 }
 
@@ -50,9 +54,67 @@ pub struct ConcreteStateReader {
 /// consistent; the application remains responsible for sourcing each historical
 /// period/root pair from its authoritative finalized header.
 pub struct ConcreteCheckpointReaders {
-    db: DB,
+    db: ReadOwner,
     committed: ConcreteStateIdentity,
     retained: BTreeMap<FinalChainBlockNumber, ConcreteStateIdentity>,
+}
+
+pub(super) enum ReadOwner {
+    Offline(DB),
+    Snapshot(OwnedSnapshotWithThreadMode<DB>),
+}
+
+impl ReadOwner {
+    pub(super) fn snapshot(db: Arc<DB>) -> Result<Self, ConcreteReadError> {
+        let snapshot = OwnedSnapshotWithThreadMode::new(db)
+            .map_err(|error| ConcreteReadError::Io(error.to_string()))?;
+        Ok(Self::Snapshot(snapshot))
+    }
+
+    fn db(&self) -> &DB {
+        match self {
+            Self::Offline(db) => db,
+            Self::Snapshot(snapshot) => snapshot.db(),
+        }
+    }
+
+    pub(super) fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        match self {
+            Self::Offline(db) => db.get(key),
+            Self::Snapshot(snapshot) => snapshot.get(key),
+        }
+    }
+
+    fn get_cf(
+        &self,
+        column: &str,
+        key: impl AsRef<[u8]>,
+        operation: &str,
+        key_label: &str,
+    ) -> Result<Option<Vec<u8>>, ConcreteReadError> {
+        let handle = self.db().cf_handle(column).ok_or_else(|| {
+            ConcreteReadError::Corrupt(format!("column family {column:?} is missing"))
+        })?;
+        match self {
+            Self::Offline(db) => db.get_cf(&handle, key),
+            Self::Snapshot(snapshot) => snapshot.get_cf(&handle, key),
+        }
+        .map_err(|error| diagnostic_io(error, operation, column, key_label))
+    }
+
+    fn iterator_cf<'a>(
+        &'a self,
+        column: &str,
+        mode: IteratorMode<'_>,
+    ) -> Result<DBIteratorWithThreadMode<'a, DB>, ConcreteReadError> {
+        let handle = self.db().cf_handle(column).ok_or_else(|| {
+            ConcreteReadError::Corrupt(format!("column family {column:?} is missing"))
+        })?;
+        Ok(match self {
+            Self::Offline(db) => db.iterator_cf(&handle, mode),
+            Self::Snapshot(snapshot) => snapshot.iterator_cf(&handle, mode),
+        })
+    }
 }
 
 /// Authenticated logical result for one storage path. This diagnostic is
@@ -139,12 +201,8 @@ impl ConcreteStateReader {
     pub fn synthetic_storage_history_prefixes(
         &self,
     ) -> Result<BTreeSet<[u8; 32]>, ConcreteReadError> {
-        let cf = self
-            .db
-            .cf_handle("5")
-            .ok_or_else(|| ConcreteReadError::Corrupt("missing storage column".into()))?;
         let mut prefixes = BTreeSet::new();
-        for (count, entry) in self.db.iterator_cf(cf, IteratorMode::Start).enumerate() {
+        for (count, entry) in self.db.iterator_cf("5", IteratorMode::Start)?.enumerate() {
             if count >= 1_000_000 {
                 return Err(ConcreteReadError::Corrupt("synthetic history bound".into()));
             }
@@ -160,8 +218,9 @@ impl ConcreteStateReader {
         }
         Ok(prefixes)
     }
-    /// Opens `state_db` read-only and pins `expected`. Existing column-family
-    /// names are preserved; every reference concrete-state column must exist.
+    /// Opens `state_db` read-only and pins `expected`.
+    /// No writable owner may be open for this path while this reader exists.
+    /// Every reference concrete-state column must exist.
     pub fn open_read_only(
         path: impl AsRef<Path>,
         expected: ConcreteStateIdentity,
@@ -169,6 +228,7 @@ impl ConcreteStateReader {
         Self::open_historical_read_only(path, expected, expected)
     }
 
+    /// No writable owner may be open for this path while this reader exists.
     /// Opens a reader pinned to an older FinalChain-supplied identity while
     /// independently requiring the database's current descriptor to equal
     /// `committed`. This does not attest the caller-supplied historical identity
@@ -180,7 +240,7 @@ impl ConcreteStateReader {
         committed: ConcreteStateIdentity,
         requested: ConcreteStateIdentity,
     ) -> Result<Self, ConcreteReadError> {
-        let db = open_database_read_only(path.as_ref())?;
+        let db = ReadOwner::Offline(open_database_read_only(path.as_ref())?);
         let observed = current_identity(&db)?;
         if committed.period.as_u64() > observed.period.as_u64() {
             return Err(ConcreteReadError::FuturePeriod {
@@ -226,6 +286,7 @@ impl ConcreteStateReader {
 
 impl ConcreteCheckpointReaders {
     /// Opens one existing database read-only for exact caller-authorized identities.
+    /// No writable owner may be open for this path while this reader exists.
     ///
     /// `committed` must equal the durable descriptor. `retained` must contain that exact
     /// identity, may contain older identities, and must not repeat a period. Each root is
@@ -236,7 +297,15 @@ impl ConcreteCheckpointReaders {
         committed: ConcreteStateIdentity,
         retained: impl IntoIterator<Item = ConcreteStateIdentity>,
     ) -> Result<Self, ConcreteReadError> {
-        let db = open_database_read_only(path.as_ref())?;
+        let db = ReadOwner::Offline(open_database_read_only(path.as_ref())?);
+        Self::from_owner(db, committed, retained)
+    }
+
+    pub(super) fn from_owner(
+        db: ReadOwner,
+        committed: ConcreteStateIdentity,
+        retained: impl IntoIterator<Item = ConcreteStateIdentity>,
+    ) -> Result<Self, ConcreteReadError> {
         let observed = current_identity(&db)?;
         if committed.period.as_u64() > observed.period.as_u64() {
             return Err(ConcreteReadError::FuturePeriod {
@@ -274,7 +343,9 @@ impl ConcreteCheckpointReaders {
         }
         for identity in identities.values().copied() {
             let pinned = PinnedDatabase { db: &db, identity };
-            read_account(&pinned, [0; 20])?;
+            read_account(&pinned, [0; 20]).inspect_err(|e| {
+                diagnostic_error(e, "root_authentication");
+            })?;
         }
 
         Ok(Self {
@@ -439,7 +510,7 @@ pub(super) fn map_inventory_error(error: InventoryError) -> ConcreteStorageInven
 }
 
 struct PinnedDatabase<'a> {
-    db: &'a DB,
+    db: &'a ReadOwner,
     identity: ConcreteStateIdentity,
 }
 
@@ -449,10 +520,7 @@ impl PhysicalTrieStore for PinnedDatabase<'_> {
     }
 
     fn node(&self, column: &str, hash: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError> {
-        let handle = self.db.cf_handle(column).ok_or_else(|| {
-            ConcreteReadError::Corrupt(format!("node column family {column:?} is missing"))
-        })?;
-        self.db.get_cf(&handle, hash).map_err(io)
+        self.db.get_cf(column, hash, "node_get", "trie_node")
     }
 
     fn value(
@@ -562,14 +630,11 @@ fn reconcile<T>(
 }
 
 fn read_code(
-    db: &DB,
+    db: &ReadOwner,
     identity: ConcreteStateIdentity,
     code_hash: [u8; 32],
 ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
-    let handle = db
-        .cf_handle("1")
-        .ok_or_else(|| ConcreteReadError::Corrupt("code column family is missing".into()))?;
-    let Some(code) = db.get_cf(&handle, code_hash).map_err(io)? else {
+    let Some(code) = db.get_cf("1", code_hash, "code_get", "code_hash")? else {
         return Err(ConcreteReadError::HistoryUnavailable(identity));
     };
     if keccak256(&code) != code_hash {
@@ -584,7 +649,8 @@ fn open_database_read_only(path: &Path) -> Result<DB, ConcreteReadError> {
     let mut options = Options::default();
     options.create_if_missing(false);
     options.create_missing_column_families(false);
-    let columns = DB::list_cf(&options, path).map_err(io)?;
+    let columns = DB::list_cf(&options, path)
+        .map_err(|e| diagnostic_io(e, "list_cf", "unavailable", "column_names"))?;
     let present = columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
     for required in REQUIRED_COLUMNS {
         if !present.contains(required) {
@@ -596,13 +662,14 @@ fn open_database_read_only(path: &Path) -> Result<DB, ConcreteReadError> {
     let descriptors = columns
         .iter()
         .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
-    DB::open_cf_descriptors_read_only(&options, path, descriptors, false).map_err(io)
+    DB::open_cf_descriptors_read_only(&options, path, descriptors, false)
+        .map_err(|e| diagnostic_io(e, "read_only_open", "unavailable", "database"))
 }
 
-fn current_identity(db: &DB) -> Result<ConcreteStateIdentity, ConcreteReadError> {
+fn current_identity(db: &ReadOwner) -> Result<ConcreteStateIdentity, ConcreteReadError> {
     let descriptor = db
         .get(DESCRIPTOR_KEY)
-        .map_err(io)?
+        .map_err(|e| diagnostic_io(e, "descriptor_get", "default", "descriptor"))?
         .ok_or_else(|| ConcreteReadError::Corrupt("concrete descriptor is missing".into()))?;
     decode_descriptor(&descriptor)
 }
@@ -638,10 +705,7 @@ impl PhysicalTrieStore for ConcreteStateReader {
     }
 
     fn node(&self, column: &str, hash: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError> {
-        let handle = self.db.cf_handle(column).ok_or_else(|| {
-            ConcreteReadError::Corrupt(format!("node column family {column:?} is missing"))
-        })?;
-        self.db.get_cf(&handle, hash).map_err(io)
+        self.db.get_cf(column, hash, "node_get", "trie_node")
     }
 
     fn value(
@@ -655,20 +719,18 @@ impl PhysicalTrieStore for ConcreteStateReader {
 }
 
 fn selected_version(
-    db: &DB,
+    db: &ReadOwner,
     column: &str,
     prefix: [u8; 32],
     period: FinalChainBlockNumber,
 ) -> Result<Option<SelectedVersion>, ConcreteReadError> {
-    let handle = db.cf_handle(column).ok_or_else(|| {
-        ConcreteReadError::Corrupt(format!("value column family {column:?} is missing"))
-    })?;
     let target = versioned_key(prefix, period);
-    let mut iterator = db.iterator_cf(&handle, IteratorMode::From(&target, Direction::Reverse));
+    let mut iterator = db.iterator_cf(column, IteratorMode::From(&target, Direction::Reverse))?;
     let Some(entry) = iterator.next() else {
         return Ok(None);
     };
-    let (key, value) = entry.map_err(io)?;
+    let (key, value) =
+        entry.map_err(|e| diagnostic_io(e, "history_seek_next", column, "versioned_value"))?;
     if key.len() != 40 {
         if key.starts_with(&prefix) {
             return Err(ConcreteReadError::Corrupt(format!(
@@ -683,6 +745,32 @@ fn selected_version(
     Ok(Some(SelectedVersion {
         value: value.to_vec(),
     }))
+}
+
+fn diagnostic_error(error: &ConcreteReadError, operation: &str) {
+    #[cfg(feature = "synthetic-fixtures")]
+    if std::env::var_os("RUST_LIB_BACKTRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        eprintln!(
+            "sst_diagnostic operation={operation} column=unavailable key=root_authentication error={error:?}"
+        );
+    }
+    #[cfg(not(feature = "synthetic-fixtures"))]
+    let _ = (error, operation);
+}
+
+fn diagnostic_io(
+    error: impl std::fmt::Display,
+    operation: &str,
+    column: &str,
+    key: &str,
+) -> ConcreteReadError {
+    #[cfg(feature = "synthetic-fixtures")]
+    if std::env::var_os("RUST_LIB_BACKTRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        eprintln!("sst_diagnostic operation={operation} column={column} key={key} error={error}");
+    }
+    #[cfg(not(feature = "synthetic-fixtures"))]
+    let _ = (operation, column, key);
+    io(error)
 }
 
 fn io(error: impl std::fmt::Display) -> ConcreteReadError {
@@ -1207,6 +1295,14 @@ mod tests {
         );
         assert!(matches!(
             reader.code(bad_code_hash),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+        assert!(matches!(
+            reader.verify_storage_path(address, available_orphan),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+        assert!(matches!(
+            ConcreteCheckpointReaders::open_read_only(&database.path, identity, [identity]),
             Err(ConcreteReadError::Corrupt(_))
         ));
         let expected_future = ConcreteStateIdentity {

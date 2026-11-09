@@ -8,6 +8,8 @@ mod api;
 mod code_objects;
 #[path = "mainnet_era_donor_negatives.rs"]
 mod donor_negatives;
+#[path = "mainnet_era_duration.rs"]
+pub(super) mod duration;
 #[path = "legacy_quote_edges.rs"]
 mod legacy_quote_edges;
 
@@ -641,7 +643,7 @@ fn verify_complete_history(
         let mut phase = fixture["seed"].clone();
         phase["accounts"] = fixture["seed"]["native_catalog"]["accounts"].clone();
         phase["root"] = state["root"].clone();
-        verify_final_reader(&reader, &phase)?;
+        verify_complete_final_reader(&reader, &phase)?;
     }
     for period in fixture["periods"]
         .as_array()
@@ -658,7 +660,7 @@ fn verify_complete_history(
             inner: ConcreteStateReader::open_historical_read_only(path, committed, selected)?,
             known: api::complete_inventory(fixture, selected.period.as_u64())?,
         };
-        verify_final_reader(&reader, &period["final"])?;
+        verify_complete_final_reader(&reader, &period["final"])?;
     }
     Ok(())
 }

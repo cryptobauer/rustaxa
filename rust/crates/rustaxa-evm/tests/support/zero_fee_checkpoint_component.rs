@@ -197,7 +197,7 @@ fn run_case(name: &str, credit: bool) -> Result<Value> {
         let view = FixtureView {
             prior: match prepared.as_ref() {
                 Some(p) => FixturePrior::Prepared(concrete.prepared_view(p)?),
-                None => FixturePrior::Committed(concrete.prior_reader()),
+                None => FixturePrior::Lifecycle(&concrete),
             },
             identity: prepared
                 .as_ref()

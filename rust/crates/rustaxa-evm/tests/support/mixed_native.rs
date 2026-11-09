@@ -148,6 +148,7 @@ impl RecordedReads {
         outcome: &FinalChainNativeRewardsOutcome,
     ) -> FinalChainNativeRewardsContext {
         FinalChainNativeRewardsContext {
+            boundaries: outcome.boundaries.clone(),
             accounts: self.accounts.into_iter().collect(),
             raw_reads: self
                 .raw
@@ -188,6 +189,244 @@ impl<'a> RecordingRead<'a> {
 }
 
 impl FinalChainNativeStateRead for RecordingRead<'_> {
+    fn observe_stage(
+        &self,
+        event: rustaxa_consensus::native_session::FinalChainNativeStageEvent<'_>,
+    ) {
+        if !rustaxa_evm::journal::duration_journal_is_armed() {
+            return;
+        }
+        use rustaxa_consensus::native_session::FinalChainNativeStageEvent as E;
+        fn bytes(out: &mut Vec<u8>, value: &[u8]) {
+            out.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            out.extend_from_slice(value);
+        }
+        fn signed(out: &mut Vec<u8>, value: &num_bigint::BigInt) {
+            let (sign, magnitude) = value.to_bytes_be();
+            out.push(match sign {
+                num_bigint::Sign::Minus => 0,
+                num_bigint::Sign::NoSign => 1,
+                num_bigint::Sign::Plus => 2,
+            });
+            bytes(
+                out,
+                if sign == num_bigint::Sign::NoSign {
+                    &[]
+                } else {
+                    &magnitude
+                },
+            );
+        }
+        fn raw(out: &mut Vec<u8>, value: &ConcreteRead<Vec<u8>>) {
+            match value {
+                ConcreteRead::Absent => out.push(0),
+                ConcreteRead::Tombstone => out.push(1),
+                ConcreteRead::Present(v) => {
+                    out.push(2);
+                    bytes(out, v);
+                }
+            }
+        }
+        let mut value = Vec::new();
+        let (kind, address, key) = match event {
+            E::SlashingCurrentGet {
+                begin,
+                purpose,
+                key,
+                expected,
+            } => {
+                value.push(u8::from(begin));
+                value.push(purpose);
+                value.extend_from_slice(&(expected.len() as u64).to_be_bytes());
+                value.extend_from_slice(expected);
+                (
+                    "slashing_current_get",
+                    [
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xee,
+                    ],
+                    key.0.to_vec(),
+                )
+            }
+            E::SlashingDelayedList {
+                origin,
+                selected_period,
+                retained_identity,
+                validators,
+                proof_status,
+                proof_validators,
+            } => {
+                value.push(2);
+                value.push(origin);
+                if let Some(period) = selected_period {
+                    value.push(1);
+                    value.extend_from_slice(&period.to_be_bytes());
+                } else {
+                    value.push(0);
+                }
+                if let Some(identity) = retained_identity {
+                    value.push(1);
+                    value.extend_from_slice(&identity.period.as_u64().to_be_bytes());
+                    value.extend_from_slice(&identity.state_root);
+                } else {
+                    value.push(0);
+                }
+                value.extend_from_slice(&(validators.len() as u64).to_be_bytes());
+                for address in validators {
+                    value.extend_from_slice(address);
+                }
+                value.push(proof_status);
+                value.extend_from_slice(&(proof_validators.len() as u64).to_be_bytes());
+                for address in proof_validators {
+                    value.extend_from_slice(address);
+                }
+                (
+                    "slashing_delayed_list",
+                    [
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xee,
+                    ],
+                    Vec::new(),
+                )
+            }
+            E::RewardMap {
+                begin,
+                map_scope,
+                address,
+                ordinal,
+            } => {
+                value.push(u8::from(begin));
+                value.push(u8::from(map_scope));
+                value.extend_from_slice(&ordinal.to_be_bytes());
+                ("reward_map", address, Vec::new())
+            }
+            E::RewardValidatorExists { address, exists } => {
+                value.push(u8::from(exists));
+                ("reward_validator_exists", address, Vec::new())
+            }
+            E::RewardFeeSource {
+                address,
+                value: fee,
+            } => {
+                value.extend_from_slice(&fee);
+                ("reward_fee_source", address, Vec::new())
+            }
+            E::RewardDisabled { period, sources } => {
+                value.extend_from_slice(&period.to_be_bytes());
+                value.extend_from_slice(&(sources.len() as u64).to_be_bytes());
+                for source in sources {
+                    value.extend_from_slice(&source.to_be_bytes());
+                }
+                ("reward_disabled", [0; 20], Vec::new())
+            }
+            E::RewardPhase {
+                kind,
+                period,
+                ordinal,
+                begin,
+            } => {
+                value.push(kind);
+                value.push(u8::from(begin));
+                value.extend_from_slice(&period.to_be_bytes());
+                value.extend_from_slice(&ordinal.to_be_bytes());
+                ("reward_phase", [0; 20], Vec::new())
+            }
+            E::Phase { prepare, begin } => {
+                let kind = match (prepare, begin) {
+                    (true, true) => "prepare_begin",
+                    (true, false) => "prepare_end",
+                    (false, true) => "invoke_begin",
+                    (false, false) => "invoke_end",
+                };
+                (kind, [0; 20], Vec::new())
+            }
+            E::AccountRead { address, account } => {
+                value.push(u8::from(account.exists));
+                bytes(&mut value, &account.nonce.to_bytes());
+                signed(&mut value, &account.balance);
+                ("stage_account_read", address, Vec::new())
+            }
+            E::AccountProbe {
+                address,
+                account,
+                purpose,
+            } => {
+                value.push(u8::from(account.exists));
+                bytes(&mut value, &account.nonce.to_bytes());
+                signed(&mut value, &account.balance);
+                ("stage_account_probe", address, vec![purpose])
+            }
+            E::AccountWrite(mutation) => {
+                let address = match mutation {
+                    FinalChainNativeOrdinaryMutation::NonceReplace {
+                        address,
+                        expected_exists,
+                        expected,
+                        replacement,
+                    } => {
+                        value.extend([0, u8::from(*expected_exists)]);
+                        bytes(&mut value, &expected.to_bytes());
+                        bytes(&mut value, &replacement.to_bytes());
+                        *address
+                    }
+                    FinalChainNativeOrdinaryMutation::EnsureExists {
+                        address,
+                        expected_exists,
+                    } => {
+                        value.extend([1, u8::from(*expected_exists)]);
+                        *address
+                    }
+                    FinalChainNativeOrdinaryMutation::Touch {
+                        address,
+                        expected_exists,
+                    } => {
+                        value.extend([2, u8::from(*expected_exists)]);
+                        *address
+                    }
+                    FinalChainNativeOrdinaryMutation::BalanceReplace {
+                        address,
+                        expected_exists,
+                        expected,
+                        replacement,
+                    } => {
+                        value.extend([3, u8::from(*expected_exists)]);
+                        signed(&mut value, expected);
+                        signed(&mut value, replacement);
+                        *address
+                    }
+                };
+                ("stage_account_write", address, Vec::new())
+            }
+            E::RawRead {
+                address,
+                key,
+                value: read,
+                semantic,
+            } => {
+                raw(&mut value, read);
+                (
+                    if semantic {
+                        "stage_raw_read"
+                    } else {
+                        "stage_raw_probe"
+                    },
+                    address,
+                    key.0.to_vec(),
+                )
+            }
+            E::RawWrite(mutation) => {
+                raw(&mut value, &mutation.expected);
+                match &mutation.operation {
+                    FinalChainNativeRawOperation::Delete => value.push(0),
+                    FinalChainNativeRawOperation::Put(v) => {
+                        value.push(1);
+                        bytes(&mut value, v.as_bytes());
+                    }
+                }
+                ("stage_raw_write", mutation.address, mutation.key.0.to_vec())
+            }
+        };
+        rustaxa_evm::journal::duration_journal_stage_event(kind, address, &key, &value);
+    }
+
     fn account(
         &self,
         address: [u8; 20],
@@ -251,6 +490,7 @@ pub struct MixedNativeExecutionPort<'a> {
     session: FinalChainNativeSession<'a>,
     pending: Option<PendingInvocation>,
     contexts: Vec<FinalChainNativeInvocationContext>,
+    receipts: Vec<rustaxa_evm::journal::JournalLifecycleReceipt>,
 }
 
 impl<'a> MixedNativeExecutionPort<'a> {
@@ -264,7 +504,85 @@ impl<'a> MixedNativeExecutionPort<'a> {
             session,
             pending: None,
             contexts: Vec::new(),
+            receipts: Vec::new(),
         }
+    }
+
+    /// Retains executor evidence separately from the mutable replay context.
+    pub fn retain_receipt(
+        &mut self,
+        expected: rustaxa_evm::journal::JournalReceiptToken,
+        receipt: rustaxa_evm::journal::JournalLifecycleReceipt,
+    ) -> anyhow::Result<()> {
+        rustaxa_evm::journal::validate_lifecycle_receipt_token(expected, &receipt)?;
+        self.receipts.push(receipt);
+        Ok(())
+    }
+
+    /// Converts retained executor evidence without reading context claims.
+    pub fn lifecycle_receipts(
+        &self,
+        transactions: &[rustaxa_consensus::final_chain_execution::FinalChainEvmTransactionInput],
+    ) -> anyhow::Result<Vec<rustaxa_consensus::native_projection_context::FinalChainLifecycleReceipt>>
+    {
+        use rustaxa_consensus::native_projection_context::{
+            FinalChainLifecycleEvent as D, FinalChainLifecycleReceipt,
+        };
+        use rustaxa_evm::journal::JournalLifecycleEvent as E;
+        anyhow::ensure!(
+            self.receipts.len() == transactions.len(),
+            "receipt transaction count mismatch"
+        );
+        Ok(self
+            .receipts
+            .iter()
+            .zip(transactions)
+            .map(|(receipt, tx)| {
+                let events: Vec<_> = receipt
+                    .events()
+                    .iter()
+                    .map(|event| match event {
+                        E::FrameOpened { parent } => D::FrameOpened { parent: *parent },
+                        E::AccountCreated {
+                            address,
+                            frame,
+                            saved_absent,
+                        } => D::AccountCreated {
+                            address: *address,
+                            frame: *frame,
+                            saved_absent: *saved_absent,
+                        },
+                        E::NativeStarted { id } => D::NativeStarted {
+                            transaction: id.transaction.as_u32(),
+                            sequence: id.sequence,
+                        },
+                        E::NativeObserved { id } => D::NativeObserved {
+                            transaction: id.transaction.as_u32(),
+                            sequence: id.sequence,
+                        },
+                        E::TransactionEnd { observations } => D::TransactionEnd {
+                            observations: *observations,
+                        },
+                        E::AccountReset {
+                            address,
+                            creation,
+                            rollback_frame,
+                        } => D::AccountReset {
+                            address: *address,
+                            creation: *creation,
+                            rollback_frame: *rollback_frame,
+                        },
+                    })
+                    .collect();
+                FinalChainLifecycleReceipt {
+                    transaction_position: tx.position.as_u32(),
+                    transaction_hash: tx.hash,
+                    token: receipt.token_value(),
+                    event_count: events.len(),
+                    events,
+                }
+            })
+            .collect())
     }
 
     /// Takes all completed invocation contexts in native sequence order.
@@ -328,10 +646,22 @@ impl NativeExecutionPort for MixedNativeExecutionPort<'_> {
     ) -> Result<NativeGasQuote, NativePortError> {
         let request = consensus_request(invocation);
         let read = RecordingRead::new(journal, RecordedReads::default());
+        read.observe_stage(
+            rustaxa_consensus::native_session::FinalChainNativeStageEvent::Phase {
+                prepare: true,
+                begin: true,
+            },
+        );
         let quote = self
             .session
             .prepare(&request, &read)
             .map_err(native_port_error)?;
+        read.observe_stage(
+            rustaxa_consensus::native_session::FinalChainNativeStageEvent::Phase {
+                prepare: true,
+                begin: false,
+            },
+        );
         self.pending = Some(PendingInvocation {
             request,
             reads: read.into_reads(),

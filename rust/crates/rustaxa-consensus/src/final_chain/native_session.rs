@@ -25,6 +25,7 @@ pub(super) mod claims;
 mod concrete_checkpoint;
 pub(super) mod context_replay;
 pub(super) mod custody;
+pub mod frozen_eligibility;
 mod query;
 pub(super) mod raw;
 mod registration;
@@ -69,6 +70,60 @@ pub enum FinalChainNativeContractKind {
 }
 
 impl FinalChain {
+    /// Selects the retained physical identity from this owner's finalized header.
+    pub fn pending_delayed_identity(
+        &self,
+        pending: FinalChainBlockNumber,
+        parent: FinalChainBlockNumber,
+    ) -> anyhow::Result<rustaxa_types::concrete_state::ConcreteStateIdentity> {
+        anyhow::ensure!(
+            self.last_block_number_typed()? == parent && parent.checked_next() == Some(pending),
+            "FINAL_CHAIN_DELAYED_PARENT_MISMATCH"
+        );
+        let period =
+            FinalChainBlockNumber::new(parent.as_u64().saturating_sub(self.dpos_delegation_delay));
+        let raw = self
+            .storage
+            .final_chain()
+            .block_header_raw(period.as_u64())?
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_DELAYED_HEADER_MISSING"))?;
+        let header = StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&raw))?;
+        Ok(rustaxa_types::concrete_state::ConcreteStateIdentity {
+            period,
+            state_root: header.state_root.into(),
+        })
+    }
+
+    /// Binds an owner-held checkpoint to the pending request and finalized headers.
+    pub fn bind_pending_delayed_view(
+        &self,
+        request_id: [u8; 32],
+        epoch: u64,
+        generation: u64,
+        pending: FinalChainBlockNumber,
+        parent: FinalChainBlockNumber,
+        reader: std::sync::Arc<rustaxa_storage::ConcreteCheckpointReaders>,
+    ) -> anyhow::Result<std::rc::Rc<frozen_eligibility::FrozenEligibility>> {
+        let basis = self.reward_scheduler_basis(request_id, epoch, pending, parent)?;
+        let selected = self.pending_delayed_identity(pending, parent)?;
+        let committed = self.committed_state_descriptor()?;
+        anyhow::ensure!(
+            reader.committed_identity().period == committed.period
+                && reader.committed_identity().state_root == committed.state_root,
+            "FINAL_CHAIN_DELAYED_COMMITTED_MISMATCH"
+        );
+        Ok(std::rc::Rc::new(
+            frozen_eligibility::FrozenEligibility::from_owner(
+                reader,
+                selected,
+                request_id,
+                (epoch, generation),
+                parent.as_u64(),
+                pending.as_u64(),
+                basis,
+            )?,
+        ))
+    }
     /// Classifies a native contract with this owner's immutable hardfork policy.
     /// Returns `None` for ordinary addresses, including slashing before Magnolia.
     pub fn native_contract_kind(
@@ -170,6 +225,74 @@ pub struct FinalChainNativeGasQuote {
     pub required_gas: FinalChainGas,
 }
 
+/// An operation observed at the native staging boundary.
+#[derive(Clone, Debug)]
+pub enum FinalChainNativeStageEvent<'a> {
+    /// The native prepare or admitted invoke phase begins or ends.
+    Phase { prepare: bool, begin: bool },
+    /// A source-owned reward preflight, distribution, or deferred phase.
+    RewardPhase {
+        kind: u8,
+        period: u64,
+        ordinal: u64,
+        begin: bool,
+    },
+    /// A source-owned validator-map boundary and its actual iteration.
+    RewardMap {
+        begin: bool,
+        map_scope: bool,
+        address: [u8; 20],
+        ordinal: u64,
+    },
+    /// Existence checked by the actual validator reward branch.
+    RewardValidatorExists { address: [u8; 20], exists: bool },
+    /// Fee value from the actual decoded validator statistics.
+    RewardFeeSource { address: [u8; 20], value: [u8; 32] },
+    /// The actual disabled reward branch and its ordered source periods.
+    RewardDisabled { period: u64, sources: &'a [u64] },
+    /// An account value read by the staged operation.
+    AccountRead {
+        address: [u8; 20],
+        account: &'a FinalChainNativeAccount,
+    },
+    /// An account-existence check used to select a source path.
+    AccountProbe {
+        address: [u8; 20],
+        account: &'a FinalChainNativeAccount,
+        /// Zero identifies cleanup, one identifies claim qualification, and two identifies a mutation prior.
+        purpose: u8,
+    },
+    /// An ordinary account operation staged by the native kernel.
+    AccountWrite(&'a FinalChainNativeOrdinaryMutation),
+    /// An exact raw value read by the staged operation.
+    RawRead {
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+        value: &'a ConcreteRead<Vec<u8>>,
+        /// Whether this read is consumed by the kernel rather than used to bind a write.
+        semantic: bool,
+    },
+    #[cfg(feature = "synthetic-fixtures")]
+    SlashingCurrentGet {
+        begin: bool,
+        purpose: u8,
+        key: ConcreteStorageKey,
+        expected: &'a [u8],
+    },
+    /// The actual selected slashing eligibility list and retained view, when observed.
+    #[cfg(feature = "synthetic-fixtures")]
+    SlashingDelayedList {
+        origin: u8,
+        selected_period: Option<u64>,
+        retained_identity: Option<rustaxa_types::concrete_state::ConcreteStateIdentity>,
+        validators: &'a [[u8; 20]],
+        proof_status: u8,
+        proof_validators: &'a [[u8; 20]],
+    },
+    /// An exact raw operation staged by the native kernel.
+    RawWrite(&'a FinalChainNativeRawMutation),
+}
+
 /// Exact current-state access required by the bounded native session.
 ///
 /// Implementations expose authoritative ordinary account facts and the current
@@ -177,6 +300,9 @@ pub struct FinalChainNativeGasQuote {
 /// must observe all preceding journal effects. Errors abort the pending period;
 /// they are never converted to absence.
 pub trait FinalChainNativeStateRead {
+    /// Observes an actual staged operation when a caller requests it.
+    fn observe_stage(&self, _event: FinalChainNativeStageEvent<'_>) {}
+
     /// Loads exact current ordinary-account facts for one native kernel read.
     ///
     /// The default keeps the original `setCommission`-only readers source
@@ -441,6 +567,20 @@ impl std::ops::Deref for NativeSessionOwner<'_> {
     }
 }
 
+/// Test-only bounded cleanup observations.
+#[cfg(feature = "synthetic-fixtures")]
+pub mod cleanup_diagnostic;
+
+/// A successful source selection used by a synthetic historical session.
+#[cfg(feature = "synthetic-fixtures")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyntheticNativeOrigin {
+    /// The selected source role.
+    pub role: &'static str,
+    /// The coordinate passed to the actual source operation.
+    pub period: FinalChainBlockNumber,
+}
+
 /// Single-period staged native kernel state.
 ///
 /// The session begins from an exact finalized DPoS snapshot. Pending sessions
@@ -450,6 +590,8 @@ impl std::ops::Deref for NativeSessionOwner<'_> {
 pub struct FinalChainNativeSession<'a> {
     final_chain: NativeSessionOwner<'a>,
     origin: NativeSessionOrigin,
+    #[cfg(feature = "synthetic-fixtures")]
+    synthetic_origins: Vec<SyntheticNativeOrigin>,
     request_id: Option<[u8; 32]>,
     /// Immutable process-local cleanup timer issued by this FinalChain. It is
     /// present only for execution bound to a live StateAPI epoch.
@@ -463,6 +605,7 @@ pub struct FinalChainNativeSession<'a> {
     dpos_state: DposSnapshot,
     eligibility_state: DposSnapshot,
     eligibility_period: FinalChainBlockNumber,
+    delayed_physical: Option<std::rc::Rc<frozen_eligibility::FrozenEligibility>>,
     prepared: Option<PreparedCall>,
     aborted: bool,
     finished_rewards: bool,
@@ -513,7 +656,28 @@ impl FinalChain {
             snapshot,
             NativeSessionOrigin::CurrentHistoricalTrace,
         )
-        .map(|session| FinalChainNativeSimulation { session })
+        .map(|session| {
+            #[cfg(feature = "synthetic-fixtures")]
+            let session = {
+                let mut session = session;
+                session.synthetic_origins.insert(
+                    0,
+                    SyntheticNativeOrigin {
+                        role: "trace_advance",
+                        period: execution_period,
+                    },
+                );
+                session.synthetic_origins.insert(
+                    0,
+                    SyntheticNativeOrigin {
+                        role: "trace_parent_historical",
+                        period: reader_period,
+                    },
+                );
+                session
+            };
+            FinalChainNativeSimulation { session }
+        })
     }
     /// Begins an unpublished native session for the block immediately after an
     /// exact currently finalized parent.
@@ -592,6 +756,8 @@ impl FinalChain {
         let FinalChainNativeSession {
             final_chain,
             origin,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
             request_id,
             reward_scheduler_basis,
             pending_period,
@@ -603,6 +769,7 @@ impl FinalChain {
             dpos_state,
             eligibility_state,
             eligibility_period,
+            delayed_physical,
             prepared,
             aborted,
             finished_rewards,
@@ -620,6 +787,8 @@ impl FinalChain {
         Ok(FinalChainNativeSession {
             final_chain: NativeSessionOwner::Owned(std::sync::Arc::clone(self)),
             origin,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
             request_id,
             reward_scheduler_basis,
             pending_period,
@@ -631,6 +800,7 @@ impl FinalChain {
             dpos_state,
             eligibility_state,
             eligibility_period,
+            delayed_physical,
             prepared,
             aborted,
             finished_rewards,
@@ -706,7 +876,21 @@ impl FinalChain {
             dpos_state,
             NativeSessionOrigin::HistoricalSimulation,
         )
-        .map(|session| FinalChainNativeSimulation { session })
+        .map(|session| {
+            #[cfg(feature = "synthetic-fixtures")]
+            let session = {
+                let mut session = session;
+                session.synthetic_origins.insert(
+                    0,
+                    SyntheticNativeOrigin {
+                        role: "simulation_historical",
+                        period,
+                    },
+                );
+                session
+            };
+            FinalChainNativeSimulation { session }
+        })
     }
 
     /// Fixture-only private view after an empty block's BeginBlock and before
@@ -1009,15 +1193,30 @@ impl FinalChain {
             FinalChainBlockNumber::new(reader_head.saturating_sub(self.dpos_delegation_delay));
         // No delayed query is admitted for the bounded trace origin. Retain its
         // source clone without claiming general live-reader query support.
+        #[cfg(feature = "synthetic-fixtures")]
+        let mut synthetic_origins = Vec::new();
         let eligibility_state = if origin.is_claim_all_trace()
             || origin == NativeSessionOrigin::CurrentHistoricalTrace
             || origin == NativeSessionOrigin::ClaimAllNonPayable
             || eligibility_period == period
         {
-            dpos_state.clone()
+            let selected = dpos_state.clone();
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins.push(SyntheticNativeOrigin {
+                role: "eligibility_live_clone",
+                period,
+            });
+            selected
         } else {
-            self.dpos_snapshot_at_finalized_block(eligibility_period)
-                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
+            let selected = self
+                .dpos_snapshot_at_finalized_block(eligibility_period)
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins.push(SyntheticNativeOrigin {
+                role: "eligibility_historical",
+                period: eligibility_period,
+            });
+            selected
         };
         // TraceRunner supplies one live blockstate to every reader callback;
         // normal pending and dry-run origins load real delayed snapshots above.
@@ -1033,6 +1232,8 @@ impl FinalChain {
         Ok(FinalChainNativeSession {
             final_chain: NativeSessionOwner::Borrowed(self),
             origin,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
             request_id,
             reward_scheduler_basis: None,
             pending_period: period,
@@ -1044,6 +1245,7 @@ impl FinalChain {
             dpos_state,
             eligibility_state,
             eligibility_period,
+            delayed_physical: None,
             prepared: None,
             aborted: false,
             finished_rewards: false,
@@ -1054,6 +1256,12 @@ impl FinalChain {
 }
 
 impl FinalChainNativeSimulation<'_> {
+    /// Returns observations recorded after successful source selections.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn synthetic_origins(&self) -> &[SyntheticNativeOrigin] {
+        &self.session.synthetic_origins
+    }
+
     /// Reads borrowed-input effects without exposing publication authority.
     pub fn input_mutations(
         &mut self,
@@ -1083,6 +1291,28 @@ impl FinalChainNativeSimulation<'_> {
 }
 
 impl FinalChainNativeSession<'_> {
+    /// Installs the independently bound view before any native invocation.
+    pub fn install_pending_delayed_view(
+        &mut self,
+        view: std::rc::Rc<frozen_eligibility::FrozenEligibility>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.origin == NativeSessionOrigin::PendingPeriod
+                && self.next_sequence == 0
+                && self.prepared.is_none()
+                && self.request_id == Some(view.request_id)
+                && self.reward_scheduler_basis == Some(view.basis)
+                && self.pending_period.as_u64() == view.pending
+                && self.eligibility_period.as_u64() == view.identity.period.as_u64(),
+            "FINAL_CHAIN_DELAYED_SESSION_BINDING_MISMATCH"
+        );
+        anyhow::ensure!(
+            self.delayed_physical.is_none(),
+            "FINAL_CHAIN_DELAYED_VIEW_ALREADY_SET"
+        );
+        self.delayed_physical = Some(view);
+        Ok(())
+    }
     /// Returns borrowed-input effects for exactly the last completed invocation.
     /// The frame applies these once to aliased caller memory, before return copy.
     pub fn input_mutations(
@@ -1442,6 +1672,13 @@ impl FinalChainNativeSession<'_> {
             ));
         };
         let prepared = prepared.clone();
+        let invoke_admitted = !matches!(&prepared.kind, PreparedKind::InsufficientGas);
+        if invoke_admitted {
+            state.observe_stage(FinalChainNativeStageEvent::Phase {
+                prepare: false,
+                begin: true,
+            });
+        }
 
         let result = match prepared.kind {
             PreparedKind::Slashing(input) => self.invoke_slashing(&input, quote, state),
@@ -1533,6 +1770,12 @@ impl FinalChainNativeSession<'_> {
                 abi_data_len,
             } => self.invoke_query(transaction, abi_data_len, quote, state),
         };
+        if invoke_admitted {
+            state.observe_stage(FinalChainNativeStageEvent::Phase {
+                prepare: false,
+                begin: false,
+            });
+        }
         let result = match result {
             Ok(result) => result,
             Err(error) => {
@@ -1563,6 +1806,18 @@ impl FinalChainNativeSession<'_> {
         let current_validator =
             state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.validator_key)?;
         let current_owner = state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.owner_key)?;
+        state.observe_stage(FinalChainNativeStageEvent::RawRead {
+            address: DPOS_CONTRACT_ADDRESS,
+            key: prepared.validator_key,
+            value: &current_validator,
+            semantic: true,
+        });
+        state.observe_stage(FinalChainNativeStageEvent::RawRead {
+            address: DPOS_CONTRACT_ADDRESS,
+            key: prepared.owner_key,
+            value: &current_owner,
+            semantic: true,
+        });
         let DposTransaction::SetCommission {
             owner,
             validator,
@@ -1624,7 +1879,7 @@ impl FinalChainNativeSession<'_> {
                     "setCommission serializer produced an empty put".to_owned(),
                 ));
             }
-            raw_mutations.push(FinalChainNativeRawMutation {
+            let mutation = FinalChainNativeRawMutation {
                 address: DPOS_CONTRACT_ADDRESS,
                 key: prepared.validator_key,
                 expected: prepared.validator_read,
@@ -1632,7 +1887,9 @@ impl FinalChainNativeSession<'_> {
                     FinalChainNativeRawValue::new(replacement)
                         .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?,
                 ),
-            });
+            };
+            state.observe_stage(FinalChainNativeStageEvent::RawWrite(&mutation));
+            raw_mutations.push(mutation);
         } else if port.take_authenticated_update().is_some() {
             return Err(FinalChainNativeSessionError::Domain(
                 "setCommission failed kernel produced an authenticated update".to_owned(),
@@ -1772,6 +2029,7 @@ fn checked_undelegations_count(
 mod tests {
     use super::*;
     mod commission_lifecycle;
+    mod owned_delayed_real_fixture;
     mod validator_info_reference_tests;
 
     mod escrow_transfer_reference_tests;
@@ -2460,36 +2718,246 @@ mod tests {
         signed.out().to_vec()
     }
 
-    fn owned_test_reopen(
-        storage: Arc<Storage>,
-        rewards: FinalChainRewardsConfig,
-        dpos: GenesisDposConfig,
-    ) -> Arc<FinalChain> {
-        Arc::new(
-            FinalChain::new_with_rewards_config_and_ficus_activation(
-                storage,
-                1_000_000.into(),
-                0,
-                crate::FinalChainGenesisAllocation {
-                    accounts: Vec::new(),
-                    validators: vec![GenesisValidator {
-                        address: VALIDATOR,
-                        vrf_key: [0; 32],
-                        total_stake: U256::from(10_000).to_big_endian().to_vec(),
-                        delegations: vec![(VALIDATOR, U256::from(10_000).to_big_endian().to_vec())],
-                        metadata: GenesisValidatorMetadata {
-                            owner: OWNER,
-                            commission: 100,
-                            ..Default::default()
-                        },
-                    }],
-                },
-                dpos,
-                rewards,
-                FinalChainBlockNumber::MAX,
-            )
-            .unwrap(),
-        )
+    #[test]
+    fn pending_jail_getters_replay_checks_frozen_view_and_forged_results() {
+        use crate::native_projection_context::FinalChainNativeInvocationContext;
+        use rustaxa_storage::{ConcreteStateLifecycle, ConcreteStateMutationBatch};
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: 1.into(),
+            cornus_period: FinalChainBlockNumber::MAX,
+            ..Default::default()
+        };
+        with_arc_chain_dpos_config(
+            "pending-jail-frozen-replay",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig::default(),
+            |chain| {
+                chain
+                    .authorize_reward_scheduler_joint_startup(91, 0.into())
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(91).unwrap();
+                let path = crate::closeout_test_scratch::new_path(
+                    std::env::temp_dir().join(format!("jail-frozen-replay-{}", std::process::id())),
+                    false,
+                );
+                let lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+                    &path,
+                    [7; 32],
+                    ConcreteStateMutationBatch::default(),
+                    vec![],
+                )
+                .unwrap();
+                crate::closeout_test_scratch::created(&path);
+                let identity = lifecycle.prior_reader().identity();
+                let reader =
+                    std::sync::Arc::new(lifecycle.open_retained_checkpoint(identity).unwrap());
+                let seed = chain
+                    .begin_native_session_bound_at_state_api_epoch(
+                        [0x39; 32],
+                        91,
+                        1.into(),
+                        0.into(),
+                    )
+                    .unwrap();
+                let view = std::rc::Rc::new(
+                    frozen_eligibility::FrozenEligibility::from_owner(
+                        reader,
+                        identity,
+                        [0x39; 32],
+                        (91, 1),
+                        0,
+                        1,
+                        seed.reward_scheduler_basis.unwrap(),
+                    )
+                    .unwrap(),
+                );
+                drop(seed);
+                for (input, output) in [
+                    (
+                        address_word_input(SLASHING_GET_JAIL_BLOCK_SELECTOR, VALIDATOR),
+                        abi_word_from_u64(0).to_vec(),
+                    ),
+                    (
+                        SLASHING_GET_JAILED_VALIDATORS_SELECTOR.to_vec(),
+                        encode_abi_address_array(&[]),
+                    ),
+                ] {
+                    let mut request =
+                        simulation_request(1.into(), 0, input, SLASHING_GET_METHOD_GAS);
+                    request.contract = SLASHING_CONTRACT_ADDRESS;
+                    request.state_address = SLASHING_CONTRACT_ADDRESS;
+                    let context = FinalChainNativeInvocationContext {
+                        request: request.clone(),
+                        accounts: vec![],
+                        raw_reads: vec![],
+                        ordinary_mutations: vec![],
+                        raw_mutations: vec![],
+                    };
+                    let expected = crate::concrete_state_projection::FinalChainConcreteInvocation {
+                        supplied_gas: SLASHING_GET_METHOD_GAS,
+                        required_gas: SLASHING_GET_METHOD_GAS,
+                        gas_used: SLASHING_GET_METHOD_GAS,
+                        output,
+                        ..Default::default()
+                    };
+                    for change in 0..7 {
+                        let mut session = chain
+                            .begin_native_session_bound_at_state_api_epoch(
+                                [0x39; 32],
+                                91,
+                                1.into(),
+                                0.into(),
+                            )
+                            .unwrap();
+                        session
+                            .eligibility_state
+                            .slashing_jail_blocks
+                            .insert(VALIDATOR, 99);
+                        session
+                            .eligibility_state
+                            .slashing_jailed_validators
+                            .push(VALIDATOR);
+                        session
+                            .install_pending_delayed_view(std::rc::Rc::clone(&view))
+                            .unwrap();
+                        let mut candidate = expected.clone();
+                        let mut forged_context = context.clone();
+                        match change {
+                            1 => candidate.output.push(1),
+                            2 => candidate.gas_used += 1,
+                            3 => candidate.error = "forged".into(),
+                            4 => candidate.logs.push(
+                                crate::final_chain_execution::FinalChainEvmLog {
+                                    address: SLASHING_CONTRACT_ADDRESS,
+                                    topics: vec![],
+                                    data: vec![1],
+                                },
+                            ),
+                            5 => forged_context.ordinary_mutations.push(
+                                FinalChainNativeOrdinaryMutation::EnsureExists {
+                                    address: SLASHING_CONTRACT_ADDRESS,
+                                    expected_exists: false,
+                                },
+                            ),
+                            6 => forged_context
+                                .raw_mutations
+                                .push(FinalChainNativeRawMutation {
+                                    address: SLASHING_CONTRACT_ADDRESS,
+                                    key: rustaxa_types::concrete_state::ConcreteStorageKey([1; 32]),
+                                    expected: rustaxa_types::concrete_state::ConcreteRead::Absent,
+                                    operation: FinalChainNativeRawOperation::Delete,
+                                }),
+                            _ => (),
+                        }
+                        assert_eq!(
+                            session.replay_context(&forged_context, &candidate).is_ok(),
+                            change == 0
+                        );
+                    }
+                    let state = RawState::fixture();
+                    let mut live = chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into(),
+                        )
+                        .unwrap();
+                    live.eligibility_state
+                        .slashing_jail_blocks
+                        .insert(VALIDATOR, 99);
+                    live.eligibility_state
+                        .slashing_jailed_validators
+                        .push(VALIDATOR);
+                    live.install_pending_delayed_view(std::rc::Rc::clone(&view))
+                        .unwrap();
+                    let quote = live.prepare(&request, &state).unwrap();
+                    let result = completed(live.invoke(&request, quote, &state).unwrap());
+                    assert_eq!(result.output, expected.output);
+                }
+                drop(view);
+                drop(lifecycle);
+                crate::closeout_test_scratch::dispose(path).unwrap();
+            },
+        );
+    }
+
+    #[test]
+    fn pending_jail_getters_reject_missing_physical_view() {
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: 1.into(),
+            cornus_period: FinalChainBlockNumber::MAX,
+            ..Default::default()
+        };
+        with_arc_chain_dpos_config(
+            "pending-jail-missing-view",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig::default(),
+            |chain| {
+                chain
+                    .authorize_reward_scheduler_joint_startup(91, 0.into())
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(91).unwrap();
+                for (input, gas) in [
+                    (
+                        SLASHING_GET_JAIL_BLOCK_SELECTOR.to_vec(),
+                        SLASHING_GET_METHOD_GAS,
+                    ),
+                    (
+                        address_word_input(SLASHING_GET_JAIL_BLOCK_SELECTOR, VALIDATOR),
+                        0,
+                    ),
+                ] {
+                    let mut session = chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into(),
+                        )
+                        .unwrap();
+                    let state = RawState::fixture();
+                    let mut request = simulation_request(1.into(), 0, input, gas);
+                    request.contract = SLASHING_CONTRACT_ADDRESS;
+                    request.state_address = SLASHING_CONTRACT_ADDRESS;
+                    let quote = session.prepare(&request, &state).unwrap();
+                    match session.invoke(&request, quote, &state).unwrap() {
+                        FinalChainNativeInvocationResult::InsufficientGas { .. } => {
+                            assert_eq!(gas, 0)
+                        }
+                        FinalChainNativeInvocationResult::Completed(outcome) => {
+                            assert_eq!(gas, SLASHING_GET_METHOD_GAS);
+                            assert!(
+                                matches!(outcome.status, FinalChainNativeStatus::ContractFailure { error } if error == "abi: cannot marshal in to go type: length insufficient 0 require 32")
+                            );
+                        }
+                    }
+                }
+                for input in [
+                    address_word_input(SLASHING_GET_JAIL_BLOCK_SELECTOR, VALIDATOR),
+                    SLASHING_GET_JAILED_VALIDATORS_SELECTOR.to_vec(),
+                ] {
+                    let mut session = chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into(),
+                        )
+                        .unwrap();
+                    let state = RawState::fixture();
+                    let mut request =
+                        simulation_request(1.into(), 0, input, SLASHING_GET_METHOD_GAS);
+                    request.contract = SLASHING_CONTRACT_ADDRESS;
+                    request.state_address = SLASHING_CONTRACT_ADDRESS;
+                    let quote = session.prepare(&request, &state).unwrap();
+                    assert!(matches!(session.invoke(&request, quote, &state),
+                        Err(FinalChainNativeSessionError::Domain(message)) if message == "FINAL_CHAIN_DELAYED_VIEW_REQUIRED"));
+                }
+            },
+        );
     }
 
     #[test]
@@ -2507,83 +2975,100 @@ mod tests {
                 delegation_delay: delay,
                 ..Default::default()
             };
-            with_arc_chain_dpos_config(
-                "owned-delayed-authority",
-                rewards.clone(),
-                FinalChainBlockNumber::MAX,
-                dpos.clone(),
-                |first| {
-                    first
-                        .finalize_block(owned_test_signed_block(1), Vec::new(), Vec::new())
-                        .unwrap();
-                    let storage = Arc::clone(&first.storage);
-                    drop(first);
-                    let chain = owned_test_reopen(storage, rewards, dpos);
-                    let parent = FinalChainBlockNumber::new(1);
-                    chain
-                        .authorize_reward_scheduler_joint_startup(91, parent)
-                        .unwrap();
-                    chain.complete_reward_scheduler_recovery(91).unwrap();
-                    let request_id = [0x39; 32];
-                    let selected = FinalChainBlockNumber::new(1_u64.saturating_sub(delay));
-                    let mut borrowed = chain
-                        .begin_native_session_bound_at_state_api_epoch(
-                            request_id,
-                            91,
-                            2.into(),
-                            parent,
-                        )
-                        .unwrap();
-                    let mut owned = chain
-                        .begin_owned_native_session_bound_at_state_api_epoch(
-                            request_id,
-                            91,
-                            2.into(),
-                            parent,
-                        )
-                        .unwrap();
-                    let expected = chain.dpos_snapshot_at_finalized_block(selected).unwrap();
-                    assert_eq!(borrowed.eligibility_period, selected);
-                    assert_eq!(owned.eligibility_period, selected);
-                    assert_eq!(borrowed.eligibility_state, expected);
-                    assert_eq!(owned.eligibility_state, expected);
-                    if delay == 0 {
-                        assert_eq!(selected, parent);
-                    }
-                    let state_a = RawState::fixture();
-                    let state_b = RawState::fixture();
-                    let request = simulation_request(
+            owned_delayed_real_fixture::with_real_owner(rewards, dpos, |chain, reader| {
+                let parent = FinalChainBlockNumber::new(1);
+                chain
+                    .authorize_reward_scheduler_joint_startup(91, parent)
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(91).unwrap();
+                let request_id = [0x39; 32];
+                let selected = FinalChainBlockNumber::new(1_u64.saturating_sub(delay));
+                let mut borrowed = chain
+                    .begin_native_session_bound_at_state_api_epoch(request_id, 91, 2.into(), parent)
+                    .unwrap();
+                let mut owned = chain
+                    .begin_owned_native_session_bound_at_state_api_epoch(
+                        request_id,
+                        91,
                         2.into(),
-                        0,
-                        address_word_input(DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR, VALIDATOR),
-                        DPOS_DEFAULT_METHOD_GAS,
-                    );
-                    let qa = borrowed.prepare(&request, &state_a).unwrap();
-                    let qb = owned.prepare(&request, &state_b).unwrap();
-                    assert_eq!(qa, qb);
-                    let left = borrowed.invoke(&request, qa, &state_a).unwrap();
-                    let right = owned.invoke(&request, qb, &state_b).unwrap();
-                    assert_eq!(left, right);
-                    let result = completed(left);
-                    assert_eq!(result.status, FinalChainNativeStatus::Success);
-                    assert_eq!(
-                        BigUint::from_bytes_be(&result.output),
-                        BigUint::from(*expected.vote_counts.get(&VALIDATOR).unwrap())
-                    );
-                    drop(borrowed);
-                    drop(owned);
-                    let current = chain
+                        parent,
+                    )
+                    .unwrap();
+                let view = chain
+                    .bind_pending_delayed_view(request_id, 91, 1, 2.into(), parent, reader)
+                    .unwrap();
+                assert_eq!(view.identity.period, selected);
+                borrowed
+                    .install_pending_delayed_view(std::rc::Rc::clone(&view))
+                    .unwrap();
+                owned.install_pending_delayed_view(view).unwrap();
+                let expected = chain.dpos_snapshot_at_finalized_block(selected).unwrap();
+                assert_eq!(borrowed.eligibility_period, selected);
+                assert_eq!(owned.eligibility_period, selected);
+                assert_eq!(borrowed.eligibility_state, expected);
+                assert_eq!(owned.eligibility_state, expected);
+                if delay == 0 {
+                    assert_eq!(selected, parent);
+                }
+                let state_a = RawState::fixture();
+                let state_b = RawState::fixture();
+                let request = simulation_request(
+                    2.into(),
+                    0,
+                    address_word_input(DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let qa = borrowed.prepare(&request, &state_a).unwrap();
+                let qb = owned.prepare(&request, &state_b).unwrap();
+                assert_eq!(qa, qb);
+                let left = borrowed.invoke(&request, qa, &state_a).unwrap();
+                let right = owned.invoke(&request, qb, &state_b).unwrap();
+                assert_eq!(left, right);
+                let result = completed(left);
+                assert_eq!(result.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    BigUint::from_bytes_be(&result.output),
+                    BigUint::from(*expected.vote_counts.get(&VALIDATOR).unwrap())
+                );
+                drop(borrowed);
+                drop(owned);
+                let current = chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .get(&parent)
+                    .unwrap()
+                    .clone();
+                chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&parent)
+                    .unwrap()
+                    .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                assert!(matches!(
+                    chain.begin_owned_native_session_bound_at_state_api_epoch(
+                        request_id,
+                        91,
+                        2.into(),
+                        parent
+                    ),
+                    Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                ));
+                chain.dpos_snapshots.lock().unwrap().insert(parent, current);
+                if delay != 0 {
+                    let old = chain
                         .dpos_snapshots
                         .lock()
                         .unwrap()
-                        .get(&parent)
+                        .get(&selected)
                         .unwrap()
                         .clone();
                     chain
                         .dpos_snapshots
                         .lock()
                         .unwrap()
-                        .get_mut(&parent)
+                        .get_mut(&selected)
                         .unwrap()
                         .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
                     assert!(matches!(
@@ -2595,56 +3080,30 @@ mod tests {
                         ),
                         Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
                     ));
-                    chain.dpos_snapshots.lock().unwrap().insert(parent, current);
-                    if delay != 0 {
-                        let old = chain
-                            .dpos_snapshots
-                            .lock()
-                            .unwrap()
-                            .get(&selected)
-                            .unwrap()
-                            .clone();
-                        chain
-                            .dpos_snapshots
-                            .lock()
-                            .unwrap()
-                            .get_mut(&selected)
-                            .unwrap()
-                            .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
-                        assert!(matches!(
-                            chain.begin_owned_native_session_bound_at_state_api_epoch(
-                                request_id,
-                                91,
-                                2.into(),
-                                parent
-                            ),
-                            Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
-                        ));
-                        chain.dpos_snapshots.lock().unwrap().remove(&selected);
-                        assert!(matches!(
-                            chain.begin_owned_native_session_bound_at_state_api_epoch(
-                                request_id,
-                                91,
-                                2.into(),
-                                parent
-                            ),
-                            Err(FinalChainNativeSessionError::Domain(_))
-                        ));
-                        chain.dpos_snapshots.lock().unwrap().insert(selected, old);
-                    }
-                    assert!(
-                        chain
-                            .begin_owned_native_session_bound_at_state_api_epoch(
-                                request_id,
-                                91,
-                                2.into(),
-                                parent
-                            )
-                            .is_ok()
-                    );
-                    assert_eq!(chain.last_block_number_typed().unwrap(), parent);
-                },
-            );
+                    chain.dpos_snapshots.lock().unwrap().remove(&selected);
+                    assert!(matches!(
+                        chain.begin_owned_native_session_bound_at_state_api_epoch(
+                            request_id,
+                            91,
+                            2.into(),
+                            parent
+                        ),
+                        Err(FinalChainNativeSessionError::Domain(_))
+                    ));
+                    chain.dpos_snapshots.lock().unwrap().insert(selected, old);
+                }
+                assert!(
+                    chain
+                        .begin_owned_native_session_bound_at_state_api_epoch(
+                            request_id,
+                            91,
+                            2.into(),
+                            parent
+                        )
+                        .is_ok()
+                );
+                assert_eq!(chain.last_block_number_typed().unwrap(), parent);
+            });
         }
     }
 

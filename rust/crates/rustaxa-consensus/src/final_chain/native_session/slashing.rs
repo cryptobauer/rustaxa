@@ -74,6 +74,14 @@ impl FinalChainNativeSession<'_> {
         if selector == SLASHING_GET_JAILED_VALIDATORS_SELECTOR {
             let output = if self.origin == NativeSessionOrigin::CurrentHistoricalTrace {
                 encode_abi_address_array(&self.trace_jailed(trace_reads::Reader::Slashing, state)?)
+            } else if self.origin == NativeSessionOrigin::PendingPeriod {
+                let view = self.delayed_physical.as_ref().ok_or_else(|| {
+                    FinalChainNativeSessionError::Domain("FINAL_CHAIN_DELAYED_VIEW_REQUIRED".into())
+                })?;
+                let values = view
+                    .jailed_validators()
+                    .map_err(|e| FinalChainNativeSessionError::Domain(e.to_string()))?;
+                encode_abi_address_array(&values)
             } else {
                 encode_slashing_jailed_validators(&self.eligibility_state)
             };
@@ -96,6 +104,14 @@ impl FinalChainNativeSession<'_> {
                         .unwrap_or_default(),
                 )
                 .to_vec()
+            } else if self.origin == NativeSessionOrigin::PendingPeriod {
+                let view = self.delayed_physical.as_ref().ok_or_else(|| {
+                    FinalChainNativeSessionError::Domain("FINAL_CHAIN_DELAYED_VIEW_REQUIRED".into())
+                })?;
+                let value = view
+                    .jail_block(validator)
+                    .map_err(|e| FinalChainNativeSessionError::Domain(e.to_string()))?;
+                abi_word_from_u64(value.unwrap_or_default()).to_vec()
             } else {
                 encode_slashing_jail_block(&self.eligibility_state, validator)
             };
@@ -131,6 +147,7 @@ impl FinalChainNativeSession<'_> {
                 Vec::new()
             },
             "double-voting proof",
+            1,
         )?;
         if self
             .dpos_state
@@ -171,12 +188,48 @@ impl FinalChainNativeSession<'_> {
                 .map(concrete_rlp_u64)
                 .unwrap_or_default(),
             "validator jail block",
+            2,
         )?;
         let delayed_jailed = if self.origin == NativeSessionOrigin::CurrentHistoricalTrace {
             self.trace_jailed(trace_reads::Reader::Slashing, state)?
         } else {
             self.eligibility_state.slashing_jailed_validators.clone()
         };
+        #[cfg(feature = "synthetic-fixtures")]
+        {
+            let trace_origin = self.origin == NativeSessionOrigin::CurrentHistoricalTrace;
+            let pending_origin = self.origin == NativeSessionOrigin::PendingPeriod;
+            let proof = if pending_origin {
+                self.delayed_physical
+                    .as_ref()
+                    .map(|view| view.jailed_validators())
+            } else {
+                None
+            };
+            let proof_status = match &proof {
+                None => 0,
+                Some(Err(_)) => 1,
+                Some(Ok(_)) => 2,
+            };
+            let proof_validators = proof
+                .as_ref()
+                .and_then(|value| value.as_ref().ok())
+                .map_or(&[][..], Vec::as_slice);
+            state.observe_stage(FinalChainNativeStageEvent::SlashingDelayedList {
+                origin: if pending_origin {
+                    0
+                } else if trace_origin {
+                    1
+                } else {
+                    2
+                },
+                selected_period: (!trace_origin).then_some(self.eligibility_period.as_u64()),
+                retained_identity: self.delayed_physical.as_ref().map(|view| view.identity),
+                validators: &delayed_jailed,
+                proof_status,
+                proof_validators,
+            });
+        }
         let mut next = self.dpos_state.clone();
         let outcome = self
             .final_chain
@@ -201,7 +254,7 @@ impl FinalChainNativeSession<'_> {
             list_key[31] = 2;
             let list_key = ConcreteStorageKey(list_key);
             let expected = encode_jailed(&self.dpos_state.slashing_jailed_validators);
-            let current = trace.current(SLASHING_CONTRACT_ADDRESS, list_key)?;
+            let current = trace.expectation(SLASHING_CONTRACT_ADDRESS, list_key)?;
             let valid = match current {
                 ConcreteRead::Present(bytes) => {
                     bytes == expected
@@ -224,6 +277,10 @@ impl FinalChainNativeSession<'_> {
             )?;
         }
         let account = state.account(SLASHING_CONTRACT_ADDRESS)?;
+        state.observe_stage(FinalChainNativeStageEvent::AccountRead {
+            address: SLASHING_CONTRACT_ADDRESS,
+            account: &account,
+        });
         let ordinary = if account.nonce.is_zero() {
             vec![FinalChainNativeOrdinaryMutation::NonceReplace {
                 address: SLASHING_CONTRACT_ADDRESS,
@@ -234,6 +291,9 @@ impl FinalChainNativeSession<'_> {
         } else {
             Vec::new()
         };
+        for mutation in &ordinary {
+            state.observe_stage(FinalChainNativeStageEvent::AccountWrite(mutation));
+        }
         trace.put(
             SLASHING_CONTRACT_ADDRESS,
             ConcreteStorageKey(proof_key),
@@ -265,7 +325,12 @@ fn authenticate(
     key: ConcreteStorageKey,
     expected: Vec<u8>,
     name: &str,
+    purpose: u8,
 ) -> Result<(), FinalChainNativeSessionError> {
+    #[cfg(feature = "synthetic-fixtures")]
+    trace.slashing_current_get(true, purpose, key, &expected);
+    #[cfg(not(feature = "synthetic-fixtures"))]
+    let _ = purpose;
     let valid = match trace.current(SLASHING_CONTRACT_ADDRESS, key)? {
         ConcreteRead::Present(bytes) => bytes == expected,
         ConcreteRead::Absent | ConcreteRead::Tombstone => expected.is_empty(),
@@ -273,6 +338,8 @@ fn authenticate(
     if !valid {
         return Err(FinalChainNativeSessionError::RawIntegrity(name.to_owned()));
     }
+    #[cfg(feature = "synthetic-fixtures")]
+    trace.slashing_current_get(false, purpose, key, &expected);
     Ok(())
 }
 

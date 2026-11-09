@@ -390,7 +390,11 @@ fn native_integration_slashing_marker_matches_literal_go_key_and_reversal() {
 
 #[test]
 fn native_integration_slashing_writes_and_duplicate_match_go() {
-    struct SlashingState(State, std::cell::Cell<usize>);
+    struct SlashingState(
+        State,
+        std::cell::Cell<usize>,
+        std::cell::RefCell<Vec<(ConcreteStorageKey, bool)>>,
+    );
     impl FinalChainNativeStateRead for SlashingState {
         fn account(
             &self,
@@ -411,6 +415,36 @@ fn native_integration_slashing_writes_and_duplicate_match_go() {
         ) -> Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
             self.0.raw_storage(address, key)
         }
+        fn observe_stage(&self, event: FinalChainNativeStageEvent<'_>) {
+            match event {
+                FinalChainNativeStageEvent::RawRead {
+                    address,
+                    key,
+                    semantic,
+                    ..
+                } if address == SLASHING_CONTRACT_ADDRESS => {
+                    self.2.borrow_mut().push((key, semantic))
+                }
+                #[cfg(feature = "synthetic-fixtures")]
+                FinalChainNativeStageEvent::SlashingCurrentGet { begin, purpose, .. } => {
+                    self.2
+                        .borrow_mut()
+                        .push((ConcreteStorageKey([0xf0 + purpose; 32]), begin));
+                }
+                #[cfg(feature = "synthetic-fixtures")]
+                FinalChainNativeStageEvent::SlashingDelayedList {
+                    selected_period,
+                    validators,
+                    ..
+                } => {
+                    self.2.borrow_mut().push((
+                        ConcreteStorageKey([0xff; 32]),
+                        selected_period.is_some() && validators.is_empty(),
+                    ));
+                }
+                _ => {}
+            }
+        }
     }
     let fixture = corpus();
     let rows = fixture["periods"][3]["transactions"].as_array().unwrap();
@@ -424,7 +458,11 @@ fn native_integration_slashing_writes_and_duplicate_match_go() {
     let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
     // Use the fixture's execution period with an independent, empty delayed list.
     session.pending_period = 4.into();
-    let mut state = SlashingState(State::genesis(&fixture), std::cell::Cell::new(0));
+    let mut state = SlashingState(
+        State::genesis(&fixture),
+        std::cell::Cell::new(0),
+        std::cell::RefCell::new(Vec::new()),
+    );
     let mut call = request(slash, 0);
     call.period = 4.into();
     call.contract = SLASHING_CONTRACT_ADDRESS;
@@ -438,7 +476,11 @@ fn native_integration_slashing_writes_and_duplicate_match_go() {
     .enumerate()
     {
         for malformed in [false, true] {
-            let mut unavailable = SlashingState(State::genesis(&fixture), std::cell::Cell::new(0));
+            let mut unavailable = SlashingState(
+                State::genesis(&fixture),
+                std::cell::Cell::new(0),
+                std::cell::RefCell::new(Vec::new()),
+            );
             unavailable.0.fault = Some((at, malformed));
             let mut failed_session = chain.begin_native_session(1.into(), 0.into()).unwrap();
             failed_session.pending_period = 4.into();
@@ -467,6 +509,39 @@ fn native_integration_slashing_writes_and_duplicate_match_go() {
     }
     let quote = session.prepare(&call, &state).unwrap();
     let outcome = completed(session.invoke(&call, quote, &state).unwrap());
+    let mut list_key = [0_u8; 32];
+    list_key[31] = 2;
+    let list_reads = state.2.borrow();
+    #[cfg(feature = "synthetic-fixtures")]
+    for purpose in [1_u8, 2] {
+        let marker = ConcreteStorageKey([0xf0 + purpose; 32]);
+        let phases: Vec<_> = list_reads
+            .iter()
+            .filter(|(key, _)| *key == marker)
+            .map(|(_, begin)| *begin)
+            .collect();
+        assert_eq!(phases, [true, false], "actual slashing getter markers");
+    }
+    assert!(
+        list_reads
+            .iter()
+            .filter(|(key, semantic)| key.0 == list_key && !semantic)
+            .count()
+            >= 2
+    );
+    assert!(
+        !list_reads
+            .iter()
+            .any(|(key, semantic)| key.0 == list_key && *semantic)
+    );
+    #[cfg(feature = "synthetic-fixtures")]
+    assert!(
+        list_reads
+            .iter()
+            .any(|(key, valid)| key.0 == [0xff; 32] && *valid),
+        "actual delayed list observation"
+    );
+    drop(list_reads);
     assert_eq!(
         outcome.account_mutations,
         vec![FinalChainNativeOrdinaryMutation::NonceReplace {
