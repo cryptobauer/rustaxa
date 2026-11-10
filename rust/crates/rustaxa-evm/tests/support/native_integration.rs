@@ -705,15 +705,16 @@ fn run_recovery_with_retry(
             split == 5 && periods.len() == 12 && retry_periods.len() == 12,
             "crypto recovery extent"
         );
+        qualification::validate_recovery_pair(fixture, retry_fixture)?;
         ensure!(
-            fixture == retry_fixture
-                && number(&periods[split - 1]["number"]) == 5
-                && number(&periods[11]["number"]) == 12,
+            number(&periods[split - 1]["number"]) == 5 && number(&periods[11]["number"]) == 12,
             "same case period five recovery"
         );
         ensure!(
-            pins.is_some_and(|(primary, retry)| primary == retry),
-            "same case body pins"
+            pins.is_some_and(|(primary, retry)| {
+                primary.len() == 64 && retry.len() == 64 && primary != retry
+            }),
+            "independent case phase body pins"
         );
     }
     let authority = match pins {

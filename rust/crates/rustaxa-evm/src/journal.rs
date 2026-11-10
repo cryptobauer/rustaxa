@@ -1238,6 +1238,7 @@ pub struct ExecutionJournal<R> {
     accounts: BTreeMap<JournalAddress, JournalAccount>,
     ordinary: BTreeMap<(JournalAddress, ConcreteStorageKey), StorageCell>,
     raw: BTreeMap<(JournalAddress, ConcreteStorageKey), NativeRawOperation>,
+    borrowed_memory: crate::borrowed_memory::BorrowedMemory<(JournalAddress, ConcreteStorageKey)>,
     transient: BTreeMap<(JournalAddress, ConcreteStorageKey), [u8; 32]>,
     logs: Vec<ExecutionLog>,
     native_invocations: Vec<ConsensusNativeObservation>,
@@ -1257,6 +1258,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             accounts: BTreeMap::new(),
             ordinary: BTreeMap::new(),
             raw: BTreeMap::new(),
+            borrowed_memory: Default::default(),
             transient: BTreeMap::new(),
             logs: Vec::new(),
             native_invocations: Vec::new(),
@@ -2011,6 +2013,50 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         Ok(())
     }
 
+    pub(crate) fn native_memory_frame(&self) -> crate::borrowed_memory::FrameMemory {
+        self.borrowed_memory.frame()
+    }
+
+    pub(crate) fn synchronize_native_memory(
+        &mut self,
+        frame: &mut crate::borrowed_memory::FrameMemory,
+        memory: &[u8],
+    ) {
+        self.borrowed_memory.synchronize(frame, memory);
+        self.synchronize_borrowed_raw_values();
+    }
+
+    pub(crate) fn release_native_memory(&mut self, frame: crate::borrowed_memory::FrameMemory) {
+        self.borrowed_memory.release(frame);
+        self.synchronize_borrowed_raw_values();
+    }
+
+    fn synchronize_borrowed_raw_values(&mut self) {
+        for (key, value) in self.borrowed_memory.values() {
+            if let Some(NativeRawOperation::Put(current)) = self.raw.get_mut(key) {
+                *current = crate::contracts::NativeRawValue::new(value.to_vec())
+                    .expect("registered VRF input is nonempty");
+            }
+        }
+    }
+
+    pub(crate) fn bind_native_input(
+        &mut self,
+        alias: &crate::contracts::NativeInputAlias,
+        frame: &crate::borrowed_memory::FrameMemory,
+        range: std::ops::Range<usize>,
+        memory: &[u8],
+    ) -> bool {
+        let key = (alias.address, alias.key);
+        let Some(NativeRawOperation::Put(value)) = self.raw.get(&key) else {
+            return false;
+        };
+        if memory.get(range.clone()) != Some(value.as_bytes()) {
+            return false;
+        }
+        self.borrowed_memory.bind(key, frame, range, memory)
+    }
+
     /// Reads exact native raw bytes, independently from ordinary dirty storage.
     pub fn raw_storage(
         &self,
@@ -2110,6 +2156,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             }
             NativeRawOperation::Delete => duration_journal_event("raw_write", address, &key.0, &[]),
         }
+        self.borrowed_memory.remove(&(address, key));
         self.raw.insert((address, key), operation);
         let account = self
             .accounts
@@ -2505,6 +2552,12 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 }
 
 impl<R: ConcreteExecutionRead> NativeJournalRead for ExecutionJournal<R> {
+    fn borrowed_raw_storage(&self, address: [u8; 20], key: &ConcreteStorageKey) -> Option<Vec<u8>> {
+        self.borrowed_memory
+            .value(&(address, *key))
+            .map(<[u8]>::to_vec)
+    }
+
     fn account(
         &self,
         address: JournalAddress,

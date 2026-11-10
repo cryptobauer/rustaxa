@@ -334,6 +334,7 @@ fn invoke_stateless(
         .map_err(ExecutionDriverError::StatelessResult)?;
     let NativeInvocationResult::Completed(outcome) = result else {
         return Ok(NativeFrameOutcome {
+            input_aliases: Vec::new(),
             input_mutations: Vec::new(),
             status: CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
             required_gas: quote.required_gas,
@@ -350,6 +351,7 @@ fn invoke_stateless(
         });
     }
     Ok(NativeFrameOutcome {
+        input_aliases: Vec::new(),
         input_mutations: Vec::new(),
         status: match outcome.status {
             NativeStatus::Success => CodeExecutionStatus::Success,
@@ -1225,6 +1227,7 @@ enum ParentInsertion {
 }
 
 struct ActiveFrame {
+    memory: crate::borrowed_memory::FrameMemory,
     interpreter: Interpreter<EthInterpreter>,
     insertion: ParentInsertion,
     full_value: num_bigint::BigUint,
@@ -1411,6 +1414,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
     );
     profile.configure_interpreter(&mut interpreter);
     let mut frames = vec![ActiveFrame {
+        memory: journal.native_memory_frame(),
         interpreter,
         insertion: ParentInsertion::Root,
         full_value: transaction.value.value().clone(),
@@ -1422,6 +1426,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
             let active = frames.last_mut().expect("root frame remains active");
             match run_until_action(
                 &mut active.interpreter,
+                &mut active.memory,
                 journal,
                 block_hashes,
                 block,
@@ -1441,6 +1446,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
         match action {
             InterpreterAction::Return(result) => {
                 let active = frames.pop().expect("returning frame exists");
+                journal.release_native_memory(active.memory);
                 let frame_depth = active.interpreter.input.depth;
                 match active.insertion {
                     ParentInsertion::Root => return Ok((result, active.last_opcode)),
@@ -1595,6 +1601,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
 #[allow(clippy::too_many_arguments)]
 fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     interpreter: &mut Interpreter<EthInterpreter>,
+    memory: &mut crate::borrowed_memory::FrameMemory,
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
     block: &ExecutionBlockContext,
@@ -1603,6 +1610,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     last_opcode: &mut u8,
     observer: &mut Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<InterpreterAction, ExecutionDriverError> {
+    journal.synchronize_native_memory(memory, &interpreter.memory.context_memory());
     let base_refund = journal.refund();
     let (table, costs) = profile.execution_instruction_table::<JournalHost<'_, R, B>>();
     let mut host = JournalHost::new(
@@ -1628,6 +1636,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
         let refund_depth = interpreter.input.depth;
         crate::journal::duration_journal_consumer(true, refund_depth, refund_pc, *last_opcode);
         let step = interpreter.step(&table, &costs, &mut host);
+        host.synchronize_native_memory(memory, &interpreter.memory.context_memory());
         crate::journal::duration_journal_consumer(false, refund_depth, refund_pc, *last_opcode);
         if matches!(*last_opcode, 0x55 | 0xff) {
             crate::journal::duration_journal_refund_opcode(
@@ -1908,6 +1917,65 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
                 memory[offset] = replacement;
             }
         }
+        if !outcome.input_aliases.is_empty()
+            && let CallInput::SharedBuffer(range) = &inputs.input
+        {
+            if outcome
+                .input_aliases
+                .iter()
+                .any(|alias| alias.scope == crate::contracts::NativeInputAliasScope::OwnedInputOnly)
+            {
+                journal.revert_checkpoint(checkpoint)?;
+                return Err(ExecutionDriverError::Native(
+                    NativeAdapterError::InputAliasLifetime,
+                ));
+            }
+            let local = range
+                .start
+                .checked_sub(parent.interpreter.memory.local_memory_offset())
+                .ok_or(ExecutionDriverError::Native(
+                    NativeAdapterError::InputMutation {
+                        offset: range.start,
+                    },
+                ))?;
+            journal.synchronize_native_memory(
+                &mut parent.memory,
+                &parent.interpreter.memory.context_memory(),
+            );
+            for alias in &outcome.input_aliases {
+                let start = local
+                    .checked_add(alias.offset)
+                    .ok_or(ExecutionDriverError::Native(
+                        NativeAdapterError::InputMutation {
+                            offset: alias.offset,
+                        },
+                    ))?;
+                let end = start
+                    .checked_add(alias.length)
+                    .ok_or(ExecutionDriverError::Native(
+                        NativeAdapterError::InputMutation {
+                            offset: alias.offset,
+                        },
+                    ))?;
+                if alias
+                    .offset
+                    .checked_add(alias.length)
+                    .is_none_or(|end| end > range.len())
+                    || !journal.bind_native_input(
+                        alias,
+                        &parent.memory,
+                        start..end,
+                        &parent.interpreter.memory.context_memory(),
+                    )
+                {
+                    return Err(ExecutionDriverError::Native(
+                        NativeAdapterError::InputMutation {
+                            offset: alias.offset,
+                        },
+                    ));
+                }
+            }
+        }
         crate::journal::duration_journal_no_refund(
             checkpoint,
             outcome.status == CodeExecutionStatus::Success,
@@ -1963,6 +2031,7 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     );
     profile.configure_interpreter(&mut interpreter);
     Ok(Some(ActiveFrame {
+        memory: journal.native_memory_frame(),
         interpreter,
         insertion: ParentInsertion::Call {
             checkpoint,
@@ -2061,6 +2130,7 @@ fn prepare_create_frame<R: ConcreteExecutionRead>(
     );
     profile.configure_interpreter(&mut interpreter);
     Ok(Some(ActiveFrame {
+        memory: journal.native_memory_frame(),
         interpreter,
         insertion: ParentInsertion::Create {
             checkpoint,

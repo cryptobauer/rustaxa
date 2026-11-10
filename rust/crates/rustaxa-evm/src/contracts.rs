@@ -505,6 +505,15 @@ impl std::error::Error for NativeJournalReadError {}
 /// Reads include earlier ordinary mutations and frame rollbacks. Raw reads use
 /// the native lane rather than the ordinary storage overlay.
 pub trait NativeJournalRead {
+    /// Reads retained native input independently from account visibility.
+    fn borrowed_raw_storage(
+        &self,
+        _address: [u8; 20],
+        _key: &ConcreteStorageKey,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
     /// Loads current existence, nonce and balance for one account.
     fn account(&self, address: [u8; 20]) -> Result<NativeJournalAccount, NativeJournalReadError>;
 
@@ -678,6 +687,30 @@ impl std::fmt::Display for NativePortError {
     }
 }
 
+/// Lifetime admitted for retained native input spans.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeInputAliasScope {
+    /// Caller memory cannot survive this transaction's settlement boundary.
+    OwnedInputOnly,
+    /// One disposable journal retains raw storage for the entire execution.
+    SharedJournal,
+}
+
+/// A native raw Put that retained a span of its borrowed invocation input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeInputAlias {
+    /// Lifetime required by the native session owner.
+    pub scope: NativeInputAliasScope,
+    /// Native storage account.
+    pub address: [u8; 20],
+    /// Exact raw storage key.
+    pub key: ConcreteStorageKey,
+    /// First byte in the completed invocation input.
+    pub offset: usize,
+    /// Length of the retained input span.
+    pub length: usize,
+}
+
 /// A precompile mutation of its borrowed input, separate from immutable
 /// transaction bytes and from return data copied by the caller frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -705,6 +738,14 @@ impl std::error::Error for NativePortError {}
 /// effects. Any integrity/infrastructure error aborts the whole pending period;
 /// exact native serialization and cache lifecycle remain an S5 adapter concern.
 pub trait NativeExecutionPort {
+    /// Returns retained input spans before input_mutations consumes completion.
+    fn input_aliases(
+        &mut self,
+        _id: NativeInvocationId,
+    ) -> Result<Vec<NativeInputAlias>, NativePortError> {
+        Ok(Vec::new())
+    }
+
     /// Returns effects for the exact completed invocation. Ports with immutable
     /// input semantics retain the empty default. Never return stale effects.
     fn input_mutations(

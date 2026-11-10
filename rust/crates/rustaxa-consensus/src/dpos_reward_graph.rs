@@ -825,6 +825,44 @@ impl DposRewardGraph {
         })
     }
 
+    /// Restores the current node loaded before a full undelegation.
+    ///
+    /// Go writes this earlier copy after deleting the delegation cursor. The
+    /// cursor must be absent and the node must match the exact preceding
+    /// decrement, including its reward index. A captured count-one node may
+    /// have been deleted. Invalid inputs leave the graph unchanged.
+    pub(crate) fn restore_undelegation_node(
+        &mut self,
+        key: NodeKey,
+        delegator: Delegator,
+        loaded: Node,
+    ) -> Result<(), DposRewardGraphError> {
+        self.apply_mutation(|graph| {
+            let mismatch = || DposRewardGraphError::CountMismatch {
+                validator: key.validator,
+                block: key.block,
+            };
+            if graph.current_block()? != key.block
+                || graph
+                    .delegation_cursors
+                    .contains_key(&(key.validator, delegator))
+            {
+                return Err(mismatch());
+            }
+            let count = loaded.count.checked_sub(1).ok_or_else(mismatch)?;
+            match graph.nodes.get(&key) {
+                Some(current)
+                    if count != 0
+                        && current.count == count
+                        && current.reward_per_stake == loaded.reward_per_stake => {}
+                None if count == 0 => {}
+                _ => return Err(mismatch()),
+            }
+            graph.nodes.insert(key, loaded);
+            Ok(())
+        })
+    }
+
     /// Returns one delegation's block-key cursor.
     /// Missing cursors and incomplete provenance are hard errors.
     pub fn read_cursor(
@@ -1789,6 +1827,125 @@ mod tests {
 
         assert_eq!(graph.load_node(&key).unwrap().count, 3);
         assert_eq!(graph.read_cursor(&validator, &delegator).unwrap(), 7);
+    }
+
+    #[test]
+    fn undelegation_loaded_node_restore_preserves_count_one_and_current_head() {
+        let validator = addr(43);
+        let delegator = addr(44);
+        for count in [1, 2] {
+            let mut graph = DposRewardGraph::new();
+            if count == 1 {
+                graph
+                    .bootstrap_node(
+                        NodeKey {
+                            validator,
+                            block: 0,
+                        },
+                        Node {
+                            reward_per_stake: DposRewardIndex::zero(),
+                            count: 1,
+                        },
+                        true,
+                        &[],
+                    )
+                    .unwrap();
+            }
+            graph.next_block(1).unwrap();
+            let key = NodeKey {
+                validator,
+                block: 1,
+            };
+            let loaded = Node {
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8) << 300usize),
+                count,
+            };
+            graph
+                .bootstrap_node(key, loaded.clone(), count == 2, &[delegator])
+                .unwrap();
+            let head = graph.read_validator_head(&validator).unwrap();
+            graph.delete_cursor(&validator, &delegator).unwrap();
+            assert_eq!(
+                graph.nodes.get(&key).map(|node| node.count),
+                (count > 1).then_some(count - 1)
+            );
+            graph
+                .restore_undelegation_node(key, delegator, loaded.clone())
+                .unwrap();
+            assert_eq!(graph.load_node(&key).unwrap(), loaded);
+            assert_eq!(graph.read_validator_head(&validator).unwrap(), head);
+            assert!(matches!(
+                graph.read_cursor(&validator, &delegator),
+                Err(DposRewardGraphError::MissingCursor { .. })
+            ));
+            let encoded = encode_dpos_reward_graph(&graph).unwrap();
+            assert_eq!(decode_dpos_reward_graph(&encoded).unwrap(), graph);
+        }
+    }
+
+    #[test]
+    fn undelegation_loaded_node_restore_rejects_changed_image_and_replay_atomically() {
+        let validator = addr(48);
+        let delegator = addr(49);
+        let key = NodeKey {
+            validator,
+            block: 0,
+        };
+        let loaded = Node {
+            reward_per_stake: DposRewardIndex::from(BigUint::from(99_u8)),
+            count: 2,
+        };
+        let mut graph = DposRewardGraph::new();
+        graph
+            .bootstrap_node(key, loaded.clone(), true, &[delegator])
+            .unwrap();
+        let before = graph.clone();
+        assert!(
+            graph
+                .restore_undelegation_node(key, delegator, loaded.clone())
+                .is_err()
+        );
+        assert_eq!(graph, before);
+        graph.delete_cursor(&validator, &delegator).unwrap();
+        for invalid in [
+            Node {
+                count: 0,
+                ..loaded.clone()
+            },
+            Node {
+                count: 3,
+                ..loaded.clone()
+            },
+            Node {
+                reward_per_stake: DposRewardIndex::zero(),
+                ..loaded.clone()
+            },
+        ] {
+            let before = graph.clone();
+            assert!(
+                graph
+                    .restore_undelegation_node(key, delegator, invalid)
+                    .is_err()
+            );
+            assert_eq!(graph, before);
+        }
+        let before = graph.clone();
+        assert!(
+            graph
+                .restore_undelegation_node(NodeKey { block: 1, ..key }, delegator, loaded.clone())
+                .is_err()
+        );
+        assert_eq!(graph, before);
+        graph
+            .restore_undelegation_node(key, delegator, loaded.clone())
+            .unwrap();
+        let restored = graph.clone();
+        assert!(
+            graph
+                .restore_undelegation_node(key, delegator, loaded)
+                .is_err()
+        );
+        assert_eq!(graph, restored);
     }
 
     #[test]

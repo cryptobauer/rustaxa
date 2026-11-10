@@ -65,7 +65,7 @@ impl FinalChainNativeSession<'_> {
         state: &dyn FinalChainNativeStateRead,
         request: &FinalChainNativeRequest,
     ) -> Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
-        let DposTransaction::Register(registration) = transaction else {
+        let DposTransaction::Register(mut registration) = transaction else {
             return Err(FinalChainNativeSessionError::UnsupportedOperation);
         };
         if registration.proof.len() == 65 {
@@ -88,6 +88,17 @@ impl FinalChainNativeSession<'_> {
                 expected,
                 replacement: expected.wrapping_sub(27),
             });
+        }
+        let vrf_offset = usize::try_from(&BigUint::from_bytes_be(&request.input[68..100]))
+            .map_err(|_| raw_integrity("registration VRF offset", "overflow"))?
+            .checked_add(36)
+            .ok_or_else(|| raw_integrity("registration VRF offset", "overflow"))?;
+        for mutation in &self.input_mutations {
+            if let Some(offset) = mutation.offset.checked_sub(vrf_offset)
+                && let Some(value) = registration.vrf_key.get_mut(offset)
+            {
+                *value = mutation.replacement;
+            }
         }
         let validator = registration.validator;
         let owner = registration.metadata.owner;
@@ -173,6 +184,20 @@ impl FinalChainNativeSession<'_> {
                 owner.to_vec(),
                 "registration owner",
             )?;
+            let offset = vrf_offset;
+            self.input_aliases.push(FinalChainNativeInputAlias {
+                scope: if self.origin == NativeSessionOrigin::PendingPeriod {
+                    FinalChainNativeInputAliasScope::OwnedInputOnly
+                } else {
+                    FinalChainNativeInputAliasScope::SharedJournal
+                },
+                address: DPOS_CONTRACT_ADDRESS,
+                key: validator_vrf_key(validator),
+                offset,
+                length: registration.vrf_key.len(),
+            });
+            self.borrowed_vrf_keys
+                .insert(validator, validator_vrf_key(validator));
             checked_put(
                 &mut trace,
                 validator_vrf_key(validator),

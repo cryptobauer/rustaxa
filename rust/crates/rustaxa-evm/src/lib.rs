@@ -7,6 +7,7 @@
 //! until a separately authorized and validated routing change.
 
 pub mod bls;
+mod borrowed_memory;
 pub mod contracts;
 pub mod curve_precompiles;
 pub mod driver;

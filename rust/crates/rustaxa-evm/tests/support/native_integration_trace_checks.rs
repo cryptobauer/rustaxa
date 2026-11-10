@@ -25,9 +25,17 @@ fn live<R: ConcreteExecutionRead>(journal: &ExecutionJournal<R>, expected: &Valu
             ConcreteRead::Present(raw) => (true, raw),
             ConcreteRead::Absent | ConcreteRead::Tombstone => (false, Vec::new()),
         };
+        let expected_raw = bytes(&row["value"]);
         ensure!(
-            row["callback"] == callback && bytes(&row["value"]) == raw,
-            "trace raw slot"
+            row["callback"] == callback && expected_raw == raw,
+            "trace raw slot address {} key {}: callback {callback} expected {}, value {} ({} bytes) expected {} ({} bytes)",
+            row["address"],
+            row["key"],
+            row["callback"],
+            hex::encode(&raw[..raw.len().min(128)]),
+            raw.len(),
+            hex::encode(&expected_raw[..expected_raw.len().min(128)]),
+            expected_raw.len()
         );
     }
     Ok(())
@@ -127,7 +135,7 @@ pub(super) fn verify(
             &trace["request"]
         };
         let req = request(input, 500_000, index);
-        live(&journal, &row["before"])?;
+        live(&journal, &row["before"]).with_context(|| format!("trace call {index} before"))?;
         if index == 0 {
             let mut changed = row["before"].clone();
             let accounts = changed["accounts"]
@@ -174,7 +182,7 @@ pub(super) fn verify(
             &outcomes.borrow()[first_outcome..],
             &row["ordered_raw_writes"],
         )?;
-        live(&journal, &row["after"])?;
+        live(&journal, &row["after"]).with_context(|| format!("trace call {index} after"))?;
         if index == 0 {
             let mut changed = row["after"].clone();
             let accounts = changed["accounts"]

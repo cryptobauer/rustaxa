@@ -50,6 +50,29 @@ impl<'a> SimulationNativeExecutionPort<'a> {
 }
 
 impl NativeExecutionPort for SimulationNativeExecutionPort<'_> {
+    fn input_aliases(
+        &mut self,
+        id: NativeInvocationId,
+    ) -> Result<Vec<rustaxa_evm::contracts::NativeInputAlias>, NativePortError> {
+        self.simulation
+            .input_aliases(consensus_id(id))
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|a| rustaxa_evm::contracts::NativeInputAlias {
+                        scope: match a.scope {
+                            rustaxa_consensus::native_session::FinalChainNativeInputAliasScope::OwnedInputOnly => rustaxa_evm::contracts::NativeInputAliasScope::OwnedInputOnly,
+                            rustaxa_consensus::native_session::FinalChainNativeInputAliasScope::SharedJournal => rustaxa_evm::contracts::NativeInputAliasScope::SharedJournal,
+                        },
+                        address: a.address,
+                        key: a.key,
+                        offset: a.offset,
+                        length: a.length,
+                    })
+                    .collect()
+            })
+            .map_err(native_port_error)
+    }
+
     fn input_mutations(
         &mut self,
         id: rustaxa_evm::contracts::NativeInvocationId,
@@ -189,6 +212,10 @@ impl<'a> RecordingRead<'a> {
 }
 
 impl FinalChainNativeStateRead for RecordingRead<'_> {
+    fn borrowed_raw_storage(&self, address: [u8; 20], key: &ConcreteStorageKey) -> Option<Vec<u8>> {
+        self.journal.borrowed_raw_storage(address, key)
+    }
+
     fn observe_stage(
         &self,
         event: rustaxa_consensus::native_session::FinalChainNativeStageEvent<'_>,
@@ -621,6 +648,29 @@ impl<'a> MixedNativeExecutionPort<'a> {
 }
 
 impl NativeExecutionPort for MixedNativeExecutionPort<'_> {
+    fn input_aliases(
+        &mut self,
+        id: NativeInvocationId,
+    ) -> Result<Vec<rustaxa_evm::contracts::NativeInputAlias>, NativePortError> {
+        self.session
+            .input_aliases(consensus_id(id))
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|a| rustaxa_evm::contracts::NativeInputAlias {
+                        scope: match a.scope {
+                            rustaxa_consensus::native_session::FinalChainNativeInputAliasScope::OwnedInputOnly => rustaxa_evm::contracts::NativeInputAliasScope::OwnedInputOnly,
+                            rustaxa_consensus::native_session::FinalChainNativeInputAliasScope::SharedJournal => rustaxa_evm::contracts::NativeInputAliasScope::SharedJournal,
+                        },
+                        address: a.address,
+                        key: a.key,
+                        offset: a.offset,
+                        length: a.length,
+                    })
+                    .collect()
+            })
+            .map_err(native_port_error)
+    }
+
     fn input_mutations(
         &mut self,
         id: rustaxa_evm::contracts::NativeInvocationId,

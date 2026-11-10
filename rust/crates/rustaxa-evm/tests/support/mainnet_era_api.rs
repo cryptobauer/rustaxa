@@ -651,6 +651,13 @@ struct DurationOriginPort<'a> {
     calls: Rc<RefCell<Vec<DurationNativeCall>>>,
 }
 impl NativeExecutionPort for DurationOriginPort<'_> {
+    fn input_aliases(
+        &mut self,
+        id: rustaxa_evm::contracts::NativeInvocationId,
+    ) -> std::result::Result<Vec<rustaxa_evm::contracts::NativeInputAlias>, NativePortError> {
+        self.inner.input_aliases(id)
+    }
+
     fn input_mutations(
         &mut self,
         id: rustaxa_evm::contracts::NativeInvocationId,

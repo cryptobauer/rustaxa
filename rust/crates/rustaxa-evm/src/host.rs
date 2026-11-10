@@ -75,6 +75,14 @@ pub struct JournalHost<'a, R, B> {
 }
 
 impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
+    pub(crate) fn synchronize_native_memory(
+        &mut self,
+        frame: &mut crate::borrowed_memory::FrameMemory,
+        memory: &[u8],
+    ) {
+        self.journal.synchronize_native_memory(frame, memory);
+    }
+
     /// Binds one interpreter to its transaction, block and journal authority.
     pub fn new(
         journal: &'a mut ExecutionJournal<R>,

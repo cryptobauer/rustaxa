@@ -29,6 +29,8 @@ use crate::{
 /// generic exceptional-bytecode insertion must not silently burn it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeFrameOutcome {
+    /// Raw values retained from caller memory by successful native operations.
+    pub input_aliases: Vec<crate::contracts::NativeInputAlias>,
     /// Ordered mutations of the borrowed input slice, before caller return copy.
     pub input_mutations: Vec<NativeInputMutation>,
     /// Success, exact native contract failure or native gas-admission failure.
@@ -45,6 +47,8 @@ pub struct NativeFrameOutcome {
 /// Integrity/infrastructure failure requiring whole-period discard.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeAdapterError {
+    /// A pending owner cannot retain caller memory across transaction settlement.
+    InputAliasLifetime,
     /// Borrowed input metadata did not match the completed invocation.
     InputMutation { offset: usize },
     /// The staged port could not prepare or execute safely.
@@ -111,6 +115,7 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
             disposition: ConsensusNativeDisposition::OwnFrameReverted,
         });
         return Ok(NativeFrameOutcome {
+            input_aliases: Vec::new(),
             input_mutations: Vec::new(),
             status: CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
             required_gas: quote.required_gas,
@@ -127,6 +132,9 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
         crate::journal::duration_native_raw_event("outcome_raw", mutation);
     }
     crate::journal::duration_native_outcome_boundary(false);
+    let input_aliases = port
+        .input_aliases(invocation.id)
+        .map_err(NativeAdapterError::Port)?;
     let input_mutations = port
         .input_mutations(invocation.id)
         .map_err(NativeAdapterError::Port)?;
@@ -203,6 +211,7 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
         journal.push_log(log);
     }
     Ok(NativeFrameOutcome {
+        input_aliases,
         input_mutations,
         required_gas: quote.required_gas,
         status,

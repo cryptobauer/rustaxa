@@ -114,6 +114,13 @@ pub(crate) struct Port<'a> {
     pub(crate) outcomes: Rc<RefCell<Vec<NativeOutcome>>>,
 }
 impl NativeExecutionPort for Port<'_> {
+    fn input_aliases(
+        &mut self,
+        id: rustaxa_evm::contracts::NativeInvocationId,
+    ) -> std::result::Result<Vec<rustaxa_evm::contracts::NativeInputAlias>, NativePortError> {
+        self.inner.input_aliases(id)
+    }
+
     fn input_mutations(
         &mut self,
         id: rustaxa_evm::contracts::NativeInvocationId,
@@ -331,6 +338,94 @@ pub(super) fn verify(fixture: &Value, application: &Path, concrete: &Path) -> Re
     )
 }
 
+pub(super) fn verify_default_trace_observations(
+    fixture: &Value,
+    paths: (&Path, &Path),
+    api: &Value,
+) -> Result<usize> {
+    let (application, concrete) = paths;
+    let (storage, chain) = open_chain(application, fixture)?;
+    let committed =
+        ConcreteStateLifecycle::inspect_existing(concrete, chain.concrete_chain_identity()?)?
+            .committed;
+    let final_period = fixture["periods"]
+        .as_array()
+        .context("periods")?
+        .last()
+        .context("final period")?;
+    let last = api["cases"]
+        .as_array()
+        .context("API cases")?
+        .iter()
+        .find(|case| case["name"] == "12/slash_reversed_duplicate")
+        .context("last default API case")?;
+    let mut selected = vec![
+        (
+            "last default trace".to_owned(),
+            number(&last["head"]),
+            &last["trace"],
+        ),
+        (
+            "last default trace_sequence".to_owned(),
+            number(&last["head"]),
+            &last["trace_sequence"],
+        ),
+    ];
+    for extra in api["interacting_traces"]
+        .as_array()
+        .context("interacting traces")?
+    {
+        selected.push((
+            format!("interacting {}", extra["name"]),
+            number(&extra["head"]),
+            &extra["trace"],
+        ));
+    }
+    let mut checked = 0;
+    for (name, head, trace) in selected {
+        verify_physical_rows(concrete, &final_period["final"]["rows"])?;
+        let before = (
+            application_rows(&storage)?,
+            ConcreteStateLifecycle::inspect_existing(concrete, chain.concrete_chain_identity()?)?,
+            chain.last_block_number_typed()?,
+            chain.execution_status()?,
+            storage
+                .final_chain()
+                .external_evm_pending_publication_raw()?,
+        );
+        let state = &fixture["periods"][head as usize - 1]["final"];
+        let identity = ConcreteStateIdentity {
+            period: head.into(),
+            state_root: fixed(&state["root"]),
+        };
+        let reader = CompleteReader {
+            inner: ConcreteStateReader::open_historical_read_only(concrete, committed, identity)?,
+            known: inventory(state, head)?,
+        };
+        eprintln!(
+            "CRYPTO_TRACE_OBSERVATION {}",
+            serde_json::json!({"completed_traces":checked,"next_trace":name,"head":head})
+        );
+        let result = trace_checks::verify(&reader, &chain, fixture, head, trace)
+            .with_context(|| name.clone());
+        verify_physical_rows(concrete, &final_period["final"]["rows"])?;
+        let after = (
+            application_rows(&storage)?,
+            ConcreteStateLifecycle::inspect_existing(concrete, chain.concrete_chain_identity()?)?,
+            chain.last_block_number_typed()?,
+            chain.execution_status()?,
+            storage
+                .final_chain()
+                .external_evm_pending_publication_raw()?,
+        );
+        ensure!(before == after, "focused trace persisted state unchanged");
+        result?;
+        checked += 1;
+    }
+    ensure!(checked == 44, "all default focused trace observations");
+    Ok(checked)
+}
+
 pub(super) fn verify_documents(
     fixture: &Value,
     paths: (&Path, &Path),
@@ -349,7 +444,17 @@ pub(super) fn verify_documents(
     let mut probes = 0usize;
     let mut traces = 0usize;
     let mut estimate_index = 0usize;
-    for case in api["cases"].as_array().context("API cases")? {
+    let cases = api["cases"].as_array().context("API cases")?;
+    for (case_index, case) in cases.iter().enumerate() {
+        if exact_probes.is_some() {
+            eprintln!(
+                "CRYPTO_API_PROGRESS {}",
+                serde_json::json!({
+                    "completed_cases": case_index, "total_cases": cases.len(),
+                    "next_case": case["name"], "head": case["head"]
+                })
+            );
+        }
         if exact_probes.is_some() {
             verify_physical_rows(concrete, &final_period["final"]["rows"])?;
         }
@@ -549,7 +654,8 @@ pub(super) fn verify_documents(
                 compare_raw(&outcomes.borrow(), &Value::Array(expected))
                     .with_context(|| format!("trace {} {name}", case["name"]))?;
                 if exact_probes.is_some() {
-                    trace_checks::verify(&reader, &chain, fixture, head, trace)?;
+                    trace_checks::verify(&reader, &chain, fixture, head, trace)
+                        .with_context(|| format!("trace observations {} {name}", case["name"]))?;
                 }
                 traces += 1;
             }
@@ -701,7 +807,8 @@ pub(super) fn verify_documents(
             compare_raw(&outcomes.borrow(), &Value::Array(expected))
                 .with_context(|| format!("interacting trace {}", extra["name"]))?;
             if exact_probes.is_some() {
-                trace_checks::verify(&reader, &chain, fixture, head, trace)?;
+                trace_checks::verify(&reader, &chain, fixture, head, trace)
+                    .with_context(|| format!("interacting trace observations {}", extra["name"]))?;
             }
             if extra["creation_prefix"] != true {
                 ensure!(
@@ -1360,14 +1467,92 @@ fn concrete_reader_regressions(
     };
     ensure!(fresh.storage(native, never) == Ok(ConcreteRead::Absent));
     verify_complete_final_reader(&fresh, &absent_final(native, never))?;
-    let present_one = fixture["periods"][head as usize - 1]["final"]["native_catalog"]["slots"]
+    let final_state = &fixture["periods"][head as usize - 1]["final"];
+    let slots = final_state["native_catalog"]["slots"]
         .as_array()
-        .context("final native slots")?
+        .context("final native slots")?;
+    if let Some(present_one) = slots
         .iter()
         .find(|row| row["present"] == true && row["value"] == "01")
-        .context("actual present one-byte slot")?;
-    let one_final = serde_json::json!({"accounts": [], "native_catalog": {"slots": [present_one]}});
-    verify_complete_final_reader(&fresh, &one_final)?;
+    {
+        let one_final =
+            serde_json::json!({"accounts": [], "native_catalog": {"slots": [present_one]}});
+        verify_complete_final_reader(&fresh, &one_final)?;
+    } else {
+        let mut slashing = [0; 20];
+        slashing[19] = 0xee;
+        let address = hex::encode(slashing);
+        let accounts = final_state["native_catalog"]["accounts"]
+            .as_array()
+            .context("final native accounts")?
+            .iter()
+            .filter(|row| row["address"] == address)
+            .collect::<Vec<_>>();
+        ensure!(
+            accounts.len() == 1,
+            "one authenticated slashing account row"
+        );
+        let account = accounts[0];
+        ensure!(
+            account["present"] == false && account["raw_account"] == "",
+            "authenticated slashing account absence"
+        );
+        ensure!(
+            final_state["accounts"]
+                .as_array()
+                .context("final accounts")?
+                .contains(account),
+            "matching final slashing account row"
+        );
+        ensure!(
+            final_state["native_catalog"]["coverage"]["absent_account_identities"]
+                .as_array()
+                .context("absent account coverage")?
+                .iter()
+                .any(|row| row == &address),
+            "slashing account absence coverage"
+        );
+        ensure!(
+            slots.iter().all(|row| row["address"] != address),
+            "absent slashing account has no catalog slots"
+        );
+        let period = &fixture["periods"][4];
+        ensure!(period["number"] == 5, "reverted proof period");
+        let parents = period["transactions"]
+            .as_array()
+            .context("period five transactions")?
+            .iter()
+            .filter(|row| row["name"] == "parent_revert_with_native_slash")
+            .collect::<Vec<_>>();
+        ensure!(parents.len() == 1, "one reverted parent slash");
+        let parent = parents[0];
+        ensure!(
+            parent["status"] == 0
+                && parent["consensus_error"] == ""
+                && parent["execution_error"] == "execution reverted",
+            "authenticated parent revert"
+        );
+        let markers = parent["ordered_raw_writes"]
+            .as_array()
+            .context("reverted native writes")?
+            .iter()
+            .filter(|row| row["address"] == address && row["value"] == "01")
+            .collect::<Vec<_>>();
+        ensure!(markers.len() == 1, "one reverted one-byte proof marker");
+        let key = ConcreteStorageKey(fixed(&markers[0]["key"]));
+        // The Go account row proves absence; the reverted write supplies the key.
+        let mut expected = absent_final(slashing, key);
+        expected["accounts"] = serde_json::json!([account]);
+        verify_complete_final_reader(&fresh, &expected)?;
+        ensure!(
+            fresh.inner.nonmember(slashing, key)?,
+            "reverted proof marker nonmembership"
+        );
+        ensure!(
+            fresh.storage(slashing, key) == Ok(ConcreteRead::Absent),
+            "reverted proof marker absence"
+        );
+    }
     ensure!(!fresh.inner.nonmember(ordinary, slot)?);
     ensure!(matches!(
         fresh.storage(ordinary, slot)?,

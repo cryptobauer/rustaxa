@@ -9229,6 +9229,33 @@ impl FinalChain {
         Ok(())
     }
 
+    /// Captures Go's earlier-loaded current node after undelegation preflight.
+    /// Only full removal of a cursor at the current block needs restoration.
+    /// Partial removal and older cursors keep the shared removal behavior.
+    /// Missing graph authority is a hard error; this helper does not mutate it.
+    fn loaded_full_undelegation_node(
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        amount: U256,
+    ) -> Result<Option<(NodeKey, Node)>, anyhow::Error> {
+        if snapshot
+            .delegations
+            .get(&validator)
+            .and_then(|rows| rows.get(&delegator))
+            .is_none_or(|stake| stake.as_u256() != amount)
+        {
+            return Ok(None);
+        }
+        let graph = &snapshot.reward_reference_graph;
+        let block = graph.current_block()?;
+        if graph.read_cursor(&validator, &delegator)? != block {
+            return Ok(None);
+        }
+        let key = NodeKey { validator, block };
+        Ok(Some((key, graph.load_node(&key)?)))
+    }
+
     /// Applies one legacy V1 undelegation to the supplied semantic and account views.
     ///
     /// Business-invalid validator, delegation, amount, and duplicate-queue
@@ -9265,6 +9292,8 @@ impl FinalChain {
             .checked_add(self.dpos_delegation_locking_period(block_number))
             .ok_or_else(|| anyhow::anyhow!("DPoS undelegation unlock block overflow"))?;
         let loaded_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
+        let loaded_current =
+            Self::loaded_full_undelegation_node(snapshot, delegator, validator, remove_amount)?;
         let mut logs = self.remove_dpos_delegation_stake(
             snapshot,
             accounts,
@@ -9284,6 +9313,10 @@ impl FinalChain {
                 .is_none_or(StoredDposTokenAmount::is_zero)
         {
             remove_dpos_validator(snapshot, validator, true)?;
+        } else if let Some((key, loaded)) = loaded_current {
+            snapshot
+                .reward_reference_graph
+                .restore_undelegation_node(key, delegator, loaded)?;
         }
         create_undelegation(
             snapshot,
@@ -9504,6 +9537,8 @@ impl FinalChain {
             return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
         let loaded_count = checked_dpos_undelegations_count_for_validator(snapshot, validator)?;
+        let loaded_current =
+            Self::loaded_full_undelegation_node(snapshot, delegator, validator, remove_amount)?;
         let mut logs = self.remove_dpos_delegation_stake(
             snapshot,
             accounts,
@@ -9523,6 +9558,10 @@ impl FinalChain {
                 .is_none_or(StoredDposTokenAmount::is_zero)
         {
             remove_dpos_validator(snapshot, validator, true)?;
+        } else if let Some((key, loaded)) = loaded_current {
+            snapshot
+                .reward_reference_graph
+                .restore_undelegation_node(key, delegator, loaded)?;
         }
         let id = create_undelegation_v2(
             snapshot,
@@ -22180,6 +22219,189 @@ mod tests {
         drop(final_chain);
         drop(storage);
         let _ = crate::closeout_test_scratch::dispose(path);
+    }
+
+    fn undelegation_loaded_node_chain(
+        label: &str,
+        magnolia: u64,
+        split: bool,
+    ) -> (FinalChain, Arc<Storage>, PathBuf) {
+        let path = temp_db_path(label);
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x33; 20];
+        let other = [0x34; 20];
+        let mut genesis =
+            genesis_validator_with_metadata(validator, U256::from(10_000u64), validator, 0, "", "");
+        if split {
+            genesis.delegations = vec![
+                (validator, u256_to_big_endian(U256::from(5_000u64))),
+                (other, u256_to_big_endian(U256::from(5_000u64))),
+            ];
+        }
+        let chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000.into(),
+            0,
+            vec![
+                genesis_account(validator, U256::from(1_000_000u64)),
+                genesis_account(other, U256::from(1_000_000u64)),
+            ],
+            vec![genesis],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: magnolia.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (chain, storage, path)
+    }
+
+    #[test]
+    fn undelegation_loaded_node_v1_v2_preserves_go_full_partial_and_terminal_branches() {
+        let validator = [0x33; 20];
+        for v2 in [false, true] {
+            for case in ["retained", "terminal", "commission", "partial", "older"] {
+                let boundary = if matches!(case, "terminal" | "commission") {
+                    1_000
+                } else {
+                    0
+                };
+                let (chain, storage, path) = undelegation_loaded_node_chain(
+                    "undelegation-loaded-node-branches",
+                    boundary,
+                    false,
+                );
+                let committed = chain.dpos_snapshot(0.into()).unwrap();
+                let mut snapshot = committed.clone();
+                if case == "commission" {
+                    snapshot
+                        .commission_rewards
+                        .insert(validator, stored_amount(U256::one()));
+                }
+                let block = u64::from(case == "older");
+                snapshot.reward_reference_graph.next_block(block).unwrap();
+                let amount = if case == "partial" { 5_000 } else { 10_000 };
+                let mut accounts = chain.current_account_snapshot().unwrap();
+                let outcome = if v2 {
+                    chain.apply_dpos_undelegate_v2(
+                        &mut snapshot,
+                        &mut accounts,
+                        validator,
+                        validator,
+                        u256_to_big_endian(U256::from(amount as u64)),
+                        block.into(),
+                    )
+                } else {
+                    chain.apply_dpos_undelegate(
+                        &mut snapshot,
+                        &mut accounts,
+                        validator,
+                        validator,
+                        u256_to_big_endian(U256::from(amount as u64)),
+                        block.into(),
+                    )
+                }
+                .unwrap();
+                assert_eq!(outcome.status_code, 1, "{case}, v2={v2}");
+                if case == "terminal" {
+                    assert!(!snapshot.total_stakes.contains_key(&validator));
+                    assert!(
+                        snapshot
+                            .reward_reference_graph
+                            .load_node(&NodeKey { validator, block })
+                            .is_err()
+                    );
+                } else {
+                    let count = match case {
+                        "partial" => 3,
+                        "older" => 1,
+                        _ => 2,
+                    };
+                    assert_eq!(
+                        snapshot
+                            .reward_reference_graph
+                            .load_node(&NodeKey { validator, block })
+                            .unwrap()
+                            .count,
+                        count,
+                        "{case}, v2={v2}"
+                    );
+                    assert_eq!(
+                        snapshot
+                            .delegations
+                            .get(&validator)
+                            .and_then(|rows| rows.get(&validator))
+                            .is_some(),
+                        case == "partial"
+                    );
+                }
+                let encoded = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+                assert_eq!(decode_dpos_snapshot_rlp(&encoded).unwrap(), snapshot);
+                assert_eq!(chain.dpos_snapshot(0.into()).unwrap(), committed);
+                drop(chain);
+                drop(storage);
+                crate::closeout_test_scratch::dispose(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn undelegation_loaded_node_consecutive_calls_preserve_state_and_failure_isolation() {
+        let (chain, storage, path) =
+            undelegation_loaded_node_chain("undelegation-loaded-node-repeat", 0, true);
+        let validator = [0x33; 20];
+        let committed = chain.dpos_snapshot(0.into()).unwrap();
+        let mut snapshot = committed.clone();
+        let mut accounts = chain.current_account_snapshot().unwrap();
+        for delegator in [validator, [0x34; 20]] {
+            let outcome = chain
+                .apply_dpos_undelegate_v2(
+                    &mut snapshot,
+                    &mut accounts,
+                    delegator,
+                    validator,
+                    u256_to_big_endian(U256::from(5_000u64)),
+                    0.into(),
+                )
+                .unwrap();
+            assert_eq!(outcome.status_code, 1);
+            assert_eq!(
+                snapshot
+                    .reward_reference_graph
+                    .load_node(&NodeKey {
+                        validator,
+                        block: 0
+                    })
+                    .unwrap()
+                    .count,
+                3
+            );
+            let before = snapshot.clone();
+            let accounts_before = accounts.clone();
+            let repeated = chain
+                .apply_dpos_undelegate_v2(
+                    &mut snapshot,
+                    &mut accounts,
+                    delegator,
+                    validator,
+                    u256_to_big_endian(U256::from(5_000u64)),
+                    0.into(),
+                )
+                .unwrap();
+            assert_eq!(
+                repeated.contract_error,
+                Some(DposContractError::NonExistentDelegation)
+            );
+            assert_eq!(snapshot, before);
+            assert_eq!(accounts, accounts_before);
+        }
+        assert_eq!(chain.dpos_snapshot(0.into()).unwrap(), committed);
+        let encoded = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        assert_eq!(decode_dpos_snapshot_rlp(&encoded).unwrap(), snapshot);
+        drop(chain);
+        drop(storage);
+        crate::closeout_test_scratch::dispose(path).unwrap();
     }
 
     #[test]

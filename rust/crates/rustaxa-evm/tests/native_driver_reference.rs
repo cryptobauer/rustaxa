@@ -1637,3 +1637,194 @@ fn return_data_copy_matches_go_memory_bounds_gas_and_reference_panics() {
 pub mod closeout_test_scratch;
 #[path = "native_driver_reference/owner_registry.rs"]
 mod owner_registry;
+
+struct InputAliasPort {
+    inner: ScriptedPort,
+    scope: rustaxa_evm::contracts::NativeInputAliasScope,
+}
+
+impl NativeExecutionPort for InputAliasPort {
+    fn input_aliases(
+        &mut self,
+        _id: rustaxa_evm::contracts::NativeInvocationId,
+    ) -> Result<Vec<rustaxa_evm::contracts::NativeInputAlias>, NativePortError> {
+        Ok(vec![rustaxa_evm::contracts::NativeInputAlias {
+            scope: self.scope,
+            address: NATIVE,
+            key: ConcreteStorageKey([0x11; 32]),
+            offset: 0,
+            length: 32,
+        }])
+    }
+
+    fn prepare(
+        &mut self,
+        invocation: &NativeInvocation,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeGasQuote, NativePortError> {
+        self.inner.prepare(invocation, journal)
+    }
+
+    fn invoke(
+        &mut self,
+        invocation: &NativeInvocation,
+        quote: NativeGasQuote,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeInvocationResult, NativePortError> {
+        assert_eq!(invocation.input, vec![0x77; 32]);
+        self.inner.invoke(invocation, quote, journal)
+    }
+}
+
+fn input_alias_port(scope: rustaxa_evm::contracts::NativeInputAliasScope) -> InputAliasPort {
+    use rustaxa_evm::contracts::{NativeRawMutation, NativeRawOperation, NativeRawValue};
+    let mut inner = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let NativeInvocationResult::Completed(outcome) = &mut inner.result else {
+        unreachable!()
+    };
+    outcome.raw_mutations.push(NativeRawMutation {
+        address: NATIVE,
+        key: ConcreteStorageKey([0x11; 32]),
+        expected: ConcreteRead::Absent,
+        operation: NativeRawOperation::Put(NativeRawValue::new(vec![0x77; 32]).unwrap()),
+    });
+    InputAliasPort { inner, scope }
+}
+
+fn keep_native_account(journal: &mut ExecutionJournal<Reader>) {
+    use rustaxa_evm::contracts::{ExecutionBalance, NativeOrdinaryAccountMutation};
+    journal
+        .apply_native_account_mutations(&[
+            NativeOrdinaryAccountMutation::EnsureExists {
+                address: NATIVE,
+                expected_exists: false,
+            },
+            NativeOrdinaryAccountMutation::Balance {
+                address: NATIVE,
+                expected_exists: true,
+                expected: ExecutionBalance::default(),
+                replacement: ExecutionBalance::new(1_u8.into()),
+            },
+        ])
+        .unwrap();
+}
+
+fn input_alias_parent(revert: bool) -> Vec<u8> {
+    let mut code = vec![0x7f];
+    code.extend_from_slice(&[0x77; 32]);
+    code.extend_from_slice(&[
+        0x60, 32, 0x52, 0x60, 0, 0x60, 0, 0x60, 32, 0x60, 32, 0x60, 0, 0x73,
+    ]);
+    code.extend_from_slice(&NATIVE);
+    code.extend_from_slice(&[0x61, 0xff, 0xff, 0xf1, 0x50]);
+    if revert {
+        code.extend_from_slice(&[0x60, 0, 0x60, 0, 0xfd]);
+    } else {
+        code.push(0);
+    }
+    code
+}
+
+#[test]
+fn native_input_alias_survives_parent_return_and_revert() {
+    use rustaxa_evm::contracts::{NativeInputAliasScope, NativeRawOperation};
+    for revert in [false, true] {
+        let mut journal = journal_with_parent(input_alias_parent(revert));
+        keep_native_account(&mut journal);
+        let mut port = input_alias_port(NativeInputAliasScope::SharedJournal);
+        let mut sequence = PeriodConsensusSequence::new(7.into());
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![NATIVE]),
+            &AddressSet(vec![NATIVE]),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &transaction(PARENT, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!("parent must execute")
+        };
+        assert_eq!(
+            result.status,
+            if revert {
+                CodeExecutionStatus::Failure(CodeExecutionError::Revert)
+            } else {
+                CodeExecutionStatus::Success
+            }
+        );
+        assert_eq!(
+            journal
+                .raw_storage(NATIVE, ConcreteStorageKey([0x11; 32]))
+                .unwrap(),
+            ConcreteRead::Present(vec![0; 32])
+        );
+        assert_eq!(
+            journal
+                .ordinary_storage(NATIVE, ConcreteStorageKey([0x11; 32]))
+                .unwrap(),
+            (BigUint::default(), BigUint::default())
+        );
+        let NativeInvocationResult::Completed(outcome) = &port.inner.result else {
+            unreachable!()
+        };
+        assert_eq!(
+            outcome.raw_mutations[0].operation,
+            NativeRawOperation::Put(
+                rustaxa_evm::contracts::NativeRawValue::new(vec![0x77; 32]).unwrap()
+            )
+        );
+    }
+}
+
+#[test]
+fn native_input_alias_rejects_pending_shared_memory_and_allows_owned_input() {
+    use rustaxa_evm::{contracts::NativeInputAliasScope, native::NativeAdapterError};
+    for borrowed in [true, false] {
+        let mut journal = journal_with_parent(input_alias_parent(false));
+        keep_native_account(&mut journal);
+        let mut port = input_alias_port(NativeInputAliasScope::OwnedInputOnly);
+        let mut sequence = PeriodConsensusSequence::new(7.into());
+        let mut request = transaction(
+            if borrowed { PARENT } else { NATIVE },
+            ExecutionValue::default(),
+        );
+        if !borrowed {
+            request.input = vec![0x77; 32];
+        }
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![NATIVE]),
+            &AddressSet(vec![NATIVE]),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &request,
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        );
+        if borrowed {
+            assert_eq!(
+                result,
+                Err(ExecutionDriverError::Native(
+                    NativeAdapterError::InputAliasLifetime
+                ))
+            );
+        } else {
+            assert!(
+                matches!(result, Ok(TransactionExecutionResult::Executed(ref out)) if out.status == CodeExecutionStatus::Success)
+            );
+            assert_eq!(
+                journal
+                    .raw_storage(NATIVE, ConcreteStorageKey([0x11; 32]))
+                    .unwrap(),
+                ConcreteRead::Present(vec![0x77; 32])
+            );
+        }
+    }
+}

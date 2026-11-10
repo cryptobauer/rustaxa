@@ -73,7 +73,9 @@ impl FinalChainNativeSession<'_> {
         plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
         state: &dyn FinalChainNativeStateRead,
     ) -> std::result::Result<FinalChainNativeRewardsOutcome, FinalChainNativeSessionError> {
-        let result = self.finish_rewards_inner(plan, state);
+        let result = self
+            .synchronize_borrowed_vrf(state)
+            .and_then(|()| self.finish_rewards_inner(plan, state));
         #[cfg(feature = "synthetic-fixtures")]
         if self.pending_period.as_u64() == 5 {
             cleanup_diagnostic::record(format_args!(

@@ -300,6 +300,15 @@ pub enum FinalChainNativeStageEvent<'a> {
 /// must observe all preceding journal effects. Errors abort the pending period;
 /// they are never converted to absence.
 pub trait FinalChainNativeStateRead {
+    /// Reads a retained input span even when its account is not visible.
+    fn borrowed_raw_storage(
+        &self,
+        _address: [u8; 20],
+        _key: &ConcreteStorageKey,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
     /// Observes an actual staged operation when a caller requests it.
     fn observe_stage(&self, _event: FinalChainNativeStageEvent<'_>) {}
 
@@ -358,6 +367,30 @@ pub enum FinalChainNativeStatus {
         /// Exact legacy diagnostic exposed by native call execution.
         error: String,
     },
+}
+
+/// Lifetime admitted for retained native input spans.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeInputAliasScope {
+    /// Caller memory cannot survive this transaction's settlement boundary.
+    OwnedInputOnly,
+    /// One disposable journal retains raw storage for the entire execution.
+    SharedJournal,
+}
+
+/// A native raw Put that retained a span of its borrowed invocation input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalChainNativeInputAlias {
+    /// Lifetime required by the native session owner.
+    pub scope: FinalChainNativeInputAliasScope,
+    /// Native storage account.
+    pub address: [u8; 20],
+    /// Exact raw storage key.
+    pub key: ConcreteStorageKey,
+    /// First byte in the completed invocation input.
+    pub offset: usize,
+    /// Length of the retained input span.
+    pub length: usize,
 }
 
 /// One mutation of the Go precompile's borrowed input slice. This never changes
@@ -602,6 +635,8 @@ pub struct FinalChainNativeSession<'a> {
     next_sequence: u64,
     completed_input_invocation: Option<FinalChainNativeInvocationId>,
     input_mutations: Vec<FinalChainNativeInputMutation>,
+    input_aliases: Vec<FinalChainNativeInputAlias>,
+    borrowed_vrf_keys: std::collections::BTreeMap<[u8; 20], ConcreteStorageKey>,
     dpos_state: DposSnapshot,
     eligibility_state: DposSnapshot,
     eligibility_period: FinalChainBlockNumber,
@@ -625,6 +660,30 @@ pub struct FinalChainNativeSimulation<'a> {
 }
 
 impl FinalChain {
+    fn normalize_disposable_slashing_snapshot(
+        &self,
+        period: FinalChainBlockNumber,
+        snapshot: &mut DposSnapshot,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        if snapshot.slashing_jail_blocks.is_empty()
+            && snapshot.slashing_jailed_validators.is_empty()
+            && snapshot.slashing_double_voting_proofs.is_empty()
+        {
+            return Ok(());
+        }
+        // A fresh Go reader cannot see cached slots of an absent account.
+        if self
+            .account_at_block(period, SLASHING_CONTRACT_ADDRESS)
+            .map_err(custody::map_kernel_error)?
+            .is_none()
+        {
+            snapshot.slashing_jail_blocks.clear();
+            snapshot.slashing_jailed_validators.clear();
+            snapshot.slashing_double_voting_proofs.clear();
+        }
+        Ok(())
+    }
+
     /// Opens one disposable trace for the Magnolia or current-profile layout.
     /// Prefix and targets share native writes and per-reader Go byte caches.
     /// No rewards, persistence, or publication capability escapes this wrapper.
@@ -648,6 +707,7 @@ impl FinalChain {
         let mut snapshot = self
             .dpos_snapshot_at_finalized_block(reader_period)
             .map_err(custody::map_kernel_error)?;
+        self.normalize_disposable_slashing_snapshot(reader_period, &mut snapshot)?;
         self.advance_reward_reference_graph_block(&mut snapshot, execution_period)
             .map_err(custody::map_kernel_error)?;
         self.native_session_from_state(
@@ -766,6 +826,8 @@ impl FinalChain {
             next_sequence,
             completed_input_invocation,
             input_mutations,
+            input_aliases,
+            borrowed_vrf_keys,
             dpos_state,
             eligibility_state,
             eligibility_period,
@@ -797,6 +859,8 @@ impl FinalChain {
             next_sequence,
             completed_input_invocation,
             input_mutations,
+            input_aliases,
+            borrowed_vrf_keys,
             dpos_state,
             eligibility_state,
             eligibility_period,
@@ -867,30 +931,29 @@ impl FinalChain {
                 finalized_head,
             });
         }
-        let dpos_state = self
+        let mut dpos_state = self
             .dpos_snapshot_at_finalized_block(period)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        self.native_session_from_state(
+        self.normalize_disposable_slashing_snapshot(period, &mut dpos_state)?;
+        let mut session = self.native_session_from_state(
             None,
             period,
             dpos_state,
             NativeSessionOrigin::HistoricalSimulation,
-        )
-        .map(|session| {
-            #[cfg(feature = "synthetic-fixtures")]
-            let session = {
-                let mut session = session;
-                session.synthetic_origins.insert(
-                    0,
-                    SyntheticNativeOrigin {
-                        role: "simulation_historical",
-                        period,
-                    },
-                );
-                session
-            };
-            FinalChainNativeSimulation { session }
-        })
+        )?;
+        self.normalize_disposable_slashing_snapshot(
+            session.eligibility_period,
+            &mut session.eligibility_state,
+        )?;
+        #[cfg(feature = "synthetic-fixtures")]
+        session.synthetic_origins.insert(
+            0,
+            SyntheticNativeOrigin {
+                role: "simulation_historical",
+                period,
+            },
+        );
+        Ok(FinalChainNativeSimulation { session })
     }
 
     /// Fixture-only private view after an empty block's BeginBlock and before
@@ -1242,6 +1305,8 @@ impl FinalChain {
             next_sequence: 0,
             completed_input_invocation: None,
             input_mutations: Vec::new(),
+            input_aliases: Vec::new(),
+            borrowed_vrf_keys: Default::default(),
             dpos_state,
             eligibility_state,
             eligibility_period,
@@ -1256,6 +1321,14 @@ impl FinalChain {
 }
 
 impl FinalChainNativeSimulation<'_> {
+    /// Returns retained input spans for exactly the last completed invocation.
+    pub fn input_aliases(
+        &mut self,
+        id: FinalChainNativeInvocationId,
+    ) -> Result<Vec<FinalChainNativeInputAlias>, FinalChainNativeSessionError> {
+        self.session.input_aliases(id)
+    }
+
     /// Returns observations recorded after successful source selections.
     #[cfg(feature = "synthetic-fixtures")]
     pub fn synthetic_origins(&self) -> &[SyntheticNativeOrigin] {
@@ -1313,6 +1386,33 @@ impl FinalChainNativeSession<'_> {
         self.delayed_physical = Some(view);
         Ok(())
     }
+    /// Returns aliases before input_mutations consumes the completed invocation.
+    pub fn input_aliases(
+        &mut self,
+        id: FinalChainNativeInvocationId,
+    ) -> Result<Vec<FinalChainNativeInputAlias>, FinalChainNativeSessionError> {
+        if self.aborted || self.completed_input_invocation != Some(id) {
+            return Err(FinalChainNativeSessionError::NotPrepared);
+        }
+        Ok(std::mem::take(&mut self.input_aliases))
+    }
+
+    fn synchronize_borrowed_vrf(
+        &mut self,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        for (validator, key) in &self.borrowed_vrf_keys {
+            if let Some(current) = self.dpos_state.vrf_keys.get_mut(validator)
+                && let Some(value) = state.borrowed_raw_storage(DPOS_CONTRACT_ADDRESS, key)
+            {
+                *current = value.try_into().map_err(|_| {
+                    FinalChainNativeSessionError::RawIntegrity("borrowed VRF input width".into())
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     /// Returns borrowed-input effects for exactly the last completed invocation.
     /// The frame applies these once to aliased caller memory, before return copy.
     pub fn input_mutations(
@@ -1344,6 +1444,7 @@ impl FinalChainNativeSession<'_> {
     ) -> std::result::Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
         self.completed_input_invocation = None;
         self.input_mutations.clear();
+        self.input_aliases.clear();
         if self.aborted {
             return Err(FinalChainNativeSessionError::Aborted);
         }
@@ -1354,6 +1455,8 @@ impl FinalChainNativeSession<'_> {
             return Err(FinalChainNativeSessionError::QuoteOutstanding);
         }
         self.validate_request(request)?;
+        self.synchronize_borrowed_vrf(state)
+            .inspect_err(|_| self.aborted = true)?;
 
         if request.contract == SLASHING_CONTRACT_ADDRESS {
             return self.prepare_slashing(request);
@@ -3151,6 +3254,227 @@ mod tests {
                         )
                         .is_ok()
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn historical_slashing_views_select_account_presence_per_period() {
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: FinalChainBlockNumber::GENESIS,
+            cornus_period: FinalChainBlockNumber::GENESIS,
+            cacti_period: FinalChainBlockNumber::MAX,
+            ..Default::default()
+        };
+        with_chain_dpos_config(
+            "historical-slashing-account-periods",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig {
+                delegation_delay: 1,
+                ..Default::default()
+            },
+            |chain| {
+                let mut orphan = chain
+                    .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                orphan.slashing_jail_blocks.insert(VALIDATOR, 7);
+                orphan.slashing_jailed_validators.push(VALIDATOR);
+                orphan.slashing_double_voting_proofs.insert([0x51; 32]);
+                let mut empty = orphan.clone();
+                empty.slashing_jail_blocks.clear();
+                empty.slashing_jailed_validators.clear();
+                empty.slashing_double_voting_proofs.clear();
+                for period in [0, 1] {
+                    chain
+                        .insert_dpos_snapshot(period.into(), orphan.clone())
+                        .unwrap();
+                }
+                chain
+                    .storage
+                    .final_chain()
+                    .write_block_header(1, H256::from_low_u64_be(1), &[0xc0], &[0xc0])
+                    .unwrap();
+                let present = HashMap::from([(
+                    SLASHING_CONTRACT_ADDRESS,
+                    Account {
+                        nonce: 1.into(),
+                        balance: rustaxa_types::FinalChainAccountBalance::zero_new(),
+                        storage_root_hash: [0; 32],
+                        code_hash: [0; 32],
+                        code_size: 0,
+                    },
+                )]);
+                for (current_present, delayed_present) in
+                    [(true, false), (false, true), (true, true), (false, false)]
+                {
+                    {
+                        let mut accounts = chain.account_snapshots.lock().unwrap();
+                        accounts.insert(
+                            0.into(),
+                            if delayed_present {
+                                present.clone()
+                            } else {
+                                HashMap::new()
+                            },
+                        );
+                        accounts.insert(
+                            1.into(),
+                            if current_present {
+                                present.clone()
+                            } else {
+                                HashMap::new()
+                            },
+                        );
+                    }
+                    let simulation = chain.begin_native_simulation(1.into()).unwrap();
+                    assert_eq!(simulation.session.eligibility_period, 0.into());
+                    assert_eq!(
+                        &simulation.session.dpos_state,
+                        if current_present { &orphan } else { &empty }
+                    );
+                    assert_eq!(
+                        &simulation.session.eligibility_state,
+                        if delayed_present { &orphan } else { &empty }
+                    );
+                    assert_eq!(
+                        chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+                        orphan
+                    );
+                    assert_eq!(
+                        chain.dpos_snapshot_at_finalized_block(1.into()).unwrap(),
+                        orphan
+                    );
+                }
+
+                chain.account_snapshots.lock().unwrap().remove(&1.into());
+                assert!(matches!(
+                    chain.begin_native_simulation(1.into()),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
+                {
+                    let mut accounts = chain.account_snapshots.lock().unwrap();
+                    accounts.insert(1.into(), present);
+                    accounts.remove(&0.into());
+                }
+                assert!(matches!(
+                    chain.begin_native_simulation(1.into()),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
+                chain.insert_dpos_snapshot(0.into(), empty.clone()).unwrap();
+                chain.insert_dpos_snapshot(1.into(), empty.clone()).unwrap();
+                chain.account_snapshots.lock().unwrap().remove(&1.into());
+                let simulation = chain.begin_native_simulation(1.into()).unwrap();
+                assert_eq!(simulation.session.dpos_state, empty);
+                assert_eq!(simulation.session.eligibility_state, empty);
+            },
+        );
+    }
+
+    #[test]
+    fn historical_slashing_trace_normalizes_only_parent_initial_state() {
+        with_chain_dpos_config(
+            "historical-slashing-trace-parent",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::GENESIS,
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig::default(),
+            |chain| {
+                let mut orphan = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+                orphan.slashing_jail_blocks.insert(VALIDATOR, 7);
+                orphan.slashing_jailed_validators.push(VALIDATOR);
+                orphan.slashing_double_voting_proofs.insert([0x51; 32]);
+                chain
+                    .insert_dpos_snapshot(0.into(), orphan.clone())
+                    .unwrap();
+                chain
+                    .account_snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&0.into())
+                    .unwrap()
+                    .remove(&SLASHING_CONTRACT_ADDRESS);
+                assert!(
+                    !chain
+                        .account_snapshots
+                        .lock()
+                        .unwrap()
+                        .contains_key(&1.into())
+                );
+
+                let mut trace = chain.begin_native_trace(0.into(), 1.into()).unwrap();
+                assert!(trace.session.dpos_state.slashing_jail_blocks.is_empty());
+                assert!(
+                    trace
+                        .session
+                        .dpos_state
+                        .slashing_jailed_validators
+                        .is_empty()
+                );
+                assert!(
+                    trace
+                        .session
+                        .dpos_state
+                        .slashing_double_voting_proofs
+                        .is_empty()
+                );
+                trace.session.dpos_state.slashing_jail_blocks = orphan.slashing_jail_blocks.clone();
+                trace.session.dpos_state.slashing_jailed_validators =
+                    orphan.slashing_jailed_validators.clone();
+                trace.session.dpos_state.slashing_double_voting_proofs =
+                    orphan.slashing_double_voting_proofs.clone();
+                let request = simulation_request(
+                    1.into(),
+                    0,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, VALIDATOR),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let state = RawState::fixture();
+                let quote = trace.prepare(&request, &state).unwrap();
+                completed(trace.invoke(&request, quote, &state).unwrap());
+                assert_eq!(
+                    trace.session.dpos_state.slashing_jail_blocks,
+                    orphan.slashing_jail_blocks
+                );
+                assert_eq!(
+                    trace.session.dpos_state.slashing_jailed_validators,
+                    orphan.slashing_jailed_validators
+                );
+                assert_eq!(
+                    trace.session.dpos_state.slashing_double_voting_proofs,
+                    orphan.slashing_double_voting_proofs
+                );
+                assert_eq!(
+                    chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+                    orphan
+                );
+
+                let fresh = chain.begin_native_trace(0.into(), 1.into()).unwrap();
+                assert!(fresh.session.dpos_state.slashing_jail_blocks.is_empty());
+                assert!(
+                    fresh
+                        .session
+                        .dpos_state
+                        .slashing_jailed_validators
+                        .is_empty()
+                );
+                assert!(
+                    fresh
+                        .session
+                        .dpos_state
+                        .slashing_double_voting_proofs
+                        .is_empty()
+                );
+                drop(fresh);
+                chain.account_snapshots.lock().unwrap().remove(&0.into());
+                assert!(matches!(
+                    chain.begin_native_trace(0.into(), 1.into()),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
             },
         );
     }
