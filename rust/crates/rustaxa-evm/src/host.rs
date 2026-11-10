@@ -297,14 +297,21 @@ impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> 
         let target_empty = beneficiary.nonce.is_zero()
             && beneficiary.balance.value() == &num_bigint::BigInt::default()
             && beneficiary.code_size == 0;
+        let previously_destroyed = if self.journal.correction_stage().single_selfdestruct_refund() {
+            match self.journal.previously_destroyed(address.into_array()) {
+                Ok(value) => value,
+                Err(error) => return self.fail(HostError::Journal(error)),
+            }
+        } else {
+            // Historical Go reports false for every existing source.
+            false
+        };
         self.pending_selfdestruct = Some((address.into_array(), target.into_array()));
         Ok(StateLoad::new(
             SelfDestructResult {
                 had_value: source.balance.value() != &num_bigint::BigInt::default(),
                 target_exists: !target_empty,
-                // Preserve Go's IsNIL() && suicided: every existing source reports
-                // false, even after a previous suicide in this transaction.
-                previously_destroyed: false,
+                previously_destroyed,
             },
             false,
         ))

@@ -1,21 +1,15 @@
 //! Differential Falcon-512 coverage against both pinned Taraxa Go revisions.
 //!
-//! The source module is included directly so this independently owned slice
-//! can validate before the lead adds the shared crate export and Cacti route.
+//! The shared crate export is the same primitive used by the frame driver.
 //! Registry activation and frame settlement remain separate integration gates.
 
-mod contracts {
-    pub use rustaxa_evm::contracts::*;
-}
-
-#[path = "../src/falcon.rs"]
-mod falcon;
-
-use falcon::{FALCON_BASE_GAS, FALCON_PER_WORD_GAS, FALCON_VERIFY_ADDRESS, PreparedFalconCall};
 use num_bigint::BigUint;
 use rustaxa_evm::contracts::{
     ExecutionValue, NativeCallKind, NativeInvocationResult, NativePortError, NativeStatus,
     StatelessInvocation, StatelessInvocationId,
+};
+use rustaxa_evm::falcon::{
+    FALCON_BASE_GAS, FALCON_PER_WORD_GAS, FALCON_VERIFY_ADDRESS, PreparedFalconCall,
 };
 use serde_json::Value;
 

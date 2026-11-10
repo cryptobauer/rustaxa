@@ -40,7 +40,52 @@ pub enum TaraxaPhase {
     Cacti,
 }
 
-/// Historical Taraxa interpreter profile for one selected instruction phase.
+/// Immutable correction set, independent of the instruction phase.
+///
+/// Corrections have no network activation mapping. Existing constructors select
+/// historical rules. Each additional stage must name its complete rule set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CorrectionStage {
+    /// Preserve the accepted historical execution rules.
+    #[default]
+    Historical,
+    /// Revert transient writes with their frame; retain all other historical rules.
+    TransientRollback,
+    /// Add one SELFDESTRUCT refund per account to transient rollback.
+    SingleSelfDestructRefund,
+    /// Add checked RETURNDATACOPY and its frame failures to the refund stage.
+    CheckedReturnDataCopy,
+    /// Add bounded Falcon ABI parsing to the checked-copy stage.
+    BoundedFalconAbi,
+}
+
+impl CorrectionStage {
+    /// Whether frame revert restores transient writes under this fixed set.
+    pub(crate) const fn transient_rollback(self) -> bool {
+        matches!(
+            self,
+            Self::TransientRollback
+                | Self::SingleSelfDestructRefund
+                | Self::CheckedReturnDataCopy
+                | Self::BoundedFalconAbi
+        )
+    }
+
+    /// Whether SELFDESTRUCT grants at most one refund per account.
+    pub(crate) const fn single_selfdestruct_refund(self) -> bool {
+        matches!(
+            self,
+            Self::SingleSelfDestructRefund | Self::CheckedReturnDataCopy | Self::BoundedFalconAbi
+        )
+    }
+
+    /// Whether RETURNDATACOPY uses checked destination arithmetic and fault traces.
+    pub(crate) const fn checked_return_data_copy(self) -> bool {
+        matches!(self, Self::CheckedReturnDataCopy | Self::BoundedFalconAbi)
+    }
+}
+
+/// Taraxa interpreter profile for one instruction phase and correction set.
 ///
 /// Every phase retains PUSH0 at `0x5f` and the legacy transient aliases at
 /// `0xb3`/`0xb4`. Ficus and Cacti add MCOPY; Cacti additionally adds the newer
@@ -49,6 +94,7 @@ pub enum TaraxaPhase {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TaraxaProfile {
     phase: TaraxaPhase,
+    correction_stage: CorrectionStage,
 }
 
 impl TaraxaProfile {
@@ -61,6 +107,7 @@ impl TaraxaProfile {
     #[must_use]
     pub const fn new(cacti: bool) -> Self {
         Self {
+            correction_stage: CorrectionStage::Historical,
             phase: if cacti {
                 TaraxaPhase::Cacti
             } else {
@@ -75,7 +122,27 @@ impl TaraxaProfile {
     /// the cumulative instruction additions documented by [`TaraxaPhase`].
     #[must_use]
     pub const fn for_phase(phase: TaraxaPhase) -> Self {
-        Self { phase }
+        Self {
+            phase,
+            correction_stage: CorrectionStage::Historical,
+        }
+    }
+
+    /// Selects an explicit isolated correction set without changing the phase.
+    ///
+    /// The driver requires a journal constructed with the same identity.
+    /// Generic instruction-table callers own their host's rollback and lifetime;
+    /// selecting this profile alone cannot correct an arbitrary host's journal.
+    #[must_use]
+    pub const fn with_correction_stage(mut self, stage: CorrectionStage) -> Self {
+        self.correction_stage = stage;
+        self
+    }
+
+    /// Returns the immutable correction set selected for this execution.
+    #[must_use]
+    pub const fn correction_stage(self) -> CorrectionStage {
+        self.correction_stage
     }
 
     /// Returns the exact Taraxa instruction-table phase.
@@ -155,7 +222,11 @@ impl TaraxaProfile {
         costs[0xb4] = 100;
 
         table[0x55] = Instruction::new(sstore::<H>);
-        table[0x3e] = Instruction::new(returndatacopy::<H>);
+        table[0x3e] = if self.correction_stage.checked_return_data_copy() {
+            Instruction::new(returndatacopy::<H, true>)
+        } else {
+            Instruction::new(returndatacopy::<H, false>)
+        };
         // Go validates stack and memory sizing before charging even base gas.
         costs[0x3e] = 0;
 
@@ -200,12 +271,12 @@ impl TaraxaProfile {
 
 /// Copies return data with Taraxa's memory/gas-before-source-bounds ordering.
 ///
-/// Memory size uses Go's wrapping 256-bit addition, followed by checked 64-bit
-/// word rounding. The driver translates this opcode's `InvalidOperandOOG` into
-/// the distinct Go gas-overflow error. After gas admission, source bounds still
-/// apply to zero-length copies. A wrapping destination which would panic in Go
-/// returns `FatalExternalError`; the driver aborts the session explicitly.
-fn returndatacopy<H: Host>(
+/// Historical memory size uses wrapping 256-bit addition. Corrected rules check
+/// that addition; both check 64-bit conversion and word rounding. The driver maps
+/// `InvalidOperandOOG` to GasUintOverflow. Source bounds follow gas admission and
+/// apply even to zero-length copies. Only historical wrapping destinations can
+/// return the fatal reference-panic marker instead of a normal frame failure.
+fn returndatacopy<H: Host, const CHECKED: bool>(
     ctx: InstructionContext<'_, H, EthInterpreter>,
 ) -> InstructionExecResult {
     let interpreter = ctx.interpreter;
@@ -215,6 +286,10 @@ fn returndatacopy<H: Host>(
         .ok_or(InstructionResult::StackUnderflow)?;
     let memory_end = if length == U256::ZERO {
         U256::ZERO
+    } else if CHECKED {
+        destination
+            .checked_add(length)
+            .ok_or(InstructionResult::InvalidOperandOOG)?
     } else {
         destination.wrapping_add(length)
     };
@@ -237,7 +312,7 @@ fn returndatacopy<H: Host>(
     if !interpreter.gas.record_regular_cost(copy_cost) {
         return Err(InstructionResult::OutOfGas);
     }
-    // Expand from the already validated modular size, not the original offset.
+    // Expand from the validated size, not the original offset.
     interpreter.resize_memory(ctx.host.gas_params(), 0, memory_size as usize)?;
     let source = u64::try_from(source).map_err(|_| InstructionResult::OutOfOffset)?;
     let end = source

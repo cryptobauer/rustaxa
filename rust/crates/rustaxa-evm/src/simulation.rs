@@ -25,12 +25,15 @@ use crate::{
     },
     envelope::EnvelopeRules,
     journal::{ExecutionJournal, JournalError},
-    profile::TaraxaProfile,
+    profile::{CorrectionStage, TaraxaProfile},
 };
 
 /// Failure to establish or execute a disposable historical simulation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SimulationError {
+    /// Historical wrapper has no corrected transaction-lifetime contract.
+    /// Rejection occurs before reader access, admission, or native factory use.
+    UnsupportedCorrectionStage(CorrectionStage),
     /// The block context does not select the supplied committed reader's period.
     /// No account read or execution has occurred.
     StatePeriodMismatch {
@@ -115,6 +118,11 @@ pub fn simulate_ordinary<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<SimulationResult, SimulationError> {
+    if profile.correction_stage() != CorrectionStage::Historical {
+        return Err(SimulationError::UnsupportedCorrectionStage(
+            profile.correction_stage(),
+        ));
+    }
     let state = reader.identity();
     if state.period != block.period {
         return Err(SimulationError::StatePeriodMismatch {
@@ -189,6 +197,11 @@ pub fn simulate_with_native<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<SimulationResult, SimulationError> {
+    if profile.correction_stage() != CorrectionStage::Historical {
+        return Err(SimulationError::UnsupportedCorrectionStage(
+            profile.correction_stage(),
+        ));
+    }
     let state = reader.identity();
     if state.period != block.period {
         return Err(SimulationError::StatePeriodMismatch {

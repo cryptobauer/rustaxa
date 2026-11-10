@@ -8,6 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::profile::CorrectionStage;
+
 /// Test-only observations of the existing slashing-list read branch.
 #[cfg(feature = "synthetic-fixtures")]
 pub mod cleanup_diagnostic_observer {
@@ -1191,6 +1193,11 @@ impl JournalLifecycleReceipt {
 
 #[derive(Clone, Debug)]
 enum Undo {
+    Transient {
+        address: JournalAddress,
+        key: ConcreteStorageKey,
+        previous: Option<[u8; 32]>,
+    },
     Suicide {
         address: JournalAddress,
         previous: bool,
@@ -1235,6 +1242,7 @@ struct CheckpointState {
 /// Concrete execution journal bound to one immutable reader generation.
 pub struct ExecutionJournal<R> {
     reader: R,
+    correction_stage: CorrectionStage,
     accounts: BTreeMap<JournalAddress, JournalAccount>,
     ordinary: BTreeMap<(JournalAddress, ConcreteStorageKey), StorageCell>,
     raw: BTreeMap<(JournalAddress, ConcreteStorageKey), NativeRawOperation>,
@@ -1253,8 +1261,17 @@ pub struct ExecutionJournal<R> {
 impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
     /// Creates an empty transaction journal over one immutable concrete reader.
     pub fn new(reader: R) -> Self {
+        Self::new_with_correction_stage(reader, CorrectionStage::Historical)
+    }
+
+    /// Creates a transaction journal with immutable isolated execution rules.
+    ///
+    /// The driver rejects a different profile identity before admission. No
+    /// network or historical wrapper selects corrected rules automatically.
+    pub fn new_with_correction_stage(reader: R, correction_stage: CorrectionStage) -> Self {
         Self {
             reader,
+            correction_stage,
             accounts: BTreeMap::new(),
             ordinary: BTreeMap::new(),
             raw: BTreeMap::new(),
@@ -1269,6 +1286,11 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             lifecycle_events: Vec::new(),
             lifecycle_token: None,
         }
+    }
+
+    /// Returns the construction-bound rule identity, retained across settlement.
+    pub fn correction_stage(&self) -> CorrectionStage {
+        self.correction_stage
     }
 
     /// Starts receipt capture and returns the expected identity before execution.
@@ -1335,7 +1357,9 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 
     /// Reverts ordinary account/storage/log/refund changes in the current frame.
     ///
-    /// Native raw and transient writes normally survive. Reverting creation of
+    /// Native raw writes survive. Historical transient writes also survive;
+    /// corrected transient writes restore their previous value or absence.
+    /// Reverting creation of
     /// an absent account also removes that account's raw overlay, matching the
     /// reference account-lifecycle undo callback.
     pub fn revert_checkpoint(&mut self, checkpoint: JournalCheckpoint) -> Result<(), JournalError> {
@@ -1350,6 +1374,18 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         );
         while self.undo.len() > state.undo_len {
             match self.undo.pop().expect("undo length checked") {
+                Undo::Transient {
+                    address,
+                    key,
+                    previous,
+                } => match previous {
+                    Some(value) => {
+                        self.transient.insert((address, key), value);
+                    }
+                    None => {
+                        self.transient.remove(&(address, key));
+                    }
+                },
                 Undo::Creation {
                     address,
                     previous,
@@ -1579,6 +1615,14 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             code_hash: account.code_hash,
             code_size: account.code_size,
         })
+    }
+
+    /// Reads the transaction-local destroyed flag without changing account state.
+    pub(crate) fn previously_destroyed(
+        &self,
+        address: JournalAddress,
+    ) -> Result<bool, JournalError> {
+        Ok(self.current_account_state(address)?.suicided)
     }
 
     /// Loads and validates current code for one account.
@@ -2174,13 +2218,23 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             .unwrap_or([0_u8; 32])
     }
 
-    /// Writes transaction-local transient storage, which survives frame revert.
+    /// Writes transient storage under the construction-bound rollback rules.
+    ///
+    /// Corrected writes retain previous presence and value for frame undo.
+    /// Historical writes survive frame revert. Both clear at transaction settlement.
     pub fn set_transient_storage(
         &mut self,
         address: JournalAddress,
         key: ConcreteStorageKey,
         value: [u8; 32],
     ) {
+        if self.correction_stage.transient_rollback() {
+            self.undo.push(Undo::Transient {
+                address,
+                key,
+                previous: self.transient.get(&(address, key)).copied(),
+            });
+        }
         if value == [0_u8; 32] {
             self.transient.remove(&(address, key));
         } else {

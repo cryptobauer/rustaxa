@@ -51,7 +51,7 @@ use crate::{
     modexp::PreparedModexpCall,
     native::{NativeAdapterError, NativeFrameOutcome, invoke_native},
     p256::{P256_VERIFY_ADDRESS, PreparedP256Call},
-    profile::TaraxaProfile,
+    profile::{CorrectionStage, TaraxaProfile},
     stateless::{OriginalStatelessPrecompile, PreparedStatelessCall},
     trace::{
         AttemptedSstore, ExecutionTraceObserver, TraceEvent, TraceOpcode, TraceOpcodePhase,
@@ -73,6 +73,13 @@ pub enum PendingFrameKind {
 /// Failure outside normal consensus or bytecode completion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionDriverError {
+    /// Journal and interpreter rules differ; no admission or effects occurred.
+    CorrectionStageMismatch {
+        /// Immutable journal rule identity.
+        journal: CorrectionStage,
+        /// Requested interpreter rule identity.
+        profile: CorrectionStage,
+    },
     /// Envelope admission or settlement could not mutate the journal safely.
     Envelope(EnvelopeError),
     /// A direct frame mutation/checkpoint operation failed.
@@ -232,6 +239,20 @@ fn is_reviewed_stateless_address(address: [u8; 20], profile: TaraxaProfile) -> b
             .is_some_and(|registry| BlsPrecompile::at_address(registry, address).is_some())
 }
 
+/// Checks rule identity before admission or any execution side effect.
+pub(crate) fn validate_profile<R: ConcreteExecutionRead>(
+    journal: &ExecutionJournal<R>,
+    profile: TaraxaProfile,
+) -> Result<(), ExecutionDriverError> {
+    if journal.correction_stage() != profile.correction_stage() {
+        return Err(ExecutionDriverError::CorrectionStageMismatch {
+            journal: journal.correction_stage(),
+            profile: profile.correction_stage(),
+        });
+    }
+    Ok(())
+}
+
 fn validate_native_period(
     sequence: &PeriodConsensusSequence,
     period: rustaxa_types::FinalChainBlockNumber,
@@ -303,8 +324,12 @@ fn invoke_stateless(
         let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
         (quote, result)
     } else if invocation.contract == FALCON_VERIFY_ADDRESS {
-        let prepared =
-            PreparedFalconCall::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let prepared = if profile.correction_stage() == CorrectionStage::BoundedFalconAbi {
+            PreparedFalconCall::prepare_bounded(invocation)
+        } else {
+            PreparedFalconCall::prepare(invocation)
+        }
+        .map_err(ExecutionDriverError::Stateless)?;
         let quote = prepared.quote();
         let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
         (quote, result)
@@ -464,6 +489,7 @@ pub fn execute_top_level_call<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
     if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
         return Err(ExecutionDriverError::UnsupportedTransactionKind(
             transaction.kind,
@@ -520,6 +546,7 @@ pub fn execute_top_level_call_with_trace<
     profile: TaraxaProfile,
     observer: &mut O,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
     if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
         return Err(ExecutionDriverError::UnsupportedTransactionKind(
             transaction.kind,
@@ -580,6 +607,7 @@ pub fn execute_top_level_call_with_native<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
     validate_native_period(native_sequence, block.period)?;
     if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
         return Err(ExecutionDriverError::UnsupportedTransactionKind(
@@ -635,6 +663,7 @@ pub fn execute_top_level_create<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
     if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
         return Err(ExecutionDriverError::UnsupportedTransactionKind(
             transaction.kind,
@@ -687,6 +716,7 @@ pub fn execute_top_level_create_with_trace<
     profile: TaraxaProfile,
     observer: &mut O,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
     if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
         return Err(ExecutionDriverError::UnsupportedTransactionKind(
             transaction.kind,
@@ -742,6 +772,7 @@ pub fn execute_top_level_create_with_native<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
     validate_native_period(native_sequence, block.period)?;
     if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
         return Err(ExecutionDriverError::UnsupportedTransactionKind(
@@ -1291,6 +1322,7 @@ fn observe_opcode_step(
     before: TraceBeforeOpcode,
     step: Result<(), InstructionResult>,
     base_refund: u64,
+    correction_stage: CorrectionStage,
 ) -> Result<(), ExecutionDriverError> {
     let fault = match step {
         Ok(())
@@ -1312,6 +1344,15 @@ fn observe_opcode_step(
         Err(InstructionResult::OutOfOffset) if before.opcode == 0x3e => {
             Some(InstructionResult::OutOfOffset)
         }
+        // Fault rows record actual opcode gas movement and memory. Frame
+        // settlement consumes the remaining gas separately.
+        Err(
+            result @ (InstructionResult::InvalidOperandOOG
+            | InstructionResult::OutOfGas
+            | InstructionResult::MemoryOOG
+            | InstructionResult::MemoryLimitOOG
+            | InstructionResult::StackUnderflow),
+        ) if before.opcode == 0x3e && correction_stage.checked_return_data_copy() => Some(result),
         Err(result) => {
             return Err(ExecutionDriverError::TraceFactUnavailable {
                 opcode: before.opcode,
@@ -1663,6 +1704,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
                 before,
                 step,
                 base_refund,
+                profile.correction_stage(),
             )?;
         }
         match step {

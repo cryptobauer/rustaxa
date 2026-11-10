@@ -26,7 +26,7 @@ use crate::{
     },
     envelope::{EnvelopeAdmission, EnvelopeRules, IntrinsicGasSchedule, admit},
     journal::ExecutionJournal,
-    profile::TaraxaProfile,
+    profile::{CorrectionStage, TaraxaProfile},
     structured_trace::{
         StructuredTraceResult, StructuredTraceSerializationError, serialize_structured_results,
     },
@@ -45,6 +45,9 @@ pub enum TraceSequenceStage {
 /// Failure to establish, execute, or serialize a structured trace sequence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StructuredTraceRunnerError {
+    /// Historical wrapper has no corrected transaction-lifetime contract.
+    /// Rejection occurs before reader access, admission, or native factory use.
+    UnsupportedCorrectionStage(CorrectionStage),
     /// Request or prefix outcome is outside the measured P0 ordinary-prefix profile.
     ClaimAllPrefixScope,
     /// The supplied reader is not the exact preceding state selected by Go.
@@ -182,6 +185,11 @@ pub fn run_structured_claim_all_prefix_trace<
 ) -> Result<StructuredTraceRun, StructuredTraceRunnerError> {
     use crate::profile::TaraxaPhase;
     use num_bigint::BigUint;
+    if profile.correction_stage() != CorrectionStage::Historical {
+        return Err(StructuredTraceRunnerError::UnsupportedCorrectionStage(
+            profile.correction_stage(),
+        ));
+    }
     let state = reader.identity();
     let expected =
         rustaxa_types::FinalChainBlockNumber::new(block.period.as_u64().saturating_sub(1));
@@ -339,6 +347,11 @@ pub fn run_structured_trace<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<StructuredTraceRun, StructuredTraceRunnerError> {
+    if profile.correction_stage() != CorrectionStage::Historical {
+        return Err(StructuredTraceRunnerError::UnsupportedCorrectionStage(
+            profile.correction_stage(),
+        ));
+    }
     let state = reader.identity();
     let expected =
         rustaxa_types::FinalChainBlockNumber::new(block.period.as_u64().saturating_sub(1));
@@ -449,6 +462,11 @@ pub fn run_structured_trace_with_native<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<StructuredTraceRun, StructuredTraceRunnerError> {
+    if profile.correction_stage() != CorrectionStage::Historical {
+        return Err(StructuredTraceRunnerError::UnsupportedCorrectionStage(
+            profile.correction_stage(),
+        ));
+    }
     let state = reader.identity();
     let expected =
         rustaxa_types::FinalChainBlockNumber::new(block.period.as_u64().saturating_sub(1));
@@ -501,6 +519,13 @@ pub fn run_structured_trace_with_native<
     for (index, transaction) in targets.iter().enumerate() {
         let mut collector = TraceCollector::default();
         let execution = if transaction.kind == ExecutionTransactionKind::Call {
+            crate::driver::validate_profile(&journal, profile).map_err(|error| {
+                StructuredTraceRunnerError::Execution {
+                    stage: TraceSequenceStage::Target,
+                    index,
+                    error,
+                }
+            })?;
             match admit(
                 &mut journal,
                 transaction,
