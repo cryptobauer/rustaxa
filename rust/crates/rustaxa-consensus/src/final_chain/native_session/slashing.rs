@@ -131,7 +131,16 @@ impl FinalChainNativeSession<'_> {
         }
         let proof_key = match crate::slashing::decoded_double_voting_proof_storage_key(input) {
             Ok(key) => key.0,
-            Err(error) => return Ok(failed(quote, legacy_error(&error))),
+            Err(error) => {
+                if self.correction_stage().slashing_hard_error()
+                    && let LegacyDoubleVotingProofDecodeError::NestedRlp(message) = &error
+                {
+                    return Err(FinalChainNativeSessionError::Domain(format!(
+                        "malformed nested slashing proof RLP: {message}"
+                    )));
+                }
+                return Ok(failed(quote, legacy_error(&error)));
+            }
         };
         let mut trace = FinalChainNativeRawTrace::new(state);
         authenticate(
@@ -158,7 +167,16 @@ impl FinalChainNativeSession<'_> {
         }
         let proof = match verify_legacy_double_voting_proof_call_data(input) {
             Ok(proof) => proof,
-            Err(error) => return Ok(failed(quote, legacy_error(&error))),
+            Err(error) => {
+                if self.correction_stage().slashing_hard_error()
+                    && let LegacyDoubleVotingProofDecodeError::NestedRlp(message) = &error
+                {
+                    return Err(FinalChainNativeSessionError::Domain(format!(
+                        "malformed nested slashing proof RLP: {message}"
+                    )));
+                }
+                return Ok(failed(quote, legacy_error(&error)));
+            }
         };
         let validator: [u8; 20] = proof.offender.0;
         let member = if self.origin == NativeSessionOrigin::CurrentHistoricalTrace {

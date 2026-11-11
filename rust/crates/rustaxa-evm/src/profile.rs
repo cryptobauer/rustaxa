@@ -40,50 +40,7 @@ pub enum TaraxaPhase {
     Cacti,
 }
 
-/// Immutable correction set, independent of the instruction phase.
-///
-/// Corrections have no network activation mapping. Existing constructors select
-/// historical rules. Each additional stage must name its complete rule set.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CorrectionStage {
-    /// Preserve the accepted historical execution rules.
-    #[default]
-    Historical,
-    /// Revert transient writes with their frame; retain all other historical rules.
-    TransientRollback,
-    /// Add one SELFDESTRUCT refund per account to transient rollback.
-    SingleSelfDestructRefund,
-    /// Add checked RETURNDATACOPY and its frame failures to the refund stage.
-    CheckedReturnDataCopy,
-    /// Add bounded Falcon ABI parsing to the checked-copy stage.
-    BoundedFalconAbi,
-}
-
-impl CorrectionStage {
-    /// Whether frame revert restores transient writes under this fixed set.
-    pub(crate) const fn transient_rollback(self) -> bool {
-        matches!(
-            self,
-            Self::TransientRollback
-                | Self::SingleSelfDestructRefund
-                | Self::CheckedReturnDataCopy
-                | Self::BoundedFalconAbi
-        )
-    }
-
-    /// Whether SELFDESTRUCT grants at most one refund per account.
-    pub(crate) const fn single_selfdestruct_refund(self) -> bool {
-        matches!(
-            self,
-            Self::SingleSelfDestructRefund | Self::CheckedReturnDataCopy | Self::BoundedFalconAbi
-        )
-    }
-
-    /// Whether RETURNDATACOPY uses checked destination arithmetic and fault traces.
-    pub(crate) const fn checked_return_data_copy(self) -> bool {
-        matches!(self, Self::CheckedReturnDataCopy | Self::BoundedFalconAbi)
-    }
-}
+pub use rustaxa_types::evm_correction::CorrectionStage;
 
 /// Taraxa interpreter profile for one instruction phase and correction set.
 ///

@@ -1867,3 +1867,7 @@ mod tests {
         assert_eq!(replay.status, DoubleVotingProofPlanStatus::Planned);
     }
 }
+
+#[cfg(test)]
+#[path = "slashing/malformed_tests.rs"]
+mod malformed_tests;

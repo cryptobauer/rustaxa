@@ -962,6 +962,7 @@ fn refund_stage_grants_one_refund_per_account_and_preserves_the_existing_cap() {
         CorrectionStage::SingleSelfDestructRefund,
         CorrectionStage::CheckedReturnDataCopy,
         CorrectionStage::BoundedFalconAbi,
+        CorrectionStage::SlashingHardError,
     ] {
         let mut journal = ExecutionJournal::new_with_correction_stage(
             selfdestruct_reader(parent.clone(), beneficiary),
@@ -977,6 +978,7 @@ fn refund_stage_grants_one_refund_per_account_and_preserves_the_existing_cap() {
             CorrectionStage::SingleSelfDestructRefund
                 | CorrectionStage::CheckedReturnDataCopy
                 | CorrectionStage::BoundedFalconAbi
+                | CorrectionStage::SlashingHardError
         ) {
             24_000
         } else {
@@ -1871,4 +1873,70 @@ fn bounded_falcon_preserves_phase_selection_and_prior_corrected_arithmetic() {
         execute(&mut journal, &transaction(false), TaraxaPhase::Cacti).status,
         CodeExecutionStatus::Failure(CodeExecutionError::GasUintOverflow)
     );
+}
+
+struct SlashingStageUnusedPort;
+impl NativeExecutionPort for SlashingStageUnusedPort {
+    fn correction_stage(&self) -> Option<CorrectionStage> {
+        Some(CorrectionStage::SlashingHardError)
+    }
+    fn prepare(
+        &mut self,
+        invocation: &NativeInvocation,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeGasQuote, NativePortError> {
+        UnusedPort.prepare(invocation, journal)
+    }
+    fn invoke(
+        &mut self,
+        invocation: &NativeInvocation,
+        quote: NativeGasQuote,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeInvocationResult, NativePortError> {
+        UnusedPort.invoke(invocation, quote, journal)
+    }
+}
+
+#[test]
+fn slashing_stage_keeps_transient_copy_and_falcon_corrections() {
+    let stage = CorrectionStage::SlashingHardError;
+    let mut parent = store(1, 0xb4);
+    parent.extend(call(CHILD, 0xf4));
+    parent.extend(load_return(0xb3));
+    let mut child = store(3, 0xb4);
+    child.extend(return_data_copy([255; 32], ZERO, integer_word(1)));
+    let mut reader = Reader::funded();
+    reader.add_code(PARENT, parent);
+    reader.add_code(CHILD, child);
+    let mut journal = ExecutionJournal::new_with_correction_stage(reader, stage);
+    let result = execute(&mut journal, &transaction(false), TaraxaPhase::Cacti);
+    assert_eq!(result.status, CodeExecutionStatus::Success);
+    assert_eq!(result.output, word(1));
+    assert_eq!(journal.transient_storage(PARENT, slot_one()), word(1));
+    let row = falcon_rows()
+        .into_iter()
+        .find(|row| row["name"] == "wrapped-message-length-panic")
+        .unwrap();
+    let mut tx = transaction(false);
+    tx.receiver = Some(FALCON_VERIFY_ADDRESS);
+    tx.input = hex::decode(row["input"].as_str().unwrap()).unwrap();
+    let mut journal = ExecutionJournal::new_with_correction_stage(Reader::funded(), stage);
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoExternal,
+        &FalconPrecompile,
+        &NoExternal,
+        &mut SlashingStageUnusedPort,
+        &mut PeriodConsensusSequence::new(block().period),
+        &block(),
+        &tx,
+        RULES,
+        profile(stage, TaraxaPhase::Cacti),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("admission")
+    };
+    assert_eq!(result.status, CodeExecutionStatus::Success);
+    assert_eq!(result.output, word(1));
 }

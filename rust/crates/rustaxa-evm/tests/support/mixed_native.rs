@@ -50,6 +50,10 @@ impl<'a> SimulationNativeExecutionPort<'a> {
 }
 
 impl NativeExecutionPort for SimulationNativeExecutionPort<'_> {
+    fn correction_stage(&self) -> Option<rustaxa_evm::profile::CorrectionStage> {
+        Some(self.simulation.correction_stage())
+    }
+
     fn input_aliases(
         &mut self,
         id: NativeInvocationId,
@@ -648,6 +652,10 @@ impl<'a> MixedNativeExecutionPort<'a> {
 }
 
 impl NativeExecutionPort for MixedNativeExecutionPort<'_> {
+    fn correction_stage(&self) -> Option<rustaxa_evm::profile::CorrectionStage> {
+        Some(self.session.correction_stage())
+    }
+
     fn input_aliases(
         &mut self,
         id: NativeInvocationId,

@@ -47,6 +47,11 @@ pub struct NativeFrameOutcome {
 /// Integrity/infrastructure failure requiring whole-period discard.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeAdapterError {
+    /// Stage-five owner and journal identities differ; no effects occurred.
+    CorrectionStageMismatch {
+        journal: crate::profile::CorrectionStage,
+        port: Option<crate::profile::CorrectionStage>,
+    },
     /// A pending owner cannot retain caller memory across transaction settlement.
     InputAliasLifetime,
     /// Borrowed input metadata did not match the completed invocation.
@@ -73,6 +78,23 @@ impl std::fmt::Display for NativeAdapterError {
 }
 impl std::error::Error for NativeAdapterError {}
 
+pub(crate) fn validate_native_stage<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
+    journal: &ExecutionJournal<R>,
+    port: &N,
+) -> Result<(), NativeAdapterError> {
+    let stage = journal.correction_stage();
+    let port_stage = port.correction_stage();
+    if (stage.slashing_hard_error() || port_stage.is_some_and(|value| value.slashing_hard_error()))
+        && port_stage != Some(stage)
+    {
+        return Err(NativeAdapterError::CorrectionStageMismatch {
+            journal: stage,
+            port: port_stage,
+        });
+    }
+    Ok(())
+}
+
 /// Prepares/invokes one native operation and applies its validated effects.
 ///
 /// The caller must already own the native call's frame checkpoint and apply the
@@ -87,6 +109,7 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
     port: &mut N,
     invocation: &NativeInvocation,
 ) -> Result<NativeFrameOutcome, NativeAdapterError> {
+    validate_native_stage(journal, port)?;
     let _duration_scope = crate::journal::duration_journal_native_scope(invocation);
     journal.begin_native_invocation(invocation.id);
     let quote = port

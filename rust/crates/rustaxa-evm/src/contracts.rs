@@ -738,6 +738,12 @@ impl std::error::Error for NativePortError {}
 /// effects. Any integrity/infrastructure error aborts the whole pending period;
 /// exact native serialization and cache lifecycle remain an S5 adapter concern.
 pub trait NativeExecutionPort {
+    /// Returns a construction-bound identity when the port supports corrections.
+    /// Stage five requires this binding; older port contracts retain the default.
+    fn correction_stage(&self) -> Option<crate::profile::CorrectionStage> {
+        None
+    }
+
     /// Returns retained input spans before input_mutations consumes completion.
     fn input_aliases(
         &mut self,

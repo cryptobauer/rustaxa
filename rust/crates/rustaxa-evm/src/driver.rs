@@ -324,7 +324,7 @@ fn invoke_stateless(
         let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
         (quote, result)
     } else if invocation.contract == FALCON_VERIFY_ADDRESS {
-        let prepared = if profile.correction_stage() == CorrectionStage::BoundedFalconAbi {
+        let prepared = if profile.correction_stage().bounded_falcon_abi() {
             PreparedFalconCall::prepare_bounded(invocation)
         } else {
             PreparedFalconCall::prepare(invocation)
@@ -608,6 +608,7 @@ pub fn execute_top_level_call_with_native<
     profile: TaraxaProfile,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     validate_profile(journal, profile)?;
+    crate::native::validate_native_stage(journal, native_port)?;
     validate_native_period(native_sequence, block.period)?;
     if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
         return Err(ExecutionDriverError::UnsupportedTransactionKind(
@@ -773,6 +774,7 @@ pub fn execute_top_level_create_with_native<
     profile: TaraxaProfile,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     validate_profile(journal, profile)?;
+    crate::native::validate_native_stage(journal, native_port)?;
     validate_native_period(native_sequence, block.period)?;
     if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
         return Err(ExecutionDriverError::UnsupportedTransactionKind(

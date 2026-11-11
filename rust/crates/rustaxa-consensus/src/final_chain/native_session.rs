@@ -1321,6 +1321,11 @@ impl FinalChain {
 }
 
 impl FinalChainNativeSimulation<'_> {
+    /// Returns the fixed correction identity of this disposable simulation.
+    pub fn correction_stage(&self) -> rustaxa_types::evm_correction::CorrectionStage {
+        self.session.correction_stage()
+    }
+
     /// Returns retained input spans for exactly the last completed invocation.
     pub fn input_aliases(
         &mut self,
@@ -1364,6 +1369,11 @@ impl FinalChainNativeSimulation<'_> {
 }
 
 impl FinalChainNativeSession<'_> {
+    /// Returns the fixed correction identity retained by the session owner.
+    pub fn correction_stage(&self) -> rustaxa_types::evm_correction::CorrectionStage {
+        self.final_chain.correction_stage()
+    }
+
     /// Installs the independently bound view before any native invocation.
     pub fn install_pending_delayed_view(
         &mut self,
@@ -5882,4 +5892,5 @@ mod tests {
             },
         );
     }
+    include!("native_session/slashing_hard_error_tests.rs");
 }

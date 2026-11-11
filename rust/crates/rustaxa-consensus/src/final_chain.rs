@@ -1508,6 +1508,7 @@ const ASPEN_YIELD_PRECISION: u64 = 1_000_000;
 
 /// Rust final-chain domain surface used by the C++ shim.
 pub struct FinalChain {
+    correction_stage: rustaxa_types::evm_correction::CorrectionStage,
     storage: Arc<Storage>,
     block_gas_limit: rustaxa_types::FinalChainGas,
     genesis_timestamp: u64,
@@ -1847,6 +1848,22 @@ pub(crate) struct ExternalEvmPendingPublicationMarker {
 }
 
 impl FinalChain {
+    /// Selects isolated rules before this owner is shared. No network activation
+    /// or persistent rule selection is implied; reopen must select the same stage.
+    #[must_use]
+    pub fn with_correction_stage(
+        mut self,
+        stage: rustaxa_types::evm_correction::CorrectionStage,
+    ) -> Self {
+        self.correction_stage = stage;
+        self
+    }
+
+    /// Returns the immutable execution correction identity of this owner.
+    pub const fn correction_stage(&self) -> rustaxa_types::evm_correction::CorrectionStage {
+        self.correction_stage
+    }
+
     /// Derives the concrete-state chain/config identity from the persisted
     /// full-genesis configuration hash.
     ///
@@ -2338,6 +2355,7 @@ impl FinalChain {
             )
         };
         let final_chain = FinalChain {
+            correction_stage: rustaxa_types::evm_correction::CorrectionStage::Historical,
             storage,
             block_gas_limit,
             genesis_timestamp,
@@ -3610,6 +3628,11 @@ impl FinalChain {
                 code_err: "out of gas".to_string(),
                 ..Default::default()
             });
+        }
+        if self.correction_stage.slashing_hard_error()
+            && selector == SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR
+        {
+            let _ = decode_slashing_transaction(&request.input)?;
         }
         let snapshot = self.dpos_snapshot(request.block_number)?;
         let code_retval = match selector {
@@ -5810,9 +5833,17 @@ impl FinalChain {
             let full_gas_affordable = gas_price
                 .checked_mul(U256::from(transaction.gas_limit))
                 .is_some_and(|cost| sender_balance >= cost);
+            let slashing_action_unfunded = self.correction_stage.slashing_hard_error()
+                && transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS)
+                && self.magnolia_active(block_number)
+                && transaction.gas_limit.as_u64()
+                    < intrinsic_gas(&transaction.data, false)?
+                        .saturating_add(slashing_required_gas(&transaction.data));
             let skip_native_decode = (transaction.receiver == Some(DPOS_CONTRACT_ADDRESS)
                 || transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS))
-                && (sender_nonce > transaction.nonce || !full_gas_affordable);
+                && (sender_nonce > transaction.nonce
+                    || !full_gas_affordable
+                    || slashing_action_unfunded);
             let mut contract_transaction = if skip_native_decode {
                 None
             } else if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
@@ -5853,8 +5884,8 @@ impl FinalChain {
                     && (block_number < self.dpos_cornus_period
                         || matches!(tx, NativeContractTransaction::Dpos(dpos_tx) if dpos_transaction_is_payable(dpos_tx)))
             });
-            let slashing_value_transfer_allowed =
-                contract_transaction.as_ref().is_some_and(|contract_tx| {
+            let slashing_value_transfer_allowed = slashing_action_unfunded
+                || contract_transaction.as_ref().is_some_and(|contract_tx| {
                     matches!(
                         contract_tx,
                         NativeContractTransaction::Slashing(
@@ -5875,7 +5906,9 @@ impl FinalChain {
                 && contract_transaction.is_some()
                 && contract_payment_recipient.is_none();
             let intrinsic_gas: FinalChainGas = intrinsic_gas(&transaction.data, false)?.into();
-            let required_gas = if contract_nonpayable_value_failure {
+            let required_gas = if slashing_action_unfunded {
+                slashing_required_gas(&transaction.data).into()
+            } else if contract_nonpayable_value_failure {
                 FinalChainGas::ZERO
             } else if let Some(contract_transaction) = contract_transaction.as_ref() {
                 match contract_transaction {
@@ -6903,6 +6936,14 @@ impl FinalChain {
                 update_dpos_claim_gas_snapshot(dpos_gas_snapshot, &transaction_for_gas)?;
             }
             outcome
+        } else if self.correction_stage.slashing_hard_error()
+            && invocation.supplied_gas < slashing_required_gas(&invocation.input)
+        {
+            anyhow::ensure!(
+                invocation.required_gas == slashing_required_gas(&invocation.input),
+                "FINAL_CHAIN_CONCRETE_INVOCATION_REQUIRED_GAS_MISMATCH"
+            );
+            DposApplyOutcome::contract_failure()
         } else {
             let transaction = decode_slashing_transaction(&invocation.input)?;
             let required_gas = match transaction {
@@ -15723,6 +15764,21 @@ fn encode_slashing_jail_block(snapshot: &DposSnapshot, validator: [u8; 20]) -> V
 /// from the caller-selected delayed snapshot, preserving stored order.
 fn encode_slashing_jailed_validators(snapshot: &DposSnapshot) -> Vec<u8> {
     encode_abi_address_array(&snapshot.slashing_jailed_validators)
+}
+
+fn slashing_required_gas(input: &[u8]) -> u64 {
+    match input.get(..4) {
+        Some(selector) if selector == SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR => {
+            SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
+        }
+        Some(selector)
+            if selector == SLASHING_GET_JAIL_BLOCK_SELECTOR
+                || selector == SLASHING_GET_JAILED_VALIDATORS_SELECTOR =>
+        {
+            SLASHING_GET_METHOD_GAS
+        }
+        _ => 0,
+    }
 }
 
 /// Decodes Rust-supported slashing contract method payloads.
@@ -27421,6 +27477,18 @@ mod tests {
     }
 
     fn assert_finalize_block_executes_slashing(magnolia_period: u64, cacti_period: u64) {
+        assert_finalize_block_executes_slashing_for_stage(
+            magnolia_period,
+            cacti_period,
+            rustaxa_types::evm_correction::CorrectionStage::Historical,
+        );
+    }
+
+    fn assert_finalize_block_executes_slashing_for_stage(
+        magnolia_period: u64,
+        cacti_period: u64,
+        stage: rustaxa_types::evm_correction::CorrectionStage,
+    ) {
         let path = temp_db_path("finalize-slashing-double-vote");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator_key = SigningKey::from_slice(&[0x51; 32]).unwrap();
@@ -27491,7 +27559,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .unwrap()
+        .with_correction_stage(stage);
 
         let (_header, receipts) = final_chain
             .finalize_block(pbft, vec![first_tx.clone(), duplicate_tx.clone()], vec![])
@@ -27576,6 +27645,14 @@ mod tests {
 
     #[test]
     fn finalize_block_does_not_double_charge_duplicate_slashing_proof_value() {
+        finalize_block_does_not_double_charge_duplicate_slashing_proof_value_for_stage(
+            rustaxa_types::evm_correction::CorrectionStage::Historical,
+        );
+    }
+
+    fn finalize_block_does_not_double_charge_duplicate_slashing_proof_value_for_stage(
+        stage: rustaxa_types::evm_correction::CorrectionStage,
+    ) {
         let path = temp_db_path("finalize-slashing-double-vote-duplicate-value");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator_key = SigningKey::from_slice(&[0x62; 32]).unwrap();
@@ -27647,7 +27724,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .unwrap()
+        .with_correction_stage(stage);
 
         let (_header, receipts) = final_chain
             .finalize_block(pbft, vec![first_tx.clone(), duplicate_tx.clone()], vec![])
@@ -28206,6 +28284,12 @@ mod tests {
 
     #[test]
     fn finalize_block_does_not_charge_value_on_invalid_slashing_proof_and_preserves_state() {
+        finalize_block_does_not_charge_value_on_invalid_slashing_proof_and_preserves_state_for_stage(rustaxa_types::evm_correction::CorrectionStage::Historical);
+    }
+
+    fn finalize_block_does_not_charge_value_on_invalid_slashing_proof_and_preserves_state_for_stage(
+        stage: rustaxa_types::evm_correction::CorrectionStage,
+    ) {
         let path = temp_db_path("finalize-slashing-double-vote-invalid-proof");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator_key = SigningKey::from_slice(&[0x72; 32]).unwrap();
@@ -28260,7 +28344,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .unwrap()
+        .with_correction_stage(stage);
         let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &malformed_tx);
         let gas_cost = U256::from(tx_gas)
             .checked_mul(gas_price)
@@ -39433,4 +39518,5 @@ mod tests {
         drop(storage);
         let _ = crate::closeout_test_scratch::dispose(path);
     }
+    include!("final_chain/slashing_hard_error_tests.rs");
 }
