@@ -234,6 +234,12 @@ impl TransactionQueue {
         self.entries.contains_key(&hash)
     }
 
+    pub(crate) fn is_proposable(&self, hash: H256) -> bool {
+        self.entries
+            .get(&hash)
+            .is_some_and(|entry| entry.proposable)
+    }
+
     /// Marks `hash` as recently known to the local transaction admission cache.
     ///
     /// The cache is independent from live proposer/non-proposer queue membership and is used to suppress duplicate

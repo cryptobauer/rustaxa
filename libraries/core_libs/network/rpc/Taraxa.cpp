@@ -96,7 +96,7 @@ TaraxaDposReader makeTaraxaDposReader(std::weak_ptr<taraxa::AppBase> app
     if (!consensus_query_api) {
       throw std::runtime_error("TARAXA_DPOS_QUERY_UNAVAILABLE");
     }
-    return (*consensus_query_api)->consensus_query_final_chain_dpos_yield(block_number);
+    return (*consensus_query_api)->consensus_query_final_chain_dpos_period_value(block_number, rustaxa::DposPeriodMetric::Yield).number;
 #else
     return node->getFinalChain()->dposYield(block_number);
 #endif
@@ -115,7 +115,7 @@ TaraxaDposReader makeTaraxaDposReader(std::weak_ptr<taraxa::AppBase> app
     if (!consensus_query_api) {
       throw std::runtime_error("TARAXA_DPOS_QUERY_UNAVAILABLE");
     }
-    const auto supply = (*consensus_query_api)->consensus_query_final_chain_dpos_total_supply(block_number);
+    const auto supply = (*consensus_query_api)->consensus_query_final_chain_dpos_period_value(block_number, rustaxa::DposPeriodMetric::Supply).amount;
     return dev::fromBigEndian<dev::u256>(dev::bytes(supply.begin(), supply.end()));
 #else
     return node->getFinalChain()->dposTotalSupply(block_number);

@@ -951,6 +951,9 @@ fn native_port_error(error: FinalChainNativeSessionError) -> NativePortError {
                 NativeJournalReadError::Invariant(error)
             }
         }),
+        FinalChainNativeSessionError::MalformedNestedSlashingProof(error) => {
+            NativePortError::MalformedNestedSlashingProof(error)
+        }
         error => NativePortError::Domain(error.to_string()),
     }
 }

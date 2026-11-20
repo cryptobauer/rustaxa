@@ -1,5 +1,9 @@
 #include "graphql/query.hpp"
 
+#include <iterator>
+
+#include <algorithm>
+
 #include <libdevcore/CommonJS.h>
 
 #include <stdexcept>
@@ -53,10 +57,10 @@ ConsensusQueryReader makeConsensusQueryReader(::taraxa::net::ConsensusQueryApiPt
     return (*query_api)->consensus_query_final_chain_block_by_number(block_number);
   };
   reader.transaction_count_by_block_number = [query_api](::taraxa::EthBlockNumber block_number) {
-    return (*query_api)->consensus_query_transaction_count_by_block_number(block_number);
+    return (*query_api)->consensus_query_transaction_count_by_block({false, block_number, {}});
   };
   reader.transaction_by_block_number_and_index = [query_api](::taraxa::EthBlockNumber block_number, uint64_t index) {
-    return (*query_api)->consensus_query_transaction_by_block_number_and_index(block_number, index);
+    return (*query_api)->consensus_query_transaction_by_block_and_index({false, block_number, {}}, index);
   };
   reader.transaction_by_hash = [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
     return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
@@ -72,18 +76,14 @@ ConsensusQueryReader makeConsensusQueryReader(::taraxa::net::ConsensusQueryApiPt
     auto views = (*query_api)->consensus_query_dag_blocks_by_level(level, number_of_levels);
     std::vector<rustaxa::DagBlockPublicView> result;
     result.reserve(views.size());
-    for (auto& view : views) {
-      result.emplace_back(std::move(view));
-    }
+    std::move(views.begin(), views.end(), std::back_inserter(result));
     return result;
   };
   reader.finalized_dag_blocks_by_period = [query_api](uint64_t period) {
     auto views = (*query_api)->consensus_query_finalized_dag_blocks_by_period(period);
     std::vector<rustaxa::DagBlockPublicView> result;
     result.reserve(views.size());
-    for (auto& view : views) {
-      result.emplace_back(std::move(view));
-    }
+    std::move(views.begin(), views.end(), std::back_inserter(result));
     return result;
   };
   return reader;
@@ -377,9 +377,7 @@ QueryDagBlockReader makeQueryDagBlockReader(
     auto views = (*consensus_query_api)->consensus_query_dag_blocks_by_level(level, 1);
     std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
     blocks.reserve(views.size());
-    for (const auto& view : views) {
-      blocks.emplace_back(materializeDagBlockView(view));
-    }
+    std::transform(views.begin(), views.end(), std::back_inserter(blocks), materializeDagBlockView);
     return blocks;
 #else
     if (!db) {
@@ -401,9 +399,7 @@ QueryDagBlockReader makeQueryDagBlockReader(
     auto views = (*consensus_query_api)->consensus_query_finalized_dag_blocks_by_period(period);
     std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
     blocks.reserve(views.size());
-    for (const auto& view : views) {
-      blocks.emplace_back(materializeDagBlockView(view));
-    }
+    std::transform(views.begin(), views.end(), std::back_inserter(blocks), materializeDagBlockView);
     return blocks;
 #else
     if (!db) {

@@ -703,12 +703,15 @@ impl FinalChainNativeSession<'_> {
         // Later zero values still require their normal committed encoding.
         let empty_genesis = self.pending_period.as_u64() == 1
             && self.period_start_total_vote_count == 0
-            && self
-                .final_chain
-                .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
-                .map_err(custody::map_kernel_error)?
-                .validator_order
-                .is_empty();
+            && match &self.captured_rewards_parent {
+                Some(parent) => parent.validator_order.is_empty(),
+                None => self
+                    .final_chain
+                    .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                    .map_err(custody::map_kernel_error)?
+                    .validator_order
+                    .is_empty(),
+            };
         validate_raw_value(
             &trace.expectation(DPOS_CONTRACT_ADDRESS, vote_key)?,
             &if empty_genesis {
@@ -962,10 +965,17 @@ impl FinalChainNativeSession<'_> {
             .pending_period
             .checked_sub_distance(1)
             .ok_or(FinalChainNativeSessionError::RewardsScopeUnsupported)?;
-        let committed = self
-            .final_chain
-            .dpos_snapshot_at_finalized_block(parent)
-            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let live_committed;
+        let committed = match &self.captured_rewards_parent {
+            Some(committed) => committed.as_ref(),
+            None => {
+                live_committed = self
+                    .final_chain
+                    .dpos_snapshot_at_finalized_block(parent)
+                    .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+                &live_committed
+            }
+        };
         if let Some(verified) = &self.verified_slashing {
             return if verified.matches(&self.dpos_state) {
                 Ok(())

@@ -40,6 +40,9 @@ pub mod closeout_test_scratch;
 #[path = "support/mixed_native.rs"]
 mod mixed_native;
 
+#[path = "support/system_execution.rs"]
+mod system_execution;
+
 const SENDER: [u8; 20] = [0xaa; 20];
 const PARENT: [u8; 20] = [0xbb; 20];
 const PREFIX: [u8; 20] = [0xcc; 20];
@@ -297,9 +300,10 @@ fn malformed_inputs() -> Vec<Vec<u8>> {
     ]
 }
 fn assert_hard(error: NativeAdapterError) {
-    assert!(
-        matches!(error, NativeAdapterError::Port(NativePortError::Domain(message)) if message.contains("malformed nested slashing proof RLP"))
-    );
+    assert!(matches!(
+        error,
+        NativeAdapterError::Port(NativePortError::MalformedNestedSlashingProof(_))
+    ));
 }
 fn run<
     R: rustaxa_types::concrete_state::execution::ConcreteExecutionRead,
@@ -370,6 +374,186 @@ fn parent_code(child_gas: u16) -> Vec<u8> {
         0xf1, 0x50, 0x60, 9, 0x60, 1, 0x55, 0x60, 0, 0x60, 0, 0xa0, 0,
     ]);
     code
+}
+
+fn signed_proof() -> Vec<u8> {
+    let key = k256::ecdsa::SigningKey::from_slice(&[0x52; 32]).unwrap();
+    let sortition = sortition();
+    let signed_vote = |block: u8| {
+        let mut unsigned = RlpStream::new_list(2);
+        unsigned.append(&vec![block; 32]).append(&sortition);
+        let (signature, recovery) = key
+            .sign_prehash_recoverable(&keccak256(unsigned.out()).0)
+            .unwrap();
+        let mut signature = signature.to_bytes().to_vec();
+        signature.push(recovery.to_byte());
+        let mut signed = RlpStream::new_list(3);
+        signed
+            .append(&vec![block; 32])
+            .append(&sortition)
+            .append(&signature);
+        signed.out().to_vec()
+    };
+    abi(&signed_vote(1), &signed_vote(2))
+}
+
+#[test]
+fn successful_slash_parent_revert_keeps_proof_for_same_attempt_retry() {
+    let key = k256::ecdsa::SigningKey::from_slice(&[0x52; 32]).unwrap();
+    let public = key.verifying_key().to_encoded_point(false);
+    let offender: [u8; 20] = keccak256(&public.as_bytes()[1..]).0[12..]
+        .try_into()
+        .unwrap();
+    let path = scratch("slash-retry");
+    let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+    closeout_test_scratch::created(&path);
+    let chain = FinalChain::new_with_rewards_config(
+        storage.clone(),
+        1_000_000.into(),
+        0,
+        vec![],
+        vec![rustaxa_types::GenesisValidator {
+            address: offender,
+            vrf_key: [0; 32],
+            total_stake: ethereum_types::U256::from(10_000).to_big_endian().to_vec(),
+            delegations: vec![(
+                offender,
+                ethereum_types::U256::from(10_000).to_big_endian().to_vec(),
+            )],
+            metadata: rustaxa_types::GenesisValidatorMetadata {
+                owner: offender,
+                ..Default::default()
+            },
+        }],
+        GenesisDposConfig {
+            eligibility_balance_threshold: ethereum_types::U256::one().into(),
+            ..Default::default()
+        },
+        FinalChainRewardsConfig {
+            cornus_period: 0.into(),
+            magnolia_jail_time: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .with_correction_stage(STAGE);
+    let owner = Owner {
+        chain,
+        storage,
+        path,
+    };
+    let input = signed_proof();
+    let root = [0xef; 20];
+    let mut state = Reader::funded();
+    let mut child = parent_code(20_000);
+    child.pop();
+    child.extend_from_slice(&[0x60, 0, 0x60, 0, 0xfd]);
+    state.add_code(PARENT, child);
+    let mut outer = vec![0x36, 0x60, 0, 0x60, 0, 0x37];
+    for (address, slot) in [(PARENT, 1), (SLASH, 2)] {
+        outer.extend_from_slice(&[0x60, 0, 0x60, 0, 0x36, 0x60, 0, 0x60, 0, 0x73]);
+        outer.extend_from_slice(&address);
+        outer.extend_from_slice(&[0x61, 0xff, 0xff, 0xf1, 0x15, 0x60, slot, 0x55]);
+    }
+    outer.push(0);
+    state.add_code(root, outer);
+
+    for _ in 0..2 {
+        let mut journal = ExecutionJournal::new_with_correction_stage(state.clone(), STAGE);
+        let mut port = mixed_native::MixedNativeExecutionPort::new(
+            owner
+                .chain
+                .begin_native_session(1.into(), 0.into())
+                .unwrap(),
+        );
+        let mut sequence = PeriodConsensusSequence::new(1.into());
+        let result = completed(
+            run(
+                &mut journal,
+                &mut port,
+                &mut sequence,
+                &tx(root, 1, input.clone()),
+            )
+            .unwrap(),
+        );
+        assert_eq!(result.status, CodeExecutionStatus::Success);
+        assert!(result.logs.is_empty());
+        assert_eq!(sequence.next_sequence(), 2);
+        assert_eq!(
+            journal.account(SENDER).unwrap().nonce,
+            FinalChainNonce::from_u64(2)
+        );
+        assert_eq!(
+            journal
+                .account(SENDER)
+                .unwrap()
+                .balance
+                .value()
+                .to_biguint()
+                .unwrap(),
+            BigUint::from(10_000_000_u64 - result.gas_used.as_u64())
+        );
+        assert_eq!(
+            journal.account(SLASH).unwrap().nonce,
+            FinalChainNonce::from_u64(1)
+        );
+        assert_eq!(
+            journal.ordinary_storage(PARENT, slot_one()).unwrap().1,
+            BigUint::default()
+        );
+        let contexts = port.take_contexts();
+        assert_eq!(contexts.len(), 2);
+        assert_eq!(contexts[0].raw_mutations.len(), 3);
+        assert!(contexts[1].raw_mutations.is_empty());
+        let jail_key = ConcreteStorageKey(keccak256([vec![0], offender.to_vec()].concat()).0);
+        let mut list_key = [0; 32];
+        list_key[31] = 2;
+        let mut list = RlpStream::new_list(1);
+        list.append(&offender.as_slice());
+        assert_eq!(
+            journal.raw_storage(SLASH, jail_key).unwrap(),
+            ConcreteRead::Present(vec![3])
+        );
+        assert_eq!(
+            journal
+                .raw_storage(SLASH, ConcreteStorageKey(list_key))
+                .unwrap(),
+            ConcreteRead::Present(list.out().to_vec())
+        );
+        let settled = journal.settle_transaction().unwrap();
+        assert_eq!(settled.native_invocations.len(), 2);
+        let first = &settled.native_invocations[0];
+        assert_eq!(
+            first.disposition,
+            ConsensusNativeDisposition::OuterFrameReverted
+        );
+        assert_eq!(first.status, CodeExecutionStatus::Success);
+        assert_eq!(first.gas_used.as_u64(), 20_000);
+        assert_eq!(first.logs.len(), 1);
+        let retry = &settled.native_invocations[1];
+        assert_eq!(
+            retry.disposition,
+            ConsensusNativeDisposition::OwnFrameReverted
+        );
+        assert_eq!(
+            retry.status,
+            CodeExecutionStatus::Failure(CodeExecutionError::Native(NativeContractFailure {
+                error: "Existing double voting proof".into()
+            }))
+        );
+        assert_eq!(retry.gas_used.as_u64(), 20_000);
+        assert!(retry.logs.is_empty());
+        assert!(retry.output.is_empty());
+        assert!(settled.logs.is_empty());
+        assert_eq!(settled.writes.ordinary_storage.len(), 2);
+        assert!(
+            settled
+                .writes
+                .ordinary_storage
+                .iter()
+                .all(|write| write.address == root && write.value == BigUint::from(1_u8))
+        );
+    }
 }
 #[test]
 fn actual_nested_call_hard_error_prevents_parent_continuation() {

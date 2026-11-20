@@ -255,6 +255,343 @@ pub struct HistoricalConcretePreparation {
     writer: ConcreteStateWriter,
 }
 
+/// Read-only, ordered execution preparation over one retained prior state.
+///
+/// No writable owner may be open for this path while this handle exists.
+/// The caller must bind the historical identity to qualified application headers
+/// and concrete owner provenance. Active candidate execution requires the exact
+/// predecessor, with `historical == committed`; opening an older root does not
+/// provide that authority. The initial path check does not prove full retention.
+/// No prepared rows, writer, lifecycle token or publication capability escapes.
+///
+/// ```compile_fail
+/// use rustaxa_storage::ConcreteExecutionProbe;
+/// fn cannot_persist(probe: &ConcreteExecutionProbe) {
+///     probe.persist_contents();
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::{ConcreteCommitApproval, ConcreteExecutionProbe};
+/// fn cannot_approve(probe: &ConcreteExecutionProbe) -> ConcreteCommitApproval {
+///     probe.commit_approval()
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::{ConcreteExecutionProbe, PreparedConcreteState};
+/// fn cannot_extract(probe: ConcreteExecutionProbe) -> PreparedConcreteState {
+///     probe.prepared.unwrap()
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::ConcreteExecutionProbe;
+/// use rustaxa_types::concrete_state::ConcreteStateRead;
+/// fn committed(_: &impl ConcreteStateRead) {}
+/// fn cannot_query_committed(probe: &ConcreteExecutionProbe) {
+///     committed(probe);
+/// }
+/// ```
+pub struct ConcreteExecutionProbe {
+    writer: ConcreteStateWriter,
+    prepared: Option<PreparedConcreteState>,
+    next_period: FinalChainBlockNumber,
+}
+
+/// Memory-only execution over a clean lifecycle's existing database handle.
+/// The owner stays borrowed until the probe and its views are no longer used.
+/// This capability does not authenticate native state or grant vote authority.
+///
+/// ```compile_fail
+/// use rustaxa_storage::ConcreteStateLifecycle;
+/// fn cannot_stage(owner: &mut ConcreteStateLifecycle) {
+///     let probe = owner.borrow_execution_probe().unwrap();
+///     owner.stage_execution(&[]).unwrap();
+///     let _ = probe.current_view();
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::ConcreteStateLifecycle;
+/// fn cannot_discard(owner: &mut ConcreteStateLifecycle) {
+///     let probe = owner.borrow_execution_probe().unwrap();
+///     owner.discard_execution(&[]).unwrap();
+///     let _ = probe.current_view();
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::{ConcreteStateLifecycle, ConcreteCommitApproval, PreparedConcreteState};
+/// fn cannot_commit(owner: ConcreteStateLifecycle, state: PreparedConcreteState, approval: ConcreteCommitApproval) {
+///     let probe = owner.borrow_execution_probe().unwrap();
+///     owner.commit_approved(state, approval).unwrap();
+///     let _ = probe.current_view();
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::{ConcreteStateLifecycle, BorrowedConcreteExecutionProbe};
+/// fn cannot_escape(owner: ConcreteStateLifecycle) -> BorrowedConcreteExecutionProbe<'static> {
+///     owner.borrow_execution_probe().unwrap()
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::BorrowedConcreteExecutionProbe;
+/// fn cannot_extract(probe: BorrowedConcreteExecutionProbe<'_>) { let _ = probe.probe; }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::BorrowedConcreteExecutionProbe;
+/// fn cannot_publish(probe: BorrowedConcreteExecutionProbe<'_>) { probe.persist_contents(); }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::{BorrowedConcreteExecutionProbe, ConcreteStateWriter};
+/// fn cannot_construct(writer: &ConcreteStateWriter) {
+///     let _ = BorrowedConcreteExecutionProbe::from_owner(writer);
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::{BorrowedConcreteExecutionProbe, ConcreteObserverPhaseDelta};
+/// fn cannot_advance(probe: &mut BorrowedConcreteExecutionProbe<'_>) {
+///     let view = probe.current_view().unwrap();
+///     probe.prepare_observer_phase(ConcreteObserverPhaseDelta::default()).unwrap();
+///     let _ = view.verify_storage_path([0; 20], rustaxa_types::concrete_state::ConcreteStorageKey([0; 32]));
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::{BorrowedConcreteExecutionProbe, ConcreteExecutionProbeView};
+/// fn cannot_keep_view(probe: BorrowedConcreteExecutionProbe<'_>) -> ConcreteExecutionProbeView<'static> {
+///     probe.current_view().unwrap()
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::BorrowedConcreteExecutionProbe;
+/// use rustaxa_types::concrete_state::ConcreteStateRead;
+/// fn committed(_: &impl ConcreteStateRead) {}
+/// fn cannot_read_committed(probe: &BorrowedConcreteExecutionProbe<'_>) { committed(probe); }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::BorrowedConcreteExecutionProbe;
+/// use rustaxa_types::concrete_state::ConcreteStateRead;
+/// fn committed(_: &impl ConcreteStateRead) {}
+/// fn cannot_read_committed(probe: &BorrowedConcreteExecutionProbe<'_>) {
+///     committed(&probe.current_view().unwrap());
+/// }
+/// ```
+pub struct BorrowedConcreteExecutionProbe<'owner> {
+    probe: ConcreteExecutionProbe,
+    _owner: &'owner ConcreteStateWriter,
+}
+
+impl<'owner> BorrowedConcreteExecutionProbe<'owner> {
+    pub(super) fn from_owner(
+        owner: &'owner ConcreteStateWriter,
+    ) -> Result<Self, ConcreteReadError> {
+        if owner.prior != owner.durable_prior
+            || current_identity(&owner.db)? != owner.durable_prior
+            || owner.persisted_sequence.get().is_some()
+        {
+            return Err(corrupt("execution probe owner is not clean and committed"));
+        }
+        let next_period = owner
+            .prior
+            .period
+            .checked_next()
+            .ok_or_else(|| corrupt("execution probe prior period overflow"))?;
+        Ok(Self {
+            probe: ConcreteExecutionProbe {
+                writer: ConcreteStateWriter {
+                    db: Arc::clone(&owner.db),
+                    path: owner.path.clone(),
+                    prior: owner.prior,
+                    durable_prior: owner.durable_prior,
+                    writer_id: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
+                    sequence: Cell::new(0),
+                    persisted_sequence: Cell::new(None),
+                },
+                prepared: None,
+                next_period,
+            },
+            _owner: owner,
+        })
+    }
+
+    /// Returns the owner's pinned durable descriptor.
+    pub fn committed_identity(&self) -> ConcreteStateIdentity {
+        self.probe.committed_identity()
+    }
+
+    /// Returns the current committed prior used for every prepared phase.
+    pub fn historical_identity(&self) -> ConcreteStateIdentity {
+        self.probe.historical_identity()
+    }
+
+    /// Applies one ordered phase in private memory; errors retain the prior phase.
+    pub fn prepare_observer_phase(
+        &mut self,
+        delta: ConcreteObserverPhaseDelta,
+    ) -> Result<(), ConcreteReadError> {
+        self.probe.prepare_observer_phase(delta)
+    }
+
+    /// Borrows the current execution view without publication authority.
+    pub fn current_view(&self) -> Result<ConcreteExecutionProbeView<'_>, ConcreteReadError> {
+        self.probe.current_view()
+    }
+}
+
+/// Borrowed execution-only view of the exact prior or current prepared phase.
+///
+/// ```compile_fail
+/// use rustaxa_storage::{ConcreteExecutionProbe, ConcreteObserverPhaseDelta};
+/// use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+/// fn cannot_advance(probe: &mut ConcreteExecutionProbe) {
+///     let view = probe.current_view().unwrap();
+///     probe.prepare_observer_phase(ConcreteObserverPhaseDelta::default()).unwrap();
+///     let _ = view.identity();
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::ConcreteExecutionProbe;
+/// use rustaxa_types::concrete_state::ConcreteStateRead;
+/// fn committed(_: &impl ConcreteStateRead) {}
+/// fn cannot_query_committed(probe: &ConcreteExecutionProbe) {
+///     committed(&probe.current_view().unwrap());
+/// }
+/// ```
+pub struct ConcreteExecutionProbeView<'a> {
+    writer: &'a ConcreteStateWriter,
+    prepared: Option<&'a PreparedConcreteState>,
+}
+
+impl ConcreteExecutionProbe {
+    /// Opens existing state read-only with exact current and historical checks.
+    /// Missing/corrupt root dependencies and a period overflow fail closed.
+    pub fn open_read_only(
+        path: impl AsRef<Path>,
+        committed: ConcreteStateIdentity,
+        historical: ConcreteStateIdentity,
+    ) -> Result<Self, ConcreteReadError> {
+        let next_period = historical
+            .period
+            .checked_next()
+            .ok_or_else(|| corrupt("execution probe prior period overflow"))?;
+        let historical =
+            HistoricalConcretePreparation::open_read_only(path, committed, historical)?;
+        Ok(Self {
+            writer: historical.writer,
+            prepared: None,
+            next_period,
+        })
+    }
+
+    /// Returns the exact durable identity pinned at open.
+    pub fn committed_identity(&self) -> ConcreteStateIdentity {
+        self.writer.durable_prior
+    }
+
+    /// Returns the retained prior identity used by every phase.
+    pub fn historical_identity(&self) -> ConcreteStateIdentity {
+        self.writer.prior
+    }
+
+    /// Applies one settled phase in supplied order, entirely in memory.
+    /// On error, the previous phase remains usable. Repeated slot operations
+    /// are not reduced to a final-value map before trie preparation.
+    pub fn prepare_observer_phase(
+        &mut self,
+        delta: ConcreteObserverPhaseDelta,
+    ) -> Result<(), ConcreteReadError> {
+        let next =
+            self.writer
+                .prepare_observer_phase(self.next_period, self.prepared.as_ref(), delta)?;
+        self.prepared = Some(next);
+        Ok(())
+    }
+
+    /// Borrows the exact current phase without committed-query authority.
+    pub fn current_view(&self) -> Result<ConcreteExecutionProbeView<'_>, ConcreteReadError> {
+        match self.prepared.as_ref() {
+            Some(prepared) => self.writer.validate_prepared(prepared)?,
+            None if current_identity(&self.writer.db)? != self.writer.durable_prior => {
+                return Err(corrupt("execution probe descriptor changed after open"));
+            }
+            None => {}
+        }
+        Ok(ConcreteExecutionProbeView {
+            writer: &self.writer,
+            prepared: self.prepared.as_ref(),
+        })
+    }
+}
+
+impl ConcreteExecutionProbeView<'_> {
+    /// Authenticates logical membership separately from raw physical history.
+    /// Nonmembership does not supply a missing raw row or imply a zero value.
+    pub fn verify_storage_path(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteStoragePath, ConcreteReadError> {
+        match self.prepared {
+            Some(prepared) => self
+                .writer
+                .prepared_view(prepared)?
+                .verify_storage_path(address, key),
+            None => self.writer.verify_prior_storage_path(address, key),
+        }
+    }
+}
+
+impl rustaxa_types::concrete_state::execution::ConcreteExecutionRead
+    for ConcreteExecutionProbeView<'_>
+{
+    fn identity(&self) -> ConcreteStateIdentity {
+        self.prepared
+            .map_or(self.writer.prior, |prepared| prepared.next)
+    }
+
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+        match self.prepared {
+            Some(prepared) => self.writer.prepared_account(prepared, address),
+            None => ConcreteStateRead::account(self.writer, address),
+        }
+    }
+
+    fn storage(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        match self.prepared {
+            Some(prepared) => self.writer.prepared_storage(prepared, address, key),
+            None => ConcreteStateRead::storage(self.writer, address, key),
+        }
+    }
+
+    fn ordinary_storage(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        match self.storage(address, key) {
+            Err(error @ ConcreteReadError::HistoryUnavailable(identity))
+                if identity == self.identity() =>
+            {
+                match self.verify_storage_path(address, key)? {
+                    ConcreteStoragePath::NonMember => Ok(ConcreteRead::Absent),
+                    ConcreteStoragePath::Member(_) => Err(error),
+                }
+            }
+            result => result,
+        }
+    }
+
+    fn code(&self, code_hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        match self.prepared {
+            Some(prepared) => self.writer.prepared_code(prepared, code_hash),
+            None => ConcreteStateRead::code(self.writer, code_hash),
+        }
+    }
+}
+
 impl HistoricalConcretePreparation {
     /// Opens existing columns read-only and pins current and historical identities.
     /// No writable owner may be open for this path while this handle exists.
@@ -424,7 +761,193 @@ pub struct ConcreteStateWriter {
     persisted_sequence: Cell<Option<u64>>,
 }
 
+pub(super) struct ConcreteTransitionWriter {
+    writer: ConcreteStateWriter,
+    prepared: Option<PreparedConcreteState>,
+    source_token: (u64, u64),
+    next_period: FinalChainBlockNumber,
+}
+
+pub(super) struct SealedConcreteTransition {
+    source_token: (u64, u64),
+    prior: ConcreteStateIdentity,
+    next: ConcreteStateIdentity,
+    changed_accounts: Vec<([u8; 20], ConcreteRead<ConcreteAccountRecord>)>,
+    storage_owners: BTreeSet<[u8; 20]>,
+    rows: BTreeMap<RowKey, Vec<u8>>,
+}
+
+impl SealedConcreteTransition {
+    pub(super) fn account_update(
+        &self,
+        address: [u8; 20],
+    ) -> Result<Option<ConcreteRead<ConcreteAccountRecord>>, ConcreteReadError> {
+        let key = RowKey {
+            column: "3",
+            key: versioned_key(account_version_prefix(address), self.next.period).to_vec(),
+        };
+        match self.rows.get(&key) {
+            None => Ok(None),
+            Some(row) if row.is_empty() => Ok(Some(ConcreteRead::Tombstone)),
+            Some(row) => decode_physical_account(row)
+                .map(ConcreteRead::Present)
+                .map(Some),
+        }
+    }
+
+    pub(super) fn next_identity(&self) -> ConcreteStateIdentity {
+        self.next
+    }
+}
+
+impl ConcreteTransitionWriter {
+    pub(super) fn verify_source(
+        &self,
+        owner: &ConcreteStateWriter,
+    ) -> Result<(), ConcreteReadError> {
+        if owner.transition_source_token()? != self.source_token {
+            return Err(corrupt("concrete transition source changed"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn current_view(&self) -> Result<ConcreteExecutionProbeView<'_>, ConcreteReadError> {
+        match self.prepared.as_ref() {
+            Some(prepared) => self.writer.validate_prepared(prepared)?,
+            None => {
+                self.writer.transition_source_token()?;
+            }
+        }
+        Ok(ConcreteExecutionProbeView {
+            writer: &self.writer,
+            prepared: self.prepared.as_ref(),
+        })
+    }
+
+    pub(super) fn apply_phase(
+        &mut self,
+        delta: ConcreteObserverPhaseDelta,
+    ) -> Result<&PreparedConcreteState, ConcreteReadError> {
+        let prepared =
+            self.writer
+                .prepare_observer_phase(self.next_period, self.prepared.as_ref(), delta)?;
+        self.prepared = Some(prepared);
+        self.latest()
+    }
+
+    pub(super) fn latest(&self) -> Result<&PreparedConcreteState, ConcreteReadError> {
+        let prepared = self
+            .prepared
+            .as_ref()
+            .ok_or_else(|| corrupt("concrete transition has no successful phase"))?;
+        self.writer.validate_prepared(prepared)?;
+        Ok(prepared)
+    }
+
+    pub(super) fn seal(self) -> Result<SealedConcreteTransition, ConcreteReadError> {
+        self.latest()?;
+        let prepared = self
+            .prepared
+            .ok_or_else(|| corrupt("concrete transition has no successful phase"))?;
+        Ok(SealedConcreteTransition {
+            source_token: self.source_token,
+            prior: prepared.prior,
+            next: prepared.next,
+            changed_accounts: prepared.changed_accounts,
+            storage_owners: prepared.storage_owners,
+            rows: prepared.rows,
+        })
+    }
+}
+
 impl ConcreteStateWriter {
+    pub(super) fn transition_source_token(&self) -> Result<(u64, u64), ConcreteReadError> {
+        self.ensure_durable_prior()?;
+        if current_identity(&self.db)? != self.durable_prior
+            || self.persisted_sequence.get().is_some()
+        {
+            return Err(corrupt(
+                "concrete transition source is not clean and committed",
+            ));
+        }
+        Ok((self.writer_id, self.sequence.get()))
+    }
+
+    pub(super) fn begin_isolated_transition(
+        &self,
+    ) -> Result<ConcreteTransitionWriter, ConcreteReadError> {
+        let source_token = self.transition_source_token()?;
+        let next_period = self
+            .prior
+            .period
+            .checked_next()
+            .ok_or_else(|| corrupt("concrete transition prior period overflow"))?;
+        Ok(ConcreteTransitionWriter {
+            writer: Self {
+                db: Arc::clone(&self.db),
+                path: self.path.clone(),
+                prior: self.prior,
+                durable_prior: self.durable_prior,
+                writer_id: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
+                sequence: Cell::new(0),
+                persisted_sequence: Cell::new(None),
+            },
+            prepared: None,
+            source_token,
+            next_period,
+        })
+    }
+
+    pub(super) fn prepare_transition_import(
+        &self,
+        sealed: SealedConcreteTransition,
+    ) -> Result<PreparedConcreteState, ConcreteReadError> {
+        if self.transition_source_token()? != sealed.source_token
+            || sealed.prior != self.prior
+            || self.prior.period.checked_next() != Some(sealed.next.period)
+        {
+            return Err(corrupt("concrete transition source is stale or foreign"));
+        }
+        let sequence = self
+            .sequence
+            .get()
+            .checked_add(1)
+            .ok_or_else(|| corrupt("concrete writer preparation sequence overflow"))?;
+        Ok(PreparedConcreteState {
+            prior: sealed.prior,
+            next: sealed.next,
+            writer_id: self.writer_id,
+            sequence,
+            changed_accounts: sealed.changed_accounts,
+            storage_owners: sealed.storage_owners,
+            rows: sealed.rows,
+        })
+    }
+
+    pub(super) fn verify_transition_import(
+        &self,
+        prepared: &PreparedConcreteState,
+    ) -> Result<(), ConcreteReadError> {
+        let (writer_id, sequence) = self.transition_source_token()?;
+        if prepared.writer_id != writer_id
+            || sequence.checked_add(1) != Some(prepared.sequence)
+            || prepared.prior != self.prior
+            || self.prior.period.checked_next() != Some(prepared.next.period)
+        {
+            return Err(corrupt("certified concrete import is stale or foreign"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn install_transition_sequence(&self, prepared: &PreparedConcreteState) {
+        self.sequence.set(prepared.sequence);
+    }
+
+    pub(super) fn install_committed_identity(&mut self, committed: ConcreteStateIdentity) {
+        self.prior = committed;
+        self.durable_prior = committed;
+    }
+
     /// Opens all existing reference columns read-write and verifies `prior`
     /// against the persisted descriptor. No missing file or column is created.
     pub fn open(
@@ -2494,6 +3017,481 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn probe_ordered_phases_read_prefix_account_code_and_raw_storage() {
+        use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+        let database = TestDb::new();
+        let address = [0x61; 20];
+        let (first, committed, _) = seed_two_periods(&database, address);
+        let mut probe =
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, first).unwrap();
+        assert_eq!(probe.committed_identity(), committed);
+        assert_eq!(probe.historical_identity(), first);
+        let prior = probe.current_view().unwrap();
+        assert_eq!(prior.identity(), first);
+        assert_eq!(
+            prior.account(address).unwrap(),
+            ConcreteRead::Present(account(0, 100, None, None, 0))
+        );
+        assert_eq!(prior.account([0; 20]).unwrap(), ConcreteRead::Absent);
+        assert!(
+            matches!(prior.code([0x55; 32]), Err(ConcreteReadError::HistoryUnavailable(id)) if id == first)
+        );
+        let key = ConcreteStorageKey([1; 32]);
+        let code = vec![0x60, 1, 0];
+        let code_hash = keccak256(&code);
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address,
+                    record: account(2, 70, None, Some(code_hash), code.len() as u64),
+                }],
+                storage: vec![
+                    ConcreteStorageMutation {
+                        address,
+                        key,
+                        value: Some(vec![1]),
+                    },
+                    ConcreteStorageMutation {
+                        address,
+                        key,
+                        value: Some(vec![2]),
+                    },
+                ],
+                code: vec![ConcreteCodeInsertion {
+                    code_hash,
+                    code: code.clone(),
+                }],
+            })
+            .unwrap();
+        let prefix = probe.current_view().unwrap();
+        let prefix_identity = prefix.identity();
+        assert_eq!(prefix_identity.period, committed.period);
+        assert_eq!(
+            prefix.storage(address, key).unwrap(),
+            ConcreteRead::Present(vec![2])
+        );
+        assert_eq!(
+            prefix.verify_storage_path(address, key).unwrap(),
+            ConcreteStoragePath::Member(vec![2])
+        );
+        assert_eq!(
+            prefix.code(code_hash).unwrap(),
+            ConcreteRead::Present(code.clone())
+        );
+        let ConcreteRead::Present(prefix_account) = prefix.account(address).unwrap() else {
+            panic!("missing prefix account")
+        };
+        assert_eq!(prefix_account.account.nonce, FinalChainNonce::from_u64(2));
+        assert_eq!(prefix_account.account.code_hash, Some(code_hash));
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address,
+                    record: account(3, 60, None, Some(code_hash), code.len() as u64),
+                }],
+                storage: vec![
+                    ConcreteStorageMutation {
+                        address,
+                        key,
+                        value: None,
+                    },
+                    ConcreteStorageMutation {
+                        address,
+                        key,
+                        value: Some(vec![3]),
+                    },
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+        let view = probe.current_view().unwrap();
+        assert_ne!(view.identity().state_root, prefix_identity.state_root);
+        assert_eq!(view.code(code_hash).unwrap(), ConcreteRead::Present(code));
+        assert_eq!(
+            view.storage(address, key).unwrap(),
+            ConcreteRead::Present(vec![3])
+        );
+        assert_eq!(
+            view.verify_storage_path(address, key).unwrap(),
+            ConcreteStoragePath::Member(vec![3])
+        );
+    }
+
+    #[test]
+    fn probe_deleted_account_keeps_raw_history_without_inferred_absence() {
+        use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+        let database = TestDb::new();
+        let address = [0x62; 20];
+        let (_, committed, _) = seed_two_periods(&database, address);
+        let mut probe =
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, committed).unwrap();
+        let key = ConcreteStorageKey([1; 32]);
+        let missing = ConcreteStorageKey([2; 32]);
+        assert_eq!(
+            probe
+                .current_view()
+                .unwrap()
+                .verify_storage_path(address, missing)
+                .unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        assert!(
+            matches!(probe.current_view().unwrap().storage(address, missing), Err(ConcreteReadError::HistoryUnavailable(id)) if id == committed)
+        );
+        assert_eq!(
+            probe
+                .current_view()
+                .unwrap()
+                .ordinary_storage(address, missing)
+                .unwrap(),
+            ConcreteRead::Absent
+        );
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                storage: vec![ConcreteStorageMutation {
+                    address,
+                    key,
+                    value: Some(vec![9]),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Delete { address }],
+                ..Default::default()
+            })
+            .unwrap();
+        let view = probe.current_view().unwrap();
+        assert_eq!(view.account(address).unwrap(), ConcreteRead::Tombstone);
+        assert_eq!(
+            view.storage(address, key).unwrap(),
+            ConcreteRead::Present(vec![9])
+        );
+        assert_eq!(
+            view.verify_storage_path(address, key).unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        assert!(
+            matches!(view.storage(address, missing), Err(ConcreteReadError::HistoryUnavailable(id)) if id == view.identity())
+        );
+        assert_eq!(
+            view.ordinary_storage(address, missing).unwrap(),
+            ConcreteRead::Absent
+        );
+    }
+
+    #[test]
+    fn probe_failed_phase_preserves_prior_view() {
+        use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+        let database = TestDb::new();
+        let address = [0x63; 20];
+        let (_, committed, _) = seed_two_periods(&database, address);
+        let mut probe =
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, committed).unwrap();
+        let key = ConcreteStorageKey([1; 32]);
+        let code = vec![0x60, 2, 0];
+        let code_hash = keccak256(&code);
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                storage: vec![ConcreteStorageMutation {
+                    address,
+                    key,
+                    value: Some(vec![7]),
+                }],
+                code: vec![ConcreteCodeInsertion {
+                    code_hash,
+                    code: code.clone(),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        let identity = probe.current_view().unwrap().identity();
+        let record = probe.current_view().unwrap().account(address).unwrap();
+        assert!(
+            probe
+                .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                    storage: vec![ConcreteStorageMutation {
+                        address,
+                        key,
+                        value: Some(vec![])
+                    }],
+                    ..Default::default()
+                })
+                .is_err()
+        );
+        assert!(
+            probe
+                .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                    accounts: vec![
+                        ConcreteAccountMutation::Delete { address },
+                        ConcreteAccountMutation::Delete { address }
+                    ],
+                    ..Default::default()
+                })
+                .is_err()
+        );
+        let view = probe.current_view().unwrap();
+        assert_eq!(view.identity(), identity);
+        assert_eq!(view.account(address).unwrap(), record);
+        assert_eq!(
+            view.storage(address, key).unwrap(),
+            ConcreteRead::Present(vec![7])
+        );
+        assert_eq!(view.code(code_hash).unwrap(), ConcreteRead::Present(code));
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        assert_eq!(probe.current_view().unwrap().identity(), identity);
+    }
+
+    #[test]
+    fn probe_open_exact_and_historical_errors() {
+        let database = TestDb::new();
+        let (first, committed, _) = seed_two_periods(&database, [0x64; 20]);
+        let wrong = ConcreteStateIdentity {
+            state_root: [0x77; 32],
+            ..committed
+        };
+        assert!(matches!(
+            ConcreteExecutionProbe::open_read_only(&database.path, wrong, first),
+            Err(ConcreteReadError::IdentityMismatch { .. })
+        ));
+        assert!(matches!(
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, wrong),
+            Err(ConcreteReadError::IdentityMismatch { .. })
+        ));
+        let future = ConcreteStateIdentity {
+            period: committed.period.checked_next().unwrap(),
+            ..committed
+        };
+        assert!(matches!(
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, future),
+            Err(ConcreteReadError::FuturePeriod { .. })
+        ));
+        let missing = ConcreteStateIdentity {
+            state_root: [0x55; 32],
+            ..first
+        };
+        assert!(
+            matches!(ConcreteExecutionProbe::open_read_only(&database.path, committed, missing), Err(ConcreteReadError::HistoryUnavailable(id)) if id == missing)
+        );
+        let corrupt_root = ConcreteStateIdentity {
+            state_root: [0x66; 32],
+            ..first
+        };
+        let db = open_existing_database(&database.path, false).unwrap();
+        db.put_cf(
+            &db.cf_handle("2").unwrap(),
+            corrupt_root.state_root,
+            [1, 2, 3],
+        )
+        .unwrap();
+        drop(db);
+        assert!(matches!(
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, corrupt_root),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+        let overflow = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(u64::MAX),
+            ..committed
+        };
+        assert!(matches!(
+            ConcreteExecutionProbe::open_read_only(&database.path, overflow, overflow),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn probe_prior_code_checks_hash_and_missing_history() {
+        use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+        let database = TestDb::new();
+        let (_, committed, _) = seed_two_periods(&database, [0x66; 20]);
+        let code = vec![0x60, 3, 0];
+        let code_hash = keccak256(&code);
+        let writer = ConcreteStateWriter::open(&database.path, committed).unwrap();
+        let prepared = writer
+            .prepare(
+                committed.period.checked_next().unwrap(),
+                ConcreteStateMutationBatch {
+                    code: vec![ConcreteCodeInsertion {
+                        code_hash,
+                        code: code.clone(),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        writer.persist_contents(&prepared).unwrap();
+        writer
+            .publish_descriptor_for_reopen_test(&prepared)
+            .unwrap();
+        let committed = prepared.next_identity();
+        drop(writer);
+        let mut probe =
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, committed).unwrap();
+        assert_eq!(
+            probe.current_view().unwrap().code(code_hash).unwrap(),
+            ConcreteRead::Present(code.clone())
+        );
+        assert!(
+            matches!(probe.current_view().unwrap().code([0x88; 32]), Err(ConcreteReadError::HistoryUnavailable(id)) if id == committed)
+        );
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        assert_eq!(
+            probe.current_view().unwrap().code(code_hash).unwrap(),
+            ConcreteRead::Present(code)
+        );
+        drop(probe);
+        let db = open_existing_database(&database.path, false).unwrap();
+        db.put_cf(&db.cf_handle("1").unwrap(), code_hash, [0xff])
+            .unwrap();
+        drop(db);
+        let mut probe =
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, committed).unwrap();
+        assert!(matches!(
+            probe.current_view().unwrap().code(code_hash),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        assert!(matches!(
+            probe.current_view().unwrap().code(code_hash),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn probe_read_only_preserves_all_columns_wal_and_reopen() {
+        use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+        let database = TestDb::new();
+        let address = [0x65; 20];
+        let (_, committed, committed_account) = seed_two_periods(&database, address);
+        let options = Options::default();
+        let columns = DB::list_cf(&options, &database.path).unwrap();
+        let descriptors = columns
+            .iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
+        let mut db = DB::open_cf_descriptors(&options, &database.path, descriptors).unwrap();
+        db.create_cf("probe_extra", &Options::default()).unwrap();
+        db.create_cf("probe_empty", &Options::default()).unwrap();
+        let extra = db.cf_handle("probe_extra").unwrap();
+        db.put_cf(&extra, b"wal-only", b"preserve").unwrap();
+        db.flush_wal(true).unwrap();
+        drop(db);
+        let wal_before = probe_wal_files(&database.path);
+        assert!(!wal_before.is_empty());
+        let db = open_existing_database(&database.path, true).unwrap();
+        assert!(
+            db.live_files()
+                .unwrap()
+                .iter()
+                .all(|file| file.column_family_name != "probe_extra")
+        );
+        drop(db);
+        let before = probe_all_columns(&database.path);
+        assert!(
+            before
+                .iter()
+                .any(|(name, rows)| name == "probe_empty" && rows.is_empty())
+        );
+        assert!(before.iter().any(|(name, rows)| name == "probe_extra"
+            && rows == &vec![(b"wal-only".to_vec(), b"preserve".to_vec())]));
+        let mut probe =
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, committed).unwrap();
+        probe
+            .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address,
+                    record: account(8, 20, None, None, 0),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(probe_all_columns(&database.path), before);
+        assert_eq!(probe_wal_files(&database.path), wal_before);
+        assert!(
+            probe
+                .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                    storage: vec![ConcreteStorageMutation {
+                        address,
+                        key: ConcreteStorageKey([1; 32]),
+                        value: Some(vec![])
+                    }],
+                    ..Default::default()
+                })
+                .is_err()
+        );
+        assert!(matches!(
+            probe
+                .current_view()
+                .unwrap()
+                .storage(address, ConcreteStorageKey([2; 32])),
+            Err(ConcreteReadError::HistoryUnavailable(_))
+        ));
+        assert_eq!(probe_all_columns(&database.path), before);
+        assert_eq!(probe_wal_files(&database.path), wal_before);
+        drop(probe);
+        let reader = ConcreteStateReader::open_read_only(&database.path, committed).unwrap();
+        assert_eq!(
+            ConcreteStateRead::account(&reader, address).unwrap(),
+            ConcreteRead::Present(committed_account)
+        );
+        drop(reader);
+        let mut fresh =
+            ConcreteExecutionProbe::open_read_only(&database.path, committed, committed).unwrap();
+        fresh
+            .prepare_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        assert_eq!(
+            fresh.current_view().unwrap().identity().state_root,
+            committed.state_root
+        );
+        drop(fresh);
+        assert_eq!(probe_all_columns(&database.path), before);
+        assert_eq!(probe_wal_files(&database.path), wal_before);
+    }
+
+    type ProbeColumnRows = Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>;
+
+    fn probe_all_columns(path: &Path) -> ProbeColumnRows {
+        let mut columns = DB::list_cf(&Options::default(), path).unwrap();
+        columns.sort();
+        let db = open_existing_database(path, true).unwrap();
+        columns
+            .into_iter()
+            .map(|name| {
+                let cf = db.cf_handle(&name).unwrap();
+                let rows = db
+                    .iterator_cf(&cf, IteratorMode::Start)
+                    .map(|row| {
+                        let (key, value) = row.unwrap();
+                        (key.to_vec(), value.to_vec())
+                    })
+                    .collect();
+                (name, rows)
+            })
+            .collect()
+    }
+
+    fn probe_wal_files(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+            .map(|path| {
+                (
+                    path.file_name().unwrap().into(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect()
+    }
+
     fn account(
         nonce: u64,
         balance: u64,
@@ -2523,6 +3521,33 @@ mod tests {
             },
             physical_rlp: stream.out().to_vec(),
         }
+    }
+
+    #[test]
+    fn borrowed_probe_private_constructor_checks_owner_identity_and_sequence() {
+        let database = TestDb::new();
+        let (_, committed, _) = seed_two_periods(&database, [0x98; 20]);
+        let mut writer = ConcreteStateWriter::open(&database.path, committed).unwrap();
+        assert!(BorrowedConcreteExecutionProbe::from_owner(&writer).is_ok());
+        writer.persisted_sequence.set(Some(1));
+        assert!(BorrowedConcreteExecutionProbe::from_owner(&writer).is_err());
+        writer.persisted_sequence.set(None);
+        writer.prior.period = 0.into();
+        assert!(BorrowedConcreteExecutionProbe::from_owner(&writer).is_err());
+        writer.prior = committed;
+        writer.durable_prior.state_root = [0; 32];
+        writer.prior = writer.durable_prior;
+        assert!(BorrowedConcreteExecutionProbe::from_owner(&writer).is_err());
+        writer.prior = ConcreteStateIdentity {
+            period: u64::MAX.into(),
+            state_root: committed.state_root,
+        };
+        writer.durable_prior = writer.prior;
+        writer
+            .db
+            .put(DESCRIPTOR_KEY, encode_descriptor(writer.prior))
+            .unwrap();
+        assert!(BorrowedConcreteExecutionProbe::from_owner(&writer).is_err());
     }
 
     fn seed_two_periods(

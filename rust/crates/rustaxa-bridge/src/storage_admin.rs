@@ -9,14 +9,16 @@ pub fn consensus_application_prune_light_history(
     runtime: &BridgeConsensusApplication,
     request: rustaxa_ffi::LightHistoryPruneRequest,
 ) -> Result<rustaxa_ffi::LightHistoryPruneReport, anyhow::Error> {
-    let report = runtime
-        .0
-        .prune_light_history(rustaxa_storage::LightHistoryPruneRequest {
-            end_period_exclusive: request.end_period_exclusive,
-            first_retained_dag_level: request.first_retained_dag_level,
-            live_cleanup: request.live_cleanup,
-            non_block_periods_to_keep: request.non_block_periods_to_keep,
-        })?;
+    let report =
+        runtime
+            .0
+            .historical()?
+            .prune_light_history(rustaxa_storage::LightHistoryPruneRequest {
+                end_period_exclusive: request.end_period_exclusive,
+                first_retained_dag_level: request.first_retained_dag_level,
+                live_cleanup: request.live_cleanup,
+                non_block_periods_to_keep: request.non_block_periods_to_keep,
+            })?;
     Ok(rustaxa_ffi::LightHistoryPruneReport {
         changed: report.changed,
         end_period_exclusive: report.end_period_exclusive,
@@ -34,6 +36,7 @@ pub fn consensus_application_run_storage_conformance_v1(
 ) -> Result<Vec<rustaxa_ffi::StorageConformanceObservation>, anyhow::Error> {
     Ok(runtime
         .0
+        .historical()?
         .run_storage_conformance_v1()?
         .into_iter()
         .map(|observation| rustaxa_ffi::StorageConformanceObservation {

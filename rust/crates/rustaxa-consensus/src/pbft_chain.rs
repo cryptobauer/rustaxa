@@ -72,12 +72,18 @@ pub fn load_persisted_pbft_chain_head_identity(
     let Some(bytes) = storage.pbft().head(H256::zero())? else {
         return Ok(None);
     };
-    let head = parse_legacy_head_json(&bytes).context("PBFT_CHAIN_PARSE_HEAD_IDENTITY")?;
+    Ok(Some(decode_persisted_pbft_chain_head_identity(&bytes)?))
+}
+
+pub(crate) fn decode_persisted_pbft_chain_head_identity(
+    bytes: &[u8],
+) -> Result<PbftChainPersistedHeadIdentity> {
+    let head = parse_legacy_head_json(bytes).context("PBFT_CHAIN_PARSE_HEAD_IDENTITY")?;
     validate_head(head).context("PBFT_CHAIN_VALIDATE_HEAD_IDENTITY")?;
-    Ok(Some(PbftChainPersistedHeadIdentity {
+    Ok(PbftChainPersistedHeadIdentity {
         size: head.size,
         last_pbft_block_hash: head.last_pbft_block_hash,
-    }))
+    })
 }
 
 /// Result of loading a PBFT block payload by hash from Rust storage.

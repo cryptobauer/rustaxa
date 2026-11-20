@@ -8,9 +8,9 @@ namespace taraxa {
 uint64_t VerifiedVotes::size() const {
   uint64_t size = 0;
   std::shared_lock lock(verified_votes_access_);
-  for (auto const& [_, period] : verified_votes_) {
-    for (auto const& [_, round] : period) {
-      for (auto const& [_, step] : round.step_votes) {
+  for (auto const& [period_id, period] : verified_votes_) {
+    for (auto const& [round_id, round] : period) {
+      for (auto const& [step_id, step] : round.step_votes) {
         size += std::accumulate(step.votes.begin(), step.votes.end(), 0, [](uint64_t value, const auto& voted_value) {
           return value + voted_value.second.votes.size();
         });
@@ -25,11 +25,11 @@ std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::votes() const {
   votes.reserve(size());
 
   std::shared_lock lock(verified_votes_access_);
-  for (const auto& [_, period_votes] : verified_votes_) {
-    for (const auto& [_, round_votes] : period_votes) {
-      for (const auto& [_, step_votes] : round_votes.step_votes) {
-        for (const auto& [_, voted_value] : step_votes.votes) {
-          for (const auto& [_, v] : voted_value.votes) {
+  for (const auto& [period_id, period_votes] : verified_votes_) {
+    for (const auto& [round_id, round_votes] : period_votes) {
+      for (const auto& [step_id, step_votes] : round_votes.step_votes) {
+        for (const auto& [block_hash, voted_value] : step_votes.votes) {
+          for (const auto& [vote_hash, v] : voted_value.votes) {
             votes.emplace_back(v);
           }
         }

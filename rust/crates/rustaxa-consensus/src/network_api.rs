@@ -270,6 +270,8 @@ pub const NETWORK_INGRESS_STATUS_DAG_BLOCK_SYNC_REQUESTED: u8 = 34;
 pub const NETWORK_INGRESS_STATUS_DAG_BLOCK_DISCONNECT: u8 = 35;
 /// A rejected DAG block is malicious under the legacy peer policy.
 pub const NETWORK_INGRESS_STATUS_DAG_BLOCK_MALICIOUS: u8 = 36;
+/// The local finalized period advanced while a DAG-sync response was in flight.
+pub const NETWORK_INGRESS_STATUS_DAG_SYNC_LOCAL_STALE: u8 = 37;
 
 /// No DAG rejection action applies to an accepted or duplicate block.
 pub const NETWORK_DAG_REJECTION_ACTION_NONE: u8 = 0;
@@ -1542,9 +1544,39 @@ impl ConsensusNetworkService {
         source_payload_id: u64,
         budget: u32,
     ) -> Result<NetworkEffectBatch> {
+        Ok(self.lock_api()?.drain_work_matching(
+            transport_lane,
+            Some(source_payload_id),
+            budget,
+            false,
+        ))
+    }
+
+    pub(crate) fn drain_proposal_egress(
+        &self,
+        lane: u32,
+        payload: u64,
+        budget: u32,
+    ) -> Result<NetworkEffectBatch> {
         Ok(self
             .lock_api()?
-            .drain_work_matching(transport_lane, Some(source_payload_id), budget))
+            .drain_work_matching(lane, Some(payload), budget, true))
+    }
+
+    pub(crate) fn cancel_proposal_egress_effects(&self, lane: u32, payload: u64) -> Result<()> {
+        let mut api = self.lock_api()?;
+        let ids: Vec<_> = api
+            .pending_effects
+            .iter()
+            .filter(|effect| {
+                effect.transport_lane == lane
+                    && effect.source_payload_id == payload
+                    && api.proposal_egress_effects.contains(&effect.effect_id)
+            })
+            .map(|effect| effect.effect_id)
+            .collect();
+        api.cancel_pending_effects(&ids);
+        Ok(())
     }
 
     /// Validates and records scalar executor results for previously drained effects.
@@ -2233,14 +2265,16 @@ impl ConsensusNetworkService {
         let egress_payload_bytes = if accepted_votes.is_empty() {
             Vec::new()
         } else {
-            build_optimized_pbft_vote_bundle(
+            let bundle = build_optimized_pbft_vote_bundle(
                 &accepted_votes,
                 inspected[0].block_hash,
                 inspected[0].period,
                 inspected[0].round,
                 inspected[0].step,
-            )?
-            .bundle_rlp
+            )?;
+            let mut packet = RlpStream::new_list(1);
+            packet.append_raw(&bundle.bundle_rlp, 1);
+            packet.out().to_vec()
         };
         Ok(NetworkPbftVotePacketReport {
             outcomes,
@@ -2903,9 +2937,64 @@ impl ConsensusNetworkService {
         self.lock_api()?.plan_egress(request)
     }
 
+    pub(crate) fn plan_proposal_egress(
+        &self,
+        request: NetworkEgressPlanRequest,
+    ) -> Result<NetworkIngressDecision> {
+        let mut api = self.lock_api()?;
+        let before = api.pending_effects.len();
+        let result = api.plan_egress(request);
+        if result.is_err() {
+            api.pending_effects.truncate(before);
+        } else {
+            let ids: Vec<_> = api
+                .pending_effects
+                .iter()
+                .skip(before)
+                .map(|effect| effect.effect_id)
+                .collect();
+            api.proposal_egress_effects.extend(ids);
+        }
+        result
+    }
+
     /// Cancels one undrained preparation. Unknown/stale tokens are harmless.
     pub fn cancel_egress(&self, token: u64) -> Result<bool> {
         Ok(self.lock_api()?.pending_egress.remove(&token).is_some())
+    }
+
+    pub(crate) fn proposal_egress_token(&self, token: u64) -> Result<bool> {
+        Ok(self
+            .lock_api()?
+            .pending_egress
+            .get(&token)
+            .is_some_and(|egress| {
+                egress.source_peer_id == [0; 64]
+                    && matches!(
+                        egress.payload,
+                        PendingNetworkEgressPayload::DagBlock { .. }
+                            | PendingNetworkEgressPayload::PbftVote { .. }
+                            | PendingNetworkEgressPayload::PbftVotesBundle { .. }
+                            | PendingNetworkEgressPayload::PillarVote { .. }
+                    )
+            }))
+    }
+
+    pub(crate) fn check_proposal_egress_slot(&self, lane: u32, payload: u64) -> Result<()> {
+        let api = self.lock_api()?;
+        ensure!(
+            !api.pending_egress.values().any(|pending| {
+                pending.transport_lane == lane && pending.source_payload_id == payload
+            }) && !api
+                .pending_effects
+                .iter()
+                .chain(api.outstanding_effects.values())
+                .any(|effect| {
+                    effect.transport_lane == lane && effect.source_payload_id == payload
+                }),
+            "PRODUCTION_PROPOSAL_EGRESS_SLOT_IN_USE"
+        );
+        Ok(())
     }
 
     /// Selects a peer and queues one canonical pending-DAG request.
@@ -2983,6 +3072,7 @@ impl ConsensusNetworkService {
         &self,
         context: NetworkDagBlockIngressContext,
         packet_rlp: &[u8],
+        owner_period: Option<u64>,
         admit: F,
     ) -> Result<NetworkDagSyncIngressReport>
     where
@@ -3003,6 +3093,29 @@ impl ConsensusNetworkService {
                 blocks: Vec::new(),
             });
         };
+        if let Some(period) = owner_period {
+            let mut canonical = RlpStream::new_list(4);
+            canonical.append(&request_period).append(&response_period);
+            for values in [&transactions, &blocks] {
+                canonical.begin_list(values.len());
+                for value in values {
+                    canonical.append_raw(value, 1);
+                }
+            }
+            if canonical.out().as_ref() != packet_rlp || request_period > period {
+                return Ok(NetworkDagSyncIngressReport {
+                    decision: local_network_decision(
+                        context.source_payload_id,
+                        NETWORK_INGRESS_STATUS_DAG_PACKET_MALFORMED,
+                        ERROR_DAG_PACKET_MALFORMED,
+                    ),
+                    request_period,
+                    response_period,
+                    transactions: Vec::new(),
+                    blocks: Vec::new(),
+                });
+            }
+        }
         if response_period > request_period {
             return Ok(NetworkDagSyncIngressReport {
                 decision: local_network_decision(
@@ -3022,6 +3135,19 @@ impl ConsensusNetworkService {
                     context.source_payload_id,
                     NETWORK_INGRESS_STATUS_DAG_SYNC_PERIOD_BEHIND,
                     ERROR_DAG_SYNC_PERIOD_BEHIND,
+                ),
+                request_period,
+                response_period,
+                transactions: Vec::new(),
+                blocks: Vec::new(),
+            });
+        }
+        if owner_period.is_some_and(|period| request_period < period) {
+            return Ok(NetworkDagSyncIngressReport {
+                decision: local_network_decision(
+                    context.source_payload_id,
+                    NETWORK_INGRESS_STATUS_DAG_SYNC_LOCAL_STALE,
+                    "PRODUCTION_DAG_SYNC_PREDECESSOR_CHANGED",
                 ),
                 request_period,
                 response_period,
@@ -3634,6 +3760,7 @@ pub(crate) struct ConsensusNetworkApi {
     next_egress_token: u64,
     next_transaction_gossip_account: usize,
     pending_effects: VecDeque<NetworkEffect>,
+    proposal_egress_effects: HashSet<u64>,
     pending_vote_admissions: HashMap<u64, PendingVoteAdmissionContext>,
     pending_vote_bundles: HashMap<u64, PendingVoteBundle>,
     pending_pillar_vote_admissions: HashMap<u64, PendingPillarVoteAdmissionContext>,
@@ -3674,6 +3801,7 @@ impl ConsensusNetworkApi {
             next_egress_token: 1,
             next_transaction_gossip_account: 0,
             pending_effects: VecDeque::new(),
+            proposal_egress_effects: HashSet::new(),
             pending_vote_admissions: HashMap::new(),
             pending_vote_bundles: HashMap::new(),
             pending_pillar_vote_admissions: HashMap::new(),
@@ -3692,7 +3820,7 @@ impl ConsensusNetworkApi {
     /// reports only work remaining for the requested lane.
     #[must_use]
     pub fn drain_work(&mut self, transport_lane: u32, budget: u32) -> NetworkEffectBatch {
-        self.drain_work_matching(transport_lane, None, budget)
+        self.drain_work_matching(transport_lane, None, budget, false)
     }
 
     fn drain_work_matching(
@@ -3700,6 +3828,7 @@ impl ConsensusNetworkApi {
         transport_lane: u32,
         source_payload_id: Option<u64>,
         budget: u32,
+        proposal_egress: bool,
     ) -> NetworkEffectBatch {
         let mut effects = Vec::new();
         let capped_budget = usize::try_from(budget)
@@ -3716,6 +3845,7 @@ impl ConsensusNetworkApi {
             };
             if effect.transport_lane != transport_lane
                 || source_payload_id.is_some_and(|source| effect.source_payload_id != source)
+                || self.proposal_egress_effects.contains(&effect.effect_id) != proposal_egress
             {
                 retained.push_back(effect);
                 continue;
@@ -3724,6 +3854,7 @@ impl ConsensusNetworkApi {
                 match self.completed_dependency_status.get(&effect.dependency_id) {
                     Some(true) => {}
                     Some(false) => {
+                        self.proposal_egress_effects.remove(&effect.effect_id);
                         continue;
                     }
                     None => {
@@ -3734,6 +3865,7 @@ impl ConsensusNetworkApi {
             }
             self.outstanding_effects
                 .insert(effect.effect_id, effect.clone());
+            self.proposal_egress_effects.remove(&effect.effect_id);
             effects.push(effect);
         }
         retained.append(&mut self.pending_effects);
@@ -3749,6 +3881,7 @@ impl ConsensusNetworkApi {
             more_available: self.pending_effects.iter().any(|effect| {
                 effect.transport_lane == transport_lane
                     && source_payload_id.is_none_or(|source| effect.source_payload_id == source)
+                    && self.proposal_egress_effects.contains(&effect.effect_id) == proposal_egress
             }),
             error_code: ERROR_NONE.to_owned(),
         }
@@ -5026,6 +5159,8 @@ impl ConsensusNetworkApi {
         let effect_ids = effect_ids.iter().copied().collect::<HashSet<_>>();
         self.pending_effects
             .retain(|effect| !effect_ids.contains(&effect.effect_id));
+        self.proposal_egress_effects
+            .retain(|effect_id| !effect_ids.contains(effect_id));
     }
 
     /// Cancels one bundle aggregation session and removes admission effects
@@ -9871,7 +10006,7 @@ mod tests {
             api.ingest_pbft_vote(vote_fact(10, 3, 2, PbftVoteType::Soft), context);
         }
 
-        let scoped = api.drain_work_matching(6, Some(41), 10);
+        let scoped = api.drain_work_matching(6, Some(41), 10, false);
         assert_eq!(scoped.effects.len(), 2);
         assert_eq!(scoped.effects[0].source_payload_id, 41);
         assert_eq!(scoped.effects[1].source_payload_id, 41);
@@ -9880,6 +10015,42 @@ mod tests {
         let retained = api.drain_work(6, 10);
         assert_eq!(retained.effects.len(), 1);
         assert_eq!(retained.effects[0].source_payload_id, 42);
+    }
+
+    #[test]
+    fn proposal_egress_cannot_cross_generic_drain() {
+        let mut api = ConsensusNetworkApi::new();
+        for (lane, source, byte) in [(6, 41, 1), (6, 41, 2), (6, 42, 3), (5, 41, 4)] {
+            let mut context = vote_context();
+            context.transport_lane = lane;
+            context.enqueue_admission = true;
+            context.peer_id = peer(byte);
+            context.vote_hash = hash(byte);
+            context.vote_rlp = vec![0xc1, byte];
+            context.source_payload_id = source;
+            api.ingest_pbft_vote(vote_fact(10, 3, 2, PbftVoteType::Soft), context);
+        }
+        api.proposal_egress_effects.extend([1, 3, 4]);
+
+        let generic = api.drain_work_matching(6, Some(41), 10, false);
+        assert_eq!(generic.effects.len(), 1);
+        assert_eq!(generic.effects[0].effect_id, 2);
+        assert!(!generic.more_available);
+        assert!(api.drain_work(6, 10).effects.is_empty());
+
+        let owned = api.drain_work_matching(6, Some(41), 10, true);
+        assert_eq!(owned.effects.len(), 1);
+        assert_eq!(owned.effects[0].effect_id, 1);
+        assert!(!owned.more_available);
+        assert_eq!(api.proposal_egress_effects, HashSet::from([3, 4]));
+
+        api.cancel_pending_effects(&[3]);
+        assert!(
+            api.drain_work_matching(6, Some(42), 10, true)
+                .effects
+                .is_empty()
+        );
+        assert_eq!(api.proposal_egress_effects, HashSet::from([4]));
     }
 
     #[test]

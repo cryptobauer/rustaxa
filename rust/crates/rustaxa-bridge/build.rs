@@ -1,6 +1,7 @@
 fn main() {
-    cxx_build::bridge("src/ffi.rs")
+    cxx_build::bridges(["src/ffi.rs", "src/production_ffi.rs"])
         .include("../../../libraries/core_libs/consensus/include")
+        .include("../rustaxa-native-config/include")
         .std("c++20")
         .flag("-fvisibility=hidden")
         .compile("rustaxa-bridge");
@@ -10,6 +11,7 @@ fn main() {
     // because it also contains generic CXX runtime support symbols.
     cxx_build::bridge("src/application_host_ffi.rs")
         .include("../../../libraries/core_libs/consensus/include")
+        .include("../rustaxa-native-config/include")
         .std("c++20")
         .flag("-fvisibility=hidden")
         .cargo_metadata(false)
@@ -29,6 +31,9 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=src/ffi.rs");
+    println!("cargo:rerun-if-changed=src/production_ffi.rs");
+    println!("cargo:rerun-if-changed=../rustaxa-native-config/src/lib.rs");
+    println!("cargo:rerun-if-changed=../rustaxa-native-config/include/rustaxa/selected_production_config.hpp");
     println!("cargo:rerun-if-changed=src/application_host_ffi.rs");
     println!("cargo:rerun-if-env-changed=RUSTAXA_APPLICATION_HOST_BRIDGE_OUT");
     println!(

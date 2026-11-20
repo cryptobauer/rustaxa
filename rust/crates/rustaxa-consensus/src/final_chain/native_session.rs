@@ -25,7 +25,9 @@ pub(super) mod claims;
 mod concrete_checkpoint;
 pub(super) mod context_replay;
 pub(super) mod custody;
+mod execution_probe;
 pub mod frozen_eligibility;
+mod prepared_transition;
 mod query;
 pub(super) mod raw;
 mod registration;
@@ -53,6 +55,10 @@ mod v1_custody_reference_tests;
 
 pub use account::{FinalChainNativeAccount, FinalChainNativeOrdinaryMutation};
 pub use concrete_checkpoint::ConcreteCheckpointNativeStateRead;
+pub use execution_probe::FinalChainNativeExecutionProbe;
+pub use prepared_transition::{
+    FinalChainFinishedNativeTransition, FinalChainPreparedNativeSession,
+};
 pub use raw::{
     FinalChainNativeRawMutation, FinalChainNativeRawOperation, FinalChainNativeRawValue,
     FinalChainNativeRawValueError,
@@ -506,6 +512,8 @@ pub enum FinalChainNativeSessionError {
     CustodyScopeUnsupported,
     /// Current raw bytes do not exactly encode the staged semantic state.
     RawIntegrity(String),
+    /// The corrected slashing kernel reached malformed nested proof RLP.
+    MalformedNestedSlashingProof(String),
     /// Existing FinalChain state or kernel execution failed.
     Domain(String),
 }
@@ -638,6 +646,7 @@ pub struct FinalChainNativeSession<'a> {
     input_aliases: Vec<FinalChainNativeInputAlias>,
     borrowed_vrf_keys: std::collections::BTreeMap<[u8; 20], ConcreteStorageKey>,
     dpos_state: DposSnapshot,
+    captured_rewards_parent: Option<std::sync::Arc<DposSnapshot>>,
     eligibility_state: DposSnapshot,
     eligibility_period: FinalChainBlockNumber,
     delayed_physical: Option<std::rc::Rc<frozen_eligibility::FrozenEligibility>>,
@@ -660,10 +669,22 @@ pub struct FinalChainNativeSimulation<'a> {
 }
 
 impl FinalChain {
-    fn normalize_disposable_slashing_snapshot(
+    fn legacy_slashing_account_present(
         &self,
         period: FinalChainBlockNumber,
+    ) -> std::result::Result<bool, FinalChainNativeSessionError> {
+        Ok(self
+            .account_at_block(period, SLASHING_CONTRACT_ADDRESS)
+            .map_err(custody::map_kernel_error)?
+            .is_some())
+    }
+
+    fn normalize_disposable_slashing_snapshot(
+        period: FinalChainBlockNumber,
         snapshot: &mut DposSnapshot,
+        account_present: &impl Fn(
+            FinalChainBlockNumber,
+        ) -> std::result::Result<bool, FinalChainNativeSessionError>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
         if snapshot.slashing_jail_blocks.is_empty()
             && snapshot.slashing_jailed_validators.is_empty()
@@ -672,11 +693,7 @@ impl FinalChain {
             return Ok(());
         }
         // A fresh Go reader cannot see cached slots of an absent account.
-        if self
-            .account_at_block(period, SLASHING_CONTRACT_ADDRESS)
-            .map_err(custody::map_kernel_error)?
-            .is_none()
-        {
+        if !account_present(period)? {
             snapshot.slashing_jail_blocks.clear();
             snapshot.slashing_jailed_validators.clear();
             snapshot.slashing_double_voting_proofs.clear();
@@ -692,7 +709,20 @@ impl FinalChain {
         reader_period: FinalChainBlockNumber,
         execution_period: FinalChainBlockNumber,
     ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
-        if reader_period.checked_add_distance(1) != Some(execution_period) {
+        self.begin_native_trace_with_slashing_accounts(reader_period, execution_period, |period| {
+            self.legacy_slashing_account_present(period)
+        })
+    }
+
+    pub(crate) fn begin_native_trace_with_slashing_accounts(
+        &self,
+        reader_period: FinalChainBlockNumber,
+        execution_period: FinalChainBlockNumber,
+        account_present: impl Fn(
+            FinalChainBlockNumber,
+        ) -> std::result::Result<bool, FinalChainNativeSessionError>,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        if reader_period.as_u64() != execution_period.as_u64().saturating_sub(1) {
             return Err(FinalChainNativeSessionError::PeriodMismatch);
         }
         let head = self
@@ -707,9 +737,15 @@ impl FinalChain {
         let mut snapshot = self
             .dpos_snapshot_at_finalized_block(reader_period)
             .map_err(custody::map_kernel_error)?;
-        self.normalize_disposable_slashing_snapshot(reader_period, &mut snapshot)?;
-        self.advance_reward_reference_graph_block(&mut snapshot, execution_period)
-            .map_err(custody::map_kernel_error)?;
+        Self::normalize_disposable_slashing_snapshot(
+            reader_period,
+            &mut snapshot,
+            &account_present,
+        )?;
+        if execution_period != reader_period {
+            self.advance_reward_reference_graph_block(&mut snapshot, execution_period)
+                .map_err(custody::map_kernel_error)?;
+        }
         self.native_session_from_state(
             None,
             execution_period,
@@ -813,64 +849,7 @@ impl FinalChain {
             pending_period,
             expected_parent,
         )?;
-        let FinalChainNativeSession {
-            final_chain,
-            origin,
-            #[cfg(feature = "synthetic-fixtures")]
-            synthetic_origins,
-            request_id,
-            reward_scheduler_basis,
-            pending_period,
-            period_start_total_vote_count,
-            period_start_amount_delegated,
-            next_sequence,
-            completed_input_invocation,
-            input_mutations,
-            input_aliases,
-            borrowed_vrf_keys,
-            dpos_state,
-            eligibility_state,
-            eligibility_period,
-            delayed_physical,
-            prepared,
-            aborted,
-            finished_rewards,
-            verified_slashing,
-            trace_readers,
-        } = session;
-        match final_chain {
-            NativeSessionOwner::Borrowed(owner) if std::ptr::eq(owner, self.as_ref()) => {}
-            _ => {
-                return Err(FinalChainNativeSessionError::Domain(
-                    "native session owner mismatch".to_owned(),
-                ));
-            }
-        }
-        Ok(FinalChainNativeSession {
-            final_chain: NativeSessionOwner::Owned(std::sync::Arc::clone(self)),
-            origin,
-            #[cfg(feature = "synthetic-fixtures")]
-            synthetic_origins,
-            request_id,
-            reward_scheduler_basis,
-            pending_period,
-            period_start_total_vote_count,
-            period_start_amount_delegated,
-            next_sequence,
-            completed_input_invocation,
-            input_mutations,
-            input_aliases,
-            borrowed_vrf_keys,
-            dpos_state,
-            eligibility_state,
-            eligibility_period,
-            delayed_physical,
-            prepared,
-            aborted,
-            finished_rewards,
-            verified_slashing,
-            trace_readers,
-        })
+        session.into_owned(self)
     }
 
     pub(super) fn reward_scheduler_basis(
@@ -922,6 +901,18 @@ impl FinalChain {
         &self,
         period: FinalChainBlockNumber,
     ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        self.begin_native_simulation_with_slashing_accounts(period, |period| {
+            self.legacy_slashing_account_present(period)
+        })
+    }
+
+    pub(crate) fn begin_native_simulation_with_slashing_accounts(
+        &self,
+        period: FinalChainBlockNumber,
+        account_present: impl Fn(
+            FinalChainBlockNumber,
+        ) -> std::result::Result<bool, FinalChainNativeSessionError>,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
         let finalized_head = self
             .last_block_number_typed()
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
@@ -934,16 +925,17 @@ impl FinalChain {
         let mut dpos_state = self
             .dpos_snapshot_at_finalized_block(period)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        self.normalize_disposable_slashing_snapshot(period, &mut dpos_state)?;
+        Self::normalize_disposable_slashing_snapshot(period, &mut dpos_state, &account_present)?;
         let mut session = self.native_session_from_state(
             None,
             period,
             dpos_state,
             NativeSessionOrigin::HistoricalSimulation,
         )?;
-        self.normalize_disposable_slashing_snapshot(
+        Self::normalize_disposable_slashing_snapshot(
             session.eligibility_period,
             &mut session.eligibility_state,
+            &account_present,
         )?;
         #[cfg(feature = "synthetic-fixtures")]
         session.synthetic_origins.insert(
@@ -1216,6 +1208,13 @@ impl FinalChain {
 
     // Earlier layouts require persisted, authenticated shape authority. Keep
     // each existing origin's independently qualified compatibility union.
+    pub(super) fn pending_native_session_requires_complete_layout(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> bool {
+        self.native_session_requires_complete_layout(period, NativeSessionOrigin::PendingPeriod)
+    }
+
     fn native_session_requires_complete_layout(
         &self,
         period: FinalChainBlockNumber,
@@ -1281,6 +1280,67 @@ impl FinalChain {
             });
             selected
         };
+        self.native_session_from_states(
+            request_id,
+            period,
+            dpos_state,
+            origin,
+            eligibility_period,
+            eligibility_state,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
+        )
+    }
+
+    pub(super) fn native_session_from_captured_states(
+        &self,
+        request_id: [u8; 32],
+        period: FinalChainBlockNumber,
+        mut current: DposSnapshot,
+        eligibility_period: FinalChainBlockNumber,
+        delayed: DposSnapshot,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let expected = period
+            .checked_sub_distance(1)
+            .ok_or(FinalChainNativeSessionError::PendingPeriodMismatch)?
+            .saturating_sub_distance(self.dpos_delegation_delay);
+        if eligibility_period != expected {
+            return Err(FinalChainNativeSessionError::PendingPeriodMismatch);
+        }
+        self.advance_reward_reference_graph_block(&mut current, period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        if self.pending_native_session_requires_complete_layout(period)
+            && !current.has_complete_validator_shapes()
+        {
+            return Err(FinalChainNativeSessionError::PreMagnoliaUnsupported);
+        }
+        self.native_session_from_states(
+            Some(request_id),
+            period,
+            current,
+            NativeSessionOrigin::PendingPeriod,
+            eligibility_period,
+            delayed,
+            #[cfg(feature = "synthetic-fixtures")]
+            vec![SyntheticNativeOrigin {
+                role: "eligibility_captured",
+                period: eligibility_period,
+            }],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn native_session_from_states(
+        &self,
+        request_id: Option<[u8; 32]>,
+        period: FinalChainBlockNumber,
+        dpos_state: DposSnapshot,
+        origin: NativeSessionOrigin,
+        eligibility_period: FinalChainBlockNumber,
+        eligibility_state: DposSnapshot,
+        #[cfg(feature = "synthetic-fixtures")] synthetic_origins: Vec<SyntheticNativeOrigin>,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let complete_layout_required = self.native_session_requires_complete_layout(period, origin);
         // TraceRunner supplies one live blockstate to every reader callback;
         // normal pending and dry-run origins load real delayed snapshots above.
         if complete_layout_required
@@ -1308,6 +1368,7 @@ impl FinalChain {
             input_aliases: Vec::new(),
             borrowed_vrf_keys: Default::default(),
             dpos_state,
+            captured_rewards_parent: None,
             eligibility_state,
             eligibility_period,
             delayed_physical: None,
@@ -1369,9 +1430,76 @@ impl FinalChainNativeSimulation<'_> {
 }
 
 impl FinalChainNativeSession<'_> {
+    fn into_owned(
+        self,
+        owner: &std::sync::Arc<FinalChain>,
+    ) -> Result<FinalChainNativeSession<'static>, FinalChainNativeSessionError> {
+        let FinalChainNativeSession {
+            final_chain,
+            origin,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
+            request_id,
+            reward_scheduler_basis,
+            pending_period,
+            period_start_total_vote_count,
+            period_start_amount_delegated,
+            next_sequence,
+            completed_input_invocation,
+            input_mutations,
+            input_aliases,
+            borrowed_vrf_keys,
+            dpos_state,
+            captured_rewards_parent,
+            eligibility_state,
+            eligibility_period,
+            delayed_physical,
+            prepared,
+            aborted,
+            finished_rewards,
+            verified_slashing,
+            trace_readers,
+        } = self;
+        match final_chain {
+            NativeSessionOwner::Borrowed(actual_owner)
+                if std::ptr::eq(actual_owner, owner.as_ref()) => {}
+            _ => {
+                return Err(FinalChainNativeSessionError::Domain(
+                    "native session owner mismatch".to_owned(),
+                ));
+            }
+        }
+        Ok(FinalChainNativeSession {
+            final_chain: NativeSessionOwner::Owned(std::sync::Arc::clone(owner)),
+            origin,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
+            request_id,
+            reward_scheduler_basis,
+            pending_period,
+            period_start_total_vote_count,
+            period_start_amount_delegated,
+            next_sequence,
+            completed_input_invocation,
+            input_mutations,
+            input_aliases,
+            borrowed_vrf_keys,
+            dpos_state,
+            captured_rewards_parent,
+            eligibility_state,
+            eligibility_period,
+            delayed_physical,
+            prepared,
+            aborted,
+            finished_rewards,
+            verified_slashing,
+            trace_readers,
+        })
+    }
+
     /// Returns the fixed correction identity retained by the session owner.
     pub fn correction_stage(&self) -> rustaxa_types::evm_correction::CorrectionStage {
-        self.final_chain.correction_stage()
+        self.final_chain.correction_stage_at(self.pending_period)
     }
 
     /// Installs the independently bound view before any native invocation.
@@ -2141,6 +2269,7 @@ fn checked_undelegations_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod captured_execution_probe;
     mod commission_lifecycle;
     mod owned_delayed_real_fixture;
     mod validator_info_reference_tests;

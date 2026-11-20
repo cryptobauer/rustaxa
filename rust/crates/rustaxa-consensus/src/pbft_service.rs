@@ -37,14 +37,18 @@ use crate::pbft_manager::{
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
     apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
     base_owned_finalization_live_report, create_pbft_manager_proposal_session,
-    create_pbft_manager_runtime_from_storage, create_pbft_manager_runtime_session,
-    create_pbft_manager_state_action_effect_session, load_pbft_manager_startup_replay_period,
-    next_pbft_manager_proposal_session, next_pbft_manager_runtime_action,
-    next_pbft_manager_state_action_effect_session, plan_pbft_manager_runtime_sleep_until_next_step,
+    create_pbft_manager_runtime_session, create_pbft_manager_state_action_effect_session,
+    load_pbft_manager_startup_replay_period, next_pbft_manager_proposal_session,
+    next_pbft_manager_runtime_action, next_pbft_manager_state_action_effect_session,
+    plan_pbft_manager_runtime_sleep_until_next_step, prepare_pbft_manager_runtime_from_storage,
     report_pbft_manager_proposal_dag_order, report_pbft_manager_runtime_action,
     report_pbft_manager_state_action_effect_session, save_cert_voted_block_in_round_storage,
     stale_pbft_manager_proposal_session_step,
 };
+/// Identity of one owned runtime cursor, including replacements with equal tick facts.
+#[derive(Clone)]
+pub(crate) struct OwnedRuntimeSession(std::sync::Arc<()>);
+
 #[cfg(test)]
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
 use crate::pbft_period_cleanup::{
@@ -838,10 +842,16 @@ fn sync_cert_bundle_error_code(status: PbftSyncCertVoteBundleStatus) -> &'static
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PbftSyncIngressSource {
+    pub payload_id: u64,
+    pub peer_id: [u8; 64],
+    pub generation: u64,
+}
+
 struct PbftSyncIngressSession {
     packet: DecodedPbftSyncPacketPrecheck,
-    source_payload_id: u64,
-    source_peer_id: [u8; 64],
+    source: PbftSyncIngressSource,
     next_vote: usize,
     slashing_submitters: Vec<SlashingSubmitterIdentity>,
     pending_slashing: Option<SlashingTransactionEffect>,
@@ -1015,6 +1025,13 @@ pub struct PbftLocalProposalSelectionResult {
     pub error_code: &'static str,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct CertVotedBlockInRound {
+    pub round: u64,
+    pub block_rlp: Vec<u8>,
+    pub link: PbftBlockLink,
+}
+
 /// CXX-free native owner of the complete PBFT application-service graph.
 ///
 /// Restoration validates storage-independent slashing configuration first,
@@ -1024,6 +1041,8 @@ pub struct PbftLocalProposalSelectionResult {
 /// facts are derived. Bootstrap readiness starts pending and is published
 /// monotonically through [`Self::complete_bootstrap`].
 pub struct PbftService {
+    strict_ingress: bool,
+    execution_guard: Option<Arc<crate::pbft_execution_guard::PbftExecutionGuard>>,
     manager: PbftManagerService,
     chain: PbftChainService,
     proposed_blocks: ProposedBlocksService,
@@ -1052,7 +1071,333 @@ pub struct PbftService {
     cornus_pbft_gas_limit: u64,
 }
 
+pub(crate) struct OwnerFinalizationBatch {
+    pub(crate) reward: rustaxa_storage::StoredFinalizedRewardVoteCursor,
+    pub(crate) successor: Option<OwnerPbftSuccessor>,
+    pub(crate) pillar_reference: Option<PillarBlockFinalizationPrepareResult>,
+    pub(crate) pillar_anchor: Option<crate::pbft_application_finalization::OwnerPillarAnchor>,
+    pub(crate) sortition: Option<crate::sortition::SortitionParamsManager>,
+}
+
+pub(crate) struct OwnerPbftSuccessor {
+    prior: PbftChainHead,
+    anchor: H256,
+    next: PbftChainHead,
+    head_payload: Vec<u8>,
+    prior_manager: crate::pbft_manager::PbftManagerRuntimeSnapshot,
+    manager: crate::pbft_manager::PbftManagerRuntime,
+    reset: crate::pbft_manager::PbftManagerTransitionPlan,
+    removed_proposals: Vec<crate::proposed_blocks::ProposedBlockPeriodHashes>,
+}
+
 impl PbftService {
+    /// Appends the existing finalization and period-reset plans without writes.
+    pub(crate) fn append_owner_finalization(
+        &self,
+        dag: &DagTransactionService,
+        request: crate::pbft_application_finalization::PbftApplicationFinalizationRequest,
+        batch: &mut StorageWriteBatch,
+        renew: bool,
+        pillar_anchor: Option<crate::pbft_application_finalization::OwnerPillarAnchor>,
+    ) -> Result<OwnerFinalizationBatch> {
+        use crate::pbft_finalize::PbftFinalizationStorageWriteStage;
+        use crate::pbft_manager::{PbftRewardVoteResetStageGuard, PbftRewardVoteResetStagePort};
+        let (plan, pillar_reference) =
+            crate::pbft_application_finalization::plan_owner_finalization(self, request)?;
+        let manager = self.manager.lock();
+        let write = &plan.storage_write_intent;
+        let mut primary_stage = PbftFinalizationStorageWriteStage::default();
+        if let Some(pillar) = &pillar_reference {
+            primary_stage.has_prepared_pillar_block = true;
+            primary_stage.prepared_pillar_block_period = pillar.prepared_pillar_block_period;
+            primary_stage.prepared_pillar_block_rlp = pillar.prepared_pillar_block_rlp.clone();
+        }
+        if let Some(anchor) = &pillar_anchor {
+            manager
+                .storage
+                .stage_current_pillar_data(batch, &anchor.data_rlp)?;
+        }
+        let mut stages = vec![primary_stage];
+        let rewards = self.verified_votes.lock_reward_votes()?;
+        let mut reward = rewards.prepare_reward_votes_reset_stage(
+            crate::pbft_vote_runtime::RewardVoteResetPrepareRequest {
+                requested: true,
+                cursor: crate::pbft_vote_runtime::RewardVoteCursor {
+                    period: write.reward_vote_period,
+                    round: write.reward_vote_round,
+                    step: write.reward_vote_step,
+                    block_hash: write.reward_vote_block_hash,
+                },
+            },
+        )?;
+        reward.extra_reward_vote_hashes = manager.storage.pbft().extra_reward_vote_hashes()?;
+        let reward_cursor = rustaxa_storage::StoredFinalizedRewardVoteCursor {
+            period: write.reward_vote_period,
+            round: write.reward_vote_round,
+            step: write.reward_vote_step,
+            block_hash: write.reward_vote_block_hash,
+            votes_bundle_rlp: reward.reward_votes_bundle_rlp.clone(),
+        };
+        stages.push(reward);
+        let mut sortition = None;
+        if write.update_sortition_params {
+            let head = self.pbft_chain_head();
+            let counts = crate::sortition::decode_period_efficiency_counts(&write.period_data_rlp)?;
+            let finalized =
+                crate::dag_transaction_service::DagTransactionSortitionFinalizationRequest {
+                    period: write.block_period,
+                    efficiency_counts: counts,
+                    non_empty_pbft_chain_size: head
+                        .non_empty_size
+                        .checked_add(1)
+                        .context("PRODUCTION_SORTITION_SIZE_OVERFLOW")?,
+                };
+            let (updated, change) = dag.prepare_owner_finalized_sortition(finalized)?;
+            sortition = Some(updated);
+            if let Some(change) = change {
+                stages.push(PbftFinalizationStorageWriteStage {
+                    stage: 3,
+                    has_sortition_params_change: true,
+                    sortition_params_change_period: change.period,
+                    sortition_params_change_interval_efficiency: change.interval_efficiency,
+                    sortition_params_change_threshold_upper: change.threshold_upper,
+                    ..Default::default()
+                });
+            }
+        }
+        if write.apply_dynamic_lambda_update {
+            stages.push(PbftFinalizationStorageWriteStage {
+                stage: 1,
+                rounds_count_dynamic_lambda: write.rounds_count_dynamic_lambda,
+                dynamic_lambda: write.dynamic_lambda,
+                ..Default::default()
+            });
+        }
+        stages.push(PbftFinalizationStorageWriteStage {
+            stage: 2,
+            ..Default::default()
+        });
+        let applied = crate::pbft_finalize::apply_pbft_finalization_storage_writes_to_batch(
+            &manager.storage,
+            batch,
+            write,
+            stages,
+        )?;
+        ensure!(
+            applied.status.is_success(),
+            "PRODUCTION_PRIMARY_FINALIZATION_REJECTED:{}",
+            applied.error_code
+        );
+        let next = write
+            .block_period
+            .checked_add(1)
+            .context("PRODUCTION_PERIOD_OVERFLOW")?;
+        let mut successor_manager = renew.then(|| manager.state.prepare_owner_period_successor());
+        if let Some(successor) = successor_manager.as_mut() {
+            if write.apply_dynamic_lambda_update {
+                let updated = successor.apply_committed_dynamic_lambda(
+                    write.rounds_count_dynamic_lambda,
+                    write.dynamic_lambda,
+                );
+                ensure!(
+                    updated.error_code.is_empty(),
+                    "PRODUCTION_PERIOD_LAMBDA_REJECTED"
+                );
+            }
+        }
+        let reset = successor_manager
+            .as_ref()
+            .unwrap_or(&manager.state)
+            .plan_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
+                kind: crate::pbft_manager::PbftManagerTransitionKind::ResetConsensus,
+                target_period: next,
+                target_round: 1,
+                has_network_next_voting_step: false,
+                network_next_voting_step: 0,
+            });
+        ensure!(
+            reset.status == PbftManagerTransitionStatus::Ready,
+            "PRODUCTION_PERIOD_RESET_REJECTED:{}",
+            reset.error_code
+        );
+        crate::pbft_manager::append_transition_storage_to_batch(&manager.storage, batch, &reset)
+            .map_err(|e| anyhow::anyhow!("PRODUCTION_PERIOD_RESET_STORAGE:{}", e.error_code))?;
+        if reset.clear_own_votes {
+            for hash in manager.storage.pbft().own_verified_vote_hashes()? {
+                manager
+                    .storage
+                    .pbft()
+                    .remove_own_verified_vote_in_batch(batch, hash)?;
+            }
+        }
+        manager.storage.pbft().write_manager_status_in_batch(
+            batch,
+            crate::pbft_manager::PBFT_MGR_STATUS_EXECUTED_BLOCK,
+            false,
+        )?;
+        let proposed = self
+            .proposed_blocks
+            .read()
+            .map_err(|_| anyhow::anyhow!("PRODUCTION_PROPOSAL_LOCK_POISONED"))?;
+        let removed = proposed.cleanup_candidates(next);
+        crate::proposed_blocks::append_proposed_blocks_cleanup_to_batch(
+            &manager.storage,
+            batch,
+            &removed,
+        )?;
+        let successor = if let Some(mut successor) = successor_manager {
+            ensure!(
+                manager.runtime_session.is_none()
+                    && (write.anchor_hash.is_zero() == write.null_anchor)
+                    && (!write.null_anchor
+                        || (write.dag_block_period_writes.is_empty()
+                            && write.transaction_location_writes.is_empty())),
+                "PRODUCTION_PERIOD_SUCCESSOR_INPUTS"
+            );
+            let chain = manager
+                .chain
+                .read()
+                .map_err(|_| anyhow::anyhow!("PBFT_CHAIN_SERVICE_LOCK_POISONED"))?;
+            let prior = chain.state.head();
+            let next_head = chain
+                .state
+                .project_update(write.pbft_block_hash, write.anchor_hash)?;
+            let prior_manager = manager.state.snapshot();
+            ensure!(
+                next_head.size == write.block_period && prior_manager.period == write.block_period,
+                "PRODUCTION_PERIOD_SUCCESSOR_PRIOR"
+            );
+            successor.apply_committed_transition(&reset);
+            successor.record_committed_reset(next, &reset);
+            successor.apply_committed_executed_block_reset();
+            let advance = successor.plan_advance_period_after_reset(next_head.size);
+            ensure!(
+                advance.accepted && advance.new_period == next,
+                "PRODUCTION_PERIOD_ADVANCE_REJECTED"
+            );
+            let advanced = successor.apply_committed_period_advance(next);
+            ensure!(
+                advanced.error_code.is_empty() && advanced.period == next,
+                "PRODUCTION_PERIOD_ADVANCE_REJECTED"
+            );
+            Some(OwnerPbftSuccessor {
+                prior,
+                anchor: write.anchor_hash,
+                next: next_head,
+                head_payload: write.pbft_head_payload.clone(),
+                prior_manager,
+                manager: successor,
+                reset,
+                removed_proposals: removed,
+            })
+        } else {
+            None
+        };
+        Ok(OwnerFinalizationBatch {
+            reward: reward_cursor,
+            successor,
+            pillar_reference,
+            pillar_anchor,
+            sortition,
+        })
+    }
+
+    pub(crate) fn install_owner_pillar_updates(
+        &self,
+        reference: Option<PillarBlockFinalizationPrepareResult>,
+        anchor: Option<crate::pbft_application_finalization::OwnerPillarAnchor>,
+    ) -> Result<()> {
+        if let Some(prepared) = reference {
+            self.acknowledge_pillar_block_finalization(
+                PillarBlockFinalizationAcknowledgeRequest {
+                    anchor_generation: prepared.preparation_anchor_generation,
+                    preparation_token: prepared.preparation_token,
+                },
+            )?;
+        }
+        if let Some(anchor) = anchor {
+            self.pillar()
+                .install_committed_current_block_data(anchor.data_rlp, anchor.generation)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn install_owner_successor(
+        &self,
+        successor: OwnerPbftSuccessor,
+        scope: &rustaxa_storage::application_control::ApplicationReadScope<'_>,
+    ) -> Result<()> {
+        let mut manager = self.manager.lock();
+        ensure!(
+            scope.is_current()
+                && manager.state.snapshot() == successor.prior_manager
+                && manager
+                    .storage
+                    .pbft()
+                    .head(successor.next.head_hash)?
+                    .as_deref()
+                    == Some(successor.head_payload.as_slice()),
+            "PRODUCTION_PERIOD_SUCCESSOR_SOURCE_CHANGED"
+        );
+        crate::pbft_manager::check_owner_period_reset_storage(&manager.storage, &successor.reset)?;
+        let service = manager.chain.clone();
+        let mut chain = service
+            .write()
+            .map_err(|_| anyhow::anyhow!("PBFT_CHAIN_SERVICE_LOCK_POISONED"))?;
+        ensure!(
+            chain.state.head() == successor.prior
+                && chain
+                    .state
+                    .project_update(successor.next.last_pbft_block_hash, successor.anchor)?
+                    == successor.next,
+            "PRODUCTION_PERIOD_SUCCESSOR_CHAIN_CHANGED"
+        );
+        let mut votes = self.verified_votes.lock()?;
+        let mut proposed = self
+            .proposed_blocks
+            .write()
+            .map_err(|_| anyhow::anyhow!("PRODUCTION_PROPOSAL_LOCK_POISONED"))?;
+        ensure!(
+            proposed.cleanup_candidates(successor.manager.snapshot().period)
+                == successor.removed_proposals,
+            "PRODUCTION_PERIOD_SUCCESSOR_PROPOSALS_CHANGED"
+        );
+        let cleanup = votes.plan_cleanup_votes_by_period(successor.next.size);
+        chain.state = crate::pbft_chain::PbftChain::new(successor.next)?;
+        votes.apply_cleanup_votes_by_period(&cleanup);
+        for removed in successor.removed_proposals {
+            proposed.remove_period(removed.period);
+        }
+        manager.state = successor.manager;
+        Ok(())
+    }
+
+    /// Installs an immutable guard from one trusted offline application owner.
+    /// Production startup still needs durable enrollment and route coverage.
+    pub fn with_offline_execution_guard(
+        mut self,
+        guard: Arc<crate::pbft_execution_guard::PbftExecutionGuard>,
+    ) -> Result<Self> {
+        ensure!(
+            self.execution_guard.is_none(),
+            "PBFT_EXECUTION_GUARD_ALREADY_INSTALLED"
+        );
+        self.execution_guard = Some(guard);
+        Ok(self)
+    }
+
+    fn require_unguarded_historical_vote(&self, period: u64, block_hash: H256) -> Result<()> {
+        ensure!(
+            block_hash == H256::zero()
+                || !self
+                    .execution_guard
+                    .as_ref()
+                    .is_some_and(|guard| { guard.requires_validation(period.into()) }),
+            "PBFT_EXECUTION_ADMISSION_REQUIRED"
+        );
+        Ok(())
+    }
+
     /// Returns immutable consensus policy to native application siblings.
     pub(crate) const fn process_synced_policy(&self) -> PbftProcessSyncedPolicy {
         self.process_synced_policy
@@ -1225,7 +1570,8 @@ impl PbftService {
             return Ok(Self::sync_cert_terminal_step(0, shape, Vec::new(), None));
         }
 
-        let strict_index = if block_period.is_multiple_of(100) {
+        let strict_all = self.strict_ingress || block_period.is_multiple_of(100);
+        let strict_index = if strict_all {
             None
         } else {
             Some(rand::rng().random_range(0..canonical_vote_rlps.len()))
@@ -1261,7 +1607,7 @@ impl PbftService {
             } else {
                 vote_rlp
             };
-            let strict_vrf = block_period.is_multiple_of(100) || strict_index == Some(index);
+            let strict_vrf = strict_all || strict_index == Some(index);
             let (validation, _) = self
                 .validate_verified_vote_with_final_chain_internal(
                     final_chain,
@@ -1679,14 +2025,33 @@ impl PbftService {
         &self,
         final_chain: &FinalChain,
         packet_rlp: &[u8],
-        source_payload_id: u64,
-        source_peer_id: [u8; 64],
+        source: PbftSyncIngressSource,
         slashing_submitters: Vec<SlashingSubmitterIdentity>,
     ) -> Result<PbftSyncIngressStep> {
-        *self
-            .sync_ingress
-            .lock()
-            .map_err(|_| anyhow::anyhow!("PBFT_SYNC_INGRESS_LOCK_POISONED"))? = None;
+        let PbftSyncIngressSource {
+            payload_id: source_payload_id,
+            peer_id: source_peer_id,
+            generation: sync_generation,
+        } = source;
+        {
+            let mut ingress = self
+                .sync_ingress
+                .lock()
+                .map_err(|_| anyhow::anyhow!("PBFT_SYNC_INGRESS_LOCK_POISONED"))?;
+            if sync_generation != 0
+                && ingress.as_ref().is_some_and(|pending| {
+                    pending.source.peer_id == source_peer_id
+                        && pending.source.generation == sync_generation
+                        && pending.pending_slashing.is_some()
+                })
+            {
+                return Ok(Self::dropped_sync_ingress(
+                    source_payload_id,
+                    "PBFT_SYNC_INGRESS_AWAITING_SLASHING_REPORT",
+                ));
+            }
+            *ingress = None;
+        }
         let decision = self
             .network
             .precheck_pbft_sync_packet(packet_rlp, source_payload_id)?;
@@ -1716,8 +2081,7 @@ impl PbftService {
             .map_err(|_| anyhow::anyhow!("PBFT_SYNC_INGRESS_LOCK_POISONED"))? =
             Some(PbftSyncIngressSession {
                 packet,
-                source_payload_id,
-                source_peer_id,
+                source,
                 next_vote: 0,
                 slashing_submitters,
                 pending_slashing: None,
@@ -1736,12 +2100,27 @@ impl PbftService {
         final_chain: &FinalChain,
         proof_hash: H256,
         transaction_inserted: bool,
+        source: PbftSyncIngressSource,
     ) -> Result<PbftSyncIngressStep> {
         {
             let mut ingress = self
                 .sync_ingress
                 .lock()
                 .map_err(|_| anyhow::anyhow!("PBFT_SYNC_INGRESS_LOCK_POISONED"))?;
+            if source.generation != 0
+                && !ingress.as_ref().is_some_and(|pending| {
+                    pending.source == source
+                        && pending
+                            .pending_slashing
+                            .as_ref()
+                            .is_some_and(|effect| effect.proof_hash == proof_hash)
+                })
+            {
+                return Ok(Self::dropped_sync_ingress(
+                    source.payload_id,
+                    "PBFT_SYNC_INGRESS_STALE_SLASHING_REPORT",
+                ));
+            }
             let session = ingress
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("PBFT_SYNC_INGRESS_NO_SESSION"))?;
@@ -1785,7 +2164,7 @@ impl PbftService {
             };
             let step = Self::sync_ingress_step(
                 Some(&session.packet),
-                session.source_payload_id,
+                session.source.payload_id,
                 action,
                 if outcome.accepted {
                     String::new()
@@ -1837,7 +2216,7 @@ impl PbftService {
             if !result.validation.accepted {
                 let step = Self::sync_ingress_step(
                     Some(&session.packet),
-                    session.source_payload_id,
+                    session.source.payload_id,
                     PbftSyncIngressAction::Malicious,
                     result.validation.error_code.into(),
                     None,
@@ -1848,7 +2227,7 @@ impl PbftService {
             if result.transaction.persistence_required && !result.transaction.transition_published {
                 let step = Self::sync_ingress_step(
                     Some(&session.packet),
-                    session.source_payload_id,
+                    session.source.payload_id,
                     PbftSyncIngressAction::QueueRejected,
                     result.transaction.persistence_error_code,
                     None,
@@ -1864,7 +2243,7 @@ impl PbftService {
                 session.pending_slashing = Some(effect.clone());
                 return Ok(Self::sync_ingress_step(
                     Some(&session.packet),
-                    session.source_payload_id,
+                    session.source.payload_id,
                     PbftSyncIngressAction::AwaitingSlashing,
                     String::new(),
                     Some(effect),
@@ -1879,7 +2258,7 @@ impl PbftService {
             let action = classify_sync_reward_failure(block.period, self.reward_vote_period()?);
             let step = Self::sync_ingress_step(
                 Some(&session.packet),
-                session.source_payload_id,
+                session.source.payload_id,
                 action,
                 rewards.status.legacy_error_code().into(),
                 None,
@@ -1900,7 +2279,7 @@ impl PbftService {
         };
         let step = Self::sync_ingress_step(
             Some(&session.packet),
-            session.source_payload_id,
+            session.source.payload_id,
             action,
             if outcome.accepted {
                 String::new()
@@ -1919,7 +2298,7 @@ impl PbftService {
         weighted_previous_cert_votes: Option<Vec<Vec<u8>>>,
     ) -> Result<PeriodDataQueuePushOutcome> {
         let mut entry = session.packet.period_data.entry.clone();
-        entry.source_peer_id = session.source_peer_id;
+        entry.source_peer_id = session.source.peer_id;
         if let Some(votes) = weighted_previous_cert_votes {
             entry.previous_cert_vote_rlps = votes;
             entry.previous_cert_first_vote_has_weight = !entry.previous_cert_vote_rlps.is_empty();
@@ -1934,6 +2313,19 @@ impl PbftService {
                 .current_block_cert_vote_rlps
                 .clone(),
         })
+    }
+
+    pub(crate) fn dropped_sync_ingress(
+        source_payload_id: u64,
+        error_code: impl Into<String>,
+    ) -> PbftSyncIngressStep {
+        Self::sync_ingress_step(
+            None,
+            source_payload_id,
+            PbftSyncIngressAction::Drop,
+            error_code.into(),
+            None,
+        )
     }
 
     fn sync_ingress_step(
@@ -2117,6 +2509,30 @@ impl PbftService {
             .unwrap_or_default())
     }
 
+    /// Loads and validates the persisted `[round, signed block]` record.
+    pub(crate) fn decoded_cert_voted_block_in_round(
+        &self,
+    ) -> Result<Option<CertVotedBlockInRound>> {
+        let payload = self.cert_voted_block_in_round()?;
+        if payload.is_empty() {
+            return Ok(None);
+        }
+        let payload = Rlp::new(&payload);
+        ensure!(payload.item_count()? == 2, "PBFT_CERT_VOTED_PAYLOAD_SHAPE");
+        let round = payload.val_at(0)?;
+        let block_rlp = payload
+            .at(1)
+            .context("PBFT_CERT_VOTED_BLOCK")?
+            .as_raw()
+            .to_vec();
+        let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block_rlp))?;
+        Ok(Some(CertVotedBlockInRound {
+            round,
+            block_rlp,
+            link,
+        }))
+    }
+
     /// Persists a cert-voted recovery payload before publishing its live metadata.
     ///
     /// The storage write and scalar publication share one manager lock epoch;
@@ -2128,6 +2544,7 @@ impl PbftService {
         block_hash: ethereum_types::H256,
         block_rlp: &[u8],
     ) -> Result<PbftManagerRuntimeSnapshot> {
+        self.require_unguarded_historical_vote(period, block_hash)?;
         let mut manager = self.manager_state();
         save_cert_voted_block_in_round_storage(
             manager.storage.as_ref(),
@@ -2171,10 +2588,30 @@ impl PbftService {
         expected_order_hash: H256,
         pbft_gas_limit: u64,
     ) -> Result<PbftCandidateDagPreparationStatus> {
-        if self
-            .manager_state()
-            .state
-            .has_cached_anchor_dag_order(anchor)
+        self.check_candidate_dag(
+            dag_transaction_service,
+            period,
+            anchor,
+            expected_order_hash,
+            pbft_gas_limit,
+            true,
+        )
+    }
+
+    fn check_candidate_dag(
+        &self,
+        dag_transaction_service: &DagTransactionService,
+        period: u64,
+        anchor: H256,
+        expected_order_hash: H256,
+        pbft_gas_limit: u64,
+        cache: bool,
+    ) -> Result<PbftCandidateDagPreparationStatus> {
+        if cache
+            && self
+                .manager_state()
+                .state
+                .has_cached_anchor_dag_order(anchor)
         {
             return Ok(PbftCandidateDagPreparationStatus::Valid);
         }
@@ -2210,9 +2647,11 @@ impl PbftService {
             }
         }
 
-        self.manager_state()
-            .state
-            .cache_candidate_dag_payload(anchor, prepared.payload);
+        if cache {
+            self.manager_state()
+                .state
+                .cache_candidate_dag_payload(anchor, prepared.payload);
+        }
         Ok(PbftCandidateDagPreparationStatus::Valid)
     }
 
@@ -2326,13 +2765,14 @@ impl PbftService {
             && period % self.pillar_blocks_interval == 1
     }
 
-    pub(crate) fn submit_synced_slashing_transaction<L: PbftProcessSyncedLeaves>(
+    pub(crate) fn submit_synced_slashing_transaction<L: PbftProcessSyncedLeaves, G>(
         &self,
         effect: &SlashingTransactionEffect,
         dag_transaction: &DagTransactionService,
         final_chain: &FinalChain,
         signing_identities: &[SlashingSubmitterIdentity],
         leaves: &L,
+        mutation: impl Fn() -> Result<G>,
     ) -> Result<bool> {
         let identity = signing_identities
             .iter()
@@ -2388,6 +2828,7 @@ impl PbftService {
             "PBFT_PROCESS_SYNCED_SLASHING_SIGNER_MISMATCH"
         );
 
+        let _operation = mutation()?;
         let finalized_period = final_chain
             .transaction_location(envelope.hash.0)?
             .map(|location| {
@@ -2427,18 +2868,20 @@ impl PbftService {
         Ok(report.insert_status == TransactionManagerInsertTransactionStatus::Accepted)
     }
 
-    fn admit_popped_synced_period<L, S>(
+    pub(crate) fn admit_synced_period<L, S, G>(
         &self,
         popped: PeriodDataQueuePopPlan,
         dag_transaction: &DagTransactionService,
         final_chain: &FinalChain,
         resolve_slashing_submitters: &mut S,
         leaves: &L,
+        mutation: impl Fn() -> Result<G>,
     ) -> Result<Option<PbftAcceptedSyncedPeriod>>
     where
         L: PbftProcessSyncedLeaves,
         S: FnMut() -> Result<Vec<SlashingSubmitterIdentity>>,
     {
+        let mut operation = mutation()?;
         let chain = self.chain.head();
         let block_in_chain = self.chain.block_exists(popped.block_hash)?;
         let pillar_votes_required = self.pillar_votes_required_for_period(popped.entry_period);
@@ -2502,6 +2945,7 @@ impl PbftService {
                             .slashing_transaction_effect
                             .as_ref()
                             .context("PBFT_PROCESS_SYNCED_SLASHING_EFFECT_MISSING")?;
+                        drop(operation);
                         let inserted = {
                             let cached = resolved_submitters.borrow();
                             self.submit_synced_slashing_transaction(
@@ -2512,7 +2956,22 @@ impl PbftService {
                                     .as_deref()
                                     .context("PBFT_PROCESS_SYNCED_SLASHING_SUBMITTERS_MISSING")?,
                                 leaves,
-                            )?
+                                &mutation,
+                            )
+                        };
+                        operation = match mutation() {
+                            Ok(operation) => operation,
+                            Err(error) => {
+                                self.abort_pbft_sync_cert_bundle(cert.session_id)?;
+                                return Err(error);
+                            }
+                        };
+                        let inserted = match inserted {
+                            Ok(inserted) => inserted,
+                            Err(error) => {
+                                self.abort_pbft_sync_cert_bundle(cert.session_id)?;
+                                return Err(error);
+                            }
                         };
                         cert = self.report_pbft_sync_cert_bundle_slashing(
                             cert.session_id,
@@ -2565,11 +3024,14 @@ impl PbftService {
         }
 
         if step.plan.wait_for_finalization {
+            drop(operation);
             leaves.wait_for_finalization()?;
+            operation = mutation()?;
         }
         if step.plan.clear_sync_queue {
             self.clear_period_data_queue();
         }
+        drop(operation);
         if step.plan.report_malicious_peer {
             leaves.report_malicious_peer(popped.source_peer_id)?;
         }
@@ -2617,12 +3079,13 @@ impl PbftService {
                 crate::pbft_sync::PbftSyncQueueDrainAction::PopAndProcess => {
                     let popped = self.pop_period_data_queue()?;
                     processed_entries = processed_entries.saturating_add(1);
-                    accepted = self.admit_popped_synced_period(
+                    accepted = self.admit_synced_period(
                         popped,
                         dag_transaction,
                         final_chain,
                         &mut resolve_slashing_submitters,
                         leaves,
+                        || Ok(()),
                     )?;
                     rejected_entries =
                         rejected_entries.saturating_add(u64::from(accepted.is_none()));
@@ -2690,11 +3153,87 @@ impl PbftService {
     /// before bootstrap publication are ignored, preserving the live daemon's
     /// fail-closed startup contract.
     pub fn begin_runtime_session(&self, fact: PbftManagerRuntimeTickFact) {
-        if !self.readiness.is_ready() {
-            return;
-        }
+        let _ = self.begin_owned_runtime_session(fact);
+    }
+
+    pub(crate) fn begin_owned_runtime_session(
+        &self,
+        fact: PbftManagerRuntimeTickFact,
+    ) -> Result<OwnedRuntimeSession> {
+        ensure!(self.readiness.is_ready(), "CONSENSUS_RUNTIME_NOT_READY");
         let mut manager = self.manager_state();
+        let identity = std::sync::Arc::new(());
+        manager.runtime_session_identity = Some(std::sync::Arc::clone(&identity));
         manager.runtime_session = Some(create_pbft_manager_runtime_session(fact));
+        Ok(OwnedRuntimeSession(identity))
+    }
+
+    pub(crate) fn discard_owned_runtime_session(&self, expected: &OwnedRuntimeSession) -> bool {
+        let mut manager = self.manager_state();
+        if !manager
+            .runtime_session_identity
+            .as_ref()
+            .is_some_and(|actual| std::sync::Arc::ptr_eq(actual, &expected.0))
+        {
+            return false;
+        }
+        manager.runtime_session_identity = None;
+        manager.runtime_session.take().is_some()
+    }
+
+    #[cfg(feature = "production_integration_test")]
+    pub(crate) fn replace_owned_runtime_session_for_test(&self) -> Result<()> {
+        let mut manager = self.manager_state();
+        let fact = manager
+            .runtime_session
+            .as_ref()
+            .context("PRODUCTION_TEST_RUNTIME_CURSOR_MISSING")?
+            .fact;
+        manager.runtime_session_identity = Some(std::sync::Arc::new(()));
+        manager.runtime_session = Some(create_pbft_manager_runtime_session(fact));
+        Ok(())
+    }
+
+    pub(crate) fn owned_runtime_session_next(
+        &self,
+        expected: &OwnedRuntimeSession,
+    ) -> Result<PbftManagerRuntimeSessionStep> {
+        let manager = self.manager_state();
+        ensure!(
+            manager
+                .runtime_session_identity
+                .as_ref()
+                .is_some_and(|actual| std::sync::Arc::ptr_eq(actual, &expected.0)),
+            "CONSENSUS_RUNTIME_SESSION_REPLACED"
+        );
+        manager
+            .runtime_session
+            .as_ref()
+            .map(next_pbft_manager_runtime_action)
+            .context("CONSENSUS_RUNTIME_SESSION_MISSING")
+    }
+
+    pub(crate) fn report_owned_runtime_session(
+        &self,
+        expected: &OwnedRuntimeSession,
+        report: PbftManagerRuntimeActionReport,
+    ) -> Result<PbftManagerRuntimeSessionStep> {
+        let mut manager = self.manager_state();
+        ensure!(
+            manager
+                .runtime_session_identity
+                .as_ref()
+                .is_some_and(|actual| std::sync::Arc::ptr_eq(actual, &expected.0)),
+            "CONSENSUS_RUNTIME_SESSION_REPLACED"
+        );
+        let session = manager
+            .runtime_session
+            .take()
+            .context("CONSENSUS_RUNTIME_SESSION_MISSING")?;
+        let session = report_pbft_manager_runtime_action(session, report);
+        let step = next_pbft_manager_runtime_action(&session);
+        manager.runtime_session = Some(session);
+        Ok(step)
     }
 
     /// Returns the current daemon-tick executor step without advancing it.
@@ -3269,6 +3808,45 @@ impl PbftService {
         self.manager_state().period_data_queue.pop()
     }
 
+    pub(crate) fn certified_sync_front(&self) -> Option<PeriodDataQueuePopPlan> {
+        self.manager_state().period_data_queue.certified_front()
+    }
+
+    pub(crate) fn sync_front_matches(&self, expected: &PeriodDataQueuePopPlan) -> bool {
+        self.certified_sync_front().is_some_and(|actual| {
+            actual.entry_period == expected.entry_period
+                && actual.source_peer_id == expected.source_peer_id
+                && actual.period_data_rlp == expected.period_data_rlp
+                && actual.cert_vote_rlps == expected.cert_vote_rlps
+        })
+    }
+
+    /// Removes the exact queue head after terminal rejection or paired publication.
+    pub(crate) fn acknowledge_synced_period(
+        &self,
+        expected: &PeriodDataQueuePopPlan,
+    ) -> Result<()> {
+        let mut manager = self.manager_state();
+        let current = manager
+            .period_data_queue
+            .certified_front()
+            .context("PBFT_SYNC_CERTIFIED_FRONT_MISSING")?;
+        ensure!(
+            current.entry_period == expected.entry_period
+                && current.source_peer_id == expected.source_peer_id
+                && current.period_data_rlp == expected.period_data_rlp
+                && current.cert_vote_rlps == expected.cert_vote_rlps,
+            "PBFT_SYNC_CERTIFIED_FRONT_CHANGED"
+        );
+        manager.period_data_queue.pop()?;
+        let syncing_period = manager
+            .period_data_queue
+            .syncing_period(manager.chain.head().size);
+        drop(manager);
+        self.network.update_pbft_sync_period(syncing_period)?;
+        Ok(())
+    }
+
     /// Removes queue entries older than `period`.
     ///
     /// Returns the count of entries removed from the live queue.
@@ -3475,6 +4053,21 @@ impl PbftService {
     /// proposed blocks, manager runtime, pillar restoration, and network
     /// composition. No service root escapes on failure.
     pub fn restore(storage: Arc<Storage>, config: PbftServiceConfig) -> Result<Self> {
+        Self::restore_with_manager_step(storage, config, false)
+    }
+
+    pub(crate) fn restore_with_deferred_manager_step(
+        storage: Arc<Storage>,
+        config: PbftServiceConfig,
+    ) -> Result<Self> {
+        Self::restore_with_manager_step(storage, config, true)
+    }
+
+    fn restore_with_manager_step(
+        storage: Arc<Storage>,
+        config: PbftServiceConfig,
+        defer_manager_step: bool,
+    ) -> Result<Self> {
         anyhow::ensure!(
             config.ficus_activation_period == u64::MAX || config.pillar_blocks_interval > 1,
             "PBFT_SERVICE_PILLAR_BLOCKS_INTERVAL_MUST_EXCEED_ONE"
@@ -3489,7 +4082,7 @@ impl PbftService {
         let verified_votes = PbftVerifiedVotesService::restore(storage.clone())?;
         let proposed_blocks = ProposedBlocksService::restore(storage.clone())?;
         let chain_head = chain.head();
-        let runtime = create_pbft_manager_runtime_from_storage(
+        let mut runtime = prepare_pbft_manager_runtime_from_storage(
             &storage,
             PbftManagerStorageStartupFact {
                 current_period: chain_head.size.saturating_add(1),
@@ -3504,6 +4097,9 @@ impl PbftService {
                 polling_interval_ms: config.polling_interval_ms,
             },
         )?;
+        if !defer_manager_step {
+            runtime.persist_prepared_startup_step(&storage)?;
+        }
         let pillar = PillarChainService::restore(storage.clone())?;
         let manager = PbftManagerService::new(runtime, storage.clone(), chain.clone());
         let network = ConsensusNetworkService::new(
@@ -3523,6 +4119,8 @@ impl PbftService {
         )?;
 
         Ok(Self {
+            strict_ingress: defer_manager_step,
+            execution_guard: None,
             manager,
             chain,
             proposed_blocks,
@@ -3554,6 +4152,12 @@ impl PbftService {
             cornus_activation_period: config.cornus_activation_period,
             cornus_pbft_gas_limit: config.cornus_pbft_gas_limit,
         })
+    }
+
+    pub(crate) fn persist_prepared_startup_step(&self) -> Result<()> {
+        let mut manager = self.manager.lock();
+        let storage = Arc::clone(&manager.storage);
+        manager.state.persist_prepared_startup_step(&storage)
     }
 
     /// Returns an owned snapshot of the current native PBFT chain head.
@@ -3615,6 +4219,58 @@ impl PbftService {
         final_chain: &FinalChain,
         dag_transaction_service: &DagTransactionService,
         candidate: PbftBlockValidationCandidate,
+    ) -> Result<crate::pbft_manager::PbftManagerBlockValidationPlan> {
+        self.validate_pbft_block_with_dag_policy(
+            final_chain,
+            dag_transaction_service,
+            candidate,
+            true,
+        )
+    }
+
+    pub(crate) fn qualify_retained_certified_proposal(
+        &self,
+        final_chain: &FinalChain,
+        dag: &DagTransactionService,
+        period: u64,
+        hash: H256,
+        block_rlp: &[u8],
+    ) -> Result<()> {
+        let entry = self
+            .proposed_block(period, hash)
+            .context("PRODUCTION_CERTIFIED_PROPOSAL_MISSING")?;
+        ensure!(
+            entry.block_rlp == block_rlp,
+            "PRODUCTION_CERTIFIED_PROPOSAL_CHANGED"
+        );
+        let plan = self.validate_retained_proposal(final_chain, dag, &entry)?;
+        ensure!(
+            plan.action == crate::pbft_manager::PbftManagerBlockValidationAction::Accept,
+            "PRODUCTION_CERTIFIED_PROPOSAL_NOT_QUALIFIED: {}",
+            plan.error_code
+        );
+        Ok(())
+    }
+
+    pub(crate) fn validate_retained_proposal(
+        &self,
+        final_chain: &FinalChain,
+        dag: &DagTransactionService,
+        entry: &ProposedBlockEntry,
+    ) -> Result<crate::pbft_manager::PbftManagerBlockValidationPlan> {
+        let candidate = proposed_block_validation_candidate(
+            entry,
+            self.value_proposal_admission_request(entry.period, entry.block_hash),
+        )?;
+        self.validate_pbft_block_with_dag_policy(final_chain, dag, candidate, false)
+    }
+
+    pub(crate) fn validate_pbft_block_with_dag_policy(
+        &self,
+        final_chain: &FinalChain,
+        dag_transaction_service: &DagTransactionService,
+        candidate: PbftBlockValidationCandidate,
+        cache: bool,
     ) -> Result<crate::pbft_manager::PbftManagerBlockValidationPlan> {
         use crate::pbft_manager::PbftManagerBlockValidationFactStatus as FactStatus;
 
@@ -3704,12 +4360,13 @@ impl PbftService {
                     }
                 }
                 NextCheck::CheckDagOrder => {
-                    let (dag_order_status, dag_weight_status) = match self.prepare_candidate_dag(
+                    let (dag_order_status, dag_weight_status) = match self.check_candidate_dag(
                         dag_transaction_service,
                         session.fact.period,
                         session.fact.pivot_hash,
                         expected_order_hash,
                         pbft_gas_limit,
+                        cache,
                     )? {
                         crate::pbft_manager::PbftCandidateDagPreparationStatus::Valid => {
                             (FactStatus::Valid, FactStatus::Valid)
@@ -3758,6 +4415,17 @@ impl PbftService {
         dag_transaction_service: &DagTransactionService,
         request: PbftProposedBlockAdmissionRequest,
     ) -> Result<PbftProposedBlockAdmissionResult> {
+        self.inspect_proposed_block(final_chain, dag_transaction_service, request, true)
+    }
+
+    pub(crate) fn inspect_proposed_block(
+        &self,
+        final_chain: &FinalChain,
+        dag_transaction_service: &DagTransactionService,
+        request: PbftProposedBlockAdmissionRequest,
+        publish_validity: bool,
+    ) -> Result<PbftProposedBlockAdmissionResult> {
+        self.require_unguarded_historical_vote(request.period, request.block_hash)?;
         let Some(entry) = self.proposed_block(request.period, request.block_hash) else {
             return Ok(PbftProposedBlockAdmissionResult {
                 status: PbftProposedBlockAdmissionStatus::Missing,
@@ -3774,11 +4442,17 @@ impl PbftService {
             });
         }
 
-        let plan =
-            self.validate_pbft_block_composed(final_chain, dag_transaction_service, candidate)?;
+        let plan = self.validate_pbft_block_with_dag_policy(
+            final_chain,
+            dag_transaction_service,
+            candidate,
+            publish_validity,
+        )?;
         match plan.action {
             crate::pbft_manager::PbftManagerBlockValidationAction::Accept => {
-                self.mark_proposed_block_valid(request.period, request.block_hash)?;
+                if publish_validity {
+                    self.mark_proposed_block_valid(request.period, request.block_hash)?;
+                }
                 Ok(PbftProposedBlockAdmissionResult {
                     status: PbftProposedBlockAdmissionStatus::AcceptedNewlyValidated,
                     block_rlp: entry.block_rlp,
@@ -4134,6 +4808,12 @@ impl PbftService {
         dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
         request: PbftFinalizationExecutorStartRequest,
     ) -> Result<PbftFinalizationExecutorBoundary> {
+        ensure!(
+            !self.execution_guard.as_ref().is_some_and(|guard| {
+                guard.requires_validation(request.plan.storage_write_intent.block_period.into())
+            }),
+            "PBFT_CERTIFIED_EXECUTION_PREFLIGHT_UNAVAILABLE"
+        );
         let mut manager = self.manager_state();
         let drain = manager.start_finalization_executor(
             dag_transaction_service,
@@ -4891,6 +5571,24 @@ impl PbftService {
         self.pillar().plan_block_linkage(request)
     }
 
+    pub(crate) fn finalized_pillar_observation(
+        &self,
+        period: u64,
+    ) -> Result<Option<crate::pbft_application_finalization::PbftApplicationPillarObservation>>
+    {
+        let storage = Arc::clone(&self.manager.lock().storage);
+        crate::consensus_query_api::finalized_pillar_data(&storage, period)?
+            .map(|data| {
+                Ok(
+                    crate::pbft_application_finalization::PbftApplicationPillarObservation {
+                        block_hash: data.pillar_block.hash().into(),
+                        block_data_rlp: data.encode_rlp()?,
+                    },
+                )
+            })
+            .transpose()
+    }
+
     /// Returns canonical latest-finalized pillar bytes for public materialization.
     ///
     /// Missing finalized state returns an empty vector. Live readiness and lock
@@ -5067,6 +5765,7 @@ impl PbftService {
         committee_size: u64,
         number_of_proposers: u64,
     ) -> Result<PbftGeneratedVote> {
+        self.require_unguarded_historical_vote(input.period, input.block_hash)?;
         let dpos_period = input
             .period
             .checked_sub(1)
@@ -5123,6 +5822,52 @@ impl PbftService {
     /// restored committee policy internally. Zero stake or zero sortition weight
     /// returns `None`, while unavailable FinalChain state remains an error.
     pub fn prepare_state_vote_signing(
+        &self,
+        final_chain: &FinalChain,
+        request: PbftVoteVrfRequest,
+        vrf_proof: Vec<u8>,
+    ) -> Result<Option<PbftVoteSigningRequest>> {
+        self.require_unguarded_historical_vote(request.input.period, request.input.block_hash)?;
+        self.prepare_state_vote_signing_inner(final_chain, request, vrf_proof)
+    }
+
+    /// Checks the exact candidate before it can reach the vote signing leaf.
+    /// The returned admission retains its immutable snapshot for later stages.
+    pub fn prepare_state_vote_signing_guarded(
+        &self,
+        final_chain: &FinalChain,
+        request: PbftVoteVrfRequest,
+        vrf_proof: Vec<u8>,
+        block_rlp: &[u8],
+    ) -> Result<
+        std::result::Result<
+            (
+                crate::pbft_execution_guard::PbftExecutionAdmission,
+                Option<PbftVoteSigningRequest>,
+            ),
+            crate::pbft_execution_guard::PbftExecutionRefusal,
+        >,
+    > {
+        let guard = self
+            .execution_guard
+            .as_ref()
+            .context("PBFT_EXECUTION_GUARD_NOT_INSTALLED")?;
+        let admission = match guard.require(request.input.period.into(), block_rlp)? {
+            Ok(admission) => admission,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = guard.check_vote(
+            &admission,
+            request.input.period.into(),
+            request.input.block_hash,
+        )? {
+            return Ok(Err(refusal));
+        }
+        let signing = self.prepare_state_vote_signing_inner(final_chain, request, vrf_proof)?;
+        Ok(Ok((admission, signing)))
+    }
+
+    pub(crate) fn prepare_state_vote_signing_inner(
         &self,
         final_chain: &FinalChain,
         request: PbftVoteVrfRequest,
@@ -5192,6 +5937,7 @@ impl PbftService {
         generated: &PbftGeneratedVote,
         resolve_slashing_submitters: impl FnOnce() -> Result<Vec<SlashingSubmitterIdentity>>,
     ) -> Result<PbftVoteAdmissionWithSlashingResult> {
+        self.require_unguarded_historical_vote(task.period, task.block_hash)?;
         anyhow::ensure!(
             generated.period == task.period
                 && generated.round == task.round
@@ -5244,6 +5990,24 @@ impl PbftService {
         &self,
         task: &crate::consensus_state_actions::ConsensusStateVoteTask,
     ) -> Result<()> {
+        use crate::consensus_state_actions::ConsensusStateVoteCommit;
+        match task.commit {
+            ConsensusStateVoteCommit::SaveCertVotedBlock
+            | ConsensusStateVoteCommit::MarkNextVotedValue => {
+                ensure!(
+                    !task.block_hash.is_zero(),
+                    "CONSENSUS_STATE_VALUE_COMMIT_REQUIRES_BLOCK"
+                );
+            }
+            ConsensusStateVoteCommit::MarkNextVotedNull => {
+                ensure!(
+                    task.block_hash.is_zero(),
+                    "CONSENSUS_STATE_NULL_COMMIT_REQUIRES_NULL"
+                );
+            }
+            ConsensusStateVoteCommit::None => {}
+        }
+        self.require_unguarded_historical_vote(task.period, task.block_hash)?;
         match task.commit {
             crate::consensus_state_actions::ConsensusStateVoteCommit::None => {}
             crate::consensus_state_actions::ConsensusStateVoteCommit::SaveCertVotedBlock => {
@@ -5755,6 +6519,10 @@ impl PbftService {
         context: PbftVoteProgressContext,
         resolve_submitters: impl FnOnce() -> Result<Vec<SlashingSubmitterIdentity>>,
     ) -> Result<PbftVoteAdmissionWithSlashingResult> {
+        if self.execution_guard.is_some() {
+            let vote = inspect_canonical_pbft_vote(canonical_vote_rlp)?;
+            self.require_unguarded_historical_vote(vote.period, vote.block_hash)?;
+        }
         let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
             final_chain,
             canonical_vote_rlp,
@@ -5958,6 +6726,77 @@ impl PbftService {
         )
     }
 
+    /// Qualifies restored votes that can still affect local signing and round changes.
+    pub(crate) fn check_restored_live_votes(&self, final_chain: &FinalChain) -> Result<()> {
+        let current = self.manager_snapshot().period;
+        let storage = Arc::clone(&self.manager.lock().storage);
+        let facts = PbftVoteAdmissionValidationRequest {
+            strict_vrf: true,
+            committee_size: self.committee_size,
+            number_of_proposers: self.number_of_proposers,
+            has_preverified_weight: false,
+            preverified_weight: 0,
+        };
+        let qualify = |payload: &[u8],
+                       inspection: &crate::pbft_vote_validation::PbftCanonicalVoteInspection|
+         -> Result<u64> {
+            let (checked, _) = self.validate_verified_vote_with_final_chain_internal(
+                final_chain,
+                payload,
+                facts,
+                false,
+            )?;
+            ensure!(
+                checked.accepted
+                    && checked.weight_calculated
+                    && inspection.has_embedded_weight
+                    && checked.calculated_weight == inspection.embedded_weight,
+                "PRODUCTION_RESTORED_LIVE_VOTE_REJECTED:{:#x}:{}",
+                inspection.vote_hash,
+                checked.error_code
+            );
+            Ok(checked.calculated_weight)
+        };
+        for record in storage.pbft().own_verified_vote_records()? {
+            let inspection = inspect_canonical_pbft_vote(&record.vote_rlp)?;
+            if inspection.period >= current {
+                qualify(&record.vote_rlp, &inspection)?;
+            }
+        }
+        for bundle in storage.pbft().two_t_plus_one_votes_bundles()? {
+            let rlp = Rlp::new(&bundle.votes_bundle_rlp);
+            let first = inspect_canonical_pbft_vote(rlp.at(0)?.as_raw())?;
+            if first.period < current {
+                continue;
+            }
+            let threshold =
+                self.public_vote_threshold(final_chain, first.period - 1, first.vote_type)?;
+            let mut weight = 0_u64;
+            let mut voters = std::collections::HashSet::new();
+            for item in rlp.iter() {
+                let inspection = inspect_canonical_pbft_vote(item.as_raw())?;
+                ensure!(
+                    voters.insert(inspection.recovered_voter),
+                    "PRODUCTION_RESTORED_LIVE_QUORUM_DUPLICATE_VOTER:{:#x}",
+                    inspection.recovered_voter
+                );
+                weight = weight
+                    .checked_add(qualify(item.as_raw(), &inspection)?)
+                    .context("PRODUCTION_RESTORED_LIVE_QUORUM_WEIGHT_OVERFLOW")?;
+            }
+            ensure!(
+                threshold.status == PbftTwoTPlusOneThresholdStatus::Available
+                    && threshold.has_threshold
+                    && threshold.threshold > 0
+                    && weight >= threshold.threshold,
+                "PRODUCTION_RESTORED_LIVE_QUORUM_REJECTED:{}:{}",
+                first.period,
+                first.round
+            );
+        }
+        Ok(())
+    }
+
     /// Validates, persists, and publishes one network-ingress PBFT vote.
     ///
     /// Packet routing supplies only canonical vote bytes and ordered signing
@@ -5989,8 +6828,12 @@ impl PbftService {
                 strict_vrf: true,
                 committee_size: self.committee_size,
                 number_of_proposers: self.number_of_proposers,
-                has_preverified_weight: inspection.has_embedded_weight,
-                preverified_weight: inspection.embedded_weight,
+                has_preverified_weight: !self.strict_ingress && inspection.has_embedded_weight,
+                preverified_weight: if self.strict_ingress {
+                    0
+                } else {
+                    inspection.embedded_weight
+                },
             },
             PbftVoteEventFactFlags {
                 vote_already_known: false,
@@ -6092,10 +6935,10 @@ impl PbftService {
         }
 
         let mut key_lookup_error = false;
-        let cached_key = {
-            let votes = self.verified_votes();
-            let runtime = votes.lock()?;
-            runtime.validation_vrf_key(voter)
+        let cached_key = if self.strict_ingress {
+            None
+        } else {
+            self.verified_votes().lock()?.validation_vrf_key(voter)
         };
         if let Some(key) = cached_key {
             facts.vrf_key_ready = true;
@@ -6107,9 +6950,11 @@ impl PbftService {
                     facts.vrf_key_ready = true;
                     facts.has_vrf_key = true;
                     facts.vrf_public_key = key;
-                    self.verified_votes()
-                        .lock()?
-                        .cache_validation_vrf_key(voter, key);
+                    if !self.strict_ingress {
+                        self.verified_votes()
+                            .lock()?
+                            .cache_validation_vrf_key(voter, key);
+                    }
                 }
                 Ok(None) => {}
                 Err(_) => key_lookup_error = true,
@@ -6197,6 +7042,52 @@ impl PbftService {
     /// native sibling contract in [`PbftVerifiedVotesService::verified_votes_own_vote_records`].
     pub fn verified_votes_own_vote_records(&self) -> Result<Vec<PbftVoteStorageRecord>> {
         self.verified_votes().verified_votes_own_vote_records()
+    }
+
+    #[cfg(feature = "production_integration_test")]
+    pub(crate) fn integration_retain_certificate_input(&self, vote_rlp: Vec<u8>) -> Result<()> {
+        let input = inspect_canonical_pbft_vote(&vote_rlp)?;
+        anyhow::ensure!(
+            input.signature_valid && input.has_embedded_weight && input.embedded_weight > 0,
+            "PRODUCTION_TEST_RETAINED_INPUT_SHAPE"
+        );
+        let vote = crate::verified_votes::VerifiedVote::new(
+            input.vote_hash,
+            input.block_hash,
+            input.recovered_voter,
+            input.period,
+            input.round,
+            input.step,
+            input.vote_type,
+            input.embedded_weight,
+        )?;
+        let service = self.verified_votes();
+        let mut runtime = service.lock()?;
+        anyhow::ensure!(
+            runtime
+                .verified_votes_mut()
+                .add_verified_vote(vote.clone(), None)?
+                .inserted,
+            "PRODUCTION_TEST_RETAINED_INPUT_DUPLICATE"
+        );
+        runtime.retain_weighted_payload(
+            &vote,
+            crate::pbft_vote_payload::PbftVotePayloadRecord {
+                hash: input.vote_hash,
+                vote_rlp,
+            },
+        )?;
+        let marker = runtime
+            .verified_votes_mut()
+            .insert_two_t_plus_one_voted_block(
+                input.period,
+                input.round,
+                crate::verified_votes::TwoTPlusOneVotedBlockType::CertVotedBlock,
+                input.block_hash,
+                input.step,
+            );
+        anyhow::ensure!(marker.round_found, "PRODUCTION_TEST_RETAINED_INPUT_ROUND");
+        Ok(())
     }
 
     /// Returns deterministic verified-vote count under runtime lock.
@@ -6353,6 +7244,10 @@ impl PbftService {
         canonical_vote_rlp: &[u8],
         weight: u64,
     ) -> Result<PbftVotePersistenceResult> {
+        if self.execution_guard.is_some() {
+            let vote = inspect_canonical_pbft_vote(canonical_vote_rlp)?;
+            self.require_unguarded_historical_vote(vote.period, vote.block_hash)?;
+        }
         self.verified_votes()
             .verified_votes_save_own_verified_vote(canonical_vote_rlp, weight)
     }
@@ -6513,6 +7408,221 @@ mod tests {
         let _ = crate::closeout_test_scratch::clear_before_open(&path);
         let storage = Arc::new(Storage::new(Config::new(path.clone())).expect("storage opens"));
         (path, storage)
+    }
+
+    #[test]
+    fn guarded_vote_refusal_precedes_vrf_and_final_chain_reads() {
+        use crate::pbft_execution_guard::{PbftExecutionRefusal, tests::Owner};
+        use crate::pbft_vote_generation::PbftVoteGenerationPublicInput;
+        let (service, final_chain) = service_with_test_chain(1, NODE_SECRET);
+        let owner = Owner::new(1, usize::MAX);
+        let service = service.with_offline_execution_guard(owner.guard()).unwrap();
+        let request = PbftVoteVrfRequest {
+            input: PbftVoteGenerationPublicInput {
+                wallet_index: 0,
+                block_hash: owner.request.snapshot().link().block_hash,
+                vote_type: PbftVoteType::Soft,
+                period: 10,
+                round: 1,
+                step: 2,
+                voter: H160::zero(),
+                voter_public_key: [0; 64],
+                vrf_public_key: [0; 32],
+            },
+            message: vec![],
+        };
+        let before = service.manager_state().state.snapshot();
+        let refusal = service
+            .prepare_state_vote_signing_guarded(
+                &final_chain,
+                request.clone(),
+                vec![],
+                owner.request.snapshot().block_rlp(),
+            )
+            .unwrap();
+        assert!(matches!(refusal, Err(PbftExecutionRefusal::Invalid { .. })));
+        let error = service
+            .prepare_state_vote_signing(&final_chain, request, vec![])
+            .unwrap_err();
+        assert_eq!(error.to_string(), "PBFT_EXECUTION_ADMISSION_REQUIRED");
+        assert_eq!(service.manager_state().state.snapshot(), before);
+        assert_eq!(owner.executions.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn active_guard_refuses_cached_valid_proposed_block_before_admission() {
+        use crate::pbft_execution_guard::tests::Owner;
+        let (path, storage) = temp_storage("pbft_execution_guard_cached_admission");
+        let owner = Owner::new(0, usize::MAX);
+        let service = PbftService::restore(storage.clone(), config(0))
+            .unwrap()
+            .with_offline_execution_guard(owner.guard())
+            .unwrap();
+        let final_chain = final_chain_with_pillar_voters(storage.clone(), &[]);
+        let dag = dag_service(storage);
+        let link = owner.request.snapshot().link();
+        service
+            .publish_proposed_block(
+                10,
+                link.block_hash,
+                link.pivot_dag_block_hash,
+                owner.request.snapshot().block_rlp().to_vec(),
+            )
+            .unwrap();
+        service
+            .mark_proposed_block_valid(10, link.block_hash)
+            .unwrap();
+        let before = service.manager_state().state.snapshot();
+        let entry = service.proposed_block(10, link.block_hash).unwrap();
+        assert!(entry.is_valid);
+        let error = service
+            .admit_proposed_block(
+                &final_chain,
+                &dag,
+                PbftProposedBlockAdmissionRequest {
+                    period: 10,
+                    block_hash: link.block_hash,
+                    pbft_gas_limit: 1_000_000,
+                    extra_data_required: false,
+                    pillar_block_required: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.to_string(), "PBFT_EXECUTION_ADMISSION_REQUIRED");
+        assert_eq!(service.proposed_block(10, link.block_hash).unwrap(), entry);
+        assert_eq!(service.manager_state().state.snapshot(), before);
+        assert_eq!(owner.executions.load(Ordering::SeqCst), 0);
+        drop(dag);
+        drop(final_chain);
+        drop(service);
+        let _ = crate::closeout_test_scratch::dispose(path);
+    }
+
+    #[test]
+    fn cached_and_restored_candidate_cannot_commit_active_vote_marker() {
+        use crate::consensus_state_actions::{ConsensusStateVoteCommit, ConsensusStateVoteTask};
+        use crate::pbft_execution_guard::tests::Owner;
+        let (path, storage) = temp_storage("pbft_execution_guard_marker");
+        let owner = Owner::new(0, usize::MAX);
+        let service = PbftService::restore(storage, config(0))
+            .unwrap()
+            .with_offline_execution_guard(owner.guard())
+            .unwrap();
+        let request = &owner.request;
+        let link = request.snapshot().link();
+        service
+            .publish_proposed_block(
+                10,
+                link.block_hash,
+                link.pivot_dag_block_hash,
+                request.snapshot().block_rlp().to_vec(),
+            )
+            .unwrap();
+        service
+            .mark_proposed_block_valid(10, link.block_hash)
+            .unwrap();
+        let before = service.manager_state().state.snapshot();
+        for (vote_type, step, commit) in [
+            (
+                PbftVoteType::Cert,
+                3,
+                ConsensusStateVoteCommit::SaveCertVotedBlock,
+            ),
+            (
+                PbftVoteType::Next,
+                4,
+                ConsensusStateVoteCommit::MarkNextVotedValue,
+            ),
+        ] {
+            let task = ConsensusStateVoteTask {
+                period: 10,
+                round: 1,
+                step,
+                vote_type,
+                block_hash: link.block_hash,
+                proposed_block_rlp: request.snapshot().block_rlp().to_vec(),
+                commit,
+            };
+            assert_eq!(
+                service
+                    .commit_state_vote_task(&task)
+                    .unwrap_err()
+                    .to_string(),
+                "PBFT_EXECUTION_ADMISSION_REQUIRED"
+            );
+        }
+        for (block_hash, commit, expected) in [
+            (
+                H256::zero(),
+                ConsensusStateVoteCommit::SaveCertVotedBlock,
+                "CONSENSUS_STATE_VALUE_COMMIT_REQUIRES_BLOCK",
+            ),
+            (
+                H256::zero(),
+                ConsensusStateVoteCommit::MarkNextVotedValue,
+                "CONSENSUS_STATE_VALUE_COMMIT_REQUIRES_BLOCK",
+            ),
+            (
+                link.block_hash,
+                ConsensusStateVoteCommit::MarkNextVotedNull,
+                "CONSENSUS_STATE_NULL_COMMIT_REQUIRES_NULL",
+            ),
+        ] {
+            let task = ConsensusStateVoteTask {
+                period: 10,
+                round: 1,
+                step: 4,
+                vote_type: PbftVoteType::Next,
+                block_hash,
+                proposed_block_rlp: Vec::new(),
+                commit,
+            };
+            assert_eq!(
+                service
+                    .commit_state_vote_task(&task)
+                    .unwrap_err()
+                    .to_string(),
+                expected
+            );
+        }
+        assert_eq!(service.manager_state().state.snapshot(), before);
+        assert_eq!(owner.executions.load(Ordering::SeqCst), 0);
+        drop(service);
+        let _ = crate::closeout_test_scratch::dispose(path);
+    }
+
+    #[test]
+    fn active_fresh_and_resume_refuse_before_primary_start() {
+        use crate::pbft_execution_guard::tests::Owner;
+        use crate::pbft_manager::PbftFinalizationExecutorStartMode;
+        let (path, storage) = temp_storage("pbft_execution_guard_primary");
+        let owner = Owner::new(0, usize::MAX);
+        let service = PbftService::restore(storage.clone(), config(0))
+            .unwrap()
+            .with_offline_execution_guard(owner.guard())
+            .unwrap();
+        let dag = dag_service(storage);
+        let before = service.manager_state().state.snapshot();
+        let chain_before = service.pbft_chain_head();
+        let fresh = reward_finalization_start_request(H256::repeat_byte(0x71));
+        let mut resume = fresh.clone();
+        resume.mode = PbftFinalizationExecutorStartMode::Resume {
+            final_chain_last_block: 11,
+        };
+        for request in [fresh, resume] {
+            assert_eq!(
+                service
+                    .start_finalization_executor(&dag, request)
+                    .unwrap_err()
+                    .to_string(),
+                "PBFT_CERTIFIED_EXECUTION_PREFLIGHT_UNAVAILABLE"
+            );
+        }
+        assert_eq!(service.manager_state().state.snapshot(), before);
+        assert_eq!(service.pbft_chain_head(), chain_before);
+        drop(dag);
+        drop(service);
+        let _ = crate::closeout_test_scratch::dispose(path);
     }
 
     fn config(cacti_block: u64) -> PbftServiceConfig {
@@ -6992,7 +8102,16 @@ mod tests {
         let peer = [0x5a; 64];
 
         let step = service
-            .begin_pbft_sync_ingress(&final_chain, &packet_rlp, 41, peer, Vec::new())
+            .begin_pbft_sync_ingress(
+                &final_chain,
+                &packet_rlp,
+                PbftSyncIngressSource {
+                    payload_id: 41,
+                    peer_id: peer,
+                    generation: 0,
+                },
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(step.action, PbftSyncIngressAction::EnqueuedContinue);
         assert_eq!(step.source_payload_id, 41);
@@ -7015,15 +8134,27 @@ mod tests {
         let packet = decode_pbft_sync_packet_precheck(&packet_rlp).unwrap();
         *service.sync_ingress.lock().unwrap() = Some(PbftSyncIngressSession {
             packet,
-            source_payload_id: 1,
-            source_peer_id: [1; 64],
+            source: PbftSyncIngressSource {
+                payload_id: 1,
+                peer_id: [1; 64],
+                generation: 0,
+            },
             next_vote: 0,
             slashing_submitters: Vec::new(),
             pending_slashing: None,
         });
 
         let step = service
-            .begin_pbft_sync_ingress(&final_chain, &[0xc1, 0x80], 42, [2; 64], Vec::new())
+            .begin_pbft_sync_ingress(
+                &final_chain,
+                &[0xc1, 0x80],
+                PbftSyncIngressSource {
+                    payload_id: 42,
+                    peer_id: [2; 64],
+                    generation: 0,
+                },
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(step.action, PbftSyncIngressAction::Malicious);
         assert_eq!(step.source_payload_id, 42);
@@ -7094,12 +8225,16 @@ mod tests {
                 conflicting.vote_hash,
             );
             let peer = [0x6b; 64];
+            let source = PbftSyncIngressSource {
+                payload_id: 81,
+                peer_id: peer,
+                generation: 2,
+            };
             let awaiting = service
                 .begin_pbft_sync_ingress(
                     &final_chain,
                     &packet_rlp,
-                    81,
-                    peer,
+                    source,
                     vec![SlashingSubmitterIdentity {
                         wallet_index: 0,
                         address: [0; 20],
@@ -7112,11 +8247,25 @@ mod tests {
             let effect = awaiting
                 .slashing_transaction_effect
                 .expect("conflict emits a slashing transaction");
+            let stale = service
+                .report_pbft_sync_ingress_slashing(
+                    &final_chain,
+                    effect.proof_hash,
+                    transaction_inserted,
+                    PbftSyncIngressSource {
+                        payload_id: 82,
+                        ..source
+                    },
+                )
+                .unwrap();
+            assert_eq!(stale.action, PbftSyncIngressAction::Drop);
+
             let resumed = service
                 .report_pbft_sync_ingress_slashing(
                     &final_chain,
                     effect.proof_hash,
                     transaction_inserted,
+                    source,
                 )
                 .unwrap();
             assert_eq!(resumed.action, PbftSyncIngressAction::Malicious);
@@ -9737,6 +10886,7 @@ mod tests {
             &dag_transaction,
             crate::ConsensusStateActionRequest {
                 round_elapsed_ms: 0,
+                finish_poll_elapsed_ms: 0,
             },
         )
         .expect("filter composes");
@@ -9750,6 +10900,7 @@ mod tests {
             &dag_transaction,
             crate::ConsensusStateActionRequest {
                 round_elapsed_ms: 1_000,
+                finish_poll_elapsed_ms: 0,
             },
         )
         .expect("certify composes");
@@ -9763,6 +10914,7 @@ mod tests {
             &dag_transaction,
             crate::ConsensusStateActionRequest {
                 round_elapsed_ms: 0,
+                finish_poll_elapsed_ms: 0,
             },
         )
         .expect("finish composes");
@@ -9848,15 +11000,23 @@ mod tests {
                 .contains("PBFT_CANDIDATE_DAG_CACHE_MISSING")
         );
 
-        let block_hash = H256::repeat_byte(0x55);
+        let (block_rlp, link) = pbft_block_rlp(12, 55);
+        let block_hash = link.block_hash;
         let cert = service
-            .save_cert_voted_block_in_round(12, 3, block_hash, &[0xc0])
+            .save_cert_voted_block_in_round(12, 3, block_hash, &block_rlp)
             .unwrap();
         assert!(cert.has_cert_voted_block);
         assert_eq!(cert.cert_voted_block_period, 12);
         assert_eq!(cert.cert_voted_block_round, 3);
         assert_eq!(cert.cert_voted_block_hash, block_hash);
         assert!(!service.cert_voted_block_in_round().unwrap().is_empty());
+        let decoded = service
+            .decoded_cert_voted_block_in_round()
+            .unwrap()
+            .expect("cert-voted record should exist");
+        assert_eq!(decoded.round, 3);
+        assert_eq!(decoded.block_rlp, block_rlp);
+        assert_eq!(decoded.link, link);
 
         let sleep = service.plan_runtime_sleep_until_next_step(i64::MAX);
         assert!(sleep.accepted);
@@ -10400,6 +11560,85 @@ mod tests {
     }
 
     #[test]
+    fn owned_runtime_cursor_preserves_same_tick_replacement_and_committed_delay() {
+        use crate::pbft_manager::{
+            PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+        };
+        let (path, storage) = temp_storage("rustaxa_owned_runtime_cursor");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        service.complete_bootstrap();
+        service.transition_to_filter().unwrap();
+        service.transition_to_certify().unwrap();
+        let before = service.manager_snapshot().next_step_time_ms;
+        let delay = service.delay_certify_poll().unwrap();
+        assert_eq!(delay.status, PbftLifecycleActionStatus::Applied);
+        let snapshot = service.manager_snapshot();
+        assert!(snapshot.next_step_time_ms > before);
+        let fact = PbftManagerRuntimeTickFact {
+            tick_id: 7,
+            state: snapshot.state,
+            period: snapshot.period,
+            round: snapshot.round,
+            step: snapshot.step,
+            network_available: false,
+            network_pbft_syncing: false,
+            has_eligible_wallet: false,
+            polling_interval_ms: 100,
+        };
+        let old = service.begin_owned_runtime_session(fact).unwrap();
+        let step = service.owned_runtime_session_next(&old).unwrap();
+        let replacement = service.begin_owned_runtime_session(fact).unwrap();
+        assert!(!service.discard_owned_runtime_session(&old));
+        assert!(service.owned_runtime_session_next(&old).is_err());
+        assert!(
+            service
+                .report_owned_runtime_session(
+                    &old,
+                    PbftManagerRuntimeActionReport {
+                        cursor: step.cursor,
+                        action: step.action.unwrap(),
+                        success: true,
+                        result: PbftManagerRuntimeActionResultCode::StateActionDone,
+                        go_finish_state: false,
+                        loop_back_finish_state: false,
+                        has_eligible_wallet: false,
+                        has_new_round: false,
+                        new_round: 0,
+                        error_code: String::new(),
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(
+            service.owned_runtime_session_next(&replacement).unwrap(),
+            step
+        );
+        assert_eq!(
+            service.manager_snapshot().next_step_time_ms,
+            snapshot.next_step_time_ms
+        );
+        assert!(service.discard_owned_runtime_session(&replacement));
+        assert_eq!(
+            service.manager_snapshot().next_step_time_ms,
+            snapshot.next_step_time_ms
+        );
+        let fresh = service
+            .begin_owned_runtime_session(PbftManagerRuntimeTickFact { tick_id: 8, ..fact })
+            .unwrap();
+        assert_eq!(
+            service.owned_runtime_session_next(&fresh).unwrap().tick_id,
+            8
+        );
+        assert_eq!(
+            service.manager_snapshot().next_step_time_ms,
+            snapshot.next_step_time_ms
+        );
+        assert!(service.discard_owned_runtime_session(&fresh));
+        drop(service);
+        let _ = crate::closeout_test_scratch::dispose(path);
+    }
+
+    #[test]
     fn service_owns_manager_executor_session_cursors() {
         use crate::pbft_manager::{
             PbftManagerProposalInitialFact, PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus,
@@ -10451,6 +11690,7 @@ mod tests {
             round: 2,
             step: 3,
             elapsed_round_ms: 250,
+            elapsed_finish_poll_ms: 0,
             deadline_ms: 1_000,
             current_round_lambda_ms: 100,
             polling_interval_ms: 100,

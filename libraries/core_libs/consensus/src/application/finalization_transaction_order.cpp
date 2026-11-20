@@ -7,7 +7,7 @@
 
 namespace taraxa::consensus {
 
-void reorderTransactionsForExecution(SharedTransactions& transactions) {
+[[maybe_unused]] void reorderTransactionsForExecution(SharedTransactions& transactions) {
   SharedTransactions ordered_transactions;
   std::unordered_map<addr_t, uint32_t> account_reverse_order;
   std::unordered_map<addr_t, val_t> account_nonce;

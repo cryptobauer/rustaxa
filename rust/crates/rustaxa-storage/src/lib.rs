@@ -1,5 +1,7 @@
+pub mod application_control;
 mod concrete_state;
 mod config;
+mod coordination;
 mod dag;
 mod db;
 mod error;
@@ -13,16 +15,18 @@ mod transaction;
 pub(crate) const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 
 pub use concrete_state::{
-    ConcreteAccountMutation, ConcreteCheckpointReaders, ConcreteCodeInsertion,
-    ConcreteCommitApproval, ConcreteLifecycleObservation, ConcreteObserverAccountChange,
-    ConcreteObserverPhaseDelta, ConcreteObserverPhaseOutput, ConcreteStateLifecycle,
-    ConcreteStateMutationBatch, ConcreteStateReader, ConcreteStateWriter, ConcreteStorageInventory,
-    ConcreteStorageInventoryEntry, ConcreteStorageInventoryError, ConcreteStorageInventoryLimits,
-    ConcreteStorageInventoryResource, ConcreteStorageMutation, ConcreteStoragePath,
-    ConcreteStorageWitness, ConcreteWitnessBudget, ConcreteWitnessError, ConcreteWitnessLimits,
-    ConcreteWitnessLogical, ConcreteWitnessPhysical, ConcreteWitnessReplay,
-    ConcreteWitnessResource, ConcreteWitnessUsage, HistoricalConcreteAccountChange,
-    HistoricalConcretePreparation, HistoricalConcretePreparationSummary, PreparedConcreteState,
+    BorrowedConcreteExecutionProbe, CertifiedConcreteCommit, ConcreteAccountMutation,
+    ConcreteCheckpointReaders, ConcreteCodeInsertion, ConcreteCommitApproval,
+    ConcreteExecutionProbe, ConcreteExecutionProbeView, ConcreteLifecycleObservation,
+    ConcreteObserverAccountChange, ConcreteObserverPhaseDelta, ConcreteObserverPhaseOutput,
+    ConcreteStateLifecycle, ConcreteStateMutationBatch, ConcreteStateReader, ConcreteStateWriter,
+    ConcreteStorageInventory, ConcreteStorageInventoryEntry, ConcreteStorageInventoryError,
+    ConcreteStorageInventoryLimits, ConcreteStorageInventoryResource, ConcreteStorageMutation,
+    ConcreteStoragePath, ConcreteStorageWitness, ConcreteTransitionBuilder, ConcreteWitnessBudget,
+    ConcreteWitnessError, ConcreteWitnessLimits, ConcreteWitnessLogical, ConcreteWitnessPhysical,
+    ConcreteWitnessReplay, ConcreteWitnessResource, ConcreteWitnessUsage,
+    HistoricalConcreteAccountChange, HistoricalConcretePreparation,
+    HistoricalConcretePreparationSummary, PreparedConcreteState, PreparedConcreteTransition,
     PreparedConcreteView, account_commitment_rlp, account_version_prefix, decode_physical_account,
     replay_storage_witness, storage_version_prefix, versioned_key,
 };
@@ -48,6 +52,7 @@ pub use dag::DagRepository;
 pub use db::DbPointReader;
 pub use db::ExtraRewardVotesGuard;
 pub use db::Storage;
+pub use db::StorageReadSnapshot;
 pub use db::StorageWriteBatch;
 pub use db::{LightHistoryPruneReport, LightHistoryPruneRequest};
 pub use error::StorageError;
@@ -75,3 +80,11 @@ pub use rustaxa_types::{FINAL_CHAIN_LOG_BLOOM_BYTES, FinalChainLogBloom};
 pub use transaction::TransactionRepository;
 #[cfg(test)]
 mod closeout_test_scratch;
+
+pub(crate) use coordination::{
+    ApplicationEffectReceipt, ApplicationOwnerKey, ApplicationReadScope, OwnedEffectScope,
+};
+pub use coordination::{StorageCoordinationError, StorageCoordinator, StorageMutationGuard};
+pub use db::{CoordinatedDatabase, OwnVerifiedVotesGuard};
+#[cfg(feature = "production_integration_test")]
+pub mod integration_inspection;

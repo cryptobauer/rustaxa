@@ -2572,7 +2572,9 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         if storage_root.is_none() {
             return Ok(BigUint::default());
         }
-        Ok(read_storage_integer(self.reader.storage(address, key)?))
+        Ok(read_storage_integer(
+            self.reader.ordinary_storage(address, key)?,
+        ))
     }
 
     fn current_account(

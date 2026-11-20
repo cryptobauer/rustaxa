@@ -53,7 +53,7 @@ class Account {
   response::Value getAddress() const noexcept;
   response::Value getBalance() const noexcept;
   response::Value getTransactionCount() const noexcept;
-  response::Value getCode() const noexcept;
+  response::Value getCode() const;
   response::Value getStorage(response::Value&& slotArg) const;
 
  private:

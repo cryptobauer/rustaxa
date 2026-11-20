@@ -68,6 +68,52 @@ pub fn decode_legacy_input(
     })
 }
 
+/// Checks an explicit System CALL against the application's exact planned bytes.
+/// The caller must obtain `authorized_rlp` from its bound system plan. Matching
+/// bytes prove consistency here; they do not grant system-plan authority.
+pub(crate) fn validate_system_call_input(
+    transaction: &ExecutionTransaction,
+    block_gas_limit: rustaxa_types::FinalChainGas,
+    authorized_rlp: &[u8],
+) -> Result<()> {
+    use rustaxa_types::{
+        LegacySystemTransactionInput, TARAXA_SYSTEM_ACCOUNT, encode_legacy_system_transaction,
+    };
+    ensure!(
+        transaction.kind == ExecutionTransactionKind::System
+            && transaction.sender == TARAXA_SYSTEM_ACCOUNT
+            && transaction.receiver.is_some()
+            && transaction.gas_price.value() == &BigUint::default()
+            && transaction.value.value() == &BigUint::default()
+            && transaction.gas_limit == block_gas_limit
+            && transaction.canonical_rlp.as_deref() == Some(authorized_rlp),
+        "EVM_SYSTEM_INPUT_PLAN_MISMATCH"
+    );
+    let envelope = LegacyTransactionEnvelope::decode_system(authorized_rlp)?;
+    let canonical = encode_legacy_system_transaction(&LegacySystemTransactionInput {
+        nonce: envelope.nonce,
+        value: envelope.value,
+        gas_price: envelope.gas_price,
+        gas: envelope.gas,
+        data: envelope.data,
+        receiver: envelope.receiver,
+        chain_id: 0,
+    });
+    ensure!(
+        canonical == authorized_rlp,
+        "EVM_SYSTEM_INPUT_NOT_CANONICAL"
+    );
+    ensure!(
+        decode_legacy_input(
+            transaction.position,
+            authorized_rlp,
+            LegacyInputKind::System
+        )? == *transaction,
+        "EVM_SYSTEM_INPUT_FACTS_MISMATCH"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

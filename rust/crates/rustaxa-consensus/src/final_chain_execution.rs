@@ -3743,7 +3743,7 @@ fn rejected_session_external_evm_publication_report(
     }
 }
 
-fn decode_system_transaction_inputs(
+pub(crate) fn decode_system_transaction_inputs(
     regular_transaction_count: usize,
     system_transaction_rlps: &[Vec<u8>],
 ) -> Result<Vec<FinalChainEvmTransactionInput>, anyhow::Error> {
@@ -3867,7 +3867,7 @@ fn build_external_evm_rewards_fact(
     })
 }
 
-fn build_external_evm_commit_plan(
+pub(crate) fn build_external_evm_commit_plan(
     request: &FinalChainExecutionRequest,
     metadata: &rustaxa_types::PbftBlockMetadata,
     block_number: FinalChainBlockNumber,
@@ -3934,7 +3934,7 @@ fn build_external_evm_commit_plan(
     })
 }
 
-fn build_external_evm_publication_plan(
+pub(crate) fn build_external_evm_publication_plan(
     final_chain: &FinalChain,
     pbft_block_rlp: &[u8],
     _metadata: &rustaxa_types::PbftBlockMetadata,
@@ -4386,7 +4386,9 @@ fn encode_receipts_rlp(receipts: &[Vec<u8>]) -> Vec<u8> {
     stream.out().to_vec()
 }
 
-fn block_log_bloom<'a>(logs: impl Iterator<Item = &'a FinalChainEvmLog>) -> FinalChainLogBloom {
+pub(crate) fn block_log_bloom<'a>(
+    logs: impl Iterator<Item = &'a FinalChainEvmLog>,
+) -> FinalChainLogBloom {
     let mut bloom = FinalChainLogBloom::ZERO;
     for log in logs {
         add_bloom_value(&mut bloom, &log.address);
@@ -4397,7 +4399,7 @@ fn block_log_bloom<'a>(logs: impl Iterator<Item = &'a FinalChainEvmLog>) -> Fina
     bloom
 }
 
-fn add_bloom_value(bloom: &mut FinalChainLogBloom, value: &[u8]) {
+pub(crate) fn add_bloom_value(bloom: &mut FinalChainLogBloom, value: &[u8]) {
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hash = [0u8; 32];

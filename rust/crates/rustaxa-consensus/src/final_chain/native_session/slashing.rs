@@ -135,9 +135,9 @@ impl FinalChainNativeSession<'_> {
                 if self.correction_stage().slashing_hard_error()
                     && let LegacyDoubleVotingProofDecodeError::NestedRlp(message) = &error
                 {
-                    return Err(FinalChainNativeSessionError::Domain(format!(
-                        "malformed nested slashing proof RLP: {message}"
-                    )));
+                    return Err(FinalChainNativeSessionError::MalformedNestedSlashingProof(
+                        message.clone(),
+                    ));
                 }
                 return Ok(failed(quote, legacy_error(&error)));
             }
@@ -171,9 +171,9 @@ impl FinalChainNativeSession<'_> {
                 if self.correction_stage().slashing_hard_error()
                     && let LegacyDoubleVotingProofDecodeError::NestedRlp(message) = &error
                 {
-                    return Err(FinalChainNativeSessionError::Domain(format!(
-                        "malformed nested slashing proof RLP: {message}"
-                    )));
+                    return Err(FinalChainNativeSessionError::MalformedNestedSlashingProof(
+                        message.clone(),
+                    ));
                 }
                 return Ok(failed(quote, legacy_error(&error)));
             }

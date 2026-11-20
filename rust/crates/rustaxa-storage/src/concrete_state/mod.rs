@@ -39,8 +39,9 @@ pub use codec::{
     storage_version_prefix, versioned_key,
 };
 pub use lifecycle::{
-    ConcreteCommitApproval, ConcreteLifecycleObservation, ConcreteObserverAccountChange,
-    ConcreteObserverPhaseOutput, ConcreteStateLifecycle,
+    CertifiedConcreteCommit, ConcreteCommitApproval, ConcreteLifecycleObservation,
+    ConcreteObserverAccountChange, ConcreteObserverPhaseOutput, ConcreteStateLifecycle,
+    ConcreteTransitionBuilder, PreparedConcreteTransition,
 };
 #[cfg(feature = "synthetic-fixtures")]
 pub use lifecycle::{ConcreteCommittedPut, ConcreteCommittedReceipt};
@@ -50,7 +51,8 @@ pub use reader::{
     ConcreteStorageInventoryResource, ConcreteStoragePath,
 };
 pub use writer::{
-    ConcreteAccountMutation, ConcreteCodeInsertion, ConcreteObserverPhaseDelta,
+    BorrowedConcreteExecutionProbe, ConcreteAccountMutation, ConcreteCodeInsertion,
+    ConcreteExecutionProbe, ConcreteExecutionProbeView, ConcreteObserverPhaseDelta,
     ConcreteStateMutationBatch, ConcreteStateWriter, ConcreteStorageMutation,
     HistoricalConcreteAccountChange, HistoricalConcretePreparation,
     HistoricalConcretePreparationSummary, PreparedConcreteState, PreparedConcreteView,

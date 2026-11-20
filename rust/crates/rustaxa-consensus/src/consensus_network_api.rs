@@ -8,6 +8,9 @@
 //! native siblings are consulted without holding the network queue lock, and
 //! only typed decisions, effects, or executor continuations are returned.
 
+use crate::consensus_application::production_application::{
+    ApplicationComposition, ApplicationScopeSource,
+};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -48,6 +51,7 @@ use crate::{
 /// lifetimes; they cannot construct an independent topology. No accessor
 /// returns them, so bridge code can invoke only the exact operations below.
 pub struct ConsensusNetworkApi {
+    composition: ApplicationComposition,
     network: ConsensusNetworkService,
     pbft: Arc<PbftService>,
     final_chain: Arc<FinalChain>,
@@ -65,7 +69,28 @@ impl ConsensusNetworkApi {
         ingress: Arc<ConsensusIngressService>,
         query: ConsensusQueryApi,
     ) -> Self {
+        Self::new_composed(
+            network,
+            pbft,
+            final_chain,
+            dag_transaction,
+            ingress,
+            query,
+            ApplicationComposition::Historical,
+        )
+    }
+
+    pub(crate) fn new_composed(
+        network: ConsensusNetworkService,
+        pbft: Arc<PbftService>,
+        final_chain: Arc<FinalChain>,
+        dag_transaction: Arc<DagTransactionService>,
+        ingress: Arc<ConsensusIngressService>,
+        query: ConsensusQueryApi,
+        composition: ApplicationComposition,
+    ) -> Self {
         Self {
+            composition,
             network,
             pbft,
             final_chain,
@@ -73,6 +98,9 @@ impl ConsensusNetworkApi {
             ingress,
             query,
         }
+    }
+    pub(crate) fn is_bound_to_scope(&self, source: &Arc<ApplicationScopeSource>) -> bool {
+        self.composition.is_bound_to(source)
     }
 
     /// Drains dependency-ready physical effects from one lane, optionally
@@ -303,10 +331,14 @@ impl ConsensusNetworkApi {
         packet_rlp: &[u8],
         policy: PublicTransactionSubmissionRequest,
         execution: &E,
+        owner_period: Option<u64>,
     ) -> Result<NetworkDagSyncIngressReport> {
         let peer_id = context.peer_id;
-        self.network
-            .ingest_dag_sync_packet(context, packet_rlp, |transactions, blocks| {
+        self.network.ingest_dag_sync_packet(
+            context,
+            packet_rlp,
+            owner_period,
+            |transactions, blocks| {
                 self.ingress.ingest_dag_sync_packet(
                     DagSyncIngressRequest {
                         transactions: transactions
@@ -330,7 +362,8 @@ impl ConsensusNetworkApi {
                     },
                     execution,
                 )
-            })
+            },
+        )
     }
 
     /// Returns the native adaptive gas bid used by a host-signed transaction.
@@ -387,13 +420,17 @@ impl ConsensusNetworkApi {
         packet_rlp: &[u8],
         source_payload_id: u64,
         source_peer_id: [u8; 64],
+        sync_generation: u64,
         slashing_submitters: Vec<SlashingSubmitterIdentity>,
     ) -> Result<PbftSyncIngressStep> {
         self.pbft.begin_pbft_sync_ingress(
             self.final_chain.as_ref(),
             packet_rlp,
-            source_payload_id,
-            source_peer_id,
+            crate::pbft_service::PbftSyncIngressSource {
+                payload_id: source_payload_id,
+                peer_id: source_peer_id,
+                generation: sync_generation,
+            },
             slashing_submitters,
         )
     }
@@ -403,11 +440,13 @@ impl ConsensusNetworkApi {
         &self,
         proof_hash: H256,
         transaction_inserted: bool,
+        source: crate::pbft_service::PbftSyncIngressSource,
     ) -> Result<PbftSyncIngressStep> {
         self.pbft.report_pbft_sync_ingress_slashing(
             self.final_chain.as_ref(),
             proof_hash,
             transaction_inserted,
+            source,
         )
     }
 

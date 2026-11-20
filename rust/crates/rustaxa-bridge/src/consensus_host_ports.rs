@@ -8,7 +8,7 @@ use crate::dag_transaction_service::{
 };
 use crate::ffi::{rustaxa_ffi, rustaxa_ffi::HostConsensusLiveStatus, BridgeConsensusNetworkApi};
 use crate::network::to_bridge_network_ingress_decision;
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use rustaxa_consensus::consensus_application_runtime::{
     PillarAnchorStateReport, PillarAnchorStateRequest,
 };
@@ -549,16 +549,24 @@ pub fn consensus_application_run(
     process: &ConsensusProcessPort,
     signer: &ConsensusSignerPort,
     transport: &ConsensusTransportPort,
-    external_evm: &ExternalEvmPort,
+    external_evm: &cxx::UniquePtr<ExternalEvmPort>,
 ) -> Result<ConsensusRunExit> {
     let process = ProcessPortAdapter(process);
     let signer = SigningPortAdapter(signer);
     let transport = TransportPortAdapter(transport);
-    let external_evm = ExternalEvmPortAdapter(external_evm);
-    let exit =
-        application
-            .0
-            .run_consensus(&process, &signer, &transport, &external_evm, &process)?;
+    let exit = match &application.0 {
+        crate::dag_transaction_service::ApplicationBackend::Historical(owner) => {
+            let external_evm = ExternalEvmPortAdapter(
+                external_evm
+                    .as_ref()
+                    .context("HISTORICAL_EVM_PORT_REQUIRED")?,
+            );
+            owner.run_consensus(&process, &signer, &transport, &external_evm, &process)?
+        }
+        crate::dag_transaction_service::ApplicationBackend::Production(owner) => {
+            owner.run(&process, &signer, &transport, &process)?
+        }
+    };
     let reason = match exit.reason {
         ConsensusRunReason::Stopped => 0,
         ConsensusRunReason::Completed => 1,
@@ -576,13 +584,14 @@ pub fn consensus_application_finalize(
     external_evm: &ExternalEvmPort,
     task: HostFinalChainFinalizeTask,
 ) -> Result<HostFinalChainFinalizeReport> {
+    let application = application.0.historical()?;
     let external_evm = ExternalEvmPortAdapter(external_evm);
     let (previous_cert_vote_rlps, previous_cert_vote_weights) = task
         .previous_cert_votes
         .into_iter()
         .map(|vote| (vote.rlp, vote.weight))
         .unzip();
-    let report = application.0.finalize_with_external_evm(
+    let report = application.finalize_with_external_evm(
         EvmFinalizationRequest {
             effect_id: Default::default(),
             period_data_rlp: rustaxa_types::codec::rlp::period::encode_period_data(
@@ -626,10 +635,11 @@ pub fn consensus_application_recover_final_chain(
     application: &BridgeConsensusApplication,
     external_evm: &ExternalEvmPort,
 ) -> Result<HostFinalChainFinalizeReport> {
+    let application = application.0.historical()?;
     let external_evm = ExternalEvmPortAdapter(external_evm);
     let report =
         rustaxa_consensus::initialize_and_recover_final_chain_application_state_at_joint_startup(
-            application.0.final_chain_for_bridge(),
+            application.final_chain_for_bridge(),
             &external_evm,
         )?;
     Ok(HostFinalChainFinalizeReport {
@@ -646,7 +656,9 @@ pub fn consensus_application_recover_final_chain(
 pub fn consensus_network_transaction_gas_price_bid(
     network: &BridgeConsensusNetworkApi,
 ) -> Result<[u8; 32]> {
-    network.0.transaction_gas_price_bid()
+    crate::ffi::dispatch_client!(network, NetworkBackend, api, {
+        api.transaction_gas_price_bid()
+    })
 }
 
 /// Submits one host-signed network transaction without escaping to the root.
@@ -654,11 +666,13 @@ pub fn consensus_network_submit_transaction(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::PublicTransactionSubmissionRequest,
 ) -> Result<rustaxa_ffi::PublicTransactionSubmissionReport> {
-    Ok(public_transaction_report_to_ffi(
-        network
-            .0
-            .submit_transaction_from_native_state(public_transaction_request_to_native(request))?,
-    ))
+    crate::ffi::dispatch_client!(network, NetworkBackend, api, {
+        Ok(public_transaction_report_to_ffi(
+            api.submit_transaction_from_native_state(public_transaction_request_to_native(
+                request,
+            ))?,
+        ))
+    })
 }
 
 /// Routes one canonical packet through native limits, admission, facts, and effects.
@@ -666,34 +680,34 @@ pub fn consensus_network_ingest_transaction_packet(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::NetworkTransactionPacketRequest,
 ) -> Result<rustaxa_ffi::NetworkTransactionPacketReport> {
-    let context = rustaxa_consensus::NetworkTransactionPacketContext {
-        transport_lane: request.transport_lane,
-        peer_id: request.peer_id,
-        source_payload_id: request.source_payload_id,
-    };
-    let policy = rustaxa_consensus::PublicTransactionSubmissionRequest {
-        transaction_rlp: Vec::new(),
-        expected_chain_id: request.expected_chain_id,
-        maximum_gas_limit: request.maximum_gas_limit,
-        minimum_gas_price: ethereum_types::U256::from_big_endian(&request.minimum_gas_price),
-        last_block_number: request.last_block_number,
-        cornus_active: request.cornus_active,
-    };
-    let report = network
-        .0
-        .ingest_transaction_packet(context, &request.packet_rlp, policy)?;
-    Ok(rustaxa_ffi::NetworkTransactionPacketReport {
-        decision: to_bridge_network_ingress_decision(report.decision),
-        transactions: report
-            .transactions
-            .into_iter()
-            .map(transaction_packet_member_to_ffi)
-            .collect(),
-        extra_transaction_hashes: report
-            .extra_transaction_hashes
-            .into_iter()
-            .map(|hash| rustaxa_ffi::DagHash { hash })
-            .collect(),
+    crate::ffi::dispatch_client!(network, NetworkBackend, api, {
+        let context = rustaxa_consensus::NetworkTransactionPacketContext {
+            transport_lane: request.transport_lane,
+            peer_id: request.peer_id,
+            source_payload_id: request.source_payload_id,
+        };
+        let policy = rustaxa_consensus::PublicTransactionSubmissionRequest {
+            transaction_rlp: Vec::new(),
+            expected_chain_id: request.expected_chain_id,
+            maximum_gas_limit: request.maximum_gas_limit,
+            minimum_gas_price: ethereum_types::U256::from_big_endian(&request.minimum_gas_price),
+            last_block_number: request.last_block_number,
+            cornus_active: request.cornus_active,
+        };
+        let report = api.ingest_transaction_packet(context, &request.packet_rlp, policy)?;
+        Ok(rustaxa_ffi::NetworkTransactionPacketReport {
+            decision: to_bridge_network_ingress_decision(report.decision),
+            transactions: report
+                .transactions
+                .into_iter()
+                .map(transaction_packet_member_to_ffi)
+                .collect(),
+            extra_transaction_hashes: report
+                .extra_transaction_hashes
+                .into_iter()
+                .map(|hash| rustaxa_ffi::DagHash { hash })
+                .collect(),
+        })
     })
 }
 
@@ -757,15 +771,31 @@ fn dag_packet_policy(
 pub fn consensus_network_ingest_dag_block_packet(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::NetworkDagPacketRequest,
-    external_evm: &ExternalEvmPort,
+    external_evm: &cxx::UniquePtr<ExternalEvmPort>,
 ) -> Result<rustaxa_ffi::NetworkDagBlockIngressReport> {
-    let external_evm = ExternalEvmPortAdapter(external_evm);
+    use crate::ffi::NetworkBackend;
     let context = dag_ingress_context(&request, request.rebroadcast);
-    let report = network
-        .0
-        .ingest_dag_block_packet(context, &request.packet_rlp, &external_evm)?;
+    let report = match &network.0 {
+        NetworkBackend::Historical(network) => {
+            let external_evm = ExternalEvmPortAdapter(
+                external_evm
+                    .as_ref()
+                    .context("HISTORICAL_EVM_PORT_REQUIRED")?,
+            );
+            network.ingest_dag_block_packet(context, &request.packet_rlp, &external_evm)?
+        }
+        NetworkBackend::Production(client) => {
+            client.ingest_dag_block_packet(context, &request.packet_rlp)?
+        }
+    };
+    Ok(dag_block_packet_to_ffi(report))
+}
+
+fn dag_block_packet_to_ffi(
+    report: rustaxa_consensus::NetworkDagBlockIngressReport,
+) -> rustaxa_ffi::NetworkDagBlockIngressReport {
     let admission_found = report.admission.is_some();
-    Ok(rustaxa_ffi::NetworkDagBlockIngressReport {
+    rustaxa_ffi::NetworkDagBlockIngressReport {
         decision: to_bridge_network_ingress_decision(report.decision),
         admission_found,
         admission: report
@@ -773,24 +803,44 @@ pub fn consensus_network_ingest_dag_block_packet(
             .map(dag_block_ingress_report_to_ffi)
             .unwrap_or_default(),
         rejection_action: report.rejection_action,
-    })
+    }
 }
 
 /// Routes one canonical DAG-sync packet with native sequential partial commits.
 pub fn consensus_network_ingest_dag_sync_packet(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::NetworkDagPacketRequest,
-    external_evm: &ExternalEvmPort,
+    external_evm: &cxx::UniquePtr<ExternalEvmPort>,
 ) -> Result<rustaxa_ffi::NetworkDagSyncIngressReport> {
-    let external_evm = ExternalEvmPortAdapter(external_evm);
+    use crate::ffi::NetworkBackend;
     let context = dag_ingress_context(&request, false);
-    let report = network.0.ingest_dag_sync_packet(
-        context,
-        &request.packet_rlp,
-        dag_packet_policy(&request, Vec::new()),
-        &external_evm,
-    )?;
-    Ok(rustaxa_ffi::NetworkDagSyncIngressReport {
+    let policy = dag_packet_policy(&request, Vec::new());
+    let report = match &network.0 {
+        NetworkBackend::Historical(network) => {
+            let external_evm = ExternalEvmPortAdapter(
+                external_evm
+                    .as_ref()
+                    .context("HISTORICAL_EVM_PORT_REQUIRED")?,
+            );
+            network.ingest_dag_sync_packet(
+                context,
+                &request.packet_rlp,
+                policy,
+                &external_evm,
+                None,
+            )?
+        }
+        NetworkBackend::Production(client) => {
+            client.ingest_dag_sync_packet(context, &request.packet_rlp, policy)?
+        }
+    };
+    Ok(dag_sync_packet_to_ffi(report))
+}
+
+fn dag_sync_packet_to_ffi(
+    report: rustaxa_consensus::NetworkDagSyncIngressReport,
+) -> rustaxa_ffi::NetworkDagSyncIngressReport {
+    rustaxa_ffi::NetworkDagSyncIngressReport {
         decision: to_bridge_network_ingress_decision(report.decision),
         request_period: report.request_period,
         response_period: report.response_period,
@@ -804,15 +854,27 @@ pub fn consensus_network_ingest_dag_sync_packet(
             .into_iter()
             .map(dag_block_ingress_report_to_ffi)
             .collect(),
-    })
+    }
 }
 
 /// Returns the application-root hot PBFT status without an executor snapshot.
 pub fn consensus_application_live_status(
     application: &BridgeConsensusApplication,
 ) -> Result<HostConsensusLiveStatus> {
-    let status = application.0.consensus_live_status()?;
-    let vote_status = application.0.consensus_vote_status()?;
+    use crate::dag_transaction_service::ApplicationBackend;
+    let (status, vote_status) = match &application.0 {
+        ApplicationBackend::Historical(owner) => (
+            owner.consensus_live_status()?,
+            owner.consensus_vote_status()?,
+        ),
+        ApplicationBackend::Production(owner) => {
+            let query = owner.query_client();
+            (
+                query.consensus_live_status()?,
+                query.consensus_vote_status()?,
+            )
+        }
+    };
     Ok(HostConsensusLiveStatus {
         period: status.period,
         round: status.round,

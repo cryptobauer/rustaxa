@@ -1,0 +1,13 @@
+[package]
+name = "rustaxa-native-config"
+version = "0.1.0"
+edition = "2024"
+publish = false
+links = "rustaxa_native_config"
+
+[dependencies]
+anyhow = "1.0.100"
+cxx = "1.0"
+
+[build-dependencies]
+cxx-build = "1.0"

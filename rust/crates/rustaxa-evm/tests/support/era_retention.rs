@@ -101,7 +101,11 @@ impl Case {
         let Some(path) = std::env::var_os("RUSTAXA_ERA_LAUNCH_MANIFEST") else {
             return Ok(None);
         };
-        let launch: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+        let launch = serde_json::from_slice(&std::fs::read(path)?)?;
+        Self::register_with_launch(root, input, launch).map(Some)
+    }
+
+    fn register_with_launch(root: &Path, input: &Value, launch: Value) -> Result<Self> {
         let parent = PathBuf::from(
             launch["scratch_parent"]
                 .as_str()
@@ -146,7 +150,7 @@ impl Case {
             dependencies: Default::default(),
         };
         case.event("registered_before_creation", Value::Null)?;
-        Ok(Some(case))
+        Ok(case)
     }
 
     pub(super) fn created(&mut self) -> Result<()> {
@@ -285,32 +289,36 @@ pub(super) fn final_evidence(root: &Path, fixture: &Value, checks: &str) -> Resu
 
 #[test]
 fn retention_rejects_unsafe_completion_and_preserves_panics() -> Result<()> {
-    // Independent miniature ledger; exercise the actual state/ownership methods
-    // without changing process-wide environment used by the integration cases.
-    let parent = std::env::var_os("RUN_ARTIFACT_DIR")
+    let base = std::env::var_os("RUN_ARTIFACT_DIR")
         .map(PathBuf::from)
-        .context("persistent test parent")?
-        .join(format!("retention-contract-{}", std::process::id()));
-    let mut parent_case = register(&parent, &serde_json::json!({"test":"retention contract"}))?;
+        .unwrap_or_else(std::env::temp_dir);
+    let parent = base.join(format!(
+        "retention-contract-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
     std::fs::create_dir(&parent)?;
-    created(&mut parent_case)?;
-    let launch: Value = serde_json::from_slice(&std::fs::read(std::env::var(
-        "RUSTAXA_ERA_LAUNCH_MANIFEST",
-    )?)?)?;
+    let metadata = std::fs::metadata(&parent)?;
+    let launch = serde_json::json!({
+        "identity": "retention-contract",
+        "source_manifest": "retention-contract",
+        "scratch_parent": &parent,
+        "scratch_parent_identity": [metadata.dev(), metadata.ino()],
+        "scratch_ledger": parent.join("ledger"),
+        "resources": {
+            "run": &parent,
+            "corpus": &parent,
+            "baseline_actual_bytes": 0,
+            "prior_charged_bytes": 0,
+            "retained_live_cap_bytes": 8 * 1024 * 1024
+        }
+    });
     let make = |name: &str| -> Result<Case> {
         let root = parent.join(name);
-        let metadata = std::fs::metadata(&parent)?;
-        let mut case = Case {
-            root: root.clone(),
-            parent: parent.clone(),
-            ledger: parent.join("ledger"),
-            launch: launch.clone(),
-            input: serde_json::json!({"test":name}),
-            inode: None,
-            parent_inode: (metadata.dev(), metadata.ino()),
-            dependencies: Default::default(),
-        };
-        case.event("registered_before_creation", Value::Null)?;
+        let input = serde_json::json!({"test": name});
+        let mut case = Case::register_with_launch(&root, &input, launch.clone())?;
         std::fs::create_dir(&root)?;
         case.created()?;
         Ok(case)
@@ -341,8 +349,11 @@ fn retention_rejects_unsafe_completion_and_preserves_panics() -> Result<()> {
     let unexpected = make("unexpected-error")?;
     drop(unexpected);
     ensure!(parent.join("unexpected-error").exists());
-    ensure!(Case::register(&parent, &Value::Null).is_err());
-    ensure!(Case::register(&parent.join("../escape"), &Value::Null).is_err());
+    ensure!(Case::register_with_launch(&parent, &Value::Null, launch.clone()).is_err());
+    ensure!(
+        Case::register_with_launch(&parent.join("../escape"), &Value::Null, launch.clone())
+            .is_err()
+    );
     let mut unwritable = make("unwritable-witness")?;
     unwritable.ledger = parent.join("missing-parent/ledger");
     ensure!(
@@ -367,7 +378,10 @@ fn retention_rejects_unsafe_completion_and_preserves_panics() -> Result<()> {
     );
     ensure!(no_links(&parent.join("link/escape/tmp")).is_err());
     std::os::unix::fs::symlink(&parent, parent.join("root-symlink"))?;
-    ensure!(Case::register(&parent.join("root-symlink"), &Value::Null).is_err());
+    ensure!(
+        Case::register_with_launch(&parent.join("root-symlink"), &Value::Null, launch.clone())
+            .is_err()
+    );
     let mut parent_replaced = make("parent-replaced-child")?;
     let child_inode = parent_replaced.inode;
     let container = parent.join("replaceable-parent");

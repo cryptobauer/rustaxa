@@ -375,6 +375,19 @@ impl FinalChainRewardSchedulerRuntime {
         Ok(basis)
     }
 
+    /// Obtains detached admission without changing this runtime.
+    pub(crate) fn probe_basis(
+        &self,
+        state_api_epoch: u64,
+        expected_parent: FinalChainBlockNumber,
+        period: FinalChainBlockNumber,
+        request_id: [u8; 32],
+    ) -> anyhow::Result<FinalChainRewardSchedulerBasis> {
+        let mut detached = self.clone();
+        detached.observe_live_epoch(state_api_epoch)?;
+        detached.basis(state_api_epoch, expected_parent, period, request_id)
+    }
+
     /// Arms a prepared successor before the potentially ambiguous marker write.
     ///
     /// The caller must retain the pending value until durable facts classify an
@@ -414,6 +427,25 @@ impl FinalChainRewardSchedulerRuntime {
         self.admitted = None;
         self.pending = Some(armed);
         Ok(armed)
+    }
+
+    /// Prepares the exact runtime image for a paired publication without
+    /// changing live admission or arming a legacy pending marker.
+    pub(crate) fn prepare_paired_install(
+        &self,
+        prepared: FinalChainPreparedRewardSchedulerSuccessor,
+        binding: FinalChainRewardSchedulerPublicationBinding,
+    ) -> anyhow::Result<Self> {
+        let mut successor = self.clone();
+        successor.basis(
+            binding.state_api_epoch,
+            binding.expected_parent,
+            binding.period,
+            binding.request_id,
+        )?;
+        successor.arm(prepared, binding)?;
+        successor.install_applied(binding)?;
+        Ok(successor)
     }
 
     /// Installs the exact armed successor after durable publication.
@@ -1051,6 +1083,39 @@ mod tests {
         runtime.validate_uncommitted_clear(0, 12).unwrap();
         runtime.complete_recovery(12).unwrap();
         assert!(runtime.validate_uncommitted_clear(0, 12).is_err());
+    }
+
+    #[test]
+    fn probe_basis_preserves_complete_runtime_on_success_and_failure() {
+        let mut runtime = FinalChainRewardSchedulerRuntime::new(7.into());
+        make_live(&mut runtime, 11);
+        let before = runtime.clone();
+        assert!(runtime.probe_basis(11, 7.into(), 8.into(), [1; 32]).is_ok());
+        assert_eq!(runtime, before);
+        assert!(
+            runtime
+                .probe_basis(12, 7.into(), 8.into(), [1; 32])
+                .is_err()
+        );
+        assert!(
+            runtime
+                .probe_basis(11, 6.into(), 8.into(), [1; 32])
+                .is_err()
+        );
+        assert!(
+            runtime
+                .probe_basis(11, 7.into(), 9.into(), [1; 32])
+                .is_err()
+        );
+        assert_eq!(runtime, before);
+        runtime.basis(11, 7.into(), 8.into(), [2; 32]).unwrap();
+        let admitted = runtime.clone();
+        assert!(
+            runtime
+                .probe_basis(11, 7.into(), 8.into(), [1; 32])
+                .is_err()
+        );
+        assert_eq!(runtime, admitted);
     }
 
     #[test]

@@ -360,9 +360,9 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
   ASSERT_EQ(stakes.size(), 1u);
   EXPECT_EQ(stakes[0].address, validator_address);
   EXPECT_EQ(bytes(stakes[0].stake), u256_be(10000));
-  EXPECT_EQ(bytes((*query)->consensus_query_final_chain_dpos_total_amount_delegated(0)), bytes(u64_be(10000)));
-  EXPECT_EQ((*query)->consensus_query_final_chain_dpos_yield(0), 0u);
-  EXPECT_TRUE((*query)->consensus_query_final_chain_dpos_total_supply(0).empty());
+  EXPECT_EQ(bytes((*query)->consensus_query_final_chain_dpos_period_value(0, rustaxa::DposPeriodMetric::Delegated).amount), bytes(u64_be(10000)));
+  EXPECT_EQ((*query)->consensus_query_final_chain_dpos_period_value(0, rustaxa::DposPeriodMetric::Yield).number, 0u);
+  EXPECT_TRUE((*query)->consensus_query_final_chain_dpos_period_value(0, rustaxa::DposPeriodMetric::Supply).amount.empty());
 
 }
 

@@ -85,102 +85,6 @@ h256 checkedHash(const bytes& value, const char* operation) {
 
 }  // namespace
 
-rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& config) {
-  auto effective_balances = config.initial_balances;
-  for (const auto& validator : config.dpos.initial_validators) {
-    for (const auto& [delegator, amount] : validator.delegations) effective_balances[delegator] -= amount;
-  }
-  rust::Vec<rustaxa::GenesisAccount> accounts;
-  accounts.reserve(effective_balances.size());
-  for (const auto& [address, balance] : effective_balances) {
-    rustaxa::GenesisAccount account;
-    account.address = toArray(address);
-    account.balance = toBigEndianBytes(balance);
-    accounts.push_back(std::move(account));
-  }
-  return accounts;
-}
-
-rust::Vec<rustaxa::GenesisValidator> makeGenesisValidators(const state_api::Config& config) {
-  rust::Vec<rustaxa::GenesisValidator> validators;
-  validators.reserve(config.dpos.initial_validators.size());
-  for (const auto& validator : config.dpos.initial_validators) {
-    rustaxa::GenesisValidator converted;
-    converted.address = toArray(validator.address);
-    converted.owner = toArray(validator.owner);
-    converted.vrf_key = toArray(validator.vrf_key);
-    converted.commission = validator.commission;
-    converted.description = rust::String(validator.description);
-    converted.endpoint = rust::String(validator.endpoint);
-    u256 total_stake = 0;
-    for (const auto& [_, amount] : validator.delegations) total_stake += amount;
-    converted.total_stake = toBigEndianBytes(total_stake);
-    converted.delegations.reserve(validator.delegations.size());
-    for (const auto& [delegator, amount] : validator.delegations) {
-      rustaxa::GenesisDelegation delegation;
-      delegation.delegator = toArray(delegator);
-      delegation.stake = toBigEndianBytes(amount);
-      converted.delegations.push_back(std::move(delegation));
-    }
-    validators.push_back(std::move(converted));
-  }
-  return validators;
-}
-
-rustaxa::GenesisDposConfig makeGenesisDposConfig(const state_api::DPOSConfig& config,
-                                                 uint64_t dag_vdf_sortition_total_vote_count_until_period) {
-  rustaxa::GenesisDposConfig result;
-  result.eligibility_balance_threshold = toBigEndianBytes(config.eligibility_balance_threshold);
-  result.vote_eligibility_balance_step = toBigEndianBytes(config.vote_eligibility_balance_step);
-  result.validator_maximum_stake = toBigEndianBytes(config.validator_maximum_stake);
-  result.minimum_deposit = toBigEndianBytes(config.minimum_deposit);
-  result.commission_change_delta = config.commission_change_delta;
-  result.commission_change_frequency = config.commission_change_frequency;
-  result.delegation_delay = config.delegation_delay;
-  result.dag_vdf_sortition_total_vote_count_until_period = dag_vdf_sortition_total_vote_count_until_period;
-  return result;
-}
-
-rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const FullNodeConfig& config) {
-  rustaxa::FinalChainRewardsConfig result;
-  result.committee_size = config.genesis.pbft.committee_size;
-  result.magnolia_period = config.genesis.state.hardforks.magnolia_hf.block_num;
-  result.aspen_part_one_period = config.genesis.state.hardforks.aspen_hf.block_num_part_one;
-  result.fix_claim_all_block_num = config.genesis.state.hardforks.fix_claim_all_block_num;
-  result.fix_redelegate_block_num = config.genesis.state.hardforks.fix_redelegate_block_num;
-  result.aspen_part_two_period = config.genesis.state.hardforks.aspen_hf.block_num_part_two;
-  result.max_block_author_reward_percent = config.genesis.state.dpos.max_block_author_reward;
-  result.dag_proposers_reward_percent = config.genesis.state.dpos.dag_proposers_reward;
-  result.yield_percentage = config.genesis.state.dpos.yield_percentage;
-  result.dpos_blocks_per_year = config.genesis.state.dpos.blocks_per_year;
-  result.dpos_delegation_locking_period = config.genesis.state.dpos.delegation_locking_period;
-  result.cornus_period = config.genesis.state.hardforks.cornus_hf.block_num;
-  result.cornus_delegation_locking_period = config.genesis.state.hardforks.cornus_hf.delegation_locking_period;
-  result.phalaenopsis_period = config.genesis.state.hardforks.phalaenopsis_hf_block_num;
-  u256 genesis_balance_sum = 0;
-  for (const auto& [_, balance] : config.genesis.state.initial_balances) genesis_balance_sum += balance;
-  result.genesis_balance_sum = toBigEndianBytes(genesis_balance_sum);
-  result.aspen_max_supply = toBigEndianBytes(config.genesis.state.hardforks.aspen_hf.max_supply);
-  result.aspen_generated_rewards = toBigEndianBytes(config.genesis.state.hardforks.aspen_hf.generated_rewards);
-  result.cacti_period = config.genesis.state.hardforks.cacti_hf.block_num;
-  result.cacti_delegation_locking_period = config.genesis.state.hardforks.cacti_hf.delegation_locking_period;
-  result.magnolia_jail_time = config.genesis.state.hardforks.magnolia_hf.jail_time;
-  result.cacti_jail_time = config.genesis.state.hardforks.cacti_hf.jail_time;
-  result.redelegations.reserve(config.genesis.state.hardforks.redelegations.size());
-  for (const auto& redelegation : config.genesis.state.hardforks.redelegations) {
-    rustaxa::RedelegationCorrection correction;
-    correction.validator = toArray(redelegation.validator);
-    correction.delegator = toArray(redelegation.delegator);
-    correction.amount = toBigEndianBytes(redelegation.amount);
-    result.redelegations.push_back(std::move(correction));
-  }
-  result.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
-  for (const auto& [from_period, frequency] : config.genesis.state.hardforks.rewards_distribution_frequency) {
-    result.frequency_rules.push_back(rustaxa::RewardsFrequencyRule{from_period, frequency});
-  }
-  return result;
-}
-
 ExternalEvmStateOwner::ExternalEvmStateOwner(const FullNodeConfig& config)
     : state_api_([this](EthBlockNumber block_number) { return blockHash(block_number); }, config.genesis.state,
                  config.opts_final_chain, {(config.db_path / "state_db").string()}),
@@ -513,34 +417,7 @@ state_api::ExecutionResult ExternalEvmStateOwner::call(const state_api::EVMTrans
   const auto requested_block = block_number.value_or(lastBlockNumber());
   const auto dpos_contract_address = addr_t("0x00000000000000000000000000000000000000FE");
   if (transaction.to && *transaction.to == dpos_contract_address) {
-    rustaxa::FinalChainNativeCall request;
-    request.block_number = requested_block;
-    request.sender = toArray(transaction.from);
-    request.receiver_found = true;
-    request.receiver = toArray(*transaction.to);
-    request.value = toBigEndianBytes(transaction.value);
-    request.gas_price = toBigEndianBytes(transaction.gas_price);
-    request.gas_limit = transaction.gas;
-    request.input = toRustBytes(transaction.input);
-    const auto outcome = (*application()->queryClient())->consensus_query_final_chain_native_call(std::move(request));
-
-    state_api::ExecutionResult result;
-    result.code_retval = fromRustBytes(outcome.code_retval);
-    result.logs.reserve(outcome.logs.size());
-    for (const auto& log : outcome.logs) {
-      state_api::LogRecord converted;
-      converted.address = toAddress(log.address);
-      converted.topics.reserve(log.topics.size());
-      for (const auto& topic : log.topics) {
-        converted.topics.emplace_back(bytes(topic.topic.begin(), topic.topic.end()));
-      }
-      converted.data = fromRustBytes(log.data);
-      result.logs.push_back(std::move(converted));
-    }
-    result.gas_used = outcome.gas_used;
-    result.code_err = std::string(outcome.code_err);
-    result.consensus_err = std::string(outcome.consensus_err);
-    return result;
+    return application()->queryFinalizedCall(transaction, requested_block);
   }
   const auto evm_block = std::min(requested_block, descriptor.blk_num);
   const auto header = blockHeader(evm_block);

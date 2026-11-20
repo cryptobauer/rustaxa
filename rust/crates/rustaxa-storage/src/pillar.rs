@@ -102,6 +102,23 @@ impl<D: DbReader + DbWriter> PillarRepository<D> {
     }
 }
 
+impl crate::Storage {
+    /// Stages a new pillar anchor and removes the previous anchor's local vote.
+    pub fn stage_current_pillar_data(
+        &self,
+        batch: &mut crate::StorageWriteBatch,
+        data: &[u8],
+    ) -> Result<()> {
+        self.batch_put_raw(
+            batch,
+            Column::CurrentPillarBlockData,
+            &SINGLE_VALUE_KEY,
+            data,
+        )?;
+        self.batch_delete_raw(batch, Column::CurrentPillarBlockOwnVote, &SINGLE_VALUE_KEY)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

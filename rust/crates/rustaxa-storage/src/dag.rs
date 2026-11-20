@@ -470,7 +470,24 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
             return Ok(());
         }
 
-        let mut write_batch = self.db.create_batch();
+        let mut batch = self.db.create_batch();
+        self.append_finalization_cleanup(
+            &mut batch,
+            counter_updates,
+            expired_hashes,
+            expired_transaction_hashes,
+        )?;
+        self.db.commit_batch(batch)
+    }
+
+    /// Appends DAG cleanup to the caller's finalization batch.
+    pub fn append_finalization_cleanup(
+        &self,
+        batch: &mut <D as DbWriter>::Batch,
+        counter_updates: &[(H256, u64, u64)],
+        expired_hashes: &[H256],
+        expired_transaction_hashes: &[H256],
+    ) -> Result<()> {
         let mut level_hashes = BTreeMap::<u64, BTreeSet<H256>>::new();
         let mut edge_count_delta = 0u64;
 
@@ -490,7 +507,7 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
                 stream.append(&hash);
             }
             self.db.batch_put(
-                &mut write_batch,
+                batch,
                 Column::DagBlocksLevel,
                 &level.to_le_bytes(),
                 stream.out().as_ref(),
@@ -506,13 +523,13 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
                 .wrapping_add(edge_count_delta);
 
             self.db.batch_put(
-                &mut write_batch,
+                batch,
                 Column::Status,
                 &[StatusField::DagBlkCount as u8],
                 &dag_blocks_count.to_le_bytes(),
             )?;
             self.db.batch_put(
-                &mut write_batch,
+                batch,
                 Column::Status,
                 &[StatusField::DagEdgeCount as u8],
                 &dag_edge_count.to_le_bytes(),
@@ -521,15 +538,15 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
 
         for hash in expired_hashes {
             self.db
-                .batch_delete(&mut write_batch, Column::DagBlocks, hash.as_bytes())?;
+                .batch_delete(batch, Column::DagBlocks, hash.as_bytes())?;
         }
 
         for hash in expired_transaction_hashes {
             self.db
-                .batch_delete(&mut write_batch, Column::Transactions, hash.as_bytes())?;
+                .batch_delete(batch, Column::Transactions, hash.as_bytes())?;
         }
 
-        self.db.commit_batch(write_batch)
+        Ok(())
     }
 
     /// Removes a non-finalized DAG block payload by hash.

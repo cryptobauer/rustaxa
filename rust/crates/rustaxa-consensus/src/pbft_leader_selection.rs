@@ -220,6 +220,14 @@ impl PbftService {
         &self,
         request: PbftLeaderSelectionFinishRequest,
     ) -> Result<PbftLeaderSelectionResult> {
+        self.finish_leader_selection_with_policy(request, true)
+    }
+
+    fn finish_leader_selection_with_policy(
+        &self,
+        request: PbftLeaderSelectionFinishRequest,
+        publish_validity: bool,
+    ) -> Result<PbftLeaderSelectionResult> {
         let _manager = self.manager_state();
         let votes = self.verified_votes();
         let runtime = votes.lock()?;
@@ -329,8 +337,10 @@ impl PbftService {
                 ));
             }
         }
-        for command in &plan.valid_blocks {
-            proposed.mark_valid(command.period, command.block_hash)?;
+        if publish_validity {
+            for command in &plan.valid_blocks {
+                proposed.mark_valid(command.period, command.block_hash)?;
+            }
         }
 
         let Some(selected) = selected else {
@@ -363,6 +373,16 @@ impl PbftService {
         dag_transaction_service: &DagTransactionService,
         request: PbftComposedLeaderSelectionRequest,
     ) -> Result<PbftLeaderSelectionResult> {
+        self.select_leader_with_policy(final_chain, dag_transaction_service, request, true)
+    }
+
+    pub(crate) fn select_leader_with_policy(
+        &self,
+        final_chain: &FinalChain,
+        dag_transaction_service: &DagTransactionService,
+        request: PbftComposedLeaderSelectionRequest,
+        publish_validity: bool,
+    ) -> Result<PbftLeaderSelectionResult> {
         let snapshot = self.prepare_leader_selection(request.period, request.round)?;
         let mut validations = Vec::with_capacity(snapshot.candidates.len());
 
@@ -387,8 +407,12 @@ impl PbftService {
                     pillar_block_required: request.pillar_block_required,
                 },
             )?;
-            let validation_plan =
-                self.validate_pbft_block_composed(final_chain, dag_transaction_service, composed)?;
+            let validation_plan = self.validate_pbft_block_with_dag_policy(
+                final_chain,
+                dag_transaction_service,
+                composed,
+                publish_validity,
+            )?;
             let status = match validation_plan.action {
                 PbftManagerBlockValidationAction::Accept => {
                     PbftLeaderCandidateValidationStatus::Validated
@@ -417,12 +441,15 @@ impl PbftService {
             });
         }
 
-        self.finish_leader_selection(PbftLeaderSelectionFinishRequest {
-            period: request.period,
-            round: request.round,
-            snapshot_fingerprint: snapshot.snapshot_fingerprint,
-            validations,
-        })
+        self.finish_leader_selection_with_policy(
+            PbftLeaderSelectionFinishRequest {
+                period: request.period,
+                round: request.round,
+                snapshot_fingerprint: snapshot.snapshot_fingerprint,
+                validations,
+            },
+            publish_validity,
+        )
     }
 }
 

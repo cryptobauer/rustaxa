@@ -26,6 +26,8 @@ use crate::verified_votes::{PbftVoteType, TwoTPlusOneVotedBlockType};
 pub struct ConsensusStateActionRequest {
     /// Milliseconds elapsed since the current round began.
     pub round_elapsed_ms: u64,
+    /// Milliseconds elapsed since the current second finish step began.
+    pub finish_poll_elapsed_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +79,25 @@ pub fn compose_consensus_state_action(
     final_chain: &FinalChain,
     dag_transaction: &DagTransactionService,
     request: ConsensusStateActionRequest,
+) -> Result<ConsensusStateActionBatch> {
+    compose_state_action(service, final_chain, dag_transaction, request, true)
+}
+
+pub(crate) fn compose_bound_state_vote(
+    service: &PbftService,
+    final_chain: &FinalChain,
+    dag_transaction: &DagTransactionService,
+    request: ConsensusStateActionRequest,
+) -> Result<ConsensusStateActionBatch> {
+    compose_state_action(service, final_chain, dag_transaction, request, false)
+}
+
+fn compose_state_action(
+    service: &PbftService,
+    final_chain: &FinalChain,
+    dag_transaction: &DagTransactionService,
+    request: ConsensusStateActionRequest,
+    publish_validity: bool,
 ) -> Result<ConsensusStateActionBatch> {
     let (snapshot, deadline_ms, polling_interval_ms) = {
         let manager = service.manager_state();
@@ -140,6 +161,7 @@ pub fn compose_consensus_state_action(
         round: snapshot.round,
         step: snapshot.step,
         elapsed_round_ms: request.round_elapsed_ms,
+        elapsed_finish_poll_ms: request.finish_poll_elapsed_ms,
         deadline_ms,
         current_round_lambda_ms: snapshot.current_round_lambda_ms,
         polling_interval_ms,
@@ -177,6 +199,7 @@ pub fn compose_consensus_state_action(
             snapshot.round,
             snapshot.step,
             snapshot.state,
+            publish_validity,
             intent,
             H256(hash),
         )? {
@@ -202,6 +225,7 @@ fn compose_vote_task(
     round: u64,
     current_step: u64,
     state: PbftManagerRuntimeStateCode,
+    publish_validity: bool,
     intent: PbftManagerStateActionIntent,
     requested_hash: H256,
 ) -> Result<Option<ConsensusStateVoteTask>> {
@@ -210,7 +234,7 @@ fn compose_vote_task(
             return Ok(None);
         }
         PbftManagerStateActionIntent::IdentifyLeaderAndSoftVote => {
-            let selected = service.select_leader_composed(
+            let selected = service.select_leader_with_policy(
                 final_chain,
                 dag_transaction,
                 PbftComposedLeaderSelectionRequest {
@@ -220,6 +244,7 @@ fn compose_vote_task(
                     extra_data_required: policy.extra_data_required,
                     pillar_block_required: policy.pillar_block_required,
                 },
+                publish_validity,
             )?;
             if selected.status != PbftLeaderSelectionStatus::Selected || !selected.selected {
                 return Ok(None);
@@ -237,7 +262,7 @@ fn compose_vote_task(
         | PbftManagerStateActionIntent::CertVoteCurrentSoftValue
         | PbftManagerStateActionIntent::NextVotePreviousRoundValue
         | PbftManagerStateActionIntent::NextVoteCurrentSoftValue => {
-            let admitted = service.admit_proposed_block(
+            let admitted = service.inspect_proposed_block(
                 final_chain,
                 dag_transaction,
                 PbftProposedBlockAdmissionRequest {
@@ -247,6 +272,7 @@ fn compose_vote_task(
                     extra_data_required: policy.extra_data_required,
                     pillar_block_required: policy.pillar_block_required,
                 },
+                publish_validity,
             )?;
             if !matches!(
                 admitted.status,
@@ -288,15 +314,20 @@ fn compose_vote_task(
             }
         }
         PbftManagerStateActionIntent::NextVoteCertVotedBlock => {
-            let block_rlp = service.cert_voted_block_in_round()?;
-            if block_rlp.is_empty() {
+            let Some(retained) = service.decoded_cert_voted_block_in_round()? else {
                 return Ok(None);
-            }
+            };
+            ensure!(
+                retained.round == round
+                    && retained.link.period == period
+                    && retained.link.block_hash == requested_hash,
+                "CONSENSUS_CERT_VOTED_BLOCK_MISMATCH"
+            );
             (
                 PbftVoteType::Next,
                 current_step,
                 requested_hash,
-                block_rlp,
+                retained.block_rlp,
                 ConsensusStateVoteCommit::None,
             )
         }

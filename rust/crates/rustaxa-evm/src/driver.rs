@@ -88,6 +88,8 @@ pub enum ExecutionDriverError {
     Host(HostError),
     /// This slice executes ordinary top-level calls only.
     UnsupportedTransactionKind(ExecutionTransactionKind),
+    /// System facts or bytes differ from the application's exact bound plan.
+    InvalidSystemTransaction(String),
     /// A native/precompile target requires the later typed native dispatcher.
     NativeCallUnavailable { address: [u8; 20] },
     /// A consensus-native classifier selected an address outside the complete native set.
@@ -615,6 +617,83 @@ pub fn execute_top_level_call_with_native<
             transaction.kind,
         ));
     }
+    execute_top_level_message_with_native(
+        journal,
+        block_hashes,
+        all_native_addresses,
+        consensus_native_addresses,
+        native_port,
+        native_sequence,
+        block,
+        transaction,
+        envelope_rules,
+        profile,
+    )
+}
+
+/// Executes an application-planned System CALL with ordinary envelope economics.
+///
+/// The caller supplies exact bytes from its authenticated system plan. Shape,
+/// fixed sender, zero price/value, gas limit and decoded facts are checked before
+/// journal access. This entry grants no authority to select a bridge or method.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_system_call_with_native<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_port: &mut P,
+    native_sequence: &mut PeriodConsensusSequence,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+    authorized_rlp: &[u8],
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
+    crate::native::validate_native_stage(journal, native_port)?;
+    validate_native_period(native_sequence, block.period)?;
+    crate::input::validate_system_call_input(transaction, block.gas_limit, authorized_rlp)
+        .map_err(|error| ExecutionDriverError::InvalidSystemTransaction(format!("{error:#}")))?;
+    execute_top_level_message_with_native(
+        journal,
+        block_hashes,
+        all_native_addresses,
+        consensus_native_addresses,
+        native_port,
+        native_sequence,
+        block,
+        transaction,
+        envelope_rules,
+        profile,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_top_level_message_with_native<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_port: &mut P,
+    native_sequence: &mut PeriodConsensusSequence,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     let admission = admit(
         journal,
         transaction,
@@ -1434,7 +1513,12 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
 ) -> Result<(revm::interpreter::InterpreterResult, u8), ExecutionDriverError> {
     // Go CALL skips interpreter entry for empty code; CREATE still executes
     // empty initcode and observes STOP. Preserve that operation distinction.
-    if code.is_empty() && transaction.kind == ExecutionTransactionKind::Call {
+    if code.is_empty()
+        && matches!(
+            transaction.kind,
+            ExecutionTransactionKind::Call | ExecutionTransactionKind::System
+        )
+    {
         return Ok((
             immediate_result(InstructionResult::Stop, admitted.action_gas.as_u64()),
             0,

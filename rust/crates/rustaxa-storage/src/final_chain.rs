@@ -8,6 +8,9 @@ use std::sync::Arc;
 use crate::db::{DbPointReader, DbReader, DbWriter};
 use crate::{Column, StatusField};
 
+pub(crate) const EXTERNAL_EVM_PENDING_PUBLICATION_KEY: &[u8] =
+    b"rustaxa:external_evm_pending_publication";
+
 /// Final-chain execution counters persisted with finalized block visibility.
 ///
 /// The fields mirror C++ `StatusDbField::ExecutedBlkCount` and
@@ -225,8 +228,9 @@ impl<D: DbReader> FinalChainRepository<D> {
     const DPOS_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:dpos_snapshot:";
     const ACCOUNT_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:account_snapshot:";
     const EXTERNAL_EVM_PENDING_PUBLICATION_KEY: &'static [u8] =
-        b"rustaxa:external_evm_pending_publication";
-    const CONCRETE_STATE_PAIRING_KEY: &'static [u8] = b"rustaxa:concrete_state_pairing:v1";
+        EXTERNAL_EVM_PENDING_PUBLICATION_KEY;
+    pub(crate) const CONCRETE_STATE_PAIRING_KEY: &'static [u8] =
+        b"rustaxa:concrete_state_pairing:v1";
 
     /// Returns raw final-chain metadata payload by metadata key.
     /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_meta)`.
@@ -331,7 +335,7 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    fn dpos_snapshot_key(number: u64) -> Vec<u8> {
+    pub(crate) fn dpos_snapshot_key(number: u64) -> Vec<u8> {
         let mut key = Vec::with_capacity(Self::DPOS_SNAPSHOT_KEY_PREFIX.len() + 8);
         key.extend_from_slice(Self::DPOS_SNAPSHOT_KEY_PREFIX);
         key.extend_from_slice(&number.to_le_bytes());
@@ -542,6 +546,42 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         proposal_period_dag_level_update: Option<FinalChainProposalPeriodDagLevelUpdate>,
         external_evm_pending_publication_clear: bool,
     ) -> Result<()> {
+        let batch = self.prepare_block_header_with_snapshots_execution_status_and_rewards_stats(
+            number,
+            hash,
+            stored_header_rlp,
+            receipts_rlp,
+            dpos_snapshot_rlp,
+            account_snapshot_rlp,
+            execution_status,
+            rewards_stats_update,
+            log_bloom_index_update,
+            transaction_index_updates,
+            period_system_transactions_update,
+            proposal_period_dag_level_update,
+            external_evm_pending_publication_clear,
+        )?;
+        self.db.commit_batch(batch)
+    }
+
+    /// Prepares the existing complete publication batch without writing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_block_header_with_snapshots_execution_status_and_rewards_stats(
+        &self,
+        number: u64,
+        hash: H256,
+        stored_header_rlp: &[u8],
+        receipts_rlp: &[u8],
+        dpos_snapshot_rlp: Option<&[u8]>,
+        account_snapshot_rlp: Option<&[u8]>,
+        execution_status: Option<FinalChainExecutionStatus>,
+        rewards_stats_update: Option<FinalChainRewardsStatsUpdate<'_>>,
+        log_bloom_index_update: Option<FinalChainLogBloomIndexUpdate<'_>>,
+        transaction_index_updates: &[FinalChainTransactionIndexUpdate<'_>],
+        period_system_transactions_update: Option<FinalChainPeriodSystemTransactionsUpdate<'_>>,
+        proposal_period_dag_level_update: Option<FinalChainProposalPeriodDagLevelUpdate>,
+        external_evm_pending_publication_clear: bool,
+    ) -> Result<D::Batch> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
         let mut batch = self.db.create_batch();
@@ -668,7 +708,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             &DB_META_LAST_NUMBER.to_le_bytes(),
             &number.to_le_bytes(),
         )?;
-        self.db.commit_batch(batch)
+        Ok(batch)
     }
 
     /// Persists the external-EVM pending publication marker.

@@ -497,7 +497,7 @@ class ConsensusNetworkApi final {
   PbftSyncIngressOutcome admitPbftSyncPacket(const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id,
                                              const std::array<uint8_t, 64>& source_peer_id,
                                              const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters,
-                                             const PbftSyncIngressExecutor& executor);
+                                             const PbftSyncIngressExecutor& executor, uint64_t sync_generation = 0);
 
   /** Correlates a response peer with the active or most-recent native sync generation. */
   PbftSyncLifecycleOutcome admitPbftSyncSource(const std::array<uint8_t, 64>& peer_id,

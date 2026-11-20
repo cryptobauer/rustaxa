@@ -92,6 +92,27 @@ pub struct TransactionServiceTransactionView {
     pub tx_rlp: Vec<u8>,
 }
 
+impl TransactionServiceTransactionView {
+    pub(crate) fn finalized_storage_sender(&self) -> Result<Option<[u8; 20]>> {
+        let stored_source = match self.source {
+            TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR => {
+                STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
+            }
+            TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_SYSTEM => {
+                STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM
+            }
+            _ => return Ok(None),
+        };
+        ensure!(
+            self.found && keccak256(&self.tx_rlp).0 == self.hash,
+            "TM_PROPOSAL_TRANSACTION_HASH_MISMATCH"
+        );
+        Ok(Some(
+            inspect_stored_transaction_identity(&self.tx_rlp, stored_source)?.sender,
+        ))
+    }
+}
+
 /// Bounded transaction view lookup output.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransactionServiceTransactionViewPlan {
@@ -494,6 +515,24 @@ pub(crate) struct PreparedDagTransactionPublication {
     queue: TransactionQueue,
     sidecar: TransactionManagerSidecar,
     outcome: DagTransactionSaveOutcome,
+}
+
+pub(crate) struct PreparedFinalizedTransactionUpdate {
+    queue: TransactionQueue,
+    sidecar: TransactionManagerSidecar,
+    pub(crate) count_write: Option<u64>,
+    report: TransactionServiceFinalizedStatusReport,
+}
+
+impl PreparedFinalizedTransactionUpdate {
+    pub(crate) fn install(
+        self,
+        state: &mut TransactionServiceState,
+    ) -> TransactionServiceFinalizedStatusReport {
+        state.queue = self.queue;
+        state.sidecar = self.sidecar;
+        self.report
+    }
 }
 
 /// Prepared transaction owner output returned by one proposer-packing step.
@@ -940,6 +979,11 @@ impl TransactionService {
         self.lock()?.recover_non_finalized()
     }
 
+    /// Restores pending payloads without a database cleanup write.
+    pub(crate) fn recover_non_finalized_read_only(&self) -> Result<u64> {
+        self.lock()?.recover_non_finalized_read_only()
+    }
+
     /// Executes one validated admission under the native transaction lock.
     ///
     /// The caller supplies only decoded envelope and retained FinalChain facts.
@@ -1297,6 +1341,28 @@ impl TransactionServiceState {
         account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
         facts: Vec<TransactionServiceFinalizedStatusFact>,
     ) -> Result<TransactionServiceFinalizedStatusReport> {
+        let update = self.prepare_finalized_status(
+            period,
+            retention_window,
+            account_nonce_facts,
+            facts,
+            &[],
+        )?;
+        if let Some(count) = update.count_write {
+            save_transaction_count(self.storage.as_ref(), count)
+                .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
+        }
+        Ok(update.install(self))
+    }
+
+    pub(crate) fn prepare_finalized_status(
+        &self,
+        period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        facts: Vec<TransactionServiceFinalizedStatusFact>,
+        expired: &[H256],
+    ) -> Result<PreparedFinalizedTransactionUpdate> {
         let plan: FinalizedTransactionStatusPlan = plan_finalized_transactions_status(
             facts
                 .iter()
@@ -1324,31 +1390,32 @@ impl TransactionServiceState {
                 Ok(fact)
             })
             .collect::<Result<Vec<_>>>()?;
-        if !plan.accepted_transactions.is_empty() {
-            save_transaction_count(self.storage.as_ref(), plan.target_transaction_count)
-                .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
+        let count_write =
+            (!plan.accepted_transactions.is_empty()).then_some(plan.target_transaction_count);
+        let mut queue = self.queue.clone();
+        let mut sidecar = self.sidecar.clone();
+        for hash in expired {
+            sidecar.remove_non_finalized(*hash);
         }
         if let Some(stale_period) = plan.stale_period {
-            self.sidecar
-                .evict_recently_finalized_stale_period(stale_period);
+            sidecar.evict_recently_finalized_stale_period(stale_period);
         }
 
         let mut removed_non_finalized = Vec::new();
         let mut queue_erased = Vec::new();
         for (action, fact) in plan.accepted_transactions.iter().zip(validated_facts) {
-            self.sidecar
+            sidecar
                 .insert_recently_finalized(period, fact.hash, fact.tx_rlp.clone())
                 .context("TM_RUNTIME_FINALIZED_STATUS_INSERT")?;
-            self.queue.mark_transaction_known(fact.hash);
-            if self.queue.erase(fact.hash) {
+            queue.mark_transaction_known(fact.hash);
+            if queue.erase(fact.hash) {
                 queue_erased.push(fact.hash);
             }
             if action.removed_non_finalized {
                 removed_non_finalized.push(fact.hash);
             }
         }
-        self.sidecar
-            .set_transaction_count(plan.target_transaction_count);
+        sidecar.set_transaction_count(plan.target_transaction_count);
 
         let supplied: HashMap<H160, (bool, U256)> = account_nonce_facts
             .into_iter()
@@ -1362,8 +1429,7 @@ impl TransactionServiceState {
                 )
             })
             .collect();
-        let purge_facts = self
-            .queue
+        let purge_facts = queue
             .proposable_accounts()
             .into_iter()
             .map(|sender| {
@@ -1377,16 +1443,21 @@ impl TransactionServiceState {
             })
             .collect::<Vec<_>>();
         let finalized_account_purged = if plan.purge_transactions {
-            self.queue.purge_accounts_plan(&purge_facts).removed_hashes
+            queue.purge_accounts_plan(&purge_facts).removed_hashes
         } else {
             Vec::new()
         };
 
-        Ok(TransactionServiceFinalizedStatusReport {
-            removed_non_finalized,
-            queue_erased,
-            finalized_account_purged,
-            accepted_count: plan.accepted_transactions.len() as u64,
+        Ok(PreparedFinalizedTransactionUpdate {
+            queue,
+            sidecar,
+            count_write,
+            report: TransactionServiceFinalizedStatusReport {
+                removed_non_finalized,
+                queue_erased,
+                finalized_account_purged,
+                accepted_count: plan.accepted_transactions.len() as u64,
+            },
         })
     }
 
@@ -1448,6 +1519,163 @@ impl TransactionServiceState {
             .collect()
     }
 
+    /// Candidate capture reads durable exclusion evidence before the sidecar.
+    /// The supplied snapshot must come from this sibling's storage owner.
+    pub(crate) fn pbft_execution_input_lookups(
+        &self,
+        snapshot: &rustaxa_storage::StorageReadSnapshot<'_>,
+        hashes: &[H256],
+        prior_period: u64,
+        supplied: Option<&std::collections::HashMap<H256, &[u8]>>,
+        budget: &mut crate::pbft_execution_inputs::PbftInputBudget,
+    ) -> Result<
+        crate::pbft_execution_inputs::PbftInputCapture<
+            crate::pbft_execution_inputs::PbftInputLookups,
+        >,
+    > {
+        use crate::pbft_execution_inputs::{
+            PbftInputCapture, PbftInputUnavailable, exact_input_rlp, input_hash,
+        };
+        use crate::pbft_execution_validation::PbftExecutionTransactionLookup;
+        use rustaxa_storage::Column;
+        let mut lookups = Vec::with_capacity(hashes.len());
+        let mut payloads = Vec::new();
+        for (index, hash) in hashes.iter().copied().enumerate() {
+            if let Some(location) = snapshot.get(Column::TrxPeriod, hash.as_bytes())? {
+                if !budget.charge(location.len()) {
+                    return Ok(PbftInputCapture::Unavailable(
+                        PbftInputUnavailable::LocalLimit,
+                    ));
+                }
+                let view = exact_input_rlp(&location)?;
+                let count = view.item_count()?;
+                ensure!(
+                    matches!(count, 2 | 3),
+                    "PBFT_INPUT_TRANSACTION_LOCATION_SHAPE"
+                );
+                let period: u64 = view.val_at(0)?;
+                let position: u32 = view.val_at(1)?;
+                let system = count == 3;
+                if system {
+                    ensure!(
+                        view.val_at::<bool>(2)?,
+                        "PBFT_INPUT_TRANSACTION_LOCATION_SYSTEM_FLAG"
+                    );
+                }
+                let mut canonical = rlp::RlpStream::new_list(count);
+                canonical.append(&period).append(&position);
+                if system {
+                    canonical.append(&true);
+                }
+                ensure!(
+                    canonical.out().as_ref() == location.as_slice(),
+                    "PBFT_INPUT_TRANSACTION_LOCATION_CANONICAL"
+                );
+                if period > prior_period {
+                    return Ok(PbftInputCapture::Unavailable(
+                        PbftInputUnavailable::FutureLocation(hash),
+                    ));
+                }
+                let Some(data) = snapshot.get(Column::PeriodData, &period.to_le_bytes())? else {
+                    return Ok(PbftInputCapture::Unavailable(
+                        PbftInputUnavailable::FinalizedPayloadUnavailable(hash),
+                    ));
+                };
+                let data = exact_input_rlp(&data)?;
+                let transactions = data.at(3)?;
+                let payload = if system {
+                    let ordinary_count = u32::try_from(transactions.item_count()?)?;
+                    let system_position =
+                        position.checked_sub(ordinary_count).ok_or_else(|| {
+                            anyhow::anyhow!("PBFT_INPUT_SYSTEM_POSITION_BEFORE_REGULAR")
+                        })?;
+                    let Some(hashes) =
+                        snapshot.get(Column::PeriodSystemTransactions, &period.to_le_bytes())?
+                    else {
+                        return Ok(PbftInputCapture::Unavailable(
+                            PbftInputUnavailable::FinalizedPayloadUnavailable(hash),
+                        ));
+                    };
+                    ensure!(
+                        exact_input_rlp(&hashes)?.val_at::<H256>(system_position as usize)? == hash,
+                        "PBFT_INPUT_SYSTEM_POSITION_HASH_MISMATCH"
+                    );
+                    let Some(payload) = snapshot.get(Column::SystemTransaction, hash.as_bytes())?
+                    else {
+                        return Ok(PbftInputCapture::Unavailable(
+                            PbftInputUnavailable::FinalizedPayloadUnavailable(hash),
+                        ));
+                    };
+                    payload
+                } else {
+                    transactions.at(position as usize)?.as_raw().to_vec()
+                };
+                ensure!(
+                    input_hash(&payload) == hash,
+                    "PBFT_INPUT_DURABLE_TRANSACTION_HASH_MISMATCH"
+                );
+                if !budget.charge(payload.len()) {
+                    return Ok(PbftInputCapture::Unavailable(
+                        PbftInputUnavailable::LocalLimit,
+                    ));
+                }
+                lookups.push(PbftExecutionTransactionLookup::Finalized {
+                    hash,
+                    period: period.into(),
+                    location_rlp: location,
+                });
+                payloads.push((hash, payload));
+            } else if let Some(supplied) = supplied {
+                let Some(&rlp) = supplied.get(&hash) else {
+                    return Ok(PbftInputCapture::Unavailable(
+                        PbftInputUnavailable::MissingTransaction(hash),
+                    ));
+                };
+                if !budget.charge(rlp.len()) {
+                    return Ok(PbftInputCapture::Unavailable(
+                        PbftInputUnavailable::LocalLimit,
+                    ));
+                }
+                lookups.push(PbftExecutionTransactionLookup::Included {
+                    hash,
+                    rlp: rlp.to_vec(),
+                });
+            } else {
+                let mut views = self.non_finalized_transaction_views(vec![
+                    TransactionServiceTransactionViewRequest {
+                        input_index: index as u64,
+                        hash: hash.0,
+                    },
+                ])?;
+                ensure!(views.len() == 1, "PBFT_INPUT_SIDECAR_VIEW_COUNT");
+                let view = views.pop().expect("checked one view");
+                ensure!(
+                    view.hash == hash.0 && view.input_index == index as u64,
+                    "PBFT_INPUT_SIDECAR_VIEW_IDENTITY"
+                );
+                if !view.found {
+                    return Ok(PbftInputCapture::Unavailable(
+                        PbftInputUnavailable::MissingTransaction(hash),
+                    ));
+                }
+                ensure!(
+                    input_hash(&view.tx_rlp) == hash,
+                    "PBFT_INPUT_SIDECAR_TRANSACTION_HASH_MISMATCH"
+                );
+                if !budget.charge(view.tx_rlp.len()) {
+                    return Ok(PbftInputCapture::Unavailable(
+                        PbftInputUnavailable::LocalLimit,
+                    ));
+                }
+                lookups.push(PbftExecutionTransactionLookup::Included {
+                    hash,
+                    rlp: view.tx_rlp,
+                });
+            }
+        }
+        Ok(PbftInputCapture::Ready((lookups, payloads)))
+    }
+
     /// Returns the current transaction count.
     pub(crate) fn transaction_count(&self) -> u64 {
         self.sidecar.transaction_count()
@@ -1464,6 +1692,10 @@ impl TransactionServiceState {
     }
 
     /// Returns queue entry count currently available for proposer scans.
+    pub(crate) fn transactions_are_proposable(&self, hashes: &[H256]) -> bool {
+        hashes.iter().all(|&hash| self.queue.is_proposable(hash))
+    }
+
     pub(crate) fn queue_size(&self) -> usize {
         self.queue.size() as usize
     }
@@ -1650,6 +1882,20 @@ impl TransactionServiceState {
     fn recover_non_finalized(&mut self) -> Result<u64> {
         let entries = load_non_finalized_recovery_entries(&self.storage)
             .context("TM_NONFINALIZED_RECOVERY_STORAGE")?;
+        self.restore_non_finalized_entries(entries)
+    }
+
+    fn recover_non_finalized_read_only(&mut self) -> Result<u64> {
+        let entries =
+            crate::transaction_storage::read_non_finalized_recovery_entries(&self.storage)
+                .context("TM_NONFINALIZED_RECOVERY_STORAGE")?;
+        self.restore_non_finalized_entries(entries)
+    }
+
+    fn restore_non_finalized_entries(
+        &mut self,
+        entries: Vec<crate::transaction_storage::NonFinalizedTransactionRecoveryEntry>,
+    ) -> Result<u64> {
         let mut recovered = Vec::with_capacity(entries.len());
         for entry in entries {
             if entry.finalized {
@@ -2343,6 +2589,82 @@ mod tests {
             },
         )?;
         Ok((service, temp_dir))
+    }
+
+    #[cfg(feature = "production_integration_test")]
+    #[test]
+    fn read_only_recovery_preserves_stale_rows_and_transaction_count() -> Result<()> {
+        let (service, _path) = build_service_with_defaults(
+            Some(3),
+            16,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let storage = Arc::clone(&service.lock()?.storage);
+        let raw = signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x43; 32])?);
+        let hash = LegacyTransactionEnvelope::decode(&raw)?.hash;
+        let stale = H256::repeat_byte(0xff);
+        storage.transaction().write(hash, &raw)?;
+        storage.transaction().write(stale, &[0xff])?;
+        storage.transaction().write_location(stale, 9, 0, false)?;
+        let before = storage.integration_database_image()?;
+        assert_eq!(service.recover_non_finalized_read_only()?, 1);
+        let state = service.lock()?;
+        assert!(state.sidecar.contains_non_finalized(hash));
+        assert!(!state.sidecar.contains_non_finalized(stale));
+        assert_eq!(state.sidecar.transaction_count(), 3);
+        assert_eq!(storage.integration_database_image()?, before);
+        Ok(())
+    }
+
+    #[cfg(feature = "production_integration_test")]
+    #[test]
+    fn read_only_recovery_does_not_publish_a_valid_prefix_on_error() -> Result<()> {
+        let (service, _path) = build_service_with_defaults(
+            Some(3),
+            16,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let storage = Arc::clone(&service.lock()?.storage);
+        let prior = signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x44; 32])?);
+        let prior_hash = LegacyTransactionEnvelope::decode(&prior)?.hash;
+        service
+            .lock()?
+            .sidecar
+            .insert_non_finalized(prior_hash, prior)?;
+        let valid = signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x43; 32])?);
+        let valid_hash = LegacyTransactionEnvelope::decode(&valid)?.hash;
+        let bad = H256::repeat_byte(0xff);
+        assert!(valid_hash < bad);
+        storage.transaction().write(valid_hash, &valid)?;
+        storage.transaction().write(bad, &[0xff])?;
+        let before = storage.integration_database_image()?;
+        let error = service
+            .recover_non_finalized_read_only()
+            .expect_err("malformed pending entry");
+        assert!(
+            error
+                .to_string()
+                .contains("TM_NONFINALIZED_RECOVERY_ENVELOPE_INSPECT")
+        );
+        let state = service.lock()?;
+        assert!(state.sidecar.contains_non_finalized(prior_hash));
+        assert!(!state.sidecar.contains_non_finalized(valid_hash));
+        assert_eq!(state.sidecar.non_finalized_size(), 1);
+        assert_eq!(state.sidecar.transaction_count(), 3);
+        assert_eq!(storage.integration_database_image()?, before);
+        Ok(())
     }
 
     #[test]

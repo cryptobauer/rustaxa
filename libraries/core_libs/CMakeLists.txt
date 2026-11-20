@@ -5,7 +5,8 @@ file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
 if(RUSTAXA_ENABLE)
   # Keep the main-only finalization execution leaf explicit for configured Rust builds.
   list(APPEND CONSENSUS_SOURCES
-       ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/application/finalization_transaction_order.cpp)
+       ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/application/finalization_transaction_order.cpp
+       ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/application/native_config_projection.cpp)
   list(REMOVE_DUPLICATES CONSENSUS_SOURCES)
 endif()
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
@@ -251,6 +252,7 @@ endif()
 
 if(RUSTAXA_ENABLE)
     target_link_libraries(core_libs PUBLIC rustaxa-bridge RocksDB::rocksdb)
+    target_include_directories(core_libs PUBLIC ${PROJECT_SOURCE_DIR}/rust/crates/rustaxa-native-config/include)
 endif()
 
 install(TARGETS core_libs

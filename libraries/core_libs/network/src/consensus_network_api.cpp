@@ -138,13 +138,13 @@ class ConsensusNetworkApi::Impl final {
   struct BoundRoot {};
 
   Impl(SharedConsensusApplication consensus_application, ConsensusNetworkObservers observers, BoundRoot)
-      : external_evm(consensus_application),
+      : external_evm(consensus_application->usesRustExecution() ? nullptr : std::make_unique<ExternalEvmPort>(consensus_application)),
         api(rustaxa::create_consensus_network_api(consensus_application->service())),
         query(consensus_application->queryClient()),
         observers(std::move(observers)) {}
 
  public:
-  ExternalEvmPort external_evm;
+  std::unique_ptr<ExternalEvmPort> external_evm;
   rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
   taraxa::net::ConsensusQueryClient query;
   ConsensusNetworkObservers observers;
@@ -337,7 +337,8 @@ StatusPacketBuildReport ConsensusNetworkApi::buildStatusPacket(const StatusPacke
 
 PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
     const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id, const std::array<uint8_t, 64>& source_peer_id,
-    const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters, const PbftSyncIngressExecutor& executor) {
+    const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters, const PbftSyncIngressExecutor& executor,
+    uint64_t sync_generation) {
   rust::Vec<rustaxa::SlashingSubmitterIdentity> native_submitters;
   native_submitters.reserve(slashing_submitters.size());
   for (const auto& submitter : slashing_submitters) {
@@ -349,7 +350,7 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
   }
   auto step = impl_->api->consensus_network_begin_pbft_sync_ingress(
       rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()), source_payload_id, source_peer_id,
-      std::move(native_submitters));
+      sync_generation, std::move(native_submitters));
   while (step.action == kPbftSyncIngressAwaitingSlashing) {
     if (!step.has_slashing_transaction_effect || !executor.submit_slashing_transaction) {
       throw std::runtime_error("Native PBFT-sync ingress paused without an executable slashing boundary");
@@ -364,8 +365,9 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
         native_effect.gas_limit,
         std::vector<uint8_t>(native_effect.call_data.begin(), native_effect.call_data.end())};
     const auto transaction_inserted = executor.submit_slashing_transaction(transaction);
-    step = impl_->api->consensus_network_report_pbft_sync_ingress_slashing(step.slashing_transaction_effect.proof_hash,
-                                                                           transaction_inserted);
+    step = impl_->api->consensus_network_report_pbft_sync_ingress_slashing(
+        step.slashing_transaction_effect.proof_hash, transaction_inserted, source_payload_id, source_peer_id,
+        sync_generation);
   }
 
   PbftSyncIngressAction action;

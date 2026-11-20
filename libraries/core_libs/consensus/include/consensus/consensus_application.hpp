@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "transaction/transaction.hpp"
 
 namespace rustaxa {
+class NativeSelectedProductionConfig;
 struct HostFinalChainFinalizeReport;
 struct HostFinalChainFinalizeTask;
 }  // namespace rustaxa
@@ -68,6 +70,7 @@ struct ConsensusRuntimeStatus {
 class ConsensusApplication final {
  public:
   /** Takes exclusive ownership of a fully restored native application root. */
+  explicit ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service);
   ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service,
                        std::shared_ptr<ExternalEvmStateOwner> external_evm_state);
   ~ConsensusApplication();
@@ -79,6 +82,7 @@ class ConsensusApplication final {
 
   /** Returns the opaque task receiver while this holder remains alive. */
   const rustaxa::BridgeConsensusApplication& service() const noexcept { return *service_; }
+  bool usesRustExecution() const noexcept { return !external_evm_state_; }
 
   /** Returns the root-bound public query client without exposing native services. */
   ConsensusQueryClient queryClient() const noexcept { return query_client_; }
@@ -150,11 +154,15 @@ class ConsensusApplication final {
 
  private:
   friend class ExternalEvmPort;
+  friend class ExternalEvmStateOwner;
   friend std::shared_ptr<ConsensusApplication> createConsensusApplication(const FullNodeConfig& config);
 
   /** Completes a crash-interrupted concrete-EVM publication before the application escapes bootstrap. */
   void recoverExternalEvmPendingPublication(const std::shared_ptr<ConsensusApplication>& self);
   std::shared_ptr<ExternalEvmStateOwner> externalEvmStateOwner() const noexcept { return external_evm_state_; }
+  state_api::ExecutionResult queryFinalizedCall(const state_api::EVMTransaction& transaction,
+                                                 EthBlockNumber block_number) const;
+  ExternalEvmStateOwner& legacyExecution() const;
 
   rust::Box<rustaxa::BridgeConsensusApplication> service_;
   ConsensusQueryClient query_client_;
@@ -168,6 +176,8 @@ class ConsensusApplication final {
 using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;
 
 /** Builds the sole native application root from immutable node configuration. */
-SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config);
+rust::Box<rustaxa::BridgeConsensusApplication> openProductionConsensusApplication(
+    std::unique_ptr<rustaxa::NativeSelectedProductionConfig> selected, const std::filesystem::path& concrete_path);
+[[maybe_unused]] SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config);
 
 }  // namespace taraxa

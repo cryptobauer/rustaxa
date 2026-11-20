@@ -96,12 +96,8 @@ extract_non_test_cpp_consumers() {
   consumer_root="$1"
   safe_scan_path "$consumer_root/libraries" || return 1
   safe_scan_path "$consumer_root/programs" || return 1
-  {
-    rg -l '#include [<"]rustaxa-bridge/(ffi|application_host_ffi)\.rs\.h[>"]' \
-      "$consumer_root/libraries" "$consumer_root/programs" \
-      --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' \
-      --glob '!AI.md' --glob '!AI.md/**' --glob '!**/AI.md/**' || true
-  } | sed "s#^$consumer_root/##" | sort -u
+  consumers="$(python3 "$inventory_parser" cpp-consumers "$consumer_root/libraries" "$consumer_root/programs")" || return 1
+  printf '%s\n' "$consumers" | sed "/^$/d; s#^$consumer_root/##" | sort -u
 }
 
 extract_audited_non_test_cpp_consumers() {
@@ -113,6 +109,10 @@ extract_audited_non_test_cpp_consumers() {
       print value
     }
   ' "$1" | sort
+}
+
+collect_cxx_sources() {
+  python3 "$inventory_parser" cxx-sources "$1"
 }
 
 extract_bridge_modules() {
@@ -404,8 +404,14 @@ extract_surface_budget() {
 
 count_shim_source_lines() {
   safe_scan_path "$1" || return 1
-  find "$1" -name 'AI.md' -prune -o -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \) \
-    -exec wc -l {} + | awk '$2 != "total" { total += $1 } END { print total + 0 }'
+  if [ ! -e "$1" ]; then
+    printf '0\n'
+    return 0
+  fi
+  [ -d "$1" ] || return 1
+  lines="$(find "$1" -name 'AI.md' -prune -o -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \) \
+    -exec wc -l {} +)" || return 1
+  printf '%s\n' "$lines" | awk '$2 != "total" { total += $1 } END { print total + 0 }'
 }
 
 count_cxx_carriers() {
@@ -510,12 +516,9 @@ check_surface_budgets() {
   safe_scan_path "$repo_root" || return 1
   audit_file="$2"
   safe_scan_path "$audit_file" || return 1
-  safe_scan_path "$repo_root/rust/crates/rustaxa-bridge/src/ffi.rs" || return 1
-  safe_scan_path "$repo_root/rust/crates/rustaxa-bridge/src/application_host_ffi.rs" || return 1
   safe_scan_path "$repo_root/CMakeLists.txt" || return 1
   ffi_file="$(mktemp)"
-  cat "$repo_root/rust/crates/rustaxa-bridge/src/ffi.rs" \
-    "$repo_root/rust/crates/rustaxa-bridge/src/application_host_ffi.rs" >"$ffi_file"
+  collect_cxx_sources "$repo_root/rust/crates/rustaxa-bridge/src/lib.rs" >"$ffi_file" || return 1
   bridge_root="$repo_root/rust/crates/rustaxa-bridge/src"
   shim_root="$repo_root/libraries/core_libs/consensus/shims"
   safe_scan_path "$bridge_root" || return 1
@@ -525,7 +528,7 @@ check_surface_budgets() {
 
   bridge_lines="$(find "$bridge_root" -name 'AI.md' -prune -o -type f -name '*.rs' -exec wc -l {} + |
     awk '$2 != "total" { total += $1 } END { print total + 0 }')"
-  shim_lines="$(count_shim_source_lines "$shim_root")"
+  shim_lines="$(count_shim_source_lines "$shim_root")" || return 1
   cxx_functions="$(count_cxx_function_declarations "$ffi_file")"
   cxx_carriers="$(count_cxx_carriers "$ffi_file")"
   cxx_handles="$(count_cxx_opaque_handles "$ffi_file")"
@@ -537,14 +540,8 @@ check_surface_budgets() {
   compatibility_constructor_calls="$(
     count_compatibility_constructor_calls "$ffi_file" "$audit_file" "$repo_root/libraries" "$repo_root/programs"
   )"
-  non_test_cpp_consumers="$(
-    {
-      rg -l '#include [<"]rustaxa-bridge/(ffi|application_host_ffi)\.rs\.h[>"]' \
-        "$repo_root/libraries" "$repo_root/programs" \
-        --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' \
-      --glob '!AI.md' --glob '!AI.md/**' --glob '!**/AI.md/**' || true
-    } | wc -l
-  )"
+  consumer_inventory="$(extract_non_test_cpp_consumers "$repo_root")" || return 1
+  non_test_cpp_consumers="$(printf '%s\n' "$consumer_inventory" | sed '/^$/d' | wc -l)"
 
   check_surface_metric bridge_lines "$bridge_lines" "$audit_file"
   check_surface_metric shim_lines "$shim_lines" "$audit_file"
@@ -696,6 +693,9 @@ check_bridge_names_do_not_leak_from_other_sections() {
 }
 
 if [ "$self_test" -eq 1 ]; then
+  # The fixture repositories need their own Git directory and index.
+  git_local_env="$(git rev-parse --local-env-vars)"
+  unset $git_local_env
   temp_dir="$(mktemp -d)"
   trap 'rm -rf "$temp_dir"' EXIT
 
@@ -1101,17 +1101,15 @@ EOF
     exit 1
   fi
 
+  python3 "$repo_root/scripts/test_rewrite_bridge_inventory.py"
   echo "Rust bridge inventory guard self-test passed."
   exit 0
 fi
 
-safe_scan_path rust/crates/rustaxa-bridge/src/ffi.rs || exit 1
-safe_scan_path rust/crates/rustaxa-bridge/src/application_host_ffi.rs || exit 1
 missing_file="$(mktemp)"
 stale_file="$(mktemp)"
 ffi_inventory_file="$(mktemp)"
-cat rust/crates/rustaxa-bridge/src/ffi.rs \
-  rust/crates/rustaxa-bridge/src/application_host_ffi.rs >"$ffi_inventory_file"
+collect_cxx_sources rust/crates/rustaxa-bridge/src/lib.rs >"$ffi_inventory_file" || exit 1
 trap 'rm -f "$missing_file" "$stale_file" "$ffi_inventory_file"' EXIT
 
 check_inventory \

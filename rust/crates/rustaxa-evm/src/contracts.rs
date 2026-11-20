@@ -675,6 +675,8 @@ pub enum NativePortError {
     QuoteMismatch,
     /// The authoritative current journal could not be read safely.
     Journal(NativeJournalReadError),
+    /// The corrected slashing kernel reached malformed nested proof RLP.
+    MalformedNestedSlashingProof(String),
     /// Native semantic state was unavailable or inconsistent.
     Domain(String),
     /// Physical adapter execution failed.

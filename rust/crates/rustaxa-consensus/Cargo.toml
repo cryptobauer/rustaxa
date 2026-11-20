@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+production_integration_test = ["rustaxa-storage/production_integration_test"]
 synthetic-fixtures = ["rustaxa-storage/synthetic-fixtures"]
 
 [dependencies]
+rustaxa-native-config = { path = "../rustaxa-native-config" }
 anyhow = "1.0.100"
 ethereum-types = { version = "0.16.0", features = ["rlp"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
@@ -23,3 +25,4 @@ triehash = "0.8.4"
 
 [dev-dependencies]
 flate2 = "1.1"
+rocksdb = { version = "0.24.0", default-features = false, features = ["lz4"] }

@@ -13,7 +13,8 @@ use rustaxa_types::FinalChainBlockNumber;
 use rustaxa_types::codec::rlp::concrete_lifecycle::{
     concrete_storage_slot_catalog_hash, decode_concrete_execution_marker,
     decode_concrete_state_provenance, decode_concrete_storage_catalog,
-    encode_concrete_state_provenance, encode_concrete_storage_catalog,
+    encode_concrete_execution_marker, encode_concrete_state_provenance,
+    encode_concrete_storage_catalog,
 };
 use rustaxa_types::concrete_lifecycle::{
     ConcreteStorageSlot, FINAL_CHAIN_CONCRETE_PROJECTION_VERSION,
@@ -178,6 +179,151 @@ impl ConcreteObserverPhaseOutput {
     }
 }
 
+/// Isolated ordered preparation borrowed from one clean lifecycle.
+/// No phase changes the live writer sequence or the durable execution marker.
+pub struct ConcreteTransitionBuilder<'owner> {
+    owner: &'owner ConcreteStateWriter,
+    writer: super::writer::ConcreteTransitionWriter,
+    provenance: FinalChainConcreteStateProvenance,
+    next_period: FinalChainBlockNumber,
+    failed: bool,
+}
+
+/// A sealed transition for one exact source and canonical execution marker.
+/// This value grants no application publication authority.
+///
+/// ```compile_fail
+/// use rustaxa_storage::{PreparedConcreteState, PreparedConcreteTransition};
+/// fn cannot_convert(raw: PreparedConcreteState) -> PreparedConcreteTransition {
+///     raw.into()
+/// }
+/// ```
+/// ```compile_fail
+/// use rustaxa_storage::{ConcreteStateLifecycle, PreparedConcreteState};
+/// fn cannot_import(owner: &mut ConcreteStateLifecycle, raw: PreparedConcreteState) {
+///     owner.consume_prepared_transition(raw).unwrap();
+/// }
+/// ```
+pub struct PreparedConcreteTransition {
+    prepared: super::writer::SealedConcreteTransition,
+    provenance: FinalChainConcreteStateProvenance,
+    marker_rlp: Vec<u8>,
+    accounts: Vec<ConcreteObserverAccountChange>,
+}
+
+/// A validated import retained before the first durable publication write.
+pub struct CertifiedConcreteCommit {
+    pub(crate) prior: ConcreteLifecycleObservation,
+    pub(crate) approval: ConcreteCommitApproval,
+    prepared: PreparedConcreteState,
+}
+
+impl CertifiedConcreteCommit {
+    pub fn prior(&self) -> &ConcreteLifecycleObservation {
+        &self.prior
+    }
+    pub fn next_identity(&self) -> ConcreteStateIdentity {
+        self.prepared.next_identity()
+    }
+    pub fn approval(&self) -> &ConcreteCommitApproval {
+        &self.approval
+    }
+}
+
+impl PreparedConcreteTransition {
+    /// Returns the cumulative staged row. An untouched account has no staged row.
+    pub fn account_update(
+        &self,
+        address: [u8; 20],
+    ) -> Result<Option<ConcreteRead<ConcreteAccountRecord>>, ConcreteReadError> {
+        self.prepared.account_update(address)
+    }
+
+    /// Returns the derived final state identity.
+    pub fn next_identity(&self) -> ConcreteStateIdentity {
+        self.prepared.next_identity()
+    }
+
+    /// Returns the exact account changes from the final ordered phase.
+    pub fn changed_accounts(&self) -> &[ConcreteObserverAccountChange] {
+        &self.accounts
+    }
+}
+
+impl ConcreteTransitionBuilder<'_> {
+    fn ensure_usable(&self) -> Result<(), ConcreteReadError> {
+        if self.failed {
+            return Err(corrupt("concrete transition preparation failed"));
+        }
+        self.writer.verify_source(self.owner)
+    }
+
+    /// Borrows the exact prior or latest prepared execution view.
+    pub fn current_view(
+        &self,
+    ) -> Result<super::writer::ConcreteExecutionProbeView<'_>, ConcreteReadError> {
+        self.ensure_usable()?;
+        self.writer.current_view()
+    }
+
+    /// Applies one ordered phase. A failed phase invalidates this builder.
+    pub fn apply_phase(
+        &mut self,
+        delta: ConcreteObserverPhaseDelta,
+    ) -> Result<ConcreteObserverPhaseOutput, ConcreteReadError> {
+        if let Err(error) = self.ensure_usable() {
+            self.failed = true;
+            return Err(error);
+        }
+        match self.writer.apply_phase(delta) {
+            Ok(prepared) => Ok(transition_phase_output(prepared)),
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
+        }
+    }
+
+    /// Seals successful phases with their exact canonical execution marker.
+    pub fn seal(self, marker_rlp: &[u8]) -> Result<PreparedConcreteTransition, ConcreteReadError> {
+        self.ensure_usable()?;
+        let marker = decode_concrete_execution_marker(marker_rlp).map_err(corrupt)?;
+        validate_marker(&self.provenance, &marker)?;
+        if marker.period != self.next_period.as_u64()
+            || encode_concrete_execution_marker(&marker) != marker_rlp
+        {
+            return Err(corrupt(
+                "concrete transition marker does not match its period",
+            ));
+        }
+        let accounts = transition_phase_output(self.writer.latest()?).accounts;
+        let prepared = self.writer.seal()?;
+        Ok(PreparedConcreteTransition {
+            prepared,
+            provenance: self.provenance,
+            marker_rlp: marker_rlp.to_vec(),
+            accounts,
+        })
+    }
+}
+
+fn transition_phase_output(prepared: &PreparedConcreteState) -> ConcreteObserverPhaseOutput {
+    let (writer_id, sequence) = prepared.token();
+    ConcreteObserverPhaseOutput {
+        identity: prepared.next_identity(),
+        accounts: prepared
+            .changed_accounts()
+            .iter()
+            .map(|(address, account)| ConcreteObserverAccountChange {
+                address: *address,
+                account: account.clone(),
+            })
+            .collect(),
+        writer_id,
+        sequence,
+    }
+}
+
 /// One opened concrete lifecycle generation. The contained writer and its
 /// prepared rows remain private so callers cannot bypass marker/provenance
 /// validation on the atomic commit path.
@@ -206,6 +352,22 @@ struct LoadedLifecycle {
 }
 
 impl ConcreteStateLifecycle {
+    #[cfg(feature = "production_integration_test")]
+    pub fn integration_database_image(
+        &self,
+    ) -> anyhow::Result<crate::integration_inspection::DatabaseImage> {
+        let db = &self.writer.db;
+        crate::integration_inspection::capture(db.path(), |name, remaining, maximum_rows| {
+            let cf = db
+                .cf_handle(name)
+                .ok_or_else(|| anyhow::anyhow!("integration column missing"))?;
+            crate::integration_inspection::collect_rows(
+                db.iterator_cf(&cf, rocksdb::IteratorMode::Start),
+                remaining,
+                maximum_rows,
+            )
+        })
+    }
     /// Exclusively creates a new database directory, computes the real period-0
     /// root from `genesis`, generates a nonzero database identity, and installs
     /// rows, descriptor, generation-0 provenance, and catalog in one synchronous
@@ -463,10 +625,184 @@ impl ConcreteStateLifecycle {
         })
     }
 
+    fn ensure_clean_transition_source(&self) -> Result<(), ConcreteReadError> {
+        self.ensure_usable()?;
+        if self.pending.is_some()
+            || !self.pending_rlp.is_empty()
+            || self.observer_prepared.is_some()
+            || self.legacy_prepared
+            || !self.intermediate_content.is_empty()
+        {
+            return Err(corrupt("concrete transition requires a clean lifecycle"));
+        }
+        self.writer.transition_source_token()?;
+        Ok(())
+    }
+
+    /// Starts isolated preparation without staging a durable marker.
+    pub fn begin_transition(
+        &self,
+        next_period: FinalChainBlockNumber,
+    ) -> Result<ConcreteTransitionBuilder<'_>, ConcreteReadError> {
+        self.ensure_clean_transition_source()?;
+        if concrete_identity(self.provenance.committed_state)
+            .period
+            .checked_next()
+            != Some(next_period)
+        {
+            return Err(corrupt("concrete transition period must follow its prior"));
+        }
+        Ok(ConcreteTransitionBuilder {
+            owner: &self.writer,
+            writer: self.writer.begin_isolated_transition()?,
+            provenance: self.provenance.clone(),
+            next_period,
+            failed: false,
+        })
+    }
+
+    /// Imports a sealed transition after application admission and durable intent.
+    /// The caller must hold its application publication authority. Storage only
+    /// checks source lineage and exact marker bytes; it grants no such authority.
+    pub fn consume_prepared_transition(
+        &mut self,
+        prepared: PreparedConcreteTransition,
+    ) -> Result<ConcreteObserverPhaseOutput, ConcreteReadError> {
+        self.ensure_clean_transition_source()?;
+        if prepared.provenance != self.provenance {
+            return Err(corrupt("concrete transition lifecycle changed"));
+        }
+        let marker = decode_concrete_execution_marker(&prepared.marker_rlp).map_err(corrupt)?;
+        validate_marker(&self.provenance, &marker)?;
+        if marker.period != prepared.next_identity().period.as_u64()
+            || encode_concrete_execution_marker(&marker) != prepared.marker_rlp
+        {
+            return Err(corrupt("concrete transition marker changed"));
+        }
+        let imported = self.writer.prepare_transition_import(prepared.prepared)?;
+        let output = transition_phase_output(&imported);
+        self.stage_execution(&prepared.marker_rlp)?;
+        self.writer.install_transition_sequence(&imported);
+        self.observer_prepared = Some(imported);
+        Ok(output)
+    }
+
+    /// Validates the complete import and approval without staging a marker.
+    pub fn prepare_certified_commit(
+        &self,
+        prepared: PreparedConcreteTransition,
+        projection_hash: [u8; 32],
+        catalog_rlp: Vec<u8>,
+    ) -> Result<CertifiedConcreteCommit, ConcreteReadError> {
+        self.ensure_clean_transition_source()?;
+        if prepared.provenance != self.provenance {
+            return Err(corrupt("certified concrete predecessor changed"));
+        }
+        let marker = decode_concrete_execution_marker(&prepared.marker_rlp).map_err(corrupt)?;
+        validate_marker(&self.provenance, &marker)?;
+        if encode_concrete_execution_marker(&marker) != prepared.marker_rlp
+            || marker.period != prepared.next_identity().period.as_u64()
+        {
+            return Err(corrupt("certified concrete marker mismatch"));
+        }
+        let catalog = decode_concrete_storage_catalog(&catalog_rlp).map_err(corrupt)?;
+        if encode_concrete_storage_catalog(catalog.iter().copied()) != catalog_rlp
+            || !self
+                .catalog
+                .iter()
+                .all(|slot| catalog.binary_search(slot).is_ok())
+        {
+            return Err(corrupt("certified concrete catalog mismatch"));
+        }
+        let catalog_hash = concrete_storage_slot_catalog_hash(catalog.iter().copied());
+        let provenance = FinalChainConcreteStateProvenance {
+            identity: marker.identity,
+            generation: marker.generation,
+            plan_hash: marker.plan_hash,
+            committed_state: lifecycle_state(prepared.next_identity()),
+            transactions_hash: marker.transactions_hash,
+            rewards_hash: marker.rewards_hash,
+            projection_hash,
+            catalog_hash,
+        };
+        let prior = self.observation()?;
+        let imported = self.writer.prepare_transition_import(prepared.prepared)?;
+        Ok(CertifiedConcreteCommit {
+            prior,
+            approval: ConcreteCommitApproval {
+                marker_rlp: prepared.marker_rlp,
+                provenance_rlp: encode_concrete_state_provenance(&provenance),
+                catalog_rlp,
+                projection_hash,
+                catalog_hash,
+            },
+            prepared: imported,
+        })
+    }
+
+    /// Commits only the exact import validated before the durable intent.
+    pub fn commit_certified(
+        self,
+        commit: CertifiedConcreteCommit,
+    ) -> Result<ConcreteLifecycleObservation, ConcreteReadError> {
+        self.commit_certified_retaining(commit)
+            .map(|(_, observation)| observation)
+    }
+
+    pub(crate) fn commit_certified_retaining(
+        mut self,
+        commit: CertifiedConcreteCommit,
+    ) -> Result<(Self, ConcreteLifecycleObservation), ConcreteReadError> {
+        self.writer.verify_transition_import(&commit.prepared)?;
+        let mut observed = self.observation()?;
+        if self.observer_prepared.is_some()
+            || self.legacy_prepared
+            || !self.intermediate_content.is_empty()
+        {
+            return Err(corrupt(
+                "certified concrete commit requires clean preparation state",
+            ));
+        }
+        if !observed.pending_marker_rlp.is_empty()
+            && observed.pending_marker_rlp != commit.approval.marker_rlp
+        {
+            return Err(corrupt("certified concrete pending marker changed"));
+        }
+        observed.pending_marker_rlp.clear();
+        if observed != commit.prior {
+            return Err(corrupt("certified concrete import is stale"));
+        }
+        self.stage_execution(&commit.approval.marker_rlp)?;
+        self.writer.install_transition_sequence(&commit.prepared);
+        let observation =
+            self.commit_prepared_inner(commit.prepared, commit.approval, |_, _, _, _, _, _| {})?;
+        Ok((self, observation))
+    }
+
     /// Borrows the immutable prior-generation read port over this same RocksDB
     /// handle. It never exposes prepared overlay rows.
     pub fn prior_reader(&self) -> &dyn ConcreteStateRead {
         &self.writer
+    }
+
+    /// Borrows clean committed state for private ordered execution preparation.
+    /// The borrow prevents lifecycle writes; probe preparation uses independent
+    /// sequence state and cannot expose rows or a publication capability.
+    pub fn borrow_execution_probe(
+        &self,
+    ) -> Result<super::writer::BorrowedConcreteExecutionProbe<'_>, ConcreteReadError> {
+        self.ensure_usable()?;
+        if self.pending.is_some()
+            || !self.pending_rlp.is_empty()
+            || self.observer_prepared.is_some()
+            || self.legacy_prepared
+            || !self.intermediate_content.is_empty()
+        {
+            return Err(corrupt(
+                "execution probe requires a clean concrete lifecycle",
+            ));
+        }
+        super::writer::BorrowedConcreteExecutionProbe::from_owner(&self.writer)
     }
 
     /// Opens retained logical-proof access while pinning the durable descriptor.
@@ -810,7 +1146,7 @@ impl ConcreteStateLifecycle {
     }
 
     fn commit_prepared(
-        self,
+        mut self,
         prepared: PreparedConcreteState,
         approval: ConcreteCommitApproval,
     ) -> Result<ConcreteLifecycleObservation, ConcreteReadError> {
@@ -818,7 +1154,7 @@ impl ConcreteStateLifecycle {
     }
 
     fn commit_prepared_inner<F>(
-        self,
+        &mut self,
         prepared: PreparedConcreteState,
         approval: ConcreteCommitApproval,
         on_commit: F,
@@ -926,14 +1262,26 @@ impl ConcreteStateLifecycle {
             &self.intermediate_content,
             &prepared.rows,
         );
-        Ok(ConcreteLifecycleObservation {
+        let committed = prepared.next_identity();
+        self.writer.install_committed_identity(committed);
+        let observation = ConcreteLifecycleObservation {
             identity: provenance.identity,
-            committed: prepared.next_identity(),
+            committed,
             generation: provenance.generation,
-            provenance_rlp: approval.provenance_rlp,
-            catalog_rlp: approval.catalog_rlp,
+            provenance_rlp: approval.provenance_rlp.clone(),
+            catalog_rlp: approval.catalog_rlp.clone(),
             pending_marker_rlp: Vec::new(),
-        })
+        };
+        self.provenance = provenance;
+        self.provenance_rlp = approval.provenance_rlp;
+        self.catalog = catalog;
+        self.catalog_rlp = approval.catalog_rlp;
+        self.pending = None;
+        self.pending_rlp.clear();
+        self.intermediate_content.clear();
+        self.observer_prepared = None;
+        self.legacy_prepared = false;
+        Ok(observation)
     }
 
     /// Deletes only the exact staged marker in a synchronous write. Prepared
@@ -1115,6 +1463,7 @@ fn io(error: impl std::fmt::Display) -> ConcreteReadError {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use num_bigint::BigUint;
@@ -1152,6 +1501,715 @@ mod tests {
                 std::fs::remove_dir_all(&self.0).unwrap();
             }
         }
+    }
+
+    fn transition_test_rows(
+        owner: &ConcreteStateLifecycle,
+    ) -> Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)> {
+        let mut columns = DB::list_cf(&rocksdb::Options::default(), owner.writer.path()).unwrap();
+        columns.sort();
+        columns
+            .into_iter()
+            .map(|name| {
+                let cf = owner.writer.db.cf_handle(&name).unwrap();
+                let rows = owner
+                    .writer
+                    .db
+                    .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+                    .map(|row| {
+                        let (key, value) = row.unwrap();
+                        (key.to_vec(), value.to_vec())
+                    })
+                    .collect();
+                (name, rows)
+            })
+            .collect()
+    }
+
+    fn transition_test_wal(
+        owner: &ConcreteStateLifecycle,
+    ) -> BTreeMap<std::ffi::OsString, Vec<u8>> {
+        std::fs::read_dir(owner.writer.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_owned(),
+                    std::fs::read(&path).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn transition_test_seal(
+        owner: &ConcreteStateLifecycle,
+        marker_rlp: &[u8],
+    ) -> PreparedConcreteTransition {
+        let mut builder = owner.begin_transition(1.into()).unwrap();
+        builder
+            .apply_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        builder.seal(marker_rlp).unwrap()
+    }
+
+    #[test]
+    fn certified_concrete_handoff_retains_writer_and_rejects_old_transition() {
+        let path = TestPath::new();
+        let chain = [0xab; 32];
+        let owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let prior = owner.observation().unwrap();
+        let prior_token = owner.writer.transition_source_token().unwrap();
+        let database = std::sync::Arc::as_ptr(&owner.writer.db);
+        let (_, first_marker) = marker(&prior, 0xac);
+        let first = transition_test_seal(&owner, &first_marker);
+        let stale = transition_test_seal(&owner, &first_marker);
+        let catalog = encode_concrete_storage_catalog(std::iter::empty());
+        let first = owner
+            .prepare_certified_commit(first, [0xad; 32], catalog.clone())
+            .unwrap();
+        let (owner, committed) = owner.commit_certified_retaining(first).unwrap();
+        assert_eq!(std::sync::Arc::as_ptr(&owner.writer.db), database);
+        assert_eq!(owner.observation().unwrap(), committed);
+        assert_eq!(committed.committed.period, 1.into());
+        assert_eq!(committed.committed.state_root, prior.committed.state_root);
+        assert!(committed.pending_marker_rlp.is_empty());
+        assert_eq!(
+            owner.writer.transition_source_token().unwrap(),
+            (prior_token.0, prior_token.1 + 1)
+        );
+        assert!(
+            owner
+                .prepare_certified_commit(stale, [0xad; 32], catalog.clone())
+                .is_err()
+        );
+
+        let (_, second_marker) = marker(&committed, 0xae);
+        let mut builder = owner.begin_transition(2.into()).unwrap();
+        builder
+            .apply_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let second = owner
+            .prepare_certified_commit(builder.seal(&second_marker).unwrap(), [0xaf; 32], catalog)
+            .unwrap();
+        let (owner, next) = owner.commit_certified_retaining(second).unwrap();
+        assert_eq!(std::sync::Arc::as_ptr(&owner.writer.db), database);
+        assert_eq!(next.committed.period, 2.into());
+        assert_eq!(next.committed.state_root, prior.committed.state_root);
+        assert_eq!(next.generation, prior.generation + 2);
+        assert_eq!(
+            owner.writer.transition_source_token().unwrap(),
+            (prior_token.0, prior_token.1 + 2)
+        );
+        drop(owner);
+        let reopened = ConcreteStateLifecycle::open(&path.0, chain, next.committed).unwrap();
+        assert_eq!(reopened.observation().unwrap(), next);
+    }
+
+    #[test]
+    fn certified_concrete_handoff_rejects_advanced_writer_sequence_at_same_head() {
+        let path = TestPath::new();
+        let chain = [0xb1; 32];
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let prior = owner.observation().unwrap();
+        let initial = owner.writer.transition_source_token().unwrap();
+        let (_, raw_marker) = marker(&prior, 0xb2);
+        let sealed = transition_test_seal(&owner, &raw_marker);
+        let stale = owner
+            .prepare_certified_commit(
+                sealed,
+                [0xb3; 32],
+                encode_concrete_storage_catalog(std::iter::empty()),
+            )
+            .unwrap();
+
+        owner.stage_execution(&raw_marker).unwrap();
+        owner.discard_execution(&raw_marker).unwrap();
+        assert_eq!(owner.observation().unwrap(), prior);
+        assert_eq!(
+            owner.writer.transition_source_token().unwrap(),
+            (initial.0, initial.1 + 1)
+        );
+        let rows = transition_test_rows(&owner);
+        let error = owner
+            .commit_certified_retaining(stale)
+            .err()
+            .expect("old certified preparation must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("certified concrete import is stale or foreign")
+        );
+        let reopened = ConcreteStateLifecycle::open(&path.0, chain, prior.committed).unwrap();
+        assert_eq!(reopened.observation().unwrap(), prior);
+        assert_eq!(transition_test_rows(&reopened), rows);
+    }
+
+    #[test]
+    fn detached_transition_preparation_preserves_store_tokens_and_matches_ordered_probe() {
+        use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+        let path = TestPath::new();
+        let chain = [0xa1; 32];
+        let address = [0xa2; 20];
+        let key = ConcreteStorageKey([0xa3; 32]);
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        std::sync::Arc::get_mut(&mut owner.writer.db)
+            .unwrap()
+            .create_cf("transition_empty", &rocksdb::Options::default())
+            .unwrap();
+        std::sync::Arc::get_mut(&mut owner.writer.db)
+            .unwrap()
+            .create_cf("transition_extra", &rocksdb::Options::default())
+            .unwrap();
+        owner
+            .writer
+            .db
+            .put_cf(
+                &owner.writer.db.cf_handle("transition_extra").unwrap(),
+                b"wal",
+                b"keep",
+            )
+            .unwrap();
+        owner.writer.db.flush_wal(true).unwrap();
+        let before = owner.observation().unwrap();
+        let before_rows = transition_test_rows(&owner);
+        let before_wal = transition_test_wal(&owner);
+        assert!(!before_wal.is_empty());
+        assert!(
+            before_rows
+                .iter()
+                .any(|(name, rows)| name == "transition_empty" && rows.is_empty())
+        );
+        let old = owner
+            .writer
+            .prepare(1.into(), ConcreteStateMutationBatch::default())
+            .unwrap();
+        let old_token = owner.writer.prepared_token(&old).unwrap();
+        let (marker, marker_rlp) = marker(&before, 0xa4);
+        let first_delta = ConcreteObserverPhaseDelta {
+            accounts: vec![ConcreteAccountMutation::Upsert {
+                address,
+                record: account(1, 10),
+            }],
+            ..Default::default()
+        };
+        let second_delta = ConcreteObserverPhaseDelta {
+            storage: vec![
+                ConcreteStorageMutation {
+                    address,
+                    key,
+                    value: Some(vec![7]),
+                },
+                ConcreteStorageMutation {
+                    address,
+                    key,
+                    value: None,
+                },
+                ConcreteStorageMutation {
+                    address,
+                    key,
+                    value: Some(vec![9]),
+                },
+            ],
+            ..Default::default()
+        };
+        let (prepared, isolated_output, expected_identity) = {
+            let mut probe = owner.borrow_execution_probe().unwrap();
+            let mut builder = owner.begin_transition(1.into()).unwrap();
+            assert_eq!(builder.current_view().unwrap().identity(), before.committed);
+            probe.prepare_observer_phase(first_delta.clone()).unwrap();
+            let first = builder.apply_phase(first_delta).unwrap();
+            assert_eq!(first.identity(), probe.current_view().unwrap().identity());
+            probe.prepare_observer_phase(second_delta.clone()).unwrap();
+            let last = builder.apply_phase(second_delta).unwrap();
+            assert_eq!(last.identity(), probe.current_view().unwrap().identity());
+            assert_eq!(
+                builder
+                    .current_view()
+                    .unwrap()
+                    .storage(address, key)
+                    .unwrap(),
+                ConcreteRead::Present(vec![9])
+            );
+            assert_eq!(
+                builder.current_view().unwrap().account(address).unwrap(),
+                probe.current_view().unwrap().account(address).unwrap()
+            );
+            assert_eq!(owner.writer.prepared_token(&old).unwrap(), old_token);
+            let identity = last.identity();
+            (builder.seal(&marker_rlp).unwrap(), last, identity)
+        };
+        assert_eq!(prepared.next_identity(), expected_identity);
+        assert_eq!(
+            prepared.changed_accounts(),
+            isolated_output.changed_accounts()
+        );
+        assert_eq!(owner.observation().unwrap(), before);
+        assert_eq!(transition_test_rows(&owner), before_rows);
+        assert_eq!(transition_test_wal(&owner), before_wal);
+        let output = owner.consume_prepared_transition(prepared).unwrap();
+        assert_eq!(output.identity(), expected_identity);
+        assert!(owner.writer.prepared_token(&old).is_err());
+        assert!(owner.prepared_view(&isolated_output).is_err());
+        assert_eq!(
+            owner
+                .prepared_view(&output)
+                .unwrap()
+                .storage(address, key)
+                .unwrap(),
+            ConcreteRead::Present(vec![9])
+        );
+        assert_eq!(owner.observation().unwrap().pending_marker_rlp, marker_rlp);
+        let catalog = [ConcreteStorageSlot {
+            address,
+            key: key.0,
+        }];
+        let committed = owner
+            .commit_observer_approved(
+                output,
+                approval(&marker, &marker_rlp, expected_identity, &catalog),
+            )
+            .unwrap();
+        let reopened = ConcreteStateLifecycle::open(&path.0, chain, committed.committed).unwrap();
+        assert_eq!(reopened.observation().unwrap(), committed);
+        assert_eq!(
+            reopened.prior_reader().storage(address, key).unwrap(),
+            ConcreteRead::Present(vec![9])
+        );
+        assert_eq!(
+            reopened.prior_reader().account(address).unwrap(),
+            isolated_output.changed_accounts()[0].account
+        );
+    }
+
+    #[test]
+    fn detached_transition_failed_phase_and_bad_marker_leave_clean_source_for_retry() {
+        let path = TestPath::new();
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            [0xb1; 32],
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let before = owner.observation().unwrap();
+        let rows = transition_test_rows(&owner);
+        let wal = transition_test_wal(&owner);
+        let old = owner
+            .writer
+            .prepare(1.into(), ConcreteStateMutationBatch::default())
+            .unwrap();
+        let token = owner.writer.prepared_token(&old).unwrap();
+        let (marker, marker_rlp) = marker(&before, 0xb2);
+        {
+            let mut builder = owner.begin_transition(1.into()).unwrap();
+            builder
+                .apply_phase(ConcreteObserverPhaseDelta::default())
+                .unwrap();
+            assert!(
+                builder
+                    .apply_phase(ConcreteObserverPhaseDelta {
+                        storage: vec![ConcreteStorageMutation {
+                            address: [1; 20],
+                            key: ConcreteStorageKey([1; 32]),
+                            value: Some(Vec::new())
+                        }],
+                        ..Default::default()
+                    })
+                    .is_err()
+            );
+            assert!(builder.current_view().is_err());
+            assert!(
+                builder
+                    .apply_phase(ConcreteObserverPhaseDelta::default())
+                    .is_err()
+            );
+            assert!(builder.seal(&marker_rlp).is_err());
+        }
+        assert!(
+            owner
+                .begin_transition(1.into())
+                .unwrap()
+                .seal(&marker_rlp)
+                .is_err()
+        );
+        for bad in [
+            FinalChainConcreteExecutionMarker {
+                identity: FinalChainConcreteIdentity {
+                    chain_id: [0; 32],
+                    ..marker.identity
+                },
+                ..marker.clone()
+            },
+            FinalChainConcreteExecutionMarker {
+                generation: marker.generation + 1,
+                ..marker.clone()
+            },
+            FinalChainConcreteExecutionMarker {
+                period: marker.period + 1,
+                ..marker.clone()
+            },
+            FinalChainConcreteExecutionMarker {
+                prior_state: FinalChainConcreteState {
+                    root: [0; 32],
+                    ..marker.prior_state
+                },
+                ..marker.clone()
+            },
+        ] {
+            let mut builder = owner.begin_transition(1.into()).unwrap();
+            builder
+                .apply_phase(ConcreteObserverPhaseDelta::default())
+                .unwrap();
+            assert!(
+                builder
+                    .seal(&encode_concrete_execution_marker(&bad))
+                    .is_err()
+            );
+        }
+        {
+            let mut dropped = owner.begin_transition(1.into()).unwrap();
+            dropped
+                .apply_phase(ConcreteObserverPhaseDelta::default())
+                .unwrap();
+        }
+        assert_eq!(owner.writer.prepared_token(&old).unwrap(), token);
+        assert_eq!(owner.observation().unwrap(), before);
+        assert_eq!(transition_test_rows(&owner), rows);
+        assert_eq!(transition_test_wal(&owner), wal);
+        let prepared = transition_test_seal(&owner, &marker_rlp);
+        let output = owner.consume_prepared_transition(prepared).unwrap();
+        let identity = output.identity();
+        let committed = owner
+            .commit_observer_approved(output, approval(&marker, &marker_rlp, identity, &[]))
+            .unwrap();
+        let reopened =
+            ConcreteStateLifecycle::open(&path.0, before.identity.chain_id, committed.committed)
+                .unwrap();
+        assert_eq!(reopened.observation().unwrap(), committed);
+    }
+
+    #[test]
+    fn detached_transition_private_payload_rejects_foreign_writer_without_sequence_change() {
+        let first_path = TestPath::new();
+        let second_path = TestPath::new();
+        let first = ConcreteStateLifecycle::create_fresh_exclusive(
+            &first_path.0,
+            [0xd1; 32],
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let second = ConcreteStateLifecycle::create_fresh_exclusive(
+            &second_path.0,
+            [0xd1; 32],
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let first_token = first.writer.transition_source_token().unwrap();
+        let second_token = second.writer.transition_source_token().unwrap();
+        let second_rows = transition_test_rows(&second);
+        let second_wal = transition_test_wal(&second);
+        let mut isolated = first.writer.begin_isolated_transition().unwrap();
+        isolated
+            .apply_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let sealed = isolated.seal().unwrap();
+        assert!(second.writer.prepare_transition_import(sealed).is_err());
+        assert_eq!(first.writer.transition_source_token().unwrap(), first_token);
+        assert_eq!(
+            second.writer.transition_source_token().unwrap(),
+            second_token
+        );
+        assert_eq!(transition_test_rows(&second), second_rows);
+        assert_eq!(transition_test_wal(&second), second_wal);
+    }
+
+    #[test]
+    fn detached_transition_import_rejects_foreign_stale_generation_and_reopened_source() {
+        let first_path = TestPath::new();
+        let second_path = TestPath::new();
+        let chain = [0xc1; 32];
+        let mut first = ConcreteStateLifecycle::create_fresh_exclusive(
+            &first_path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut second = ConcreteStateLifecycle::create_fresh_exclusive(
+            &second_path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let before = first.observation().unwrap();
+        let second_before = second.observation().unwrap();
+        let rows = transition_test_rows(&first);
+        let wal = transition_test_wal(&first);
+        let second_rows = transition_test_rows(&second);
+        let second_wal = transition_test_wal(&second);
+        let (_, marker_rlp) = marker(&before, 0xc2);
+        assert!(
+            second
+                .consume_prepared_transition(transition_test_seal(&first, &marker_rlp))
+                .is_err()
+        );
+        assert_eq!(second.observation().unwrap(), second_before);
+        assert_eq!(transition_test_rows(&second), second_rows);
+        assert_eq!(transition_test_wal(&second), second_wal);
+        let stale = transition_test_seal(&first, &marker_rlp);
+        let live = first
+            .writer
+            .prepare(1.into(), ConcreteStateMutationBatch::default())
+            .unwrap();
+        assert!(first.consume_prepared_transition(stale).is_err());
+        assert!(first.writer.prepared_token(&live).is_ok());
+        let wrong_generation = transition_test_seal(&first, &marker_rlp);
+        first.provenance.generation += 1;
+        assert!(first.consume_prepared_transition(wrong_generation).is_err());
+        first.provenance.generation -= 1;
+        let reopened_token = transition_test_seal(&first, &marker_rlp);
+        assert_eq!(first.observation().unwrap(), before);
+        assert_eq!(transition_test_rows(&first), rows);
+        assert_eq!(transition_test_wal(&first), wal);
+        drop(first);
+        let mut reopened =
+            ConcreteStateLifecycle::open(&first_path.0, chain, before.committed).unwrap();
+        assert!(
+            reopened
+                .consume_prepared_transition(reopened_token)
+                .is_err()
+        );
+        assert_eq!(reopened.observation().unwrap(), before);
+        let fresh = transition_test_seal(&reopened, &marker_rlp);
+        assert!(reopened.consume_prepared_transition(fresh).is_ok());
+        assert!(reopened.begin_transition(1.into()).is_err());
+    }
+
+    #[test]
+    fn borrowed_probe_isolates_preparation_and_preserves_owner_database() {
+        use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
+        let path = TestPath::new();
+        let chain = [0x93; 32];
+        let address = [0x94; 20];
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        std::sync::Arc::get_mut(&mut owner.writer.db)
+            .unwrap()
+            .create_cf("probe_empty", &rocksdb::Options::default())
+            .unwrap();
+        std::sync::Arc::get_mut(&mut owner.writer.db)
+            .unwrap()
+            .create_cf("probe_extra", &rocksdb::Options::default())
+            .unwrap();
+        owner
+            .writer
+            .db
+            .put_cf(
+                &owner.writer.db.cf_handle("probe_extra").unwrap(),
+                b"wal-only",
+                b"keep",
+            )
+            .unwrap();
+        let rows = |owner: &ConcreteStateLifecycle| {
+            let mut columns = DB::list_cf(&rocksdb::Options::default(), &path.0).unwrap();
+            columns.sort();
+            columns
+                .into_iter()
+                .map(|name| {
+                    let cf = owner.writer.db.cf_handle(&name).unwrap();
+                    let values: Vec<_> = owner
+                        .writer
+                        .db
+                        .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+                        .map(|row| {
+                            let (k, v) = row.unwrap();
+                            (k.to_vec(), v.to_vec())
+                        })
+                        .collect();
+                    (name, values)
+                })
+                .collect::<Vec<_>>()
+        };
+        let wal = || {
+            std::fs::read_dir(&path.0)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|e| e == "log"))
+                .map(|p| {
+                    (
+                        p.file_name().unwrap().to_owned(),
+                        std::fs::read(&p).unwrap(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let before = owner.observation().unwrap();
+        let before_rows = rows(&owner);
+        let before_wal = wal();
+        assert!(!before_wal.is_empty());
+        assert!(
+            before_rows
+                .iter()
+                .any(|(name, values)| name == "probe_empty" && values.is_empty())
+        );
+        let expected = owner
+            .writer
+            .prepare_observer_phase(
+                1.into(),
+                None,
+                ConcreteObserverPhaseDelta {
+                    accounts: vec![ConcreteAccountMutation::Upsert {
+                        address,
+                        record: account(1, 10),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let owner_token = owner.writer.prepared_token(&expected).unwrap();
+        {
+            let mut first = owner.borrow_execution_probe().unwrap();
+            let mut second = owner.borrow_execution_probe().unwrap();
+            assert_eq!(first.committed_identity(), before.committed);
+            assert_eq!(first.historical_identity(), before.committed);
+            first
+                .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                    accounts: vec![ConcreteAccountMutation::Upsert {
+                        address,
+                        record: account(1, 10),
+                    }],
+                    ..Default::default()
+                })
+                .unwrap();
+            let root = first.current_view().unwrap().identity();
+            assert_eq!(root, expected.next_identity());
+            assert!(matches!(
+                second.current_view().unwrap().account(address).unwrap(),
+                ConcreteRead::Absent
+            ));
+            second
+                .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                    accounts: vec![ConcreteAccountMutation::Upsert {
+                        address,
+                        record: account(2, 20),
+                    }],
+                    ..Default::default()
+                })
+                .unwrap();
+            assert_ne!(second.current_view().unwrap().identity(), root);
+            first
+                .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                    accounts: vec![ConcreteAccountMutation::Delete { address }],
+                    ..Default::default()
+                })
+                .unwrap();
+            let deleted = first.current_view().unwrap().identity();
+            assert_eq!(
+                first.current_view().unwrap().account(address).unwrap(),
+                ConcreteRead::Tombstone
+            );
+            assert!(
+                first
+                    .prepare_observer_phase(ConcreteObserverPhaseDelta {
+                        code: vec![super::super::writer::ConcreteCodeInsertion {
+                            code_hash: [0; 32],
+                            code: vec![1]
+                        }],
+                        ..Default::default()
+                    })
+                    .is_err()
+            );
+            assert_eq!(first.current_view().unwrap().identity(), deleted);
+            assert_eq!(owner.writer.prepared_token(&expected).unwrap(), owner_token);
+            assert_eq!(owner.observation().unwrap(), before);
+            assert_eq!(rows(&owner), before_rows);
+            assert_eq!(wal(), before_wal);
+        }
+        assert_eq!(owner.writer.prepared_token(&expected).unwrap(), owner_token);
+        assert!(owner.borrow_execution_probe().is_ok());
+        assert_eq!(owner.observation().unwrap(), before);
+        assert_eq!(rows(&owner), before_rows);
+        let (marker, marker_rlp) = marker(&before, 0x95);
+        owner.stage_execution(&marker_rlp).unwrap();
+        let output = owner
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let approval = approval(&marker, &marker_rlp, output.identity(), &[]);
+        let committed = owner.commit_observer_approved(output, approval).unwrap();
+        let reopened = ConcreteStateLifecycle::open(&path.0, chain, committed.committed).unwrap();
+        assert_eq!(reopened.observation().unwrap(), committed);
+    }
+
+    #[test]
+    fn borrowed_probe_refuses_dirty_and_poisoned_owner() {
+        let path = TestPath::new();
+        let mut owner = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            [0x96; 32],
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let before = owner.observation().unwrap();
+        let (marker, marker_rlp) = marker(&before, 0x97);
+        owner.pending = Some(marker);
+        assert!(owner.borrow_execution_probe().is_err());
+        owner.pending = None;
+        owner.pending_rlp = marker_rlp;
+        assert!(owner.borrow_execution_probe().is_err());
+        owner.pending_rlp.clear();
+        owner.legacy_prepared = true;
+        assert!(owner.borrow_execution_probe().is_err());
+        owner.legacy_prepared = false;
+        owner.observer_prepared = Some(
+            owner
+                .writer
+                .prepare_observer_phase(1.into(), None, ConcreteObserverPhaseDelta::default())
+                .unwrap(),
+        );
+        assert!(owner.borrow_execution_probe().is_err());
+        owner.observer_prepared = None;
+        owner.intermediate_content.insert(
+            RowKey {
+                column: "1",
+                key: vec![1],
+            },
+            vec![1],
+        );
+        assert!(owner.borrow_execution_probe().is_err());
+        owner.intermediate_content.clear();
+        owner.poisoned = true;
+        assert!(owner.borrow_execution_probe().is_err());
+        owner.poisoned = false;
+        assert_eq!(owner.observation().unwrap(), before);
+        assert!(owner.borrow_execution_probe().is_ok());
     }
 
     #[test]
@@ -2990,6 +4048,220 @@ mod tests {
             },
             physical_rlp: stream.out().to_vec(),
         }
+    }
+
+    struct ApplicationPreparationFixture {
+        state: Option<crate::application_control::ApplicationConcreteState>,
+        db: Option<Arc<DB>>,
+        owner: Arc<crate::application_control::ApplicationOwner>,
+        concrete_path: TestPath,
+        _primary_path: TestPath,
+        before: ConcreteLifecycleObservation,
+    }
+
+    impl ApplicationPreparationFixture {
+        fn new() -> Self {
+            let primary_path = TestPath::new();
+            let mut config = crate::Config::new(primary_path.0.clone());
+            config.db_write_buffer_size = 2 * 1024 * 1024;
+            config.max_total_wal_size = 32 * 1024 * 1024;
+            config.max_open_files = 32;
+            let primary = Arc::new(crate::Storage::new(config).unwrap());
+            let owner = Arc::new(primary.claim_application_owner().unwrap());
+            let concrete_path = TestPath::new();
+            let lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+                &concrete_path.0,
+                [0xc1; 32],
+                ConcreteStateMutationBatch::default(),
+                Vec::new(),
+            )
+            .unwrap();
+            let before = lifecycle.observation().unwrap();
+            let db = Arc::clone(&lifecycle.writer.db);
+            let state = crate::application_control::ApplicationConcreteState::new(
+                Arc::clone(&owner),
+                lifecycle,
+            )
+            .unwrap();
+            Self {
+                state: Some(state),
+                db: Some(db),
+                owner,
+                concrete_path,
+                _primary_path: primary_path,
+                before,
+            }
+        }
+
+        fn state(&self) -> &crate::application_control::ApplicationConcreteState {
+            self.state.as_ref().unwrap()
+        }
+
+        fn rows(&self) -> Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)> {
+            let db = self.db.as_ref().unwrap();
+            let mut names = DB::list_cf(&Options::default(), &self.concrete_path.0).unwrap();
+            names.sort();
+            names
+                .into_iter()
+                .map(|name| {
+                    let cf = db.cf_handle(&name).unwrap();
+                    let rows = db
+                        .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+                        .map(|row| {
+                            let (key, value) = row.unwrap();
+                            (key.to_vec(), value.to_vec())
+                        })
+                        .collect();
+                    (name, rows)
+                })
+                .collect()
+        }
+
+        fn wal(&self) -> BTreeMap<std::ffi::OsString, Vec<u8>> {
+            std::fs::read_dir(&self.concrete_path.0)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+                .map(|path| {
+                    (
+                        path.file_name().unwrap().to_owned(),
+                        std::fs::read(path).unwrap(),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn application_concrete_preparation_seal_drop_and_reopen_preserve_rows() {
+        let mut fixture = ApplicationPreparationFixture::new();
+        let rows = fixture.rows();
+        assert!(rows.iter().any(|(_, values)| values.is_empty()));
+        let wal = fixture.wal();
+        let read = fixture.owner.try_read(std::time::Duration::ZERO).unwrap();
+        let (_, marker) = marker(&fixture.before, 0xc2);
+        let prepared = fixture
+            .state()
+            .with_preparation(
+                &read,
+                &fixture.before,
+                1.into(),
+                fixture.before.committed,
+                |mut builder, readers| {
+                    assert!(matches!(
+                        readers.account_at(fixture.before.committed, address(7))?,
+                        ConcreteRead::Absent
+                    ));
+                    builder.apply_phase(ConcreteObserverPhaseDelta {
+                        accounts: vec![ConcreteAccountMutation::Upsert {
+                            address: address(7),
+                            record: account(1, 9),
+                        }],
+                        ..Default::default()
+                    })?;
+                    Ok(builder.seal(&marker)?)
+                },
+            )
+            .unwrap();
+        assert_eq!(prepared.next_identity().period.as_u64(), 1);
+        assert_ne!(
+            prepared.next_identity().state_root,
+            fixture.before.committed.state_root
+        );
+        drop(prepared);
+        assert_eq!(fixture.state().observation(&read).unwrap(), fixture.before);
+        assert_eq!(fixture.rows(), rows);
+        assert_eq!(fixture.wal(), wal);
+        drop(read);
+        drop(fixture.state.take());
+        drop(fixture.db.take());
+        let reopened = ConcreteStateLifecycle::open(
+            &fixture.concrete_path.0,
+            [0xc1; 32],
+            fixture.before.committed,
+        )
+        .unwrap();
+        assert_eq!(reopened.observation().unwrap(), fixture.before);
+        assert_eq!(transition_test_rows(&reopened), rows);
+    }
+
+    #[test]
+    fn application_concrete_preparation_failure_allows_fresh_sequence() {
+        let fixture = ApplicationPreparationFixture::new();
+        let rows = fixture.rows();
+        let wal = fixture.wal();
+        let read = fixture.owner.try_read(std::time::Duration::ZERO).unwrap();
+        let failed_sequence = std::cell::Cell::new(None);
+        let failed: anyhow::Result<()> = fixture.state().with_preparation(
+            &read,
+            &fixture.before,
+            1.into(),
+            fixture.before.committed,
+            |mut builder, _| {
+                let output = builder.apply_phase(ConcreteObserverPhaseDelta::default())?;
+                failed_sequence.set(Some(output.sequence));
+                anyhow::bail!("controlled preparation failure")
+            },
+        );
+        assert!(
+            failed
+                .unwrap_err()
+                .to_string()
+                .contains("controlled preparation failure")
+        );
+        let fresh = fixture
+            .state()
+            .with_preparation(
+                &read,
+                &fixture.before,
+                1.into(),
+                fixture.before.committed,
+                |mut builder, _| {
+                    let output = builder.apply_phase(ConcreteObserverPhaseDelta::default())?;
+                    Ok(output.sequence)
+                },
+            )
+            .unwrap();
+        assert_eq!(Some(fresh), failed_sequence.get());
+        assert_eq!(fixture.rows(), rows);
+        assert_eq!(fixture.wal(), wal);
+        assert_eq!(fixture.state().observation(&read).unwrap(), fixture.before);
+    }
+
+    #[test]
+    fn application_concrete_preparation_rejects_foreign_or_changed_sources() {
+        let fixture = ApplicationPreparationFixture::new();
+        let foreign = ApplicationPreparationFixture::new();
+        let read = fixture.owner.try_read(std::time::Duration::ZERO).unwrap();
+        let other = foreign.owner.try_read(std::time::Duration::ZERO).unwrap();
+        assert_eq!(read.generation(), other.generation());
+        let mut wrong_generation = fixture.before.clone();
+        wrong_generation.generation += 1;
+        let wrong_root = ConcreteStateIdentity {
+            period: fixture.before.committed.period,
+            state_root: [0xe3; 32],
+        };
+        let calls = std::cell::Cell::new(0);
+        for (scope, expected, period, delayed) in [
+            (&other, &fixture.before, 1, fixture.before.committed),
+            (&read, &wrong_generation, 1, fixture.before.committed),
+            (&read, &fixture.before, 2, fixture.before.committed),
+            (&read, &fixture.before, 1, wrong_root),
+        ] {
+            let result = fixture.state().with_preparation(
+                scope,
+                expected,
+                period.into(),
+                delayed,
+                |_, _| {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+        }
+        assert_eq!(calls.get(), 0);
+        assert_eq!(fixture.state().observation(&read).unwrap(), fixture.before);
     }
 
     fn mutate_default(path: &Path, key: &[u8], value: Option<&[u8]>) {

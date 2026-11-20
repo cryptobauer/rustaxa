@@ -1288,7 +1288,7 @@ pub fn append_pbft_finalization_executed_status_storage_write(
     append_pbft_finalization_executed_status_storage_write_impl(storage, batch, write_set)
 }
 
-fn apply_pbft_finalization_storage_writes_to_batch(
+pub(crate) fn apply_pbft_finalization_storage_writes_to_batch(
     storage: &Storage,
     batch: &mut StorageWriteBatch,
     write_set: &PbftFinalizationStorageWriteIntent,

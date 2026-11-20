@@ -1788,6 +1788,61 @@ mod tests {
     }
 
     #[test]
+    fn canonical_proof_transplant_keeps_historical_sampling_distinct() {
+        let signing_key = SigningKey::from_slice(&[0x22; 32]).unwrap();
+        let block = H256::from_low_u64_be(88);
+        let proof = vrf::prove(&VRF_SECRET_KEY, &legacy_vrf_message_rlp(13, 4, 3)).unwrap();
+        let valid = signed_pbft_vote_with_proof(&signing_key, block, 13, 4, 3, proof);
+        let transplanted = signed_pbft_vote_with_proof(&signing_key, block, 13, 5, 3, proof);
+        let key = vrf::public_key_from_secret(&VRF_SECRET_KEY).unwrap();
+        let facts =
+            |strict_vrf, future_dpos_state, unknown_error| PbftVoteValidationExternalFacts {
+                voter_dpos_ready: true,
+                voter_dpos_vote_count: 70,
+                total_dpos_ready: true,
+                total_dpos_vote_count: 100,
+                future_dpos_state,
+                unknown_error,
+                vrf_key_ready: true,
+                has_vrf_key: true,
+                vrf_public_key: key,
+                strict_vrf,
+                committee_size: 100,
+                number_of_proposers: 20,
+                has_preverified_weight: false,
+                preverified_weight: 0,
+            };
+        let control = validate_canonical_pbft_vote(&valid, facts(true, false, false)).unwrap();
+        assert!(control.accepted);
+        assert_eq!(control.calculated_weight, 70);
+        let inspection = inspect_canonical_pbft_vote(&transplanted).unwrap();
+        assert!(inspection.signature_valid);
+        assert_eq!(inspection.round, 5);
+        assert_eq!(inspection.recovered_voter, signer_address(&signing_key));
+        let sampled =
+            validate_canonical_pbft_vote(&transplanted, facts(false, false, false)).unwrap();
+        assert!(sampled.accepted);
+        assert!(sampled.weight_calculated);
+        assert_eq!(sampled.calculated_weight, 70);
+        let strict =
+            validate_canonical_pbft_vote(&transplanted, facts(true, false, false)).unwrap();
+        assert_eq!(strict.status, PbftVoteValidationStatus::InvalidVrfProof);
+        assert!(strict.rejected && strict.mark_validated_replay);
+        let unavailable = validate_canonical_pbft_vote(&valid, facts(true, true, false)).unwrap();
+        assert_eq!(
+            unavailable.status,
+            PbftVoteValidationStatus::FutureDposState
+        );
+        assert!(!unavailable.mark_validated_replay);
+        let fault = validate_canonical_pbft_vote(&valid, facts(true, false, true)).unwrap();
+        assert_eq!(fault.status, PbftVoteValidationStatus::UnknownError);
+        assert!(!fault.mark_validated_replay);
+        eprintln!(
+            "PROOF_TRANSPLANT_DIAGNOSTIC_PASSED: signature_valid=true old_round=4 new_round=5 non_strict_weight=70 strict=InvalidVrfProof unavailable=FutureDposState fault=UnknownError"
+        );
+    }
+
+    #[test]
     fn canonical_vote_inspection_reports_peer_data_failures_as_statuses() {
         let malformed = inspect_canonical_pbft_vote(&[0x01, 0x02, 0x03]).unwrap();
         assert_eq!(

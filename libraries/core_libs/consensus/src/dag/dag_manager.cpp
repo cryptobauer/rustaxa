@@ -584,11 +584,13 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     return {VerifyBlockReturnType::FailedTipsVerification, {}};
   }
 
-  for (auto const &tip : blk->getTips()) {
-    if (!unique_tips_pivot.insert(tip).second) {
-      LOG(log_er_) << "DAG Block " << block_hash << " tip " << tip << " duplicate";
-      return {VerifyBlockReturnType::FailedTipsVerification, {}};
-    }
+  const auto& tips = blk->getTips();
+  const auto duplicate_tip = std::find_if(tips.begin(), tips.end(), [&unique_tips_pivot](const auto& tip) {
+    return !unique_tips_pivot.insert(tip).second;
+  });
+  if (duplicate_tip != tips.end()) {
+    LOG(log_er_) << "DAG Block " << block_hash << " tip " << *duplicate_tip << " duplicate";
+    return {VerifyBlockReturnType::FailedTipsVerification, {}};
   }
 
   auto propose_period = db_->getProposalPeriodForDagLevel(blk->getLevel());

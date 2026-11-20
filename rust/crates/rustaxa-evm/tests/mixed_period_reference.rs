@@ -8,6 +8,8 @@
 //! the pinned Go observer. This is test composition, not production routing or
 //! imported-state qualification.
 
+#[path = "support/application_publication.rs"]
+mod application_publication;
 #[path = "support/mixed_genesis.rs"]
 mod mixed_genesis;
 #[path = "support/mixed_native.rs"]
@@ -1746,6 +1748,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 == "b934d70f36b020f10434857a9512ab00832370bfef875438cdb6e7ee58dd2b8e";
 
         for (transaction, expected) in request.transactions.iter().zip(expected) {
+            application_publication::transaction_enter(transaction.position.as_u32());
             ensure!(
                 transaction.rlp == bytes(&expected["signed_rlp"]),
                 "fixture signed input"
@@ -1783,7 +1786,10 @@ impl ConsensusExecutionPort for Adapter<'_> {
             } else {
                 None
             };
-            let mut journal = ExecutionJournal::new(view);
+            let mut journal = ExecutionJournal::new_with_correction_stage(
+                view,
+                self.chain.correction_stage_at(request.period),
+            );
             let expected_receipt_token = journal.begin_lifecycle_receipt()?;
             let block = ExecutionBlockContext {
                 period: request.period,
@@ -1797,7 +1803,11 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 ExecutionTransactionKind::Call => execute_top_level_call_with_native(
                     &mut journal,
                     &ChainHashes(self.chain),
-                    &AllNatives(fixture_execution_profile(self.fixture), self.chain),
+                    &AllNatives(
+                        fixture_execution_profile(self.fixture)
+                            .with_correction_stage(self.chain.correction_stage_at(request.period)),
+                        self.chain,
+                    ),
                     &ConsensusNatives(self.chain),
                     &mut native,
                     &mut sequence,
@@ -1806,7 +1816,8 @@ impl ConsensusExecutionPort for Adapter<'_> {
                     EnvelopeRules {
                         cornus: self.fixture["rules"]["cornus"].as_bool().unwrap_or(true),
                     },
-                    fixture_execution_profile(self.fixture),
+                    fixture_execution_profile(self.fixture)
+                        .with_correction_stage(self.chain.correction_stage_at(request.period)),
                 )
                 .with_context(|| {
                     format!(
@@ -1819,7 +1830,11 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 ExecutionTransactionKind::Create => execute_top_level_create_with_native(
                     &mut journal,
                     &ChainHashes(self.chain),
-                    &AllNatives(fixture_execution_profile(self.fixture), self.chain),
+                    &AllNatives(
+                        fixture_execution_profile(self.fixture)
+                            .with_correction_stage(self.chain.correction_stage_at(request.period)),
+                        self.chain,
+                    ),
                     &ConsensusNatives(self.chain),
                     &mut native,
                     &mut sequence,
@@ -1828,7 +1843,8 @@ impl ConsensusExecutionPort for Adapter<'_> {
                     EnvelopeRules {
                         cornus: self.fixture["rules"]["cornus"].as_bool().unwrap_or(true),
                     },
-                    fixture_execution_profile(self.fixture),
+                    fixture_execution_profile(self.fixture)
+                        .with_correction_stage(self.chain.correction_stage_at(request.period)),
                 )
                 .with_context(|| {
                     format!(
@@ -2218,6 +2234,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 invocations,
             });
             prepared = Some(next);
+            application_publication::transaction_complete(&report, identity);
             results.push(report);
         }
 
@@ -2344,6 +2361,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         request: &FinalChainEvmRewardsRequest,
         plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
     ) -> Result<FinalChainEvmRewardsReport> {
+        application_publication::phase("rewards");
         self.state_api_epoch.validate(request.state_api_epoch)?;
         let mut concrete = self.concrete.borrow_mut();
         let concrete = concrete
@@ -2360,7 +2378,10 @@ impl ConsensusExecutionPort for Adapter<'_> {
             prior: FixturePrior::Prepared(concrete.prepared_view(&staged.prepared)?),
             identity: prior_identity,
         };
-        let mut journal = ExecutionJournal::new(view);
+        let mut journal = ExecutionJournal::new_with_correction_stage(
+            view,
+            self.chain.correction_stage_at(request.period),
+        );
         let mut native = self.native.borrow_mut();
         let native = native
             .as_mut()
@@ -3058,6 +3079,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
         &self,
         request: &FinalChainExternalEvmStateCommitIntent,
     ) -> Result<FinalChainExternalEvmStateCommitResult> {
+        application_publication::phase("commit");
         self.state_api_epoch.validate(request.state_api_epoch)?;
         ensure!(
             self.chain.last_block_number_typed()? == request.prior_state.period,
@@ -3185,6 +3207,9 @@ impl ConsensusExecutionPort for Adapter<'_> {
         self.state_api_epoch
             .validate(request.expected_state_api_epoch)?;
         self.staged.borrow_mut().take();
+        self.native.borrow_mut().take();
+        self.native_context.borrow_mut().take();
+        application_publication::phase("discard");
         let mut concrete = self.concrete.borrow_mut();
         let concrete = concrete
             .as_mut()

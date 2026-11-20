@@ -77,9 +77,20 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use triehash::ordered_trie_root;
 
-use self::native_session::account::{DposAccountPort, transfer_dpos_contract_balance};
+use self::native_session::account::{
+    CheckpointDposCallAccounts, DposAccountPort, transfer_dpos_contract_balance,
+};
 
 mod concrete_genesis;
+#[cfg(any(test, feature = "production_integration_test"))]
+mod genesis_inputs_for_test;
+#[allow(dead_code)]
+mod native_predecessor;
+mod owner_publication;
+pub(crate) use native_predecessor::{
+    NativePredecessorCapture, NativePredecessorLimits, NativePredecessorUnavailable,
+    PreparedNativePredecessor,
+};
 #[cfg(feature = "synthetic-fixtures")]
 mod synthetic_fixture;
 #[cfg(feature = "synthetic-fixtures")]
@@ -1506,9 +1517,16 @@ const DPOS_MAX_DESCRIPTION_LENGTH: usize = 100;
 const DPOS_MAX_ENDPOINT_LENGTH: usize = 50;
 const ASPEN_YIELD_PRECISION: u64 = 1_000_000;
 
+#[derive(Clone, Copy)]
+enum FinalChainCorrectionPolicy {
+    Fixed(rustaxa_types::evm_correction::CorrectionStage),
+    Activation(Option<FinalChainBlockNumber>),
+}
+
 /// Rust final-chain domain surface used by the C++ shim.
 pub struct FinalChain {
-    correction_stage: rustaxa_types::evm_correction::CorrectionStage,
+    correction_policy: FinalChainCorrectionPolicy,
+    native_configuration_seed: crate::execution_configuration::NativeConfigurationSeed,
     storage: Arc<Storage>,
     block_gas_limit: rustaxa_types::FinalChainGas,
     genesis_timestamp: u64,
@@ -1593,6 +1611,15 @@ enum ValidatorRowAuthority {
     CompatibilityOnly,
     Complete(BTreeMap<[u8; 20], ValidatorRowShape>),
 }
+struct PreparedFinalChainGenesis {
+    native_configuration_seed: crate::execution_configuration::NativeConfigurationSeed,
+    genesis_accounts: HashMap<[u8; 20], Account>,
+    genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
+    genesis_dpos_snapshot: DposSnapshot,
+    rewards_config: FinalChainRewardsConfig,
+    dag_vdf_sortition_max_vote_count: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposSnapshot {
     /// Total stake by validator address at this block.
@@ -1855,13 +1882,65 @@ impl FinalChain {
         mut self,
         stage: rustaxa_types::evm_correction::CorrectionStage,
     ) -> Self {
-        self.correction_stage = stage;
+        self.correction_policy = FinalChainCorrectionPolicy::Fixed(stage);
         self
     }
 
-    /// Returns the immutable execution correction identity of this owner.
-    pub const fn correction_stage(&self) -> rustaxa_types::evm_correction::CorrectionStage {
-        self.correction_stage
+    /// Selects an inclusive correction boundary before this owner is shared.
+    /// `None` keeps historical rules. This method does not verify the network,
+    /// configuration, boundary approval, or durable schedule enrollment.
+    #[must_use]
+    pub fn with_correction_activation(mut self, activation: Option<FinalChainBlockNumber>) -> Self {
+        self.correction_policy = FinalChainCorrectionPolicy::Activation(activation);
+        self
+    }
+
+    /// Returns the immutable correction rules for the execution period.
+    /// Fixed correction owners retain their selected stage at every period.
+    pub fn correction_stage_at(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> rustaxa_types::evm_correction::CorrectionStage {
+        use rustaxa_types::evm_correction::CorrectionStage;
+        match self.correction_policy {
+            FinalChainCorrectionPolicy::Fixed(stage) => stage,
+            FinalChainCorrectionPolicy::Activation(Some(boundary)) if period >= boundary => {
+                CorrectionStage::SlashingHardError
+            }
+            FinalChainCorrectionPolicy::Activation(_) => CorrectionStage::Historical,
+        }
+    }
+
+    /// Reads the exact constructor configuration with this owner's current,
+    /// immutable correction selection. This is not native-state authority.
+    pub(crate) fn native_execution_configuration(
+        &self,
+    ) -> crate::execution_configuration::NativeExecutionConfiguration {
+        match self.correction_policy {
+            FinalChainCorrectionPolicy::Fixed(stage) => self.native_configuration_seed.fixed(stage),
+            FinalChainCorrectionPolicy::Activation(boundary) => {
+                self.native_configuration_seed.activation(boundary)
+            }
+        }
+    }
+
+    /// Captures native source inputs from one storage sequence. The result
+    /// borrows this owner but grants no execution or publication authority.
+    ///
+    /// External callers cannot create this crate-owned input capability.
+    ///
+    /// ```compile_fail
+    /// use rustaxa_consensus::FinalChain;
+    /// fn capture(owner: &FinalChain) {
+    ///     let _ = owner.capture_native_predecessor(1_u64.into(), todo!());
+    /// }
+    /// ```
+    pub(crate) fn capture_native_predecessor(
+        &self,
+        pending_period: FinalChainBlockNumber,
+        limits: NativePredecessorLimits,
+    ) -> Result<NativePredecessorCapture<'_>> {
+        native_predecessor::capture(self, pending_period, limits)
     }
 
     /// Derives the concrete-state chain/config identity from the persisted
@@ -2005,6 +2084,31 @@ impl FinalChain {
             && period >= self.ficus_activation_period
     }
 
+    /// Returns instruction rules from this owner's immutable fork configuration.
+    pub fn pbft_execution_instruction_phase(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> crate::pbft_execution_validation::PbftInstructionPhase {
+        use crate::pbft_execution_validation::PbftInstructionPhase;
+        if self.cacti_active(period) {
+            PbftInstructionPhase::Cacti
+        } else if self.ficus_active_at(period) {
+            PbftInstructionPhase::Ficus
+        } else {
+            PbftInstructionPhase::Californicum
+        }
+    }
+
+    /// Returns the envelope rule for the selected execution period.
+    pub fn pbft_execution_cornus(&self, period: FinalChainBlockNumber) -> bool {
+        self.is_on_cornus(period)
+    }
+
+    /// Returns the gas limit bound to this execution owner.
+    pub fn pbft_execution_block_gas_limit(&self) -> FinalChainGas {
+        self.block_gas_limit
+    }
+
     /// Constructs the Rust FinalChain state from effective genesis accounts and validators.
     ///
     /// `genesis_accounts` must already reflect the balances left after genesis
@@ -2102,25 +2206,45 @@ impl FinalChain {
         )
     }
 
-    /// Constructs FinalChain with a concrete genesis root and explicit Ficus activation.
-    ///
-    /// Inputs and root-validation errors match [`Self::new_with_genesis_state_root`].
-    /// `ficus_activation_period` is immutable for the resulting chain, applies
-    /// inclusively to native DPoS serialization, and uses
-    /// `FinalChainBlockNumber::MAX` as its disabled sentinel.
+    /// Prepares immutable native configuration without storage or execution authority.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_genesis_state_root_and_ficus_activation(
-        storage: Arc<Storage>,
+    pub(crate) fn prepare_native_execution_configuration(
         block_gas_limit: FinalChainGas,
         genesis_timestamp: u64,
         genesis_state_root: ethereum_types::H256,
         enforce_genesis_state_root: bool,
         genesis_accounts: Vec<GenesisAccount>,
         genesis_validators: Vec<GenesisValidator>,
-        genesis_dpos_config: GenesisDposConfig,
+        genesis_dpos_config: &GenesisDposConfig,
         rewards_config: FinalChainRewardsConfig,
         ficus_activation_period: FinalChainBlockNumber,
-    ) -> Result<Self> {
+    ) -> Result<crate::execution_configuration::NativeConfigurationSeed> {
+        Ok(Self::prepare_genesis(
+            block_gas_limit,
+            genesis_timestamp,
+            genesis_state_root,
+            enforce_genesis_state_root,
+            genesis_accounts,
+            genesis_validators,
+            genesis_dpos_config,
+            rewards_config,
+            ficus_activation_period,
+        )?
+        .native_configuration_seed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_genesis(
+        block_gas_limit: FinalChainGas,
+        genesis_timestamp: u64,
+        genesis_state_root: ethereum_types::H256,
+        enforce_genesis_state_root: bool,
+        genesis_accounts: Vec<GenesisAccount>,
+        genesis_validators: Vec<GenesisValidator>,
+        genesis_dpos_config: &GenesisDposConfig,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
+    ) -> Result<PreparedFinalChainGenesis> {
         let mut rewards_config = rewards_config;
         let genesis_accounts: HashMap<[u8; 20], Account> = genesis_accounts
             .into_iter()
@@ -2137,6 +2261,18 @@ impl FinalChain {
                 )
             })
             .collect();
+        let native_configuration_input =
+            crate::execution_configuration::NativeConfigurationInput::capture(
+                block_gas_limit,
+                genesis_timestamp,
+                genesis_state_root,
+                enforce_genesis_state_root,
+                ficus_activation_period,
+                &genesis_accounts,
+                &genesis_validators,
+                genesis_dpos_config,
+                rewards_config.genesis_balance_sum,
+            );
         let mut genesis_accounts = genesis_accounts;
         let genesis_validator_order = genesis_validators
             .iter()
@@ -2146,6 +2282,9 @@ impl FinalChain {
             .into_iter()
             .map(|validator| {
                 let metadata = DposValidatorMetadata::from(&validator);
+                if validator.total_stake.len() > 32 {
+                    anyhow::bail!("genesis DPoS validator stake encoding exceeds 32 bytes");
+                }
                 let vote_count = dpos_vote_count(
                     &validator.total_stake,
                     genesis_dpos_config.eligibility_balance_threshold,
@@ -2315,7 +2454,85 @@ impl FinalChain {
         }
 
         let dag_vdf_sortition_max_vote_count =
-            dpos_vdf_sortition_max_vote_count(&genesis_dpos_config)?;
+            dpos_vdf_sortition_max_vote_count(genesis_dpos_config)?;
+        let native_configuration_seed = native_configuration_input.finish(&rewards_config);
+        let genesis_dpos_snapshot = DposSnapshot {
+            total_stakes: genesis_dpos_total_stakes,
+            commission_rewards: BTreeMap::new(),
+            delegator_rewards: BTreeMap::new(),
+            validator_metadata: genesis_dpos_validator_metadata,
+            vrf_keys: genesis_vrf_keys
+                .iter()
+                .map(|(address, vrf_key)| (*address, *vrf_key))
+                .collect(),
+            vote_counts: genesis_dpos_vote_counts,
+            total_vote_count: genesis_dpos_total_vote_count,
+            delegations: genesis_dpos_delegations,
+            validator_order: genesis_validator_order,
+            delegator_validators: genesis_dpos_delegator_validators,
+            delegation_ledger_history_complete: true,
+            delegation_reward_cursors: genesis_dpos_delegation_reward_cursors,
+            validator_reward_per_stake: BTreeMap::new(),
+            aspen_supply_state: AspenSupplyState::default(),
+            retained_undelegation_counts: BTreeMap::new(),
+            validator_row_authority: ValidatorRowAuthority::CompatibilityOnly,
+            undelegations_v2: BTreeMap::new(),
+            undelegations: BTreeMap::new(),
+            undelegation_v2_last_ids: BTreeMap::new(),
+            slashing_jail_blocks: BTreeMap::new(),
+            slashing_jailed_validators: Vec::new(),
+            slashing_double_voting_proofs: BTreeSet::new(),
+            reward_reference_graph,
+            redelegate_same_validator_history_complete: true,
+            redelegate_same_validator_corruption: BTreeSet::new(),
+        };
+        Ok(PreparedFinalChainGenesis {
+            native_configuration_seed,
+            genesis_accounts,
+            genesis_vrf_keys,
+            genesis_dpos_snapshot,
+            rewards_config,
+            dag_vdf_sortition_max_vote_count,
+        })
+    }
+
+    /// Constructs FinalChain with a concrete genesis root and explicit Ficus activation.
+    ///
+    /// Inputs and root-validation errors match [`Self::new_with_genesis_state_root`].
+    /// `ficus_activation_period` is immutable for the resulting chain, applies
+    /// inclusively to native DPoS serialization, and uses
+    /// `FinalChainBlockNumber::MAX` as its disabled sentinel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_genesis_state_root_and_ficus_activation(
+        storage: Arc<Storage>,
+        block_gas_limit: FinalChainGas,
+        genesis_timestamp: u64,
+        genesis_state_root: ethereum_types::H256,
+        enforce_genesis_state_root: bool,
+        genesis_accounts: Vec<GenesisAccount>,
+        genesis_validators: Vec<GenesisValidator>,
+        genesis_dpos_config: GenesisDposConfig,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
+    ) -> Result<Self> {
+        let PreparedFinalChainGenesis {
+            native_configuration_seed,
+            genesis_accounts,
+            genesis_vrf_keys,
+            mut genesis_dpos_snapshot,
+            rewards_config,
+            dag_vdf_sortition_max_vote_count,
+        } = Self::prepare_genesis(
+            block_gas_limit,
+            genesis_timestamp,
+            genesis_state_root,
+            enforce_genesis_state_root,
+            genesis_accounts,
+            genesis_validators,
+            &genesis_dpos_config,
+            rewards_config,
+            ficus_activation_period,
+        )?;
         let (rewards_stats_runtime_head, rewards_stats_runtime) =
             rewards_stats_runtime_from_storage(&storage, &rewards_config, true)?;
         let dpos_delegation_locking_period = rewards_config.dpos_delegation_locking_period;
@@ -2339,7 +2556,8 @@ impl FinalChain {
             ValidatorRowAuthority::CompatibilityOnly
         } else {
             ValidatorRowAuthority::Complete(
-                genesis_dpos_total_stakes
+                genesis_dpos_snapshot
+                    .total_stakes
                     .keys()
                     .map(|address| {
                         (
@@ -2354,8 +2572,12 @@ impl FinalChain {
                     .collect(),
             )
         };
+        genesis_dpos_snapshot.validator_row_authority = genesis_validator_row_authority;
         let final_chain = FinalChain {
-            correction_stage: rustaxa_types::evm_correction::CorrectionStage::Historical,
+            native_configuration_seed,
+            correction_policy: FinalChainCorrectionPolicy::Fixed(
+                rustaxa_types::evm_correction::CorrectionStage::Historical,
+            ),
             storage,
             block_gas_limit,
             genesis_timestamp,
@@ -2400,36 +2622,7 @@ impl FinalChain {
             latest_account_snapshot_block: Mutex::new(FinalChainBlockNumber::GENESIS),
             dpos_snapshots: Mutex::new(HashMap::from([(
                 FinalChainBlockNumber::GENESIS,
-                DposSnapshot {
-                    total_stakes: genesis_dpos_total_stakes,
-                    commission_rewards: BTreeMap::new(),
-                    delegator_rewards: BTreeMap::new(),
-                    validator_metadata: genesis_dpos_validator_metadata,
-                    vrf_keys: genesis_vrf_keys
-                        .iter()
-                        .map(|(address, vrf_key)| (*address, *vrf_key))
-                        .collect(),
-                    vote_counts: genesis_dpos_vote_counts,
-                    total_vote_count: genesis_dpos_total_vote_count,
-                    delegations: genesis_dpos_delegations,
-                    validator_order: genesis_validator_order,
-                    delegator_validators: genesis_dpos_delegator_validators,
-                    delegation_ledger_history_complete: true,
-                    delegation_reward_cursors: genesis_dpos_delegation_reward_cursors,
-                    validator_reward_per_stake: BTreeMap::new(),
-                    aspen_supply_state: AspenSupplyState::default(),
-                    retained_undelegation_counts: BTreeMap::new(),
-                    validator_row_authority: genesis_validator_row_authority,
-                    undelegations_v2: BTreeMap::new(),
-                    undelegations: BTreeMap::new(),
-                    undelegation_v2_last_ids: BTreeMap::new(),
-                    slashing_jail_blocks: BTreeMap::new(),
-                    slashing_jailed_validators: Vec::new(),
-                    slashing_double_voting_proofs: BTreeSet::new(),
-                    reward_reference_graph,
-                    redelegate_same_validator_history_complete: true,
-                    redelegate_same_validator_corruption: BTreeSet::new(),
-                },
+                genesis_dpos_snapshot,
             )])),
         };
         if final_chain.rewards_config.aspen_part_two_period == FinalChainBlockNumber::GENESIS {
@@ -3115,15 +3308,52 @@ impl FinalChain {
         &self,
         request: FinalChainCallRequest,
     ) -> Result<FinalChainCallOutcome, anyhow::Error> {
-        if request.receiver == Some(DPOS_CONTRACT_ADDRESS) && request.input.len() >= 4 {
-            let mut selector = [0u8; 4];
-            selector.copy_from_slice(&request.input[..4]);
-            if is_dpos_mutation_selector(selector) {
-                return self.dpos_mutation_call(request);
-            }
+        self.call_with_account_source(request, None)
+    }
+
+    pub(crate) fn dpos_call_uses_historical_accounts(request: &FinalChainCallRequest) -> bool {
+        request.receiver == Some(DPOS_CONTRACT_ADDRESS)
+            && request
+                .input
+                .get(..4)
+                .and_then(|prefix| <[u8; 4]>::try_from(prefix).ok())
+                .is_some_and(is_dpos_mutation_selector)
+    }
+
+    pub(crate) fn call_with_dpos_checkpoint(
+        &self,
+        request: FinalChainCallRequest,
+        reader: &native_session::ConcreteCheckpointNativeStateRead<'_>,
+    ) -> Result<FinalChainCallOutcome, anyhow::Error> {
+        ensure!(
+            request.receiver == Some(DPOS_CONTRACT_ADDRESS)
+                && reader.identity().period
+                    == if Self::dpos_call_uses_historical_accounts(&request) {
+                        request.block_number
+                    } else {
+                        self.last_block_number_typed()?
+                    },
+            "PRODUCTION_DPOS_CALL_ACCOUNT_SCOPE_MISMATCH"
+        );
+        self.call_with_account_source(request, Some(reader))
+    }
+
+    fn call_with_account_source(
+        &self,
+        request: FinalChainCallRequest,
+        reader: Option<&dyn native_session::FinalChainNativeStateRead>,
+    ) -> Result<FinalChainCallOutcome, anyhow::Error> {
+        if Self::dpos_call_uses_historical_accounts(&request) {
+            return match reader {
+                Some(reader) => self.dpos_mutation_call_with_accounts(
+                    request,
+                    &mut CheckpointDposCallAccounts::new(reader),
+                ),
+                None => self.dpos_mutation_call(request),
+            };
         }
 
-        if let Some(outcome) = self.validate_call_funds_and_gas(&request)? {
+        if let Some(outcome) = self.validate_call_funds_and_gas(&request, reader)? {
             return Ok(outcome);
         }
 
@@ -3439,33 +3669,43 @@ impl FinalChain {
         &self,
         request: FinalChainCallRequest,
     ) -> Result<FinalChainCallOutcome, anyhow::Error> {
+        let mut accounts = self.account_snapshot_map_at_block(request.block_number)?;
+        self.dpos_mutation_call_with_accounts(request, &mut accounts)
+    }
+
+    fn dpos_mutation_call_with_accounts(
+        &self,
+        request: FinalChainCallRequest,
+        accounts: &mut (impl DposAccountPort + Clone),
+    ) -> Result<FinalChainCallOutcome, anyhow::Error> {
         let mut selector = [0u8; 4];
         selector.copy_from_slice(&request.input[..4]);
-        let mut accounts = self.account_snapshot_map_at_block(request.block_number)?;
         let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
         let gas_price = request.gas_price.as_u256();
         let value = request.value.as_u256();
 
         let mut balance_after_gas_cap = None;
         if request.sender != [0u8; 20] {
-            let sender = accounts.entry(request.sender).or_insert_with(empty_account);
-            let sender_balance = *sender.balance.as_u256();
+            let sender_balance = call_account_balance(&accounts.account(request.sender)?.balance)?;
             let Some(gas_cap_cost) = gas_price.checked_mul(U256::from(request.gas_limit)) else {
                 return Ok(FinalChainCallOutcome {
-                    gas_used: affordable_gas(sender, gas_price, request.gas_limit),
+                    gas_used: affordable_gas(sender_balance, gas_price, request.gas_limit),
                     consensus_err: "insufficient balance to pay for gas".to_string(),
                     ..Default::default()
                 });
             };
             if sender_balance < gas_cap_cost {
                 return Ok(FinalChainCallOutcome {
-                    gas_used: affordable_gas(sender, gas_price, request.gas_limit),
+                    gas_used: affordable_gas(sender_balance, gas_price, request.gas_limit),
                     consensus_err: "insufficient balance to pay for gas".to_string(),
                     ..Default::default()
                 });
             }
             let remaining_balance = sender_balance - gas_cap_cost;
-            sender.balance.replace_after_mutation(remaining_balance);
+            accounts.subtract_balance(
+                request.sender,
+                &BigUint::from_bytes_be(&u256_to_big_endian(gas_cap_cost)),
+            )?;
             balance_after_gas_cap = Some(remaining_balance);
         }
 
@@ -3546,33 +3786,23 @@ impl FinalChain {
 
         Self::inject_dpos_transaction_value(&mut dpos_tx, request.value);
         if value_transfer_allowed && !value.is_zero() {
+            let amount = BigUint::from_bytes_be(&u256_to_big_endian(value));
             if request.sender != [0u8; 20] {
-                let sender = accounts
-                    .get_mut(&request.sender)
-                    .ok_or_else(|| anyhow::anyhow!("transient call sender account is missing"))?;
-                let balance = *sender.balance.as_u256();
-                sender.balance.replace_after_mutation(
-                    balance.checked_sub(value).ok_or_else(|| {
-                        anyhow::anyhow!("transient call value transfer underflow")
-                    })?,
-                );
+                accounts.subtract_balance(request.sender, &amount)?;
             }
-            let contract = accounts
-                .entry(DPOS_CONTRACT_ADDRESS)
-                .or_insert_with(empty_account);
-            let contract_balance = *contract.balance.as_u256();
-            contract.balance.replace_after_mutation(
-                contract_balance
-                    .checked_add(value)
-                    .ok_or_else(|| anyhow::anyhow!("DPoS contract balance overflow"))?,
-            );
+            let contract_balance =
+                call_account_balance(&accounts.account(DPOS_CONTRACT_ADDRESS)?.balance)?;
+            contract_balance
+                .checked_add(value)
+                .ok_or_else(|| anyhow::anyhow!("DPoS contract balance overflow"))?;
+            accounts.add_balance(DPOS_CONTRACT_ADDRESS, &amount)?;
         }
 
         let outcome = self.apply_dpos_mutation_transaction(
             request.block_number,
             dpos_tx,
             &mut dpos_snapshot,
-            &mut accounts,
+            accounts,
         )?;
         if outcome.status_code == 0 {
             return Ok(FinalChainCallOutcome {
@@ -3629,7 +3859,9 @@ impl FinalChain {
                 ..Default::default()
             });
         }
-        if self.correction_stage.slashing_hard_error()
+        if self
+            .correction_stage_at(request.block_number)
+            .slashing_hard_error()
             && selector == SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR
         {
             let _ = decode_slashing_transaction(&request.input)?;
@@ -5833,12 +6065,13 @@ impl FinalChain {
             let full_gas_affordable = gas_price
                 .checked_mul(U256::from(transaction.gas_limit))
                 .is_some_and(|cost| sender_balance >= cost);
-            let slashing_action_unfunded = self.correction_stage.slashing_hard_error()
-                && transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS)
-                && self.magnolia_active(block_number)
-                && transaction.gas_limit.as_u64()
-                    < intrinsic_gas(&transaction.data, false)?
-                        .saturating_add(slashing_required_gas(&transaction.data));
+            let slashing_action_unfunded =
+                self.correction_stage_at(block_number).slashing_hard_error()
+                    && transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS)
+                    && self.magnolia_active(block_number)
+                    && transaction.gas_limit.as_u64()
+                        < intrinsic_gas(&transaction.data, false)?
+                            .saturating_add(slashing_required_gas(&transaction.data));
             let skip_native_decode = (transaction.receiver == Some(DPOS_CONTRACT_ADDRESS)
                 || transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS))
                 && (sender_nonce > transaction.nonce
@@ -5970,7 +6203,8 @@ impl FinalChain {
                 let full_gas_affordable = full_gas_cost.is_some_and(|cost| sender_balance >= cost);
                 if sender.nonce > transaction.nonce || !full_gas_affordable {
                     status_code = 0;
-                    gas_used = affordable_gas(sender, gas_price, transaction.gas_limit);
+                    gas_used =
+                        affordable_gas(*sender.balance.as_u256(), gas_price, transaction.gas_limit);
                     // Cornus advances a sender nonce for every non-stale
                     // transaction, including one that cannot afford its full gas
                     // cap.  Earlier hardforks retain the legacy no-advance rule.
@@ -6365,6 +6599,31 @@ impl FinalChain {
             Option<&std::rc::Rc<crate::native_session::frozen_eligibility::FrozenEligibility>>,
         ),
     ) -> Result<(Vec<u8>, Vec<u8>, FinalChainPreparedRewardSchedulerSuccessor), anyhow::Error> {
+        self.external_evm_concrete_projection_with_basis(
+            identity,
+            transactions,
+            projection,
+            rewards_plan,
+            reported_total_reward,
+            native,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn external_evm_concrete_projection_with_basis(
+        &self,
+        identity: FinalChainProjectionIdentity,
+        transactions: &[FinalChainEvmTransactionInput],
+        projection: &FinalChainConcreteStateProjection,
+        rewards_plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
+        reported_total_reward: &[u8],
+        native: (
+            Option<&crate::native_projection_context::FinalChainNativeProjectionContext>,
+            Option<&std::rc::Rc<crate::native_session::frozen_eligibility::FrozenEligibility>>,
+        ),
+        detached_basis: Option<reward_scheduler::FinalChainRewardSchedulerBasis>,
+    ) -> Result<(Vec<u8>, Vec<u8>, FinalChainPreparedRewardSchedulerSuccessor), anyhow::Error> {
         let (native_context, delayed_view) = native;
         let FinalChainProjectionIdentity {
             request_id,
@@ -6378,15 +6637,17 @@ impl FinalChain {
             "FINAL_CHAIN_CONCRETE_TRANSACTION_EFFECT_COUNT_MISMATCH"
         );
         let head = self.last_block_number_typed()?;
-        let scheduler_basis =
-            self.reward_scheduler_basis(request_id, state_api_epoch, block_number, head)?;
+        let scheduler_basis = match detached_basis {
+            Some(basis) => basis,
+            None => self.reward_scheduler_basis(request_id, state_api_epoch, block_number, head)?,
+        };
         let mut native_replay = native_context
             .map(|context| {
-                self.begin_native_session_bound_at_state_api_epoch(
+                self.begin_native_session_bound_with_scheduler_basis(
                     context.request_id,
-                    state_api_epoch,
                     block_number,
                     head,
+                    scheduler_basis,
                 )
             })
             .transpose()?;
@@ -6936,7 +7197,7 @@ impl FinalChain {
                 update_dpos_claim_gas_snapshot(dpos_gas_snapshot, &transaction_for_gas)?;
             }
             outcome
-        } else if self.correction_stage.slashing_hard_error()
+        } else if self.correction_stage_at(block_number).slashing_hard_error()
             && invocation.supplied_gas < slashing_required_gas(&invocation.input)
         {
             anyhow::ensure!(
@@ -7135,7 +7396,7 @@ impl FinalChain {
         block_number: FinalChainBlockNumber,
         dpos_tx: DposTransaction,
         dpos_snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + Clone),
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         match dpos_tx {
             DposTransaction::Register(registration) => {
@@ -7448,6 +7709,7 @@ impl FinalChain {
     fn validate_call_funds_and_gas(
         &self,
         request: &FinalChainCallRequest,
+        reader: Option<&dyn native_session::FinalChainNativeStateRead>,
     ) -> Result<Option<FinalChainCallOutcome>, anyhow::Error> {
         if request.gas_limit.as_u64() < VALUE_TRANSFER_GAS {
             return Ok(Some(FinalChainCallOutcome {
@@ -7461,10 +7723,13 @@ impl FinalChain {
             return Ok(None);
         }
 
-        let balance = self
-            .account(request.sender)?
-            .map(|account| *account.balance.as_u256())
-            .unwrap_or_default();
+        let balance = match reader {
+            Some(reader) => call_account_balance(&reader.account(request.sender)?.balance)?,
+            None => self
+                .account(request.sender)?
+                .map(|account| *account.balance.as_u256())
+                .unwrap_or_default(),
+        };
         let value = request.value.as_u256();
         if balance < value {
             return Ok(Some(FinalChainCallOutcome {
@@ -8608,7 +8873,7 @@ impl FinalChain {
     fn apply_dpos_claim_all_rewards(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + Clone),
         delegator: [u8; 20],
         batch: Option<u32>,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
@@ -8672,7 +8937,7 @@ impl FinalChain {
     fn apply_dpos_claim_all_reward_set(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + Clone),
         delegator: [u8; 20],
         validators: &[[u8; 20]],
         code_retval: Vec<u8>,
@@ -16790,11 +17055,20 @@ fn concrete_native_envelope_kind(
     }
 }
 
-fn affordable_gas(account: &Account, gas_price: U256, gas_limit: FinalChainGas) -> FinalChainGas {
+fn call_account_balance(balance: &BigInt) -> Result<U256, anyhow::Error> {
+    let (sign, bytes) = balance.to_bytes_be();
+    ensure!(
+        sign != num_bigint::Sign::Minus && bytes.len() <= 32,
+        "PRODUCTION_DPOS_CALL_BALANCE_WIDTH"
+    );
+    Ok(U256::from_big_endian(&bytes))
+}
+
+fn affordable_gas(balance: U256, gas_price: U256, gas_limit: FinalChainGas) -> FinalChainGas {
     if gas_price.is_zero() {
         return gas_limit;
     }
-    let affordable = *account.balance.as_u256() / gas_price;
+    let affordable = balance / gas_price;
     affordable.min(U256::from(gas_limit)).as_u64().into()
 }
 

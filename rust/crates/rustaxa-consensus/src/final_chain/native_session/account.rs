@@ -338,6 +338,54 @@ impl DposAccountPort for HashMap<[u8; 20], Account> {
     }
 }
 
+#[derive(Clone)]
+pub(in crate::final_chain) struct CheckpointDposCallAccounts<'a> {
+    source: &'a dyn FinalChainNativeStateRead,
+    accounts: HashMap<[u8; 20], Account>,
+}
+
+impl<'a> CheckpointDposCallAccounts<'a> {
+    pub(in crate::final_chain) fn new(source: &'a dyn FinalChainNativeStateRead) -> Self {
+        Self {
+            source,
+            accounts: HashMap::new(),
+        }
+    }
+
+    fn load_account(&mut self, address: [u8; 20]) -> Result<()> {
+        if self.accounts.contains_key(&address) {
+            return Ok(());
+        }
+        let facts = self.source.account(address)?;
+        if facts.exists {
+            let mut account = empty_account();
+            account.nonce = facts.nonce;
+            account
+                .balance
+                .replace_after_mutation(super::super::call_account_balance(&facts.balance)?);
+            self.accounts.insert(address, account);
+        }
+        Ok(())
+    }
+}
+
+impl DposAccountPort for CheckpointDposCallAccounts<'_> {
+    fn account(&mut self, address: [u8; 20]) -> Result<FinalChainNativeAccount> {
+        self.load_account(address)?;
+        self.accounts.account(address)
+    }
+
+    fn subtract_balance(&mut self, address: [u8; 20], amount: &BigUint) -> Result<()> {
+        self.load_account(address)?;
+        self.accounts.subtract_balance(address, amount)
+    }
+
+    fn add_balance(&mut self, address: [u8; 20], amount: &BigUint) -> Result<()> {
+        self.load_account(address)?;
+        self.accounts.add_balance(address, amount)
+    }
+}
+
 /// Transfers contract custody through sequential subtract/add operations.
 ///
 /// The source comparison uses the complete signed balance. Self-transfers retain

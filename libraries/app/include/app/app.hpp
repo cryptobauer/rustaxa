@@ -54,6 +54,7 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   void startConsensus();
   /** Stops only the App-owned native consensus process and joins its worker. */
   void stopConsensus();
+  bool consensusRunCompleted() const;
 #endif
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<PbftManager> getPbftManager() const { return pbft_mgr_; }

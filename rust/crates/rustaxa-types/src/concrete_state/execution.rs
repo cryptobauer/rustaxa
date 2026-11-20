@@ -14,7 +14,7 @@ use super::{
 /// private preparation tokens and FinalChain approval remain owner-controlled.
 /// Account storage roots are derived by storage, while slot reads select raw
 /// physical history independently of account/trie reachability. Missing physical
-/// history still returns `HistoryUnavailable`; neither a prepared identity nor
+/// history for raw reads still returns `HistoryUnavailable`; neither a prepared identity nor
 /// logical nonmembership establishes retention or permits inferred absence.
 /// No read creates, repairs, adopts, commits or publishes a database.
 ///
@@ -40,6 +40,17 @@ pub trait ConcreteExecutionRead {
         address: [u8; 20],
         key: ConcreteStorageKey,
     ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError>;
+
+    /// Reads a committed ordinary EVM slot. The default preserves raw history
+    /// selection. A fixed execution view may prove ordinary absence from its
+    /// own trie, but must keep missing native raw history as an error.
+    fn ordinary_storage(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        self.storage(address, key)
+    }
 
     /// Reads immutable staged or committed code by hash. Bytes must match the
     /// hash; consumers also validate reachable account code size and must reject

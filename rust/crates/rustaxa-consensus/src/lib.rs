@@ -11,12 +11,18 @@ pub mod dag;
 pub(crate) mod dag_service;
 pub(crate) mod dag_transaction_service;
 pub(crate) mod dpos_reward_graph;
+mod execution_configuration;
 pub mod gas_pricer;
 pub mod maybe_broadcast_votes;
 pub mod native_projection_context;
 pub mod network_api;
 pub mod pbft_application_finalization;
 pub mod pbft_chain;
+pub mod pbft_execution_guard;
+pub use execution_configuration::{ConfigurationUnavailable, ExecutionConfiguration};
+
+mod pbft_execution_inputs;
+pub mod pbft_execution_validation;
 pub mod pbft_finalize;
 pub mod pbft_leader_selection;
 pub mod pbft_manager;
@@ -70,6 +76,7 @@ pub use concrete_state_projection::{
     encode_concrete_state_projection, encode_concrete_state_provenance,
     validate_concrete_state_pair,
 };
+pub use consensus_application::production_application::DagGasState;
 pub use consensus_application::{
     ConsensusApplication, ConsensusApplicationBootstrap, ConsensusApplicationConfig,
     ConsensusFinalChainConfig, ConsensusLiveStatus, ConsensusVoteStatus, DagBlockIngressReport,
@@ -457,3 +464,15 @@ pub use dag::{
 #[cfg(test)]
 #[path = "../../rustaxa-storage/src/closeout_test_scratch.rs"]
 pub mod closeout_test_scratch;
+
+pub use consensus_application::production_application::{
+    ApplicationExecutionView, BoundConsensusApplication, ProductionAdmissionPolicy,
+    ProductionConfiguration,
+};
+
+pub mod production_bootstrap;
+pub use consensus_application::production_application::{
+    ApplicationTransitionContext, ProductionCertificateProofError,
+    ProductionOwnerPublicationAuthority, ProductionPreparationUnavailable, ProposalExecutionCheck,
+    ScheduledCertificateStale, VerifiedCertificateEvidence,
+};

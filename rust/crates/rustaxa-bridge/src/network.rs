@@ -30,17 +30,18 @@ fn consensus_packet_request_to_domain(
     }
 }
 
-/// Creates a thin network/tarcap adapter over the application PBFT service.
-///
-/// The returned handle clones the one native network service restored by the
-/// root, so every C++ wrapper observes the same effect IDs, dependency state,
-/// and protocol siblings. Peer transport and packet framing remain external.
+/// Creates a network client for the existing application owner.
 pub fn create_consensus_network_api(
-    service: &crate::ffi::BridgeApp,
+    service: &crate::ffi::BridgeConsensusApplication,
 ) -> Box<BridgeConsensusNetworkApi> {
-    Box::new(BridgeConsensusNetworkApi(
-        service.0.consensus_network_api_for_bridge(),
-    ))
+    Box::new(BridgeConsensusNetworkApi(match &service.0 {
+        crate::dag_transaction_service::ApplicationBackend::Historical(owner) => {
+            crate::ffi::NetworkBackend::Historical(owner.consensus_network_api_for_bridge())
+        }
+        crate::dag_transaction_service::ApplicationBackend::Production(owner) => {
+            crate::ffi::NetworkBackend::Production(owner.network_client())
+        }
+    }))
 }
 
 impl BridgeConsensusNetworkApi {
@@ -52,18 +53,18 @@ impl BridgeConsensusNetworkApi {
         source_scoped: bool,
         budget: u32,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectBatch> {
-        let batch = self
-            .0
-            .drain_work(transport_lane, source_payload_id, source_scoped, budget)?;
-        Ok(rustaxa_ffi::NetworkEffectBatch {
-            status: batch.status,
-            effects: batch
-                .effects
-                .into_iter()
-                .map(to_bridge_network_effect)
-                .collect(),
-            more_available: batch.more_available,
-            error_code: batch.error_code,
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let batch = api.drain_work(transport_lane, source_payload_id, source_scoped, budget)?;
+            Ok(rustaxa_ffi::NetworkEffectBatch {
+                status: batch.status,
+                effects: batch
+                    .effects
+                    .into_iter()
+                    .map(to_bridge_network_effect)
+                    .collect(),
+                more_available: batch.more_available,
+                error_code: batch.error_code,
+            })
         })
     }
 
@@ -74,14 +75,16 @@ impl BridgeConsensusNetworkApi {
         &self,
         results: Vec<rustaxa_ffi::NetworkEffectResult>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectAck> {
-        let ack = self
-            .0
-            .report_effect_results(results.into_iter().map(from_bridge_effect_result).collect())?;
-        Ok(rustaxa_ffi::NetworkEffectAck {
-            status: ack.status,
-            accepted_results: ack.accepted_results,
-            failed_results: ack.failed_results,
-            error_code: ack.error_code,
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let ack = api.report_effect_results(
+                results.into_iter().map(from_bridge_effect_result).collect(),
+            )?;
+            Ok(rustaxa_ffi::NetworkEffectAck {
+                status: ack.status,
+                accepted_results: ack.accepted_results,
+                failed_results: ack.failed_results,
+                error_code: ack.error_code,
+            })
         })
     }
 
@@ -90,9 +93,8 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkPbftSyncStartRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncStartOutcome> {
-        let outcome = self
-            .0
-            .begin_pbft_sync(rustaxa_consensus::NetworkPbftSyncStartRequest {
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let outcome = api.begin_pbft_sync(rustaxa_consensus::NetworkPbftSyncStartRequest {
                 start: request.start,
                 now_ms: request.now_ms,
                 local_pbft_synced_period: request.local_pbft_synced_period,
@@ -103,17 +105,18 @@ impl BridgeConsensusNetworkApi {
                     .map(to_domain_network_pbft_sync_peer_candidate)
                     .collect(),
             })?;
-        Ok(rustaxa_ffi::NetworkPbftSyncStartOutcome {
-            status: outcome.status,
-            error_code: outcome.error_code,
-            started: outcome.started,
-            has_peer: outcome.has_peer,
-            peer_id: outcome.peer_id,
-            peer_pbft_chain_size: outcome.peer_pbft_chain_size,
-            request_period: outcome.request_period,
-            generation: outcome.generation,
-            deep_syncing: outcome.deep_syncing,
-            enable_snapshot_creation: outcome.enable_snapshot_creation,
+            Ok(rustaxa_ffi::NetworkPbftSyncStartOutcome {
+                status: outcome.status,
+                error_code: outcome.error_code,
+                started: outcome.started,
+                has_peer: outcome.has_peer,
+                peer_id: outcome.peer_id,
+                peer_pbft_chain_size: outcome.peer_pbft_chain_size,
+                request_period: outcome.request_period,
+                generation: outcome.generation,
+                deep_syncing: outcome.deep_syncing,
+                enable_snapshot_creation: outcome.enable_snapshot_creation,
+            })
         })
     }
 
@@ -122,9 +125,9 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkStatusPacketRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkStatusPacketReport> {
-        let outcome =
-            self.0
-                .ingest_status_packet(rustaxa_consensus::NetworkStatusPacketRequest {
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let outcome =
+                api.ingest_status_packet(rustaxa_consensus::NetworkStatusPacketRequest {
                     peer_id: request.peer_id,
                     packet_rlp: request.packet_rlp,
                     source_peer_ready: request.source_peer_ready,
@@ -133,30 +136,31 @@ impl BridgeConsensusNetworkApi {
                     local_pbft_round: request.local_pbft_round,
                     peer_dag_synced: request.peer_dag_synced,
                 })?;
-        Ok(rustaxa_ffi::NetworkStatusPacketReport {
-            status: outcome.status,
-            error_code: outcome.error_code,
-            malicious: outcome.malicious,
-            initial: outcome.initial,
-            accept_peer: outcome.accept_peer,
-            disconnect_peer: outcome.disconnect_peer,
-            peer_pbft_chain_size: outcome.peer_pbft_chain_size,
-            peer_pbft_period: outcome.peer_pbft_period,
-            peer_pbft_round: outcome.peer_pbft_round,
-            peer_dag_level: outcome.peer_dag_level,
-            peer_syncing: outcome.peer_syncing,
-            peer_is_light_node: outcome.peer_is_light_node,
-            peer_light_node_history: outcome.peer_light_node_history,
-            node_major_version: outcome.node_major_version,
-            node_minor_version: outcome.node_minor_version,
-            node_patch_version: outcome.node_patch_version,
-            request_pbft_sync: outcome.request_pbft_sync,
-            request_pending_dag_blocks: outcome.request_pending_dag_blocks,
-            request_next_votes: outcome.request_next_votes,
-            next_votes_period: outcome.next_votes_period,
-            next_votes_round: outcome.next_votes_round,
-            next_votes_request_rlp: outcome.next_votes_request_rlp,
-            sync_generation: outcome.sync_generation,
+            Ok(rustaxa_ffi::NetworkStatusPacketReport {
+                status: outcome.status,
+                error_code: outcome.error_code,
+                malicious: outcome.malicious,
+                initial: outcome.initial,
+                accept_peer: outcome.accept_peer,
+                disconnect_peer: outcome.disconnect_peer,
+                peer_pbft_chain_size: outcome.peer_pbft_chain_size,
+                peer_pbft_period: outcome.peer_pbft_period,
+                peer_pbft_round: outcome.peer_pbft_round,
+                peer_dag_level: outcome.peer_dag_level,
+                peer_syncing: outcome.peer_syncing,
+                peer_is_light_node: outcome.peer_is_light_node,
+                peer_light_node_history: outcome.peer_light_node_history,
+                node_major_version: outcome.node_major_version,
+                node_minor_version: outcome.node_minor_version,
+                node_patch_version: outcome.node_patch_version,
+                request_pbft_sync: outcome.request_pbft_sync,
+                request_pending_dag_blocks: outcome.request_pending_dag_blocks,
+                request_next_votes: outcome.request_next_votes,
+                next_votes_period: outcome.next_votes_period,
+                next_votes_round: outcome.next_votes_round,
+                next_votes_request_rlp: outcome.next_votes_request_rlp,
+                sync_generation: outcome.sync_generation,
+            })
         })
     }
 
@@ -165,18 +169,19 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkStatusPacketBuildRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkStatusPacketBuildOutcome> {
-        let outcome =
-            self.0
-                .build_status_packet(rustaxa_consensus::NetworkStatusPacketBuildRequest {
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let outcome =
+                api.build_status_packet(rustaxa_consensus::NetworkStatusPacketBuildRequest {
                     initial: request.initial,
                     local_pbft_chain_size: request.local_pbft_chain_size,
                     local_pbft_round: request.local_pbft_round,
                     local_dag_level: request.local_dag_level,
                 })?;
-        Ok(rustaxa_ffi::NetworkStatusPacketBuildOutcome {
-            status: outcome.status,
-            error_code: outcome.error_code,
-            packet_rlp: outcome.packet_rlp,
+            Ok(rustaxa_ffi::NetworkStatusPacketBuildOutcome {
+                status: outcome.status,
+                error_code: outcome.error_code,
+                packet_rlp: outcome.packet_rlp,
+            })
         })
     }
 
@@ -186,9 +191,9 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkPbftSyncCommand,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncCommandOutcome> {
-        let outcome =
-            self.0
-                .apply_pbft_sync_command(rustaxa_consensus::NetworkPbftSyncCommandRequest {
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let outcome =
+                api.apply_pbft_sync_command(rustaxa_consensus::NetworkPbftSyncCommandRequest {
                     kind: request.kind,
                     now_ms: request.now_ms,
                     generation: request.generation,
@@ -203,18 +208,19 @@ impl BridgeConsensusNetworkApi {
                     retry_count: request.retry_count,
                     retry_delay_ms: request.retry_delay_ms,
                 })?;
-        Ok(rustaxa_ffi::NetworkPbftSyncCommandOutcome {
-            accepted: outcome.accepted,
-            active: outcome.active,
-            stopped: outcome.stopped,
-            expired: outcome.expired,
-            restart_sync: outcome.restart_sync,
-            retry: outcome.retry,
-            request_next: outcome.request_next,
-            request_pending_dag_if_idle: outcome.request_pending_dag_if_idle,
-            deep_syncing: outcome.deep_syncing,
-            generation: outcome.generation,
-            error_code: outcome.error_code,
+            Ok(rustaxa_ffi::NetworkPbftSyncCommandOutcome {
+                accepted: outcome.accepted,
+                active: outcome.active,
+                stopped: outcome.stopped,
+                expired: outcome.expired,
+                restart_sync: outcome.restart_sync,
+                retry: outcome.retry,
+                request_next: outcome.request_next,
+                request_pending_dag_if_idle: outcome.request_pending_dag_if_idle,
+                deep_syncing: outcome.deep_syncing,
+                generation: outcome.generation,
+                error_code: outcome.error_code,
+            })
         })
     }
 
@@ -225,13 +231,15 @@ impl BridgeConsensusNetworkApi {
         source_payload_id: u64,
         facts: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        Ok(to_bridge_network_ingress_decision(
-            self.0.request_pending_dag_blocks(
-                transport_lane,
-                source_payload_id,
-                to_domain_network_pending_dag_blocks_request_facts(facts),
-            )?,
-        ))
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            Ok(to_bridge_network_ingress_decision(
+                api.request_pending_dag_blocks(
+                    transport_lane,
+                    source_payload_id,
+                    to_domain_network_pending_dag_blocks_request_facts(facts),
+                )?,
+            ))
+        })
     }
 
     /// Decodes and admits a complete canonical PBFT vote packet in native code.
@@ -240,20 +248,24 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkConsensusPacketRequest,
         slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftVotePacketReport> {
-        let report = self.0.ingest_pbft_vote_packet(
-            consensus_packet_request_to_domain(request),
-            &slashing_submitters
-                .into_iter()
-                .map(slashing_submitter_identity_to_domain)
-                .collect::<Vec<_>>(),
-        );
-        match report {
-            Ok(report) => Ok(to_bridge_pbft_vote_packet_report(report)),
-            Err(error) => match peer_packet_error_code(&error, &["NETWORK_PBFT_VOTE_PACKET_"]) {
-                Some(error_code) => Ok(pbft_peer_packet_error_report(error_code)),
-                None => Err(error),
-            },
-        }
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let report = api.ingest_pbft_vote_packet(
+                consensus_packet_request_to_domain(request),
+                &slashing_submitters
+                    .into_iter()
+                    .map(slashing_submitter_identity_to_domain)
+                    .collect::<Vec<_>>(),
+            );
+            match report {
+                Ok(report) => Ok(to_bridge_pbft_vote_packet_report(report)),
+                Err(error) => {
+                    match peer_packet_error_code(&error, &["NETWORK_PBFT_VOTE_PACKET_"]) {
+                        Some(error_code) => Ok(pbft_peer_packet_error_report(error_code)),
+                        None => Err(error),
+                    }
+                }
+            }
+        })
     }
 
     /// Decodes and admits a complete optimized PBFT votes-bundle packet in native code.
@@ -262,20 +274,23 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkConsensusPacketRequest,
         slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftVotePacketReport> {
-        let report = self.0.ingest_pbft_votes_bundle_packet(
-            consensus_packet_request_to_domain(request),
-            &slashing_submitters
-                .into_iter()
-                .map(slashing_submitter_identity_to_domain)
-                .collect::<Vec<_>>(),
-        );
-        match report {
-            Ok(report) => Ok(to_bridge_pbft_vote_packet_report(report)),
-            Err(error) => match peer_packet_error_code(&error, &["NETWORK_PBFT_VOTES_BUNDLE_"]) {
-                Some(error_code) => Ok(pbft_peer_packet_error_report(error_code)),
-                None => Err(error),
-            },
-        }
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let report = api.ingest_pbft_votes_bundle_packet(
+                consensus_packet_request_to_domain(request),
+                &slashing_submitters
+                    .into_iter()
+                    .map(slashing_submitter_identity_to_domain)
+                    .collect::<Vec<_>>(),
+            );
+            match report {
+                Ok(report) => Ok(to_bridge_pbft_vote_packet_report(report)),
+                Err(error) => match peer_packet_error_code(&error, &["NETWORK_PBFT_VOTES_BUNDLE_"])
+                {
+                    Some(error_code) => Ok(pbft_peer_packet_error_report(error_code)),
+                    None => Err(error),
+                },
+            }
+        })
     }
 
     /// Decodes and admits a complete canonical pillar-vote packet in native code.
@@ -283,16 +298,18 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkConsensusPacketRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPillarVotePacketReport> {
-        let report = self
-            .0
-            .ingest_pillar_vote_packet(consensus_packet_request_to_domain(request));
-        match report {
-            Ok(report) => Ok(to_bridge_pillar_vote_packet_report(report)),
-            Err(error) => match peer_packet_error_code(&error, &["NETWORK_PILLAR_VOTE_PACKET_"]) {
-                Some(error_code) => Ok(pillar_peer_packet_error_report(error_code)),
-                None => Err(error),
-            },
-        }
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let report = api.ingest_pillar_vote_packet(consensus_packet_request_to_domain(request));
+            match report {
+                Ok(report) => Ok(to_bridge_pillar_vote_packet_report(report)),
+                Err(error) => {
+                    match peer_packet_error_code(&error, &["NETWORK_PILLAR_VOTE_PACKET_"]) {
+                        Some(error_code) => Ok(pillar_peer_packet_error_report(error_code)),
+                        None => Err(error),
+                    }
+                }
+            }
+        })
     }
 
     /// Decodes and admits a complete optimized pillar-votes-bundle packet in native code.
@@ -300,18 +317,19 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkConsensusPacketRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPillarVotePacketReport> {
-        let report = self
-            .0
-            .ingest_pillar_votes_bundle_packet(consensus_packet_request_to_domain(request));
-        match report {
-            Ok(report) => Ok(to_bridge_pillar_vote_packet_report(report)),
-            Err(error) => {
-                match peer_packet_error_code(&error, &["NETWORK_PILLAR_VOTES_BUNDLE_PACKET_"]) {
-                    Some(error_code) => Ok(pillar_peer_packet_error_report(error_code)),
-                    None => Err(error),
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let report =
+                api.ingest_pillar_votes_bundle_packet(consensus_packet_request_to_domain(request));
+            match report {
+                Ok(report) => Ok(to_bridge_pillar_vote_packet_report(report)),
+                Err(error) => {
+                    match peer_packet_error_code(&error, &["NETWORK_PILLAR_VOTES_BUNDLE_PACKET_"]) {
+                        Some(error_code) => Ok(pillar_peer_packet_error_report(error_code)),
+                        None => Err(error),
+                    }
                 }
             }
-        }
+        })
     }
 
     /// Routes one get-next-votes request and queues its native egress leaf.
@@ -323,16 +341,18 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkCanonicalRequestPacket,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        Ok(to_bridge_network_ingress_decision(
-            self.0.ingest_pbft_next_votes_bundle_request(
-                rustaxa_consensus::NetworkPbftNextVotesBundlePacketRequest {
-                    transport_lane: request.transport_lane,
-                    peer_id: request.peer_id,
-                    source_payload_id: request.source_payload_id,
-                    packet_rlp: request.packet_rlp,
-                },
-            )?,
-        ))
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            Ok(to_bridge_network_ingress_decision(
+                api.ingest_pbft_next_votes_bundle_request(
+                    rustaxa_consensus::NetworkPbftNextVotesBundlePacketRequest {
+                        transport_lane: request.transport_lane,
+                        peer_id: request.peer_id,
+                        source_payload_id: request.source_payload_id,
+                        packet_rlp: request.packet_rlp,
+                    },
+                )?,
+            ))
+        })
     }
 
     /// Routes one pillar-vote bundle request through the native PBFT application root.
@@ -340,16 +360,18 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkCanonicalRequestPacket,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        Ok(to_bridge_network_ingress_decision(
-            self.0.ingest_pillar_votes_bundle_request(
-                rustaxa_consensus::NetworkGetPillarVotesBundlePacketRequest {
-                    transport_lane: request.transport_lane,
-                    peer_id: request.peer_id,
-                    source_payload_id: request.source_payload_id,
-                    packet_rlp: request.packet_rlp,
-                },
-            )?,
-        ))
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            Ok(to_bridge_network_ingress_decision(
+                api.ingest_pillar_votes_bundle_request(
+                    rustaxa_consensus::NetworkGetPillarVotesBundlePacketRequest {
+                        transport_lane: request.transport_lane,
+                        peer_id: request.peer_id,
+                        source_payload_id: request.source_payload_id,
+                        packet_rlp: request.packet_rlp,
+                    },
+                )?,
+            ))
+        })
     }
 
     /// Routes canonical get-PBFT-sync bytes through native range validation,
@@ -358,15 +380,16 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkGetPbftSyncRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        Ok(to_bridge_network_ingress_decision(
-            self.0
-                .ingest_get_pbft_sync_request(rustaxa_consensus::NetworkGetPbftSyncRequest {
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            Ok(to_bridge_network_ingress_decision(
+                api.ingest_get_pbft_sync_request(rustaxa_consensus::NetworkGetPbftSyncRequest {
                     tarcap_version: request.tarcap_version,
                     peer_id: request.peer_id,
                     request_rlp: request.request_rlp,
                     source_payload_id: request.source_payload_id,
                 })?,
-        ))
+            ))
+        })
     }
 
     /// Admits one latest-tarcap proposed-block bundle through native consensus.
@@ -379,10 +402,11 @@ impl BridgeConsensusNetworkApi {
         packet_rlp: Vec<u8>,
         source_payload_id: u64,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        Ok(to_bridge_network_ingress_decision(
-            self.0
-                .ingest_pbft_blocks_bundle(&packet_rlp, source_payload_id)?,
-        ))
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            Ok(to_bridge_network_ingress_decision(
+                api.ingest_pbft_blocks_bundle(&packet_rlp, source_payload_id)?,
+            ))
+        })
     }
 
     /// Serves one canonical get-DAG-sync request from application-owned bytes.
@@ -390,17 +414,19 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkGetDagSyncRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        Ok(to_bridge_network_ingress_decision(
-            self.0.ingest_get_dag_sync_request(
-                rustaxa_consensus::NetworkGetDagSyncContext {
-                    transport_lane: request.transport_lane,
-                    peer_id: request.peer_id,
-                    source_payload_id: request.source_payload_id,
-                    request_allowed: request.request_allowed,
-                },
-                &request.request_rlp,
-            )?,
-        ))
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            Ok(to_bridge_network_ingress_decision(
+                api.ingest_get_dag_sync_request(
+                    rustaxa_consensus::NetworkGetDagSyncContext {
+                        transport_lane: request.transport_lane,
+                        peer_id: request.peer_id,
+                        source_payload_id: request.source_payload_id,
+                        request_allowed: request.request_allowed,
+                    },
+                    &request.request_rlp,
+                )?,
+            ))
+        })
     }
 
     /// Prepares canonical packets and exact known-object probes for one
@@ -411,10 +437,10 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkEgressPrepareRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEgressPreparation> {
-        let payload_bytes = request.payload_bytes;
-        let preparation =
-            self.0
-                .prepare_egress(rustaxa_consensus::NetworkEgressPrepareRequest {
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            let payload_bytes = request.payload_bytes;
+            let preparation =
+                api.prepare_egress(rustaxa_consensus::NetworkEgressPrepareRequest {
                     family: request.family,
                     transport_lane: request.transport_lane,
                     source_payload_id: request.source_payload_id,
@@ -424,17 +450,18 @@ impl BridgeConsensusNetworkApi {
                     payload_bytes,
                     related_payload_bytes: request.related_payload_bytes,
                 })?;
-        Ok(rustaxa_ffi::NetworkEgressPreparation {
-            token: preparation.token,
-            probes: preparation
-                .probes
-                .into_iter()
-                .map(|probe| rustaxa_ffi::NetworkEgressProbe {
-                    probe_id: probe.probe_id,
-                    object_kind: probe.object_kind,
-                    object_hash: probe.object_hash,
-                })
-                .collect(),
+            Ok(rustaxa_ffi::NetworkEgressPreparation {
+                token: preparation.token,
+                probes: preparation
+                    .probes
+                    .into_iter()
+                    .map(|probe| rustaxa_ffi::NetworkEgressProbe {
+                        probe_id: probe.probe_id,
+                        object_kind: probe.object_kind,
+                        object_hash: probe.object_hash,
+                    })
+                    .collect(),
+            })
         })
     }
 
@@ -444,9 +471,9 @@ impl BridgeConsensusNetworkApi {
         token: u64,
         peers: Vec<rustaxa_ffi::NetworkEgressPeerSnapshot>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        Ok(to_bridge_network_ingress_decision(
-            self.0
-                .plan_egress(rustaxa_consensus::NetworkEgressPlanRequest {
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            Ok(to_bridge_network_ingress_decision(
+                api.plan_egress(rustaxa_consensus::NetworkEgressPlanRequest {
                     token,
                     peers: peers
                         .into_iter()
@@ -462,12 +489,13 @@ impl BridgeConsensusNetworkApi {
                         })
                         .collect(),
                 })?,
-        ))
+            ))
+        })
     }
 
     /// Cancels one preparation during C++ lane-operation unwinding.
     pub fn consensus_network_cancel_egress(&self, token: u64) -> anyhow::Result<bool> {
-        self.0.cancel_egress(token)
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, { api.cancel_egress(token) })
     }
 
     /// Starts one native PBFT-sync ingress operation for the network adapter.
@@ -476,19 +504,22 @@ impl BridgeConsensusNetworkApi {
         packet_rlp: &[u8],
         source_payload_id: u64,
         source_peer_id: [u8; 64],
+        sync_generation: u64,
         slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
     ) -> anyhow::Result<rustaxa_ffi::PbftSyncIngressStep> {
-        self.0
-            .begin_pbft_sync_ingress(
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            api.begin_pbft_sync_ingress(
                 packet_rlp,
                 source_payload_id,
                 source_peer_id,
+                sync_generation,
                 slashing_submitters
                     .into_iter()
                     .map(slashing_submitter_identity_to_domain)
                     .collect(),
             )
             .map(pbft_sync_ingress_step_to_ffi)
+        })
     }
 
     /// Resumes PBFT-sync ingress after one external slashing submission.
@@ -496,10 +527,19 @@ impl BridgeConsensusNetworkApi {
         &self,
         proof_hash: [u8; 32],
         transaction_inserted: bool,
+        source_payload_id: u64,
+        source_peer_id: [u8; 64],
+        sync_generation: u64,
     ) -> anyhow::Result<rustaxa_ffi::PbftSyncIngressStep> {
-        self.0
-            .report_pbft_sync_ingress_slashing(proof_hash.into(), transaction_inserted)
-            .map(pbft_sync_ingress_step_to_ffi)
+        let source = rustaxa_consensus::pbft_service::PbftSyncIngressSource {
+            payload_id: source_payload_id,
+            peer_id: source_peer_id,
+            generation: sync_generation,
+        };
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            api.report_pbft_sync_ingress_slashing(proof_hash.into(), transaction_inserted, source)
+                .map(pbft_sync_ingress_step_to_ffi)
+        })
     }
 
     /// Correlates one verified-vote slashing submission with its native proof.
@@ -508,10 +548,12 @@ impl BridgeConsensusNetworkApi {
         proof_hash: &[u8; 32],
         transaction_inserted: bool,
     ) -> anyhow::Result<bool> {
-        self.0.report_verified_vote_slashing_transaction_submission(
-            H256::from(*proof_hash),
-            transaction_inserted,
-        )
+        crate::ffi::dispatch_client!(self, NetworkBackend, api, {
+            api.report_verified_vote_slashing_transaction_submission(
+                H256::from(*proof_hash),
+                transaction_inserted,
+            )
+        })
     }
 }
 

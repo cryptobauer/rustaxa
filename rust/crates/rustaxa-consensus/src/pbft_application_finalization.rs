@@ -196,7 +196,7 @@ fn keccak(bytes: &[u8]) -> H256 {
     output.into()
 }
 
-fn process_pillar_after_finalization(
+pub(crate) fn process_pillar_after_finalization(
     ficus_activation: u64,
     pillar_interval: u64,
     finalized_period: u64,
@@ -212,11 +212,47 @@ fn process_pillar_after_finalization(
     finalized_period >= first_pillar_period && finalized_period.is_multiple_of(pillar_interval)
 }
 
-fn pillar_anchor_state_period(finalized_period: u64, delegation_delay: u64) -> Result<u64> {
+pub(crate) fn pillar_anchor_state_period(
+    finalized_period: u64,
+    delegation_delay: u64,
+) -> Result<u64> {
     finalized_period
         .checked_sub(delegation_delay)
         .filter(|period| *period > 0)
         .context("PBFT_APPLICATION_FINALIZATION_PILLAR_STATE_PERIOD")
+}
+
+/// Reads the existing reward timing plan for one exact certified period and round.
+pub(crate) fn prepare_certified_dynamic_lambda(
+    pbft: &PbftService,
+    period: u64,
+    round: u64,
+) -> Result<crate::pbft_service::PbftFinalizationDynamicLambdaDecision> {
+    let snapshot = pbft.manager_snapshot();
+    let policy = pbft.process_synced_policy();
+    let (lambda_max, lambda_default) = pbft.cacti_lambda_policy();
+    let dynamic = pbft.plan_finalization_dynamic_lambda(PbftDynamicLambdaFact {
+        dynamic_lambda_active: period >= pbft.cacti_block(),
+        finalized_period: period,
+        finalized_round: round,
+        pre_adjust_rounds_count_dynamic_lambda: snapshot.rounds_count_dynamic_lambda,
+        pre_adjust_dynamic_lambda: snapshot.dynamic_lambda_ms,
+        config: PbftDynamicLambdaConfig {
+            cacti_block_num: pbft.cacti_block(),
+            lambda_min: policy.lambda_min_ms,
+            lambda_max,
+            lambda_default,
+            lambda_change_interval: policy.lambda_change_interval,
+            lambda_change: policy.lambda_change_ms,
+            consensus_delay: policy.consensus_delay_ms,
+            dpos_blocks_per_year: policy.dpos_blocks_per_year,
+        },
+    })?;
+    ensure!(
+        dynamic.plan.status == crate::pbft_finalize::PbftFinalizationStatus::Accepted,
+        "PBFT_APPLICATION_FINALIZATION_DYNAMIC_LAMBDA_REJECTED"
+    );
+    Ok(dynamic)
 }
 
 fn decode_finalization(
@@ -541,6 +577,126 @@ fn drive_boundary(
     }
 }
 
+pub(crate) struct OwnerPillarAnchor {
+    pub data_rlp: Vec<u8>,
+    pub generation: u64,
+}
+
+pub(crate) fn prepare_owner_pillar_anchor(
+    pbft: &PbftService,
+    final_chain: &FinalChain,
+    period: u64,
+    state_root: [u8; 32],
+    bridge_root: [u8; 32],
+    bridge_epoch: [u8; 32],
+) -> Result<OwnerPillarAnchor> {
+    let (ficus, interval) = pbft.pillar_schedule();
+    let created = pbft.plan_pillar_block_creation_with_final_chain(
+        final_chain,
+        crate::pillar_chain_service::PillarBlockCreationRequest {
+            pillar_block_period: period,
+            state_root: state_root.into(),
+            bridge_root: bridge_root.into(),
+            bridge_epoch: bridge_epoch.into(),
+            first_pillar_block_period: if ficus == 0 { interval } else { ficus },
+            pillar_blocks_interval: interval,
+        },
+    )?;
+    ensure!(created.creation.valid, "PRODUCTION_PILLAR_ANCHOR_LINKAGE");
+    let data = CurrentPillarBlockDataDb {
+        pillar_block: PillarBlock {
+            period,
+            state_root: created.creation.state_root,
+            previous_pillar_block_hash: created.creation.previous_pillar_block_hash,
+            bridge_root: created.creation.bridge_root,
+            epoch: ethereum_types::U256::from_big_endian(&bridge_epoch),
+            validator_vote_count_changes: created
+                .vote_count_changes
+                .into_iter()
+                .map(|delta| ValidatorVoteCountChange {
+                    address: delta.address,
+                    vote_count_change: delta.vote_count_change,
+                })
+                .collect(),
+        },
+        vote_counts: created
+            .current_vote_counts
+            .into_iter()
+            .map(|count| ValidatorVoteCount {
+                address: count.address,
+                vote_count: count.vote_count,
+            })
+            .collect(),
+    };
+    Ok(OwnerPillarAnchor {
+        data_rlp: data.encode_rlp(),
+        generation: created.anchor_generation,
+    })
+}
+
+/// Pure plan for a fully checked owner transition, before any finalization write.
+pub(crate) fn plan_owner_finalization(
+    pbft: &PbftService,
+    request: PbftApplicationFinalizationRequest,
+) -> Result<(
+    crate::pbft_finalize::PbftFinalizationPlan,
+    Option<crate::pillar_vote_service::PillarBlockFinalizationPrepareResult>,
+)> {
+    let decoded = decode_finalization(&request)?;
+    let policy = pbft.process_synced_policy();
+    let dynamic = prepare_certified_dynamic_lambda(pbft, decoded.link.period, decoded.cert.round)?;
+    let (ficus, interval) = pbft.pillar_schedule();
+    let process_pillar = process_pillar_after_finalization(ficus, interval, decoded.link.period);
+    let pillar = decoded
+        .pillar_hash
+        .map(|hash| {
+            pbft.prepare_pillar_block_finalization(PillarBlockFinalizationRequest {
+                requested_pillar_block_hash: hash.into(),
+            })
+        })
+        .transpose()?;
+    if let Some(prepared) = &pillar {
+        ensure!(
+            prepared.success
+                && prepared.has_prepared_pillar_block
+                && prepared.selected_vote_count > 0,
+            "PRODUCTION_PILLAR_CERTIFICATE_UNAVAILABLE"
+        );
+    }
+    let intent = PbftFinalizationIntent {
+        block_hash: decoded.link.block_hash,
+        block_period: decoded.link.period,
+        block_prev_hash: decoded.link.prev_block_hash,
+        pivot_dag_anchor_hash: decoded.link.pivot_dag_block_hash,
+        has_pillar_block: decoded.has_pillar_block,
+        pillar_block_finalized: true,
+        request_dynamic_lambda_update: dynamic.plan.apply_dynamic_lambda_update,
+        cert_vote_count: request.current_cert_vote_rlps.len() as u64,
+        sample_cert_vote_block_hash: decoded.cert.block_hash,
+        sample_cert_vote_period: decoded.cert.period,
+        sample_cert_vote_round: decoded.cert.round,
+        sample_cert_vote_step: decoded.cert.step,
+        block_lambda: dynamic.plan.period_lambda,
+        last_saved_period_lambda_found: dynamic.last_saved_period_lambda.found,
+        last_saved_period_lambda: dynamic.last_saved_period_lambda.value,
+        dynamic_blocks_per_year: dynamic.plan.blocks_per_year,
+        rounds_count_dynamic_lambda: dynamic.plan.rounds_count_dynamic_lambda,
+        dynamic_lambda: dynamic.plan.dynamic_lambda,
+        dpos_blocks_per_year: policy.dpos_blocks_per_year,
+        period_data_rlp: request.period_data_rlp,
+        ordered_dag_block_hashes: decoded.ordered_dag_hashes.clone(),
+        ordered_transaction_hashes: decoded.ordered_transaction_hashes.clone(),
+        process_pillar_block_after_advance: process_pillar,
+    };
+    let plan = pbft.plan_finalization_intent(intent)?;
+    ensure!(
+        plan.finalize_block,
+        "PRODUCTION_PBFT_PUBLICATION_PLAN_REJECTED:{:?}",
+        plan.status
+    );
+    Ok((plan, pillar))
+}
+
 /// Prepares and drives one canonical PeriodData finalization to EVM or terminal state.
 pub fn prepare_pbft_application_finalization(
     pbft: &PbftService,
@@ -550,30 +706,8 @@ pub fn prepare_pbft_application_finalization(
 ) -> Result<PreparedPbftApplicationFinalization> {
     let mut decoded = decode_finalization(&request)?;
     decoded.previous_cert_vote_rlps = previous_cert_vote_rlps(pbft, &decoded)?;
-    let snapshot = pbft.manager_snapshot();
     let policy = pbft.process_synced_policy();
-    let (lambda_max, lambda_default) = pbft.cacti_lambda_policy();
-    let dynamic = pbft.plan_finalization_dynamic_lambda(PbftDynamicLambdaFact {
-        dynamic_lambda_active: decoded.link.period >= pbft.cacti_block(),
-        finalized_period: decoded.link.period,
-        finalized_round: decoded.cert.round,
-        pre_adjust_rounds_count_dynamic_lambda: snapshot.rounds_count_dynamic_lambda,
-        pre_adjust_dynamic_lambda: snapshot.dynamic_lambda_ms,
-        config: PbftDynamicLambdaConfig {
-            cacti_block_num: pbft.cacti_block(),
-            lambda_min: policy.lambda_min_ms,
-            lambda_max,
-            lambda_default,
-            lambda_change_interval: policy.lambda_change_interval,
-            lambda_change: policy.lambda_change_ms,
-            consensus_delay: policy.consensus_delay_ms,
-            dpos_blocks_per_year: policy.dpos_blocks_per_year,
-        },
-    })?;
-    ensure!(
-        dynamic.plan.status == crate::pbft_finalize::PbftFinalizationStatus::Accepted,
-        "PBFT_APPLICATION_FINALIZATION_DYNAMIC_LAMBDA_REJECTED"
-    );
+    let dynamic = prepare_certified_dynamic_lambda(pbft, decoded.link.period, decoded.cert.round)?;
     let (ficus_activation, pillar_interval) = pbft.pillar_schedule();
     let process_pillar =
         process_pillar_after_finalization(ficus_activation, pillar_interval, decoded.link.period);
@@ -1098,17 +1232,13 @@ fn encode_finalized_dag_bundle(blocks: &[crate::dag::DagSyncBlockRlp]) -> Result
 }
 
 /// Builds canonical PeriodData from a live certified proposal and enters the shared operation.
-pub fn prepare_certified_pbft_application_finalization(
+pub(crate) fn build_certified_application_finalization_request(
     pbft: &PbftService,
     dag: &DagTransactionService,
-    final_chain: &FinalChain,
     proposed_block_rlp: Vec<u8>,
     current_cert_vote_rlps: Vec<Vec<u8>>,
     synchronous: bool,
-) -> Result<(
-    PbftApplicationFinalizationRequest,
-    PreparedPbftApplicationFinalization,
-)> {
+) -> Result<PbftApplicationFinalizationRequest> {
     let block = Rlp::new(&proposed_block_rlp);
     let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&proposed_block_rlp))?;
     let reward_hashes: Vec<H256> = block.list_at(6)?;
@@ -1195,6 +1325,27 @@ pub fn prepare_certified_pbft_application_finalization(
         current_cert_vote_rlps,
         synchronous,
     };
+    Ok(request)
+}
+
+pub fn prepare_certified_pbft_application_finalization(
+    pbft: &PbftService,
+    dag: &DagTransactionService,
+    final_chain: &FinalChain,
+    proposed_block_rlp: Vec<u8>,
+    current_cert_vote_rlps: Vec<Vec<u8>>,
+    synchronous: bool,
+) -> Result<(
+    PbftApplicationFinalizationRequest,
+    PreparedPbftApplicationFinalization,
+)> {
+    let request = build_certified_application_finalization_request(
+        pbft,
+        dag,
+        proposed_block_rlp,
+        current_cert_vote_rlps,
+        synchronous,
+    )?;
     let prepared = prepare_pbft_application_finalization(pbft, dag, final_chain, request.clone())?;
     Ok((request, prepared))
 }

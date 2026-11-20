@@ -11,6 +11,15 @@ fn tainted() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::P
     ROOTS.get_or_init(Default::default)
 }
 
+fn locked_ledger(path: &Path) -> anyhow::Result<std::fs::File> {
+    let output = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)?;
+    std::fs::File::lock(&output)?;
+    Ok(output)
+}
+
 fn record(path: &Path, state: &str) -> anyhow::Result<()> {
     let launch_path = std::env::var("RUSTAXA_ERA_LAUNCH_MANIFEST")?;
     let launch: serde_json::Value = serde_json::from_slice(&std::fs::read(launch_path)?)?;
@@ -47,10 +56,11 @@ fn record(path: &Path, state: &str) -> anyhow::Result<()> {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("unit ledger"))?,
     );
+    if state == "created" && !ledger.exists() {
+        return Ok(());
+    }
+    let mut output = locked_ledger(ledger)?;
     if state == "created" {
-        if !ledger.exists() {
-            return Ok(());
-        }
         let registered = std::fs::read_to_string(ledger)?
             .lines()
             .map(serde_json::from_str::<serde_json::Value>)
@@ -114,15 +124,67 @@ fn record(path: &Path, state: &str) -> anyhow::Result<()> {
         Some(measured)
     };
     let row = serde_json::json!({"state":state,"root":path,"test":std::thread::current().name(),"launch":launch["identity"],"source_manifest":launch["source_manifest"],"panicking":std::thread::panicking(),"identity":metadata.map(|meta|(meta.dev(),meta.ino())),"live_charged_bytes":live,"measurement_scope":if identity_only {"identity_only_empty_new_root"} else {"complete_task_usage"},"completion_scope":"whole_source_stable_command","tainted":tainted().lock().unwrap().contains(path)});
-    let mut output = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(ledger)?;
     serde_json::to_writer(&mut output, &row)?;
     output.write_all(b"\n")?;
     output.sync_all()?;
     std::fs::File::open(ledger.parent().unwrap())?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    #[test]
+    fn application_concrete_preparation_ledger_records_are_atomic() {
+        use std::io::Write;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = super::new_path(
+            std::env::temp_dir().join(format!(
+                "rustaxa-closeout-ledger-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )),
+            true,
+        );
+        if !root.exists() {
+            std::fs::create_dir(&root).unwrap();
+        }
+        let path = root.join("records.jsonl");
+        std::thread::scope(|scope| {
+            for worker in 0..4_u64 {
+                let path = &path;
+                scope.spawn(move || {
+                    for index in 0..64_u64 {
+                        let mut output = super::locked_ledger(path).unwrap();
+                        let row = serde_json::json!({
+                            "worker": worker,
+                            "index": index,
+                            "payload": "ledger record".repeat(16),
+                        });
+                        serde_json::to_writer(&mut output, &row).unwrap();
+                        output.write_all(b"\n").unwrap();
+                    }
+                });
+            }
+        });
+        let rows = std::fs::read_to_string(&path).unwrap();
+        let identities = rows
+            .lines()
+            .map(|line| {
+                let row: serde_json::Value = serde_json::from_str(line).unwrap();
+                (
+                    row["worker"].as_u64().unwrap(),
+                    row["index"].as_u64().unwrap(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows.lines().count(), 256);
+        assert_eq!(identities.len(), 256);
+        assert_eq!(identities.first(), Some(&(0, 0)));
+        assert_eq!(identities.last(), Some(&(3, 63)));
+        if !super::preserve(&root) {
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 }
 pub fn register(path: &Path) {
     if std::env::var_os("RUSTAXA_ERA_LAUNCH_MANIFEST").is_some() {
@@ -278,7 +340,13 @@ fn closeout_terminal_record_failure_exits_and_retains_earlier_request() {
         )),
         true,
     );
-    let before = std::fs::read(&original_ledger).unwrap();
+    fn snapshot(path: &Path) -> Vec<u8> {
+        let _lock = locked_ledger(path).unwrap();
+        std::fs::read(path).unwrap()
+    }
+    let before = snapshot(&original_ledger);
+    // Valid records from another root must not invalidate child isolation.
+    let other_root = new_path(owner.join("other-ledger-writer"), true);
     let mut isolated = original.clone();
     let ledger = owner.join("child.jsonl");
     isolated["unit_scratch_ledger"] = serde_json::json!(ledger);
@@ -301,9 +369,28 @@ fn closeout_terminal_record_failure_exits_and_retains_earlier_request() {
         .unwrap();
     std::fs::write(owner.join("child-stdout.raw"), &result.stdout).unwrap();
     std::fs::write(owner.join("child-stderr.raw"), &result.stderr).unwrap();
-    std::fs::write(owner.join("child-status.json"), serde_json::to_vec(&serde_json::json!({"actual_child_exit":result.status.code(),"expected":125,"root":child_root,"isolated_ledger":ledger,"original_ledger_unchanged":std::fs::read(&original_ledger).unwrap()==before})).unwrap()).unwrap();
+    let after = snapshot(&original_ledger);
+    let prefix_preserved = after.starts_with(&before);
+    std::fs::write(owner.join("child-status.json"), serde_json::to_vec(&serde_json::json!({"actual_child_exit":result.status.code(),"expected":125,"root":child_root,"isolated_ledger":ledger,"original_ledger_prefix_preserved":prefix_preserved})).unwrap()).unwrap();
     assert_eq!(result.status.code(), Some(125));
-    assert_eq!(std::fs::read(&original_ledger).unwrap(), before);
+    assert!(prefix_preserved);
+    let original_records = std::str::from_utf8(&after)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        original_records
+            .iter()
+            .all(|row| row["root"] != serde_json::json!(child_root))
+    );
+    for state in ["registered_before_creation", "created"] {
+        assert!(
+            original_records.iter().any(|row| {
+                row["root"] == serde_json::json!(other_root) && row["state"] == state
+            })
+        );
+    }
     assert_eq!(
         std::fs::read(child_root.join("diagnostic")).unwrap(),
         b"must survive failed panic record"

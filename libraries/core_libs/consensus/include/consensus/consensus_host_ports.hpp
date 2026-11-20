@@ -206,6 +206,7 @@ class ConsensusProcess final {
   void start();
   /** Requests stop and joins the worker; concurrent lifecycle transitions are linearized. */
   void stop() noexcept;
+  bool completed() const;
 
  private:
   class Impl;

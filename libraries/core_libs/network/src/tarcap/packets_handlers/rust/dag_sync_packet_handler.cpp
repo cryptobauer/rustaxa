@@ -12,6 +12,7 @@ constexpr uint8_t kDagPacketMalformed = 29;
 constexpr uint8_t kDagBlockRejected = 30;
 constexpr uint8_t kDagSyncPeriodAhead = 31;
 constexpr uint8_t kDagSyncPeriodBehind = 32;
+constexpr uint8_t kDagSyncLocalStale = 37;
 
 dev::p2p::NodeID toNodeId(const std::array<uint8_t, 64>& peer_id) {
   return dev::p2p::NodeID(peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
@@ -50,11 +51,15 @@ void RustDagSyncPacketHandler::process(const threadpool::PacketData& packet_data
           },
           {},
           {}});
+  if (outcome.status == kDagSyncLocalStale) {
+    peer->completeDagSyncRequest(outcome.request_period);
+    return;
+  }
   if (outcome.status == kDagSyncPeriodAhead) {
     if (peer->pbft_chain_size_ < outcome.response_period) {
       peer->pbft_chain_size_ = outcome.response_period;
     }
-    peer->peer_dag_syncing_ = false;
+    peer->completeDagSyncRequest(outcome.request_period);
     startSyncingPbft();
     return;
   }
@@ -70,7 +75,7 @@ void RustDagSyncPacketHandler::process(const threadpool::PacketData& packet_data
   peer->peer_dag_synced_ = true;
   peer->peer_dag_synced_time_ =
       std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-  peer->peer_dag_syncing_ = false;
+  peer->completeDagSyncRequest(outcome.request_period);
 }
 
 }  // namespace taraxa::network::tarcap

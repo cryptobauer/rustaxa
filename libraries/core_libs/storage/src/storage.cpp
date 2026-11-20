@@ -1,5 +1,9 @@
 #include "storage/storage.hpp"
 
+#include <iterator>
+
+#include <algorithm>
+
 #include <libdevcore/RLP.h>
 
 #include <boost/algorithm/string.hpp>
@@ -1159,9 +1163,8 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getAllTwoTPlusOneVotes() {
     auto votes_rlp = dev::RLP(votes_raw);
     votes.reserve(votes.size() + votes_rlp.size());
 
-    for (const auto vote : votes_rlp) {
-      votes.emplace_back(std::make_shared<PbftVote>(vote));
-    }
+    std::transform(votes_rlp.begin(), votes_rlp.end(), std::back_inserter(votes),
+                   [](const auto& vote) { return std::make_shared<PbftVote>(vote); });
   };
 
   load_db_votes(TwoTPlusOneVotedBlockType::SoftVotedBlock);

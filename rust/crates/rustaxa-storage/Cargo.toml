@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 # Explicit synthetic fixture initialization; never enabled by production crates.
 synthetic-fixtures = []
+production_integration_test = []
 
 [dependencies]
 anyhow = "1.0.100"
@@ -13,6 +14,7 @@ ethereum-types = { version = "0.16.0", features = ["rlp"] }
 getrandom = "0.3"
 k256 = { version = "0.13", features = ["ecdsa"] }
 num-bigint = "0.4"
+parking_lot = "=0.12.5"
 rlp = "0.6"
 sha2 = "0.10"
 rustaxa-types = { path = "../rustaxa-types" }

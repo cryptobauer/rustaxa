@@ -329,6 +329,18 @@ impl<D: DbReader> PbftRepository<D> {
 }
 
 impl<D: DbReader + DbWriter> PbftRepository<D> {
+    pub(crate) fn replace_cert_votes_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        votes_bundle_rlp: &[u8],
+    ) -> Result<()> {
+        self.replace_two_t_plus_one_votes_in_batch(
+            batch,
+            TwoTPlusOneVotedBlockType::CertVoted as u8,
+            votes_bundle_rlp,
+        )
+    }
+
     /// Appends the finalized reward-vote cursor to a caller-owned batch.
     ///
     /// The cursor is encoded canonically as fixed-width scalar fields and must
