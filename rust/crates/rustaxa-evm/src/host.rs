@@ -72,6 +72,8 @@ pub struct JournalHost<'a, R, B> {
     defer_selfdestruct: bool,
     pending_selfdestruct: Option<([u8; 20], [u8; 20])>,
     fault: Option<HostError>,
+    trace_sstore_cost: Option<u64>,
+    trace_gas: bool,
 }
 
 impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
@@ -81,6 +83,58 @@ impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
         memory: &[u8],
     ) {
         self.journal.synchronize_native_memory(frame, memory);
+    }
+
+    pub(crate) fn capture_trace_gas(&mut self) {
+        self.trace_gas = true;
+        self.trace_sstore_cost = None;
+    }
+
+    pub(crate) fn trace_sstore_cost(
+        &mut self,
+        address: [u8; 20],
+        key: U256,
+        value: U256,
+    ) -> Result<u64, HostError> {
+        if let Some(cost) = self.trace_sstore_cost.take() {
+            return Ok(cost);
+        }
+        let (original, current) = self
+            .journal
+            .ordinary_storage(address, ConcreteStorageKey(key.to_be_bytes()))
+            .map_err(HostError::Journal)?;
+        Ok(self.sstore_cost(&sstore_gas_values(original, current, value)))
+    }
+
+    fn sstore_cost(&self, values: &SStoreResult) -> u64 {
+        self.gas_params.sstore_static_gas()
+            + self.gas_params.sstore_dynamic_gas(true, values, false)
+    }
+
+    pub(crate) fn trace_ext_account_empty(&mut self, word: U256) -> Result<bool, HostError> {
+        let address = word.to_be_bytes::<32>()[12..]
+            .try_into()
+            .expect("address is twenty bytes");
+        match self.account_info(address, false) {
+            Ok((_, _, empty)) => Ok(empty),
+            Err(_) => Err(self
+                .take_error()
+                .expect("account load recorded a host error")),
+        }
+    }
+
+    pub(crate) fn trace_source_has_balance(
+        &mut self,
+        address: [u8; 20],
+    ) -> Result<bool, HostError> {
+        let account = self
+            .journal
+            .account_metadata(address)
+            .map_err(HostError::Journal)?;
+        if !account.exists {
+            return Err(HostError::SelfDestructSourceAbsent);
+        }
+        Ok(account.balance.value() != &num_bigint::BigInt::default())
     }
 
     /// Binds one interpreter to its transaction, block and journal authority.
@@ -101,6 +155,8 @@ impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
             defer_selfdestruct: false,
             pending_selfdestruct: None,
             fault: None,
+            trace_sstore_cost: None,
+            trace_gas: false,
         }
     }
 
@@ -348,10 +404,11 @@ impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> 
         {
             return self.fail(HostError::Journal(error));
         }
-        Ok(StateLoad::new(
-            sstore_gas_values(original, present, value),
-            false,
-        ))
+        let values = sstore_gas_values(original, present, value);
+        if self.trace_gas {
+            self.trace_sstore_cost = Some(self.sstore_cost(&values));
+        }
+        Ok(StateLoad::new(values, false))
     }
 
     fn sload_skip_cold_load(

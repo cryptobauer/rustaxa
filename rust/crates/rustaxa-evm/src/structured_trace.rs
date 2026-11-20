@@ -200,7 +200,7 @@ fn push_hex(output: &mut String, bytes: &[u8]) {
     }
 }
 
-fn opcode_name(opcode: u8) -> Cow<'static, str> {
+pub(crate) fn opcode_name(opcode: u8) -> Cow<'static, str> {
     let fixed = match opcode {
         0x00 => Some("STOP"),
         0x01 => Some("ADD"),

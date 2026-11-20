@@ -170,6 +170,9 @@ impl TaraxaProfile {
         let mut table = instructions::instruction_table::<EthInterpreter, H>();
         let mut costs = gas_table_spec(SpecId::ISTANBUL);
 
+        // Taraxa charges 6 gas plus 6 gas per input word for KECCAK256.
+        costs[0x20] = 6;
+
         table[0x5f] = Instruction::new(push0::<H>);
         costs[0x5f] = 2;
 

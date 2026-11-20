@@ -211,11 +211,16 @@ impl DagGasState<'_> {
     }
 
     pub fn block_header(&self) -> Result<Vec<u8>> {
+        self.published_block_header()?
+            .context("PRODUCTION_DAG_EVM_HEADER_MISSING")
+    }
+
+    /// Returns the published header at the selected period, capped at the committed head.
+    pub fn published_block_header(&self) -> Result<Option<Vec<u8>>> {
         self.application
             .core
             .final_chain
-            .block_header(self.period())?
-            .context("PRODUCTION_DAG_EVM_HEADER_MISSING")
+            .block_header(self.period())
     }
 
     pub fn block_hash(&self, number: FinalChainBlockNumber) -> Result<Option<Vec<u8>>> {

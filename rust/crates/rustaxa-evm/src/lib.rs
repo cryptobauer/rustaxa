@@ -20,6 +20,7 @@ pub mod input;
 pub mod journal;
 pub mod modexp;
 pub mod native;
+mod openethereum_trace;
 pub mod p256;
 pub mod profile;
 pub mod query_policy;

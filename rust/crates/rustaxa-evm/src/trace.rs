@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 
 use revm::interpreter::InstructionResult;
 
+use crate::contracts::CodeExecutionError;
+
 /// One EVM word in big-endian byte order.
 pub type TraceWord = [u8; 32];
 
@@ -124,8 +126,8 @@ pub struct TraceFrameExit {
     pub supplied_gas: u64,
     /// Gas remaining when the frame returned.
     pub remaining_gas: u64,
-    /// Exact interpreter terminal category.
-    pub result: InstructionResult,
+    /// Frame error, if execution failed.
+    pub error: Option<CodeExecutionError>,
     /// Returned or reverted bytes.
     pub output: Vec<u8>,
 }
@@ -147,6 +149,11 @@ pub enum TraceEvent {
 /// an observer cannot change consensus execution; trace preparation that cannot
 /// produce exact facts must fail in the driver before emitting a fabricated row.
 pub trait ExecutionTraceObserver {
+    /// Select call-frame callbacks.
+    fn call_frames(&self) -> bool {
+        false
+    }
+
     /// Receives one event in interpreter order.
     fn observe(&mut self, event: TraceEvent);
 }
@@ -272,7 +279,7 @@ mod tests {
             depth: 1,
             supplied_gas: 10_000,
             remaining_gas: 0,
-            result: InstructionResult::Revert,
+            error: Some(CodeExecutionError::Revert),
             output: vec![],
         }));
 

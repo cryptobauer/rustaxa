@@ -20,17 +20,19 @@ use crate::{
     },
     driver::{
         ExecutionDriverError, NativeAddressClassifier, NativeExecution, PeriodConsensusSequence,
-        execute_admitted_call, execute_top_level_call, execute_top_level_call_with_native,
-        execute_top_level_call_with_trace, execute_top_level_create,
-        execute_top_level_create_with_native, execute_top_level_create_with_trace,
+        execute_admitted_call, execute_admitted_create, execute_top_level_call,
+        execute_top_level_call_with_native, execute_top_level_call_with_trace,
+        execute_top_level_create, execute_top_level_create_with_native,
+        execute_top_level_create_with_trace,
     },
     envelope::{EnvelopeAdmission, EnvelopeRules, IntrinsicGasSchedule, admit},
     journal::ExecutionJournal,
+    openethereum_trace::OpenEthereumTrace,
     profile::{CorrectionStage, TaraxaProfile},
     structured_trace::{
         StructuredTraceResult, StructuredTraceSerializationError, serialize_structured_results,
     },
-    trace::{TraceCollector, TraceEvent},
+    trace::{ExecutionTraceObserver, TraceCollector, TraceEvent},
 };
 
 /// Position of a transaction that aborted a disposable trace sequence.
@@ -73,11 +75,17 @@ pub enum StructuredTraceRunnerError {
     },
     /// Observed facts could not form the qualified structured JSON shape.
     Serialization(StructuredTraceSerializationError),
+    /// The reference tracer cannot produce a result without trace or vmTrace.
+    InvalidOpenEthereumMode,
 }
 
 impl std::fmt::Display for StructuredTraceRunnerError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "structured trace runner: {self:?}")
+        match self {
+            Self::InvalidOpenEthereumMode => formatter
+                .write_str("runtime error: invalid memory address or nil pointer dereference"),
+            _ => write!(formatter, "structured trace runner: {self:?}"),
+        }
     }
 }
 
@@ -462,6 +470,64 @@ pub fn run_structured_trace_with_native<
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
 ) -> Result<StructuredTraceRun, StructuredTraceRunnerError> {
+    run_trace_with_native(
+        reader,
+        block_hashes,
+        all_native_addresses,
+        consensus_native_addresses,
+        native_factory,
+        block,
+        prefix,
+        targets,
+        envelope_rules,
+        profile,
+        HistoricalTraceFormat::Debug,
+    )
+}
+
+/// Select the historical RPC output format for one private replay sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoricalTraceFormat {
+    /// Structured trace for the Debug RPCs.
+    Debug,
+    /// Flat call trace, with optional VM operations.
+    OpenEthereum {
+        /// Include the call tree.
+        trace: bool,
+        /// Include VM operations and the call tree.
+        vm_trace: bool,
+    },
+}
+
+/// Replay prerequisites and targets on the committed parent in one private journal.
+///
+/// Each target has a separate collector. Replay returns an ordered JSON result
+/// array and discards the journal. An unavailable checkpoint or execution
+/// dependency fails the request without returning partial results.
+#[allow(clippy::too_many_arguments)]
+pub fn run_trace_with_native<
+    R: ConcreteStateRead + ?Sized,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+    F: FnOnce(
+        ConcreteStateIdentity,
+        rustaxa_types::FinalChainBlockNumber,
+    ) -> Result<P, NativePortError>,
+>(
+    reader: &R,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_factory: F,
+    block: &ExecutionBlockContext,
+    prefix: &[ExecutionTransaction],
+    targets: &[ExecutionTransaction],
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+    format: HistoricalTraceFormat,
+) -> Result<StructuredTraceRun, StructuredTraceRunnerError> {
     if profile.correction_stage() != CorrectionStage::Historical {
         return Err(StructuredTraceRunnerError::UnsupportedCorrectionStage(
             profile.correction_stage(),
@@ -515,10 +581,30 @@ pub fn run_structured_trace_with_native<
             error,
         })?;
     }
-    let mut observed = Vec::with_capacity(targets.len());
+    let mut observed = Vec::new();
+    let mut openethereum = Vec::new();
     for (index, transaction) in targets.iter().enumerate() {
         let mut collector = TraceCollector::default();
-        let execution = if transaction.kind == ExecutionTransactionKind::Call {
+        let mut openethereum_trace = match format {
+            HistoricalTraceFormat::Debug => None,
+            HistoricalTraceFormat::OpenEthereum {
+                trace: false,
+                vm_trace: false,
+            } => {
+                return Err(StructuredTraceRunnerError::InvalidOpenEthereumMode);
+            }
+            HistoricalTraceFormat::OpenEthereum { vm_trace, .. } => {
+                Some(OpenEthereumTrace::new(vm_trace))
+            }
+        };
+        let with_frames = openethereum_trace.is_some();
+        let observer: &mut dyn ExecutionTraceObserver = match openethereum_trace.as_mut() {
+            Some(trace) => trace,
+            None => &mut collector,
+        };
+        let execution = if transaction.kind == ExecutionTransactionKind::Call
+            || (transaction.kind == ExecutionTransactionKind::Create && with_frames)
+        {
             crate::driver::validate_profile(&journal, profile).map_err(|error| {
                 StructuredTraceRunnerError::Execution {
                     stage: TraceSequenceStage::Target,
@@ -535,21 +621,28 @@ pub fn run_structured_trace_with_native<
                 Ok(EnvelopeAdmission::Rejected(result)) => {
                     Ok(TransactionExecutionResult::ConsensusFailure(result))
                 }
-                Ok(EnvelopeAdmission::Admitted(admitted)) => execute_admitted_call(
-                    &mut journal,
-                    block_hashes,
-                    all_native_addresses,
-                    block,
-                    transaction,
-                    &admitted,
-                    profile,
-                    Some(NativeExecution::new(
-                        consensus_native_addresses,
-                        &mut port,
-                        &mut sequence,
-                    )),
-                    Some(&mut collector),
-                ),
+                Ok(EnvelopeAdmission::Admitted(admitted)) => {
+                    let execute = if transaction.kind == ExecutionTransactionKind::Call {
+                        execute_admitted_call
+                    } else {
+                        execute_admitted_create
+                    };
+                    execute(
+                        &mut journal,
+                        block_hashes,
+                        all_native_addresses,
+                        block,
+                        transaction,
+                        &admitted,
+                        profile,
+                        Some(NativeExecution::new(
+                            consensus_native_addresses,
+                            &mut port,
+                            &mut sequence,
+                        )),
+                        Some(observer),
+                    )
+                }
                 Err(error) => Err(error.into()),
             }
         } else {
@@ -561,7 +654,7 @@ pub fn run_structured_trace_with_native<
                 transaction,
                 envelope_rules,
                 profile,
-                &mut collector,
+                observer,
             )
         }
         .map_err(|error| StructuredTraceRunnerError::Execution {
@@ -569,7 +662,21 @@ pub fn run_structured_trace_with_native<
             index,
             error,
         })?;
-        observed.push(owned_result(execution, collector));
+        if let Some(trace) = openethereum_trace {
+            let output = match execution {
+                TransactionExecutionResult::Executed(result) => result.output,
+                TransactionExecutionResult::ConsensusFailure(result) => result.output,
+            };
+            openethereum.push(trace.finish(&output));
+        } else {
+            observed.push(owned_result(execution, collector));
+        }
+    }
+    if matches!(format, HistoricalTraceFormat::OpenEthereum { .. }) {
+        return Ok(StructuredTraceRun {
+            state,
+            output: serde_json::to_vec(&openethereum).expect("trace contains only JSON values"),
+        });
     }
     let supplied = observed
         .iter()
@@ -627,7 +734,7 @@ fn execute_traced<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressCl
     transaction: &ExecutionTransaction,
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
-    observer: &mut TraceCollector,
+    observer: &mut dyn ExecutionTraceObserver,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     match transaction.kind {
         ExecutionTransactionKind::Call => execute_top_level_call_with_trace(

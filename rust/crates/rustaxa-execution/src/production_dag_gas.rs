@@ -1,6 +1,6 @@
 use crate::native::ProbeNativeExecutionPort;
 use crate::production_transition::{Hashes, Natives, historical_profile};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use ethereum_types::{H160, H256};
 use rlp::Rlp;
 use rustaxa_consensus::consensus_application_runtime::{OwnedDagGasEstimate, OwnedDagGasReport};
@@ -178,12 +178,33 @@ pub(crate) fn simulate_at_checkpoint(
 
 pub(crate) fn trace(state: &DagGasState<'_>, request_rlp: &[u8]) -> Result<Vec<u8>> {
     let request = Rlp::new(request_rlp);
-    ensure!(request.item_count()? == 2, "PRODUCTION_TRACE_REQUEST_SHAPE");
+    use rustaxa_evm::trace_runner::HistoricalTraceFormat;
+    let format = match request.item_count()? {
+        2 => HistoricalTraceFormat::Debug,
+        3 => {
+            let options = request.at(2)?;
+            ensure!(options.item_count()? == 3, "PRODUCTION_TRACE_OPTIONS_SHAPE");
+            HistoricalTraceFormat::OpenEthereum {
+                vm_trace: options.val_at(0)?,
+                trace: options.val_at(1)?,
+            }
+        }
+        _ => anyhow::bail!("PRODUCTION_TRACE_REQUEST_SHAPE"),
+    };
     let prefix = decode_trace_transactions(request.at(0)?, 0)?;
     let targets = decode_trace_transactions(request.at(1)?, prefix.len())?;
-    let header = state.block_header()?;
-    let header = Rlp::new(&header);
     let period = state.proposal_period();
+    let header = match format {
+        HistoricalTraceFormat::Debug => state.block_header()?,
+        HistoricalTraceFormat::OpenEthereum { .. } => {
+            ensure!(
+                period == state.period(),
+                "FinalChain::trace is not implemented above EVM head"
+            );
+            state.published_block_header()?.context("Future block")?
+        }
+    };
+    let header = Rlp::new(&header);
     ensure!(
         header.val_at::<u64>(7)? == period.as_u64(),
         "PRODUCTION_TRACE_HEADER_PERIOD"
@@ -201,7 +222,7 @@ pub(crate) fn trace(state: &DagGasState<'_>, request_rlp: &[u8]) -> Result<Vec<u
     state.with_trace_checkpoint(|readers, identity, native| {
         let checkpoint = Checkpoint { readers, identity };
         let classifier = |period, address| state.is_native(period, address);
-        rustaxa_evm::trace_runner::run_structured_trace_with_native(
+        rustaxa_evm::trace_runner::run_trace_with_native(
             &checkpoint,
             &Hashes(|number| state.block_hash(number)),
             &Natives(classifier, profile, true),
@@ -217,6 +238,7 @@ pub(crate) fn trace(state: &DagGasState<'_>, request_rlp: &[u8]) -> Result<Vec<u
                 cornus: state.cornus(),
             },
             profile,
+            format,
         )
         .map(|result| result.output)
         .map_err(Into::into)

@@ -26,6 +26,7 @@
 
 #include "app/app.hpp"
 #include "consensus/consensus_application.hpp"
+#include "network/rpc/Debug.h"
 #endif
 
 namespace {
@@ -160,6 +161,41 @@ rust::String check_app_interrupted_recovery(const taraxa::cli::Config& cli, cons
   return rust::String(pillar      ? "ACTUAL_APP_PILLAR_INTERRUPT_RESTART_PASSED"
                       : stop == 1 ? "ACTUAL_APP_INTENT_ONLY_RESTART_PASSED"
                                   : "ACTUAL_APP_CONCRETE_COMMIT_RESTART_PASSED");
+}
+
+void check_historical_trace_rpc(const std::shared_ptr<taraxa::App>& app, const std::vector<taraxa::trx_hash_t>& hashes,
+                                const taraxa::addr_t& wallet) {
+  taraxa::net::Debug rpc(app, 1000000, {}, {}, {}, {}, {}, {}, app->getConsensusApplication()->queryClient());
+  Json::Value options(Json::arrayValue);
+  options.append("trace");
+  options.append("vmTrace");
+  const auto block = rpc.trace_replayBlockTransactions("0x2", options);
+  if (!block.isArray() || block.size() != hashes.size()) throw std::runtime_error("APP_TEST_REPLAY_BLOCK_TRACES");
+  for (Json::ArrayIndex index = 0; index < block.size(); ++index) {
+    const auto hash = dev::toJS(hashes[index]);
+    const auto replay = rpc.trace_replayTransaction(hash, options);
+    if (!replay.isArray() || replay.size() != 1 || replay[0] != block[index] ||
+        replay[0]["trace"][0]["traceAddress"] != Json::Value(Json::arrayValue))
+      throw std::runtime_error("APP_TEST_REPLAY_TRANSACTION_TRACE");
+  }
+  Json::Value call(Json::objectValue);
+  call["from"] = dev::toJS(wallet);
+  call["gas"] = "0x186a0";
+  call["nonce"] = "0x3";
+  call["data"] = "0xfe";
+  call["code"] = "0x602a60005260206000f3";
+  const auto traced = rpc.trace_call(call, options, "0x2");
+  const auto debug = rpc.debug_traceCall(call, "0x2");
+  const std::string output = std::string(62, '0') + "2a";
+  if (!traced.isArray() || traced.size() != 1 || traced[0]["output"].asString() != "0x" + output ||
+      traced[0]["trace"][0]["type"].asString() != "create" || traced[0]["vmTrace"]["ops"].size() != 6 ||
+      !debug.isArray() || debug.size() != 1 || debug[0]["returnValue"].asString() != output ||
+      debug[0]["structLogs"].size() != 6)
+    throw std::runtime_error("APP_TEST_TRACE_CALL_FORMATS");
+  const auto historical = rpc.debug_traceTransaction(dev::toJS(hashes.back()));
+  if (!historical.isArray() || historical.size() != 1 || historical[0]["gas"].asUInt64() != 21000)
+    throw std::runtime_error("APP_TEST_DEBUG_TRANSACTION_TRACE");
+  std::cout << "ACTUAL_APP_HISTORICAL_TRACE_RPC_PASSED\n";
 }
 
 rust::String check_actual_app(const taraxa::cli::Config& cli, const std::array<std::uint8_t, 32>& secret,
@@ -306,6 +342,7 @@ rust::String check_actual_app(const taraxa::cli::Config& cli, const std::array<s
           genesis_trace[0]["gas"].asUInt64() != 21000)
         throw std::runtime_error("APP_TEST_GENESIS_TRACE");
       std::cout << "ACTUAL_APP_HISTORICAL_TRACE_PASSED\n";
+      check_historical_trace_rpc(reopened, hashes, wallet_address);
     }
     for (std::size_t index = 0; index < hashes.size(); ++index) {
       const auto receipt = (*query)->consensus_query_transaction_receipt_by_hash(hashes[index].asArray());

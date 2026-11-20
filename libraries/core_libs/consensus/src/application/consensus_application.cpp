@@ -162,9 +162,12 @@ std::string ConsensusApplication::trace(std::vector<state_api::EVMTransaction> s
   if (!usesRustExecution()) {
     return legacyExecution().trace(std::move(state_transactions), std::move(transactions), block_number, params);
   }
-  if (params) throw std::runtime_error("PRODUCTION_OPENETHEREUM_TRACE_UNAVAILABLE");
   dev::RLPStream stream;
-  util::rlp_tuple(stream, state_transactions, transactions);
+  if (params) {
+    util::rlp_tuple(stream, state_transactions, transactions, *params);
+  } else {
+    util::rlp_tuple(stream, state_transactions, transactions);
+  }
   const auto& encoded = stream.out();
   rustaxa::FinalChainNativeCall request{};
   request.block_number = block_number;

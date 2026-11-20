@@ -27,6 +27,8 @@ mod api_fixture;
 
 use api_fixture::{FixtureReader, PersistedApiFixture};
 
+mod openethereum_trace;
+
 struct NoHistory;
 
 impl BlockHashRead for NoHistory {

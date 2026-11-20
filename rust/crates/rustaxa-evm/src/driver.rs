@@ -18,13 +18,14 @@
 use num_bigint::BigInt;
 use revm::{
     bytecode::Bytecode,
+    context_interface::Host,
     handler::handle_reservoir_remaining_gas,
     interpreter::{
         CallInput, CallInputs, CallScheme as RevmCallScheme, CreateInputs, FrameInput, Gas,
         InputsImpl, InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
         SharedMemory,
         interpreter::{EthInterpreter, ExtBytecode},
-        interpreter_types::{Jumps, LoopControl, MemoryTr, ReturnData},
+        interpreter_types::{Jumps, LoopControl, MemoryTr, ReturnData, RuntimeFlag},
     },
     primitives::{Address, Bytes, U256, hardfork::SpecId},
 };
@@ -50,12 +51,13 @@ use crate::{
     journal::{ExecutionJournal, JournalCheckpoint, JournalError},
     modexp::PreparedModexpCall,
     native::{NativeAdapterError, NativeFrameOutcome, invoke_native},
+    openethereum_trace::stack_effect,
     p256::{P256_VERIFY_ADDRESS, PreparedP256Call},
     profile::{CorrectionStage, TaraxaProfile},
     stateless::{OriginalStatelessPrecompile, PreparedStatelessCall},
     trace::{
-        AttemptedSstore, ExecutionTraceObserver, TraceEvent, TraceOpcode, TraceOpcodePhase,
-        TraceWord,
+        AttemptedSstore, ExecutionTraceObserver, TraceEvent, TraceFrameEnter, TraceFrameExit,
+        TraceFrameKind, TraceOpcode, TraceOpcodePhase, TraceWord,
     },
 };
 
@@ -537,7 +539,6 @@ pub fn execute_top_level_call_with_trace<
     R: ConcreteExecutionRead,
     B: BlockHashRead,
     N: NativeAddressClassifier,
-    O: ExecutionTraceObserver,
 >(
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
@@ -546,7 +547,7 @@ pub fn execute_top_level_call_with_trace<
     transaction: &ExecutionTransaction,
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
-    observer: &mut O,
+    observer: &mut dyn ExecutionTraceObserver,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     validate_profile(journal, profile)?;
     if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
@@ -785,7 +786,6 @@ pub fn execute_top_level_create_with_trace<
     R: ConcreteExecutionRead,
     B: BlockHashRead,
     N: NativeAddressClassifier,
-    O: ExecutionTraceObserver,
 >(
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
@@ -794,7 +794,7 @@ pub fn execute_top_level_create_with_trace<
     transaction: &ExecutionTransaction,
     envelope_rules: EnvelopeRules,
     profile: TaraxaProfile,
-    observer: &mut O,
+    observer: &mut dyn ExecutionTraceObserver,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     validate_profile(journal, profile)?;
     if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
@@ -891,7 +891,7 @@ pub fn execute_top_level_create_with_native<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_admitted_create<
+pub(crate) fn execute_admitted_create<
     R: ConcreteExecutionRead,
     B: BlockHashRead,
     N: NativeAddressClassifier,
@@ -904,7 +904,7 @@ fn execute_admitted_create<
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
     mut native: Option<NativeExecution<'_>>,
-    observer: Option<&mut dyn ExecutionTraceObserver>,
+    mut observer: Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     crate::journal::duration_journal_read_role(true, 5, transaction.sender);
     crate::journal::duration_journal_read_role(false, 5, transaction.sender);
@@ -954,6 +954,18 @@ fn execute_admitted_create<
     journal.set_nonce(attempted, rustaxa_types::FinalChainNonce::from_u64(1))?;
     journal.subtract_balance(transaction.sender, transaction.value.value())?;
     journal.add_balance(attempted, transaction.value.value())?;
+    observe_frame_enter(&mut observer, || TraceFrameEnter {
+        depth: 1,
+        kind: TraceFrameKind::Create,
+        caller: transaction.sender,
+        state_address: attempted,
+        code_address: None,
+        gas: admitted.action_gas.as_u64(),
+        value: transaction.value.value().to_bytes_be(),
+        input: transaction.input.clone(),
+        code: transaction.input.clone(),
+        precompile: false,
+    });
     let (result, opcode) = match run_revm(
         journal,
         block_hashes,
@@ -966,7 +978,7 @@ fn execute_admitted_create<
         admitted,
         profile,
         &mut native,
-        observer,
+        &mut observer,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -1009,6 +1021,7 @@ fn execute_admitted_create<
             return Err(error);
         }
     };
+    observe_settled_root(&mut observer, admitted, gas_left, &status, &output);
     settle(
         journal,
         transaction,
@@ -1037,7 +1050,7 @@ pub(crate) fn execute_admitted_call<
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
     mut native: Option<NativeExecution<'_>>,
-    observer: Option<&mut dyn ExecutionTraceObserver>,
+    mut observer: Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     let target = transaction.receiver.expect("call receiver checked");
     let route = classify_native(
@@ -1094,6 +1107,14 @@ pub(crate) fn execute_admitted_call<
         && !target_metadata.exists
         && transaction.value.value() == &num_bigint::BigUint::default()
     {
+        observe_root_call(&mut observer, transaction, target, admitted, &[], false);
+        observe_settled_root(
+            &mut observer,
+            admitted,
+            admitted.action_gas.as_u64(),
+            &FrameSettlementStatus::Success,
+            &[],
+        );
         return settle(
             journal,
             transaction,
@@ -1156,6 +1177,14 @@ pub(crate) fn execute_admitted_call<
     }
     journal.subtract_balance(transaction.sender, transaction.value.value())?;
     journal.add_balance(target, transaction.value.value())?;
+    if route != NativeRoute::Ordinary
+        && observer
+            .as_ref()
+            .is_some_and(|observer| observer.call_frames())
+    {
+        let code = journal.account_code(target)?;
+        observe_root_call(&mut observer, transaction, target, admitted, &code, true);
+    }
     let native_outcome = match route {
         NativeRoute::Consensus => {
             let native = native
@@ -1224,6 +1253,14 @@ pub(crate) fn execute_admitted_call<
             }
         };
         let status = native_frame_status(&outcome);
+        if observer
+            .as_ref()
+            .is_some_and(|observer| observer.call_frames())
+        {
+            // The reference tracer uses the native gas charge as the remaining gas.
+            let charge = admitted.action_gas.as_u64() - outcome.gas_left.as_u64();
+            observe_settled_root(&mut observer, admitted, charge, &status, &outcome.output);
+        }
         crate::journal::duration_journal_no_refund(
             checkpoint,
             outcome.status == CodeExecutionStatus::Success,
@@ -1248,6 +1285,7 @@ pub(crate) fn execute_admitted_call<
         .map_err(Into::into);
     }
     let code = journal.account_code(target)?;
+    observe_root_call(&mut observer, transaction, target, admitted, &code, false);
     let (result, opcode) = match run_revm(
         journal,
         block_hashes,
@@ -1260,7 +1298,7 @@ pub(crate) fn execute_admitted_call<
         admitted,
         profile,
         &mut native,
-        observer,
+        &mut observer,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -1290,6 +1328,7 @@ pub(crate) fn execute_admitted_call<
         FrameSettlementStatus::CodeFailure(_)
         | FrameSettlementStatus::InsufficientBalanceForTransfer => 0,
     };
+    observe_settled_root(&mut observer, admitted, gas_left, &status, &result.output);
     settle(
         journal,
         transaction,
@@ -1302,6 +1341,65 @@ pub(crate) fn execute_admitted_call<
         },
     )
     .map_err(Into::into)
+}
+
+fn observe_frame_enter(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    frame: impl FnOnce() -> TraceFrameEnter,
+) {
+    if let Some(observer) = observer.as_mut().filter(|observer| observer.call_frames()) {
+        observer.observe(TraceEvent::FrameEnter(frame()));
+    }
+}
+
+fn observe_frame_exit(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    frame: impl FnOnce() -> TraceFrameExit,
+) {
+    if let Some(observer) = observer.as_mut().filter(|observer| observer.call_frames()) {
+        observer.observe(TraceEvent::FrameExit(frame()));
+    }
+}
+
+fn observe_root_call(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    transaction: &ExecutionTransaction,
+    target: [u8; 20],
+    admitted: &AdmittedTransaction,
+    code: &[u8],
+    precompile: bool,
+) {
+    observe_frame_enter(observer, || TraceFrameEnter {
+        depth: 1,
+        kind: TraceFrameKind::Call,
+        caller: transaction.sender,
+        state_address: target,
+        code_address: Some(target),
+        gas: admitted.action_gas.as_u64(),
+        value: transaction.value.value().to_bytes_be(),
+        input: transaction.input.clone(),
+        code: code.to_vec(),
+        precompile,
+    });
+}
+
+fn observe_settled_root(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    admitted: &AdmittedTransaction,
+    remaining_gas: u64,
+    status: &FrameSettlementStatus,
+    output: &[u8],
+) {
+    observe_frame_exit(observer, || TraceFrameExit {
+        depth: 1,
+        supplied_gas: admitted.action_gas.as_u64(),
+        remaining_gas,
+        error: match status {
+            FrameSettlementStatus::CodeFailure(error) => Some(error.clone()),
+            _ => None,
+        },
+        output: output.to_vec(),
+    });
 }
 
 /// Applies the root-local refund delta under its still-open rollback checkpoint.
@@ -1344,6 +1442,7 @@ struct ActiveFrame {
     insertion: ParentInsertion,
     full_value: num_bigint::BigUint,
     last_opcode: u8,
+    trace_cost: u64,
 }
 
 struct TraceBeforeOpcode {
@@ -1354,6 +1453,7 @@ struct TraceBeforeOpcode {
     state_address: [u8; 20],
     stack: Vec<TraceWord>,
     memory: Vec<u8>,
+    memory_cost: u64,
 }
 
 fn trace_depth(depth: usize) -> Result<u16, ExecutionDriverError> {
@@ -1496,6 +1596,257 @@ fn observe_opcode_step(
     Ok(())
 }
 
+fn openethereum_opcode_available(opcode: u8, profile: TaraxaProfile) -> bool {
+    match opcode {
+        0x5c | 0x5d => profile.cacti(),
+        0x5e => profile.ficus(),
+        0x00..=0x0b
+        | 0x10..=0x1d
+        | 0x20
+        | 0x30..=0x47
+        | 0x50..=0x5b
+        | 0x5f..=0xa4
+        | 0xb3
+        | 0xb4
+        | 0xf0..=0xf5
+        | 0xfa
+        | 0xfd
+        | 0xff => true,
+        _ => false,
+    }
+}
+
+fn openethereum_admission(
+    opcode: u8,
+    stack: &[TraceWord],
+    is_static: bool,
+) -> Option<InstructionResult> {
+    use InstructionResult as I;
+    let (inputs, outputs) = stack_effect(opcode)?;
+    if stack.len() < inputs {
+        return Some(I::StackUnderflow);
+    }
+    if stack.len() - inputs + outputs > 1024 {
+        return Some(I::StackOverflow);
+    }
+    let writes = matches!(opcode, 0x55 | 0xa0..=0xa4 | 0xf0 | 0xf5 | 0xff);
+    let transfers = opcode == 0xf1
+        && stack
+            .iter()
+            .rev()
+            .nth(2)
+            .is_some_and(|word| *word != [0; 32]);
+    (is_static && (writes || transfers)).then_some(I::StateChangeDuringStaticCall)
+}
+
+fn openethereum_gas_quote<R: ConcreteExecutionRead, B: BlockHashRead>(
+    host: &mut JournalHost<'_, R, B>,
+    before: &TraceBeforeOpcode,
+    static_cost: u16,
+) -> Result<Option<u64>, HostError> {
+    let word = |offset| {
+        before
+            .stack
+            .iter()
+            .rev()
+            .nth(offset)
+            .map_or(U256::ZERO, |word| U256::from_be_bytes(*word))
+    };
+    let end = |offset, len: U256| {
+        if len.is_zero() {
+            U256::ZERO
+        } else {
+            word(offset).wrapping_add(len)
+        }
+    };
+    let memory = match before.opcode {
+        0x20 | 0xa0..=0xa4 | 0xf3 | 0xfd => end(0, word(1)),
+        0x37 | 0x39 | 0x3e => end(0, word(2)),
+        0x3c => end(1, word(3)),
+        0x51 | 0x52 => end(0, U256::from(32)),
+        0x53 => end(0, U256::from(1)),
+        0x5e => end(0, word(2)).max(end(1, word(2))),
+        0xf0 | 0xf5 => end(1, word(2)),
+        0xf1 | 0xf2 => end(3, word(4)).max(end(5, word(6))),
+        0xf4 | 0xfa => end(2, word(3)).max(end(4, word(5))),
+        _ => U256::ZERO,
+    };
+    let Ok(memory) = u64::try_from(memory) else {
+        return Ok(None);
+    };
+    let words = memory.div_ceil(32);
+    let Some(bytes) = words.checked_mul(32) else {
+        return Ok(None);
+    };
+    if bytes > 0xff_ffff_ffe0 {
+        return Ok(Some(0));
+    }
+    let gas = host.gas_params();
+    let expansion = gas
+        .memory_cost(words as usize)
+        .saturating_sub(before.memory_cost);
+    let base = u64::from(static_cost);
+    let cost = match before.opcode {
+        0x0a => Some(base + gas.exp_cost(word(1))),
+        0x20 => u64::try_from(word(1))
+            .ok()
+            .map(|len| base.saturating_add(gas.keccak256_cost(len as usize))),
+        0x37 | 0x39 | 0x3e | 0x5e => u64::try_from(word(2))
+            .ok()
+            .map(|len| 3_u64.saturating_add(gas.copy_cost(len as usize))),
+        0x3c => u64::try_from(word(3))
+            .ok()
+            .map(|len| 700_u64.saturating_add(gas.copy_cost(len as usize))),
+        0x55 => Some(host.trace_sstore_cost(before.state_address, word(0), word(1))?),
+        0xa0..=0xa4 => u64::try_from(word(1))
+            .ok()
+            .map(|len| base.saturating_add(gas.log_cost(before.opcode - 0xa0, len))),
+        0xf1 | 0xf2 | 0xf4 | 0xfa => {
+            let mut base = 700 + expansion;
+            if matches!(before.opcode, 0xf1 | 0xf2) && !word(2).is_zero() {
+                base += 9_000;
+                if before.opcode == 0xf1 && host.trace_ext_account_empty(word(1))? {
+                    base += 25_000;
+                }
+            }
+            let available = before.gas.wrapping_sub(base);
+            let forwarded =
+                (available - available / 64).min(u64::try_from(word(0)).unwrap_or(u64::MAX));
+            return Ok(Some(base.checked_add(forwarded).unwrap_or(0)));
+        }
+        0xf0 => Some(32_000),
+        0xf5 => u64::try_from(word(2))
+            .ok()
+            .map(|len| 32_000_u64.saturating_add(gas.keccak256_cost(len as usize))),
+        0xff => Some(
+            if host.trace_ext_account_empty(word(0))?
+                && host.trace_source_has_balance(before.state_address)?
+            {
+                30_000
+            } else {
+                5_000
+            },
+        ),
+        _ => Some(base),
+    };
+    Ok(Some(
+        cost.and_then(|cost| cost.checked_add(expansion))
+            .unwrap_or(0),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe_openethereum_step<R: ConcreteExecutionRead, B: BlockHashRead>(
+    observer: &mut dyn ExecutionTraceObserver,
+    host: &mut JournalHost<'_, R, B>,
+    interpreter: &Interpreter<EthInterpreter>,
+    before: TraceBeforeOpcode,
+    step: Result<(), InstructionResult>,
+    forwarded_create_gas: u64,
+    static_cost: u16,
+    profile: TaraxaProfile,
+    previous_cost: &mut u64,
+) -> Result<(), ExecutionDriverError> {
+    use InstructionResult as I;
+    let mut fault = step
+        .err()
+        .filter(|result| !matches!(result, I::Stop | I::Return | I::SelfDestruct | I::Suspend));
+    let gas_fault = matches!(
+        fault,
+        Some(I::OutOfGas | I::MemoryOOG | I::MemoryLimitOOG | I::InvalidOperandOOG)
+    );
+    let static_fault = matches!(
+        fault,
+        Some(I::StateChangeDuringStaticCall | I::CallNotAllowedInsideStatic)
+    );
+    if gas_fault || static_fault {
+        fault = if openethereum_opcode_available(before.opcode, profile) {
+            openethereum_admission(
+                before.opcode,
+                &before.stack,
+                interpreter.runtime_flag.is_static(),
+            )
+            .or(fault)
+        } else {
+            Some(I::NotActivated)
+        };
+    }
+    let after_gas = interpreter.gas.remaining();
+    let charged = before
+        .gas
+        .wrapping_sub(after_gas)
+        .wrapping_sub(forwarded_create_gas);
+    let transient_write_fault =
+        matches!(before.opcode, 0x5d | 0xb4) && fault == Some(I::StateChangeDuringStaticCall);
+    let before_cost = match fault {
+        _ if transient_write_fault => charged,
+        Some(
+            I::StackUnderflow
+            | I::StackOverflow
+            | I::OpcodeNotFound
+            | I::InvalidFEOpcode
+            | I::NotActivated
+            | I::StateChangeDuringStaticCall
+            | I::CallNotAllowedInsideStatic,
+        ) => *previous_cost,
+        Some(I::OutOfGas | I::MemoryOOG | I::MemoryLimitOOG | I::InvalidOperandOOG) => {
+            openethereum_gas_quote(host, &before, static_cost)
+                .map_err(ExecutionDriverError::Host)?
+                .unwrap_or(*previous_cost)
+        }
+        _ => charged,
+    };
+    let depth = trace_depth(before.depth)?;
+    let log_row = |stack: Vec<TraceWord>, memory, phase| TraceOpcode {
+        pc: before.pc,
+        opcode: before.opcode,
+        gas: before.gas,
+        gas_cost: before_cost,
+        depth,
+        state_address: before.state_address,
+        attempted_sstore: attempted_sstore(before.opcode, &stack),
+        stack,
+        memory,
+        refund: 0,
+        phase,
+    };
+    match fault {
+        Some(fault)
+            if transient_write_fault
+                || matches!(fault, I::Revert | I::InvalidJump | I::OutOfOffset) =>
+        {
+            let mut memory = before.memory;
+            memory.resize(interpreter.memory.len(), 0);
+            observer.observe(TraceEvent::Opcode(log_row(
+                before.stack,
+                memory,
+                TraceOpcodePhase::BeforeExecution,
+            )));
+            observer.observe(TraceEvent::Opcode(log_row(
+                trace_stack(&interpreter.stack),
+                interpreter.memory.context_memory().to_vec(),
+                TraceOpcodePhase::Fault(fault),
+            )));
+        }
+        Some(fault) => observer.observe(TraceEvent::Opcode(log_row(
+            before.stack,
+            before.memory,
+            TraceOpcodePhase::Fault(fault),
+        ))),
+        None => {
+            let mut memory = before.memory;
+            memory.resize(interpreter.memory.len(), 0);
+            observer.observe(TraceEvent::Opcode(log_row(
+                before.stack,
+                memory,
+                TraceOpcodePhase::BeforeExecution,
+            )));
+        }
+    }
+    *previous_cost = before_cost;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifier>(
     journal: &mut ExecutionJournal<R>,
@@ -1509,7 +1860,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
     native: &mut Option<NativeExecution<'_>>,
-    mut observer: Option<&mut dyn ExecutionTraceObserver>,
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<(revm::interpreter::InterpreterResult, u8), ExecutionDriverError> {
     // Go CALL skips interpreter entry for empty code; CREATE still executes
     // empty initcode and observes STOP. Preserve that operation distinction.
@@ -1546,6 +1897,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
         insertion: ParentInsertion::Root,
         full_value: transaction.value.value().clone(),
         last_opcode: 0,
+        trace_cost: 0,
     }];
 
     loop {
@@ -1560,7 +1912,8 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                 transaction,
                 profile,
                 &mut active.last_opcode,
-                &mut observer,
+                &mut active.trace_cost,
+                observer,
             ) {
                 Ok(action) => action,
                 Err(error) => {
@@ -1592,6 +1945,12 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                         let before = parent.interpreter.gas.refunded();
                         let child = result.gas.refunded();
                         let success = result.result.is_ok();
+                        if let Err(error) =
+                            observe_child_exit(observer, frame_depth, active.last_opcode, &result)
+                        {
+                            unwind_active_frames(journal, &frames)?;
+                            return Err(error);
+                        }
                         insert_call_result(&mut parent.interpreter, result, return_memory);
                         crate::journal::duration_journal_refund_frame(
                             false,
@@ -1624,6 +1983,12 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                         let before = parent.interpreter.gas.refunded();
                         let child = result.gas.refunded();
                         let success = result.result.is_ok();
+                        if let Err(error) =
+                            observe_child_exit(observer, frame_depth, active.last_opcode, &result)
+                        {
+                            unwind_active_frames(journal, &frames)?;
+                            return Err(error);
+                        }
                         insert_create_result(&mut parent.interpreter, attempted_address, result);
                         crate::journal::duration_journal_refund_frame(
                             false,
@@ -1647,6 +2012,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                     *inputs,
                     transaction.position,
                     native,
+                    observer,
                 ) {
                     Ok(child) => child,
                     Err(error) => {
@@ -1684,6 +2050,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                     profile,
                     frames.last_mut().expect("creation parent exists"),
                     *inputs,
+                    observer,
                 ) {
                     Ok(child) => child,
                     Err(error) => {
@@ -1735,6 +2102,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     transaction: &ExecutionTransaction,
     profile: TaraxaProfile,
     last_opcode: &mut u8,
+    trace_cost: &mut u64,
     observer: &mut Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<InterpreterAction, ExecutionDriverError> {
     journal.synchronize_native_memory(memory, &interpreter.memory.context_memory());
@@ -1757,11 +2125,18 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
             state_address: interpreter.input.target_address.into_array(),
             stack: trace_stack(&interpreter.stack),
             memory: interpreter.memory.context_memory().to_vec(),
+            memory_cost: interpreter.gas.memory().expansion_cost,
         });
         let refund_before = interpreter.gas.refunded();
         let refund_pc = interpreter.bytecode.pc() as u64;
         let refund_depth = interpreter.input.depth;
         crate::journal::duration_journal_consumer(true, refund_depth, refund_pc, *last_opcode);
+        if observer
+            .as_ref()
+            .is_some_and(|observer| observer.call_frames())
+        {
+            host.capture_trace_gas();
+        }
         let step = interpreter.step(&table, &costs, &mut host);
         host.synchronize_native_memory(memory, &interpreter.memory.context_memory());
         crate::journal::duration_journal_consumer(false, refund_depth, refund_pc, *last_opcode);
@@ -1775,23 +2150,41 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
                 matches!(&step, Ok(()) | Err(InstructionResult::SelfDestruct)),
             );
         }
-        if let Some(before) = trace_before {
+        if let (Some(before), Some(observer)) = (trace_before, observer.as_mut()) {
             if let Some(error) = host.take_error() {
                 return Err(ExecutionDriverError::Host(error));
             }
             if step == Err(InstructionResult::FatalExternalError) && *last_opcode == 0x3e {
                 return Err(ExecutionDriverError::ReferenceInstructionPanic(0x3e));
             }
-            observe_opcode_step(
-                observer
-                    .as_deref_mut()
-                    .expect("trace snapshot has observer"),
-                interpreter,
-                before,
-                step,
-                base_refund,
-                profile.correction_stage(),
-            )?;
+            if observer.call_frames() {
+                let forwarded_create_gas = match interpreter.bytecode.action().as_ref() {
+                    Some(InterpreterAction::NewFrame(FrameInput::Create(inputs))) => {
+                        inputs.gas_limit()
+                    }
+                    _ => 0,
+                };
+                observe_openethereum_step(
+                    &mut **observer,
+                    &mut host,
+                    interpreter,
+                    before,
+                    step,
+                    forwarded_create_gas,
+                    costs[usize::from(*last_opcode)],
+                    profile,
+                    trace_cost,
+                )?;
+            } else {
+                observe_opcode_step(
+                    &mut **observer,
+                    interpreter,
+                    before,
+                    step,
+                    base_refund,
+                    profile.correction_stage(),
+                )?;
+            }
         }
         match step {
             Ok(()) => {
@@ -1825,6 +2218,7 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     inputs: CallInputs,
     transaction_position: rustaxa_types::FinalChainTransactionPosition,
     native: &mut Option<NativeExecution<'_>>,
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<Option<ActiveFrame>, ExecutionDriverError> {
     let input = if inputs.input.is_empty() {
         Bytes::new()
@@ -1888,6 +2282,32 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     }
 
     let code_address = inputs.bytecode_address.into_array();
+    let kind = match inputs.scheme {
+        RevmCallScheme::Call => TraceFrameKind::Call,
+        RevmCallScheme::CallCode => TraceFrameKind::CallCode,
+        RevmCallScheme::StaticCall => TraceFrameKind::StaticCall,
+        RevmCallScheme::DelegateCall => TraceFrameKind::DelegateCall,
+    };
+    let depth = u16::try_from(child_depth + 1).expect("bounded frame depth");
+    let enter = |code: &[u8], precompile: bool| TraceFrameEnter {
+        depth,
+        kind,
+        caller: parent.interpreter.input.target_address.into_array(),
+        state_address: inputs.target_address.into_array(),
+        code_address: Some(code_address),
+        gas: inputs.gas_limit,
+        value: inputs.value.get().to_be_bytes::<32>().to_vec(),
+        input: input.to_vec(),
+        code: code.to_vec(),
+        precompile,
+    };
+    let empty_exit = || TraceFrameExit {
+        depth,
+        supplied_gas: inputs.gas_limit,
+        remaining_gas: inputs.gas_limit,
+        error: None,
+        output: Vec::new(),
+    };
     let route = classify_native(
         native_addresses,
         native.as_ref(),
@@ -1913,6 +2333,8 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         && value == num_bigint::BigUint::default()
         && !metadata.exists
     {
+        observe_frame_enter(observer, || enter(&[], false));
+        observe_frame_exit(observer, empty_exit);
         insert_call_result(
             &mut parent.interpreter,
             immediate_result(InstructionResult::Stop, inputs.gas_limit),
@@ -1942,6 +2364,14 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     } else {
         value
     };
+    if route != NativeRoute::Ordinary
+        && observer
+            .as_ref()
+            .is_some_and(|observer| observer.call_frames())
+    {
+        let code = journal.account_code(code_address)?;
+        observe_frame_enter(observer, || enter(&code, true));
+    }
     let native_outcome = match route {
         NativeRoute::Consensus => {
             let native = native
@@ -2114,6 +2544,16 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         } else {
             journal.revert_checkpoint(checkpoint)?;
         }
+        observe_frame_exit(observer, || TraceFrameExit {
+            depth,
+            supplied_gas: inputs.gas_limit,
+            remaining_gas: inputs.gas_limit - outcome.gas_left.as_u64(),
+            error: match &outcome.status {
+                CodeExecutionStatus::Success => None,
+                CodeExecutionStatus::Failure(error) => Some(error.clone()),
+            },
+            output: outcome.output.clone(),
+        });
         insert_native_call_result(
             &mut parent.interpreter,
             outcome,
@@ -2129,7 +2569,9 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
             return Err(error.into());
         }
     };
+    observe_frame_enter(observer, || enter(&code, false));
     if code.is_empty() {
+        observe_frame_exit(observer, empty_exit);
         crate::journal::duration_journal_no_refund(checkpoint, true, 1);
         journal.commit_checkpoint(checkpoint)?;
         insert_call_result(
@@ -2167,6 +2609,7 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         },
         full_value,
         last_opcode: 0,
+        trace_cost: 0,
     }))
 }
 
@@ -2175,6 +2618,7 @@ fn prepare_create_frame<R: ConcreteExecutionRead>(
     profile: TaraxaProfile,
     parent: &mut ActiveFrame,
     inputs: CreateInputs,
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<Option<ActiveFrame>, ExecutionDriverError> {
     let child_depth = parent.interpreter.input.depth.saturating_add(1);
     if child_depth > 1_024 {
@@ -2240,6 +2684,21 @@ fn prepare_create_frame<R: ConcreteExecutionRead>(
         return Err(error.into());
     }
 
+    observe_frame_enter(observer, || TraceFrameEnter {
+        depth: u16::try_from(child_depth + 1).expect("bounded frame depth"),
+        kind: match scheme {
+            CreateScheme::Create { .. } => TraceFrameKind::Create,
+            CreateScheme::Create2 { .. } => TraceFrameKind::Create2,
+        },
+        caller: creator,
+        state_address: attempted_address,
+        code_address: None,
+        gas: inputs.gas_limit(),
+        value: value.to_bytes_be(),
+        input: inputs.init_code().to_vec(),
+        code: inputs.init_code().to_vec(),
+        precompile: false,
+    });
     let child_memory = parent.interpreter.memory.new_child_context();
     let mut interpreter = Interpreter::<EthInterpreter>::new(
         child_memory,
@@ -2266,7 +2725,26 @@ fn prepare_create_frame<R: ConcreteExecutionRead>(
         },
         full_value: value,
         last_opcode: 0,
+        trace_cost: 0,
     }))
+}
+
+fn observe_child_exit(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    depth: usize,
+    opcode: u8,
+    result: &InterpreterResult,
+) -> Result<(), ExecutionDriverError> {
+    if let Some(observer) = observer.as_mut().filter(|observer| observer.call_frames()) {
+        observer.observe(TraceEvent::FrameExit(TraceFrameExit {
+            depth: trace_depth(depth)?,
+            supplied_gas: result.gas.limit(),
+            remaining_gas: result.gas.remaining(),
+            error: map_terminal(result.result, opcode)?,
+            output: result.output.to_vec(),
+        }));
+    }
+    Ok(())
 }
 
 fn settle_call_checkpoint<R: ConcreteExecutionRead>(
