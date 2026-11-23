@@ -614,22 +614,34 @@ fn ordered_probe_scenario(
     let mut slash = [0; 20];
     slash[19] = 0xee;
     let mut ordinary_controls = Vec::new();
-    for (receiver, gas, status) in [
+    use rustaxa_evm::contracts::{
+        CodeExecutionError, CodeExecutionStatus, ConsensusNativeDisposition, NativeContractFailure,
+    };
+    let retired_claim_all = [0x09, 0xb7, 0x2e, 0x00];
+    for (receiver, input, gas, status) in [
         (
             [0x44; 20],
+            malformed(),
             100_000,
-            rustaxa_evm::contracts::CodeExecutionStatus::Success,
+            CodeExecutionStatus::Success,
         ),
         (
             slash,
+            malformed(),
             30_000,
-            rustaxa_evm::contracts::CodeExecutionStatus::Failure(
-                rustaxa_evm::contracts::CodeExecutionError::OutOfGas,
-            ),
+            CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
+        ),
+        (
+            dpos,
+            retired_claim_all.to_vec(),
+            100_000,
+            CodeExecutionStatus::Failure(CodeExecutionError::Native(NativeContractFailure {
+                error: "no method with id: 0x09b72e00".into(),
+            })),
         ),
     ] {
         let mut ordinary = prefix.clone();
-        ordinary.push(transaction(&fixture, 12, receiver, &malformed(), gas));
+        ordinary.push(transaction(&fixture, 12, receiver, &input, gas));
         ordinary.push(transaction(&fixture, 13, [0x44; 20], &[], 100_000));
         let ordinary = request(&fixture, facts.clone(), ordinary);
         let (probe, delayed) = open()?;
@@ -660,6 +672,24 @@ fn ordered_probe_scenario(
         };
         assert_eq!(result.status, status);
         assert!(result.logs.is_empty());
+        if receiver == dpos {
+            assert_eq!(result.gas_used.as_u64(), 21_208);
+            assert!(result.output.is_empty());
+            let (_, _, native, raw_writes, _) = &events.completed[12];
+            let [call] = native.as_slice() else {
+                panic!("expected one retired selector call");
+            };
+            assert_eq!(call.status, status);
+            assert_eq!(call.required_gas.as_u64(), 0);
+            assert_eq!(call.gas_used.as_u64(), 0);
+            assert_eq!(
+                call.disposition,
+                ConsensusNativeDisposition::OwnFrameReverted
+            );
+            assert!(call.output.is_empty() && call.logs.is_empty());
+            assert_eq!(*raw_writes, 0);
+            assert_eq!(call.invocation.id.sequence, 1);
+        }
         assert!(matches!(
             &events.completed[13].1,
             rustaxa_evm::contracts::TransactionExecutionResult::Executed(
