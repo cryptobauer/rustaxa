@@ -65,21 +65,36 @@ fn scope<T>() -> Result<T, FinalChainNativeSessionError> {
 }
 
 impl FinalChainNativeSession<'_> {
-    /// Bounded post-Magnolia old-selector route. Its inputs and membership are
-    /// deliberately narrower than the general uint32 ABI.
+    /// Quotes and binds the legacy batch selector for the current session.
+    /// At and after retirement, the call has zero native gas and fails before
+    /// payability, decoding, or reward reads. Before retirement, only the
+    /// measured predecessor block, call shapes, and reward state are supported.
     pub(super) fn prepare_legacy_claim_all(
         &mut self,
         request: &FinalChainNativeRequest,
         state: &dyn FinalChainNativeStateRead,
     ) -> Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
-        let boundary = self
-            .final_chain
-            .rewards_config
-            .fix_claim_all_block_num
-            .as_u64();
-        let period = request.period.as_u64();
-        if boundary.checked_sub(1).is_none_or(|p| period < p)
-            || boundary.checked_add(1).is_none_or(|p| period > p)
+        let boundary = self.final_chain.rewards_config.fix_claim_all_block_num;
+        let quote_zero = FinalChainNativeGasQuote {
+            invocation: request.id,
+            required_gas: FinalChainGas::ZERO,
+        };
+        if request.period >= boundary {
+            let kind = if request.period < self.final_chain.rewards_config.fix_redelegate_block_num
+                && request.depth != 0
+            {
+                PreparedKind::NestedCallRejected
+            } else {
+                PreparedKind::AbiFailure("no method with id: 0x09b72e00".into())
+            };
+            self.prepared = Some(PreparedCall {
+                request: request.clone(),
+                quote: quote_zero,
+                kind,
+            });
+            return Ok(quote_zero);
+        }
+        if boundary.as_u64().checked_sub(1) != Some(request.period.as_u64())
             || !self.final_chain.magnolia_active(request.period)
             || request.period >= self.final_chain.dpos_cornus_period
             || request.kind != FinalChainNativeCallKind::Call
@@ -113,20 +128,13 @@ impl FinalChainNativeSession<'_> {
         {
             return scope();
         }
-        let quote_zero = FinalChainNativeGasQuote {
-            invocation: request.id,
-            required_gas: FinalChainGas::ZERO,
-        };
-        if period >= boundary || batch.is_none() {
-            let error = if period >= boundary {
-                "no method with id: 0x09b72e00"
-            } else {
-                "abi: cannot marshal in to go type: length insufficient 0 require 32"
-            };
+        if batch.is_none() {
             self.prepared = Some(PreparedCall {
                 request: request.clone(),
                 quote: quote_zero,
-                kind: PreparedKind::AbiFailure(error.into()),
+                kind: PreparedKind::AbiFailure(
+                    "abi: cannot marshal in to go type: length insufficient 0 require 32".into(),
+                ),
             });
             return Ok(quote_zero);
         }

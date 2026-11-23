@@ -1499,6 +1499,99 @@ impl FinalChainNativeStateRead for LegacySecondSerializationFault<'_> {
 }
 
 #[test]
+fn retired_legacy_claim_all_completes_pending_invocation_past_window() {
+    with_claim_all_chain_config(
+        "legacy-retired-past-window",
+        |rewards, _| {
+            rewards.fix_claim_all_block_num = 3.into();
+            rewards.cornus_period = FinalChainBlockNumber::MAX;
+        },
+        |chain| {
+            let mut pending = session(chain);
+            pending.pending_period = 5.into();
+            let mut request = legacy_request();
+            request.period = 5.into();
+            let quote = pending.prepare(&request, &NoNonpayableReads).unwrap();
+            assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+            let before = pending.dpos_state.clone();
+            assert_eq!(
+                pending.invoke(&request, quote, &NoNonpayableReads),
+                Ok(FinalChainNativeInvocationResult::Completed(
+                    FinalChainNativeOutcome {
+                        status: FinalChainNativeStatus::ContractFailure {
+                            error: "no method with id: 0x09b72e00".into(),
+                        },
+                        gas_used: FinalChainGas::ZERO,
+                        output: vec![],
+                        account_mutations: vec![],
+                        raw_mutations: vec![],
+                        logs: vec![],
+                    }
+                ))
+            );
+            assert_eq!(pending.dpos_state, before);
+            request.id.sequence = 1;
+            request.id.transaction = FinalChainTransactionPosition::new(1);
+            request.input.clear();
+            let quote = pending.prepare(&request, &NoNonpayableReads).unwrap();
+            assert!(pending.invoke(&request, quote, &NoNonpayableReads).is_ok());
+        },
+    );
+}
+
+#[test]
+fn retired_legacy_claim_all_preserves_fork_order() {
+    with_claim_all_chain_config(
+        "legacy-retired-fork-order",
+        |rewards, _| {
+            rewards.fix_claim_all_block_num = 3.into();
+            rewards.fix_redelegate_block_num = 4.into();
+            rewards.magnolia_period = 4.into();
+            rewards.cornus_period = 5.into();
+        },
+        |chain| {
+            for (period, depth, expected) in [
+                (3, 0, "no method with id: 0x09b72e00"),
+                (3, 1, "only top-level calls are allowed"),
+                (4, 1, "no method with id: 0x09b72e00"),
+                (5, 0, "no method with id: 0x09b72e00"),
+                (100, 1, "no method with id: 0x09b72e00"),
+            ] {
+                let mut pending = session(chain);
+                pending.pending_period = period.into();
+                let mut request = legacy_request();
+                request.period = period.into();
+                request.depth = depth;
+                request.supplied_gas = FinalChainGas::ZERO;
+                if depth == 0 {
+                    request.value = FinalChainNativeValue::new(1u8.into());
+                    request.input.truncate(5);
+                } else {
+                    request.kind = FinalChainNativeCallKind::StaticCall;
+                    request.is_static = true;
+                }
+                let quote = pending.prepare(&request, &NoNonpayableReads).unwrap();
+                assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+                let FinalChainNativeInvocationResult::Completed(outcome) =
+                    pending.invoke(&request, quote, &NoNonpayableReads).unwrap()
+                else {
+                    panic!("zero gas quote must permit invocation");
+                };
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: expected.into(),
+                    }
+                );
+                assert!(outcome.output.is_empty());
+                assert_eq!(outcome.gas_used, FinalChainGas::ZERO);
+                assert!(!pending.aborted);
+            }
+        },
+    );
+}
+
+#[test]
 fn legacy_batch_binds_request_count_order_and_retries_cleanly() {
     with_claim_all_chain_config(
         "legacy-bound",
@@ -1787,7 +1880,7 @@ fn legacy_capability_guards_reject_exactly() {
             rewards.cornus_period = FinalChainBlockNumber::MAX;
         },
         |chain| {
-            for kind in 0..15 {
+            for kind in 0..14 {
                 let mut s = session(chain);
                 let mut r = legacy_request();
                 match kind {
@@ -1799,24 +1892,20 @@ fn legacy_capability_guards_reject_exactly() {
                         s.pending_period = 1.into();
                         r.period = 1.into();
                     }
-                    2 => {
-                        s.pending_period = 5.into();
-                        r.period = 5.into();
-                    }
-                    3 => r.caller = [0x77; 20],
-                    4 => r.depth = 1,
-                    5 => r.depth = 2,
-                    6 => r.value = FinalChainNativeValue::new(BigUint::from(2u8)),
-                    7 => r.input.push(0),
-                    8 => r.input[4] = 1,
-                    9 => r.input[35] = 2,
-                    10 => r.is_static = true,
-                    11 => r.kind = FinalChainNativeCallKind::StaticCall,
-                    12 => {
+                    2 => r.caller = [0x77; 20],
+                    3 => r.depth = 1,
+                    4 => r.depth = 2,
+                    5 => r.value = FinalChainNativeValue::new(BigUint::from(2u8)),
+                    6 => r.input.push(0),
+                    7 => r.input[4] = 1,
+                    8 => r.input[35] = 2,
+                    9 => r.is_static = true,
+                    10 => r.kind = FinalChainNativeCallKind::StaticCall,
+                    11 => {
                         r.input[35] = 1;
                         r.value = FinalChainNativeValue::new(BigUint::from(1u8));
                     }
-                    13 => {
+                    12 => {
                         r.input.truncate(4);
                         r.value = FinalChainNativeValue::new(BigUint::from(1u8));
                     }
