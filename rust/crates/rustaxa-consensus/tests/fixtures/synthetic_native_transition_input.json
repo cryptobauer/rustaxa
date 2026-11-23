@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "synthetic": true,
+  "period": 1,
+  "parent_period": 0,
+  "parent_root_label": "0x1234",
+  "block_author": "0x0000000000000000000000000000000000000051",
+  "timestamp": 0,
+  "gas_limit": 1000000,
+  "config": {
+    "EVMChainConfig": {
+      "chainId": 1
+    },
+    "GenesisBalances": {
+      "0x0000000000000000000000000000000000000032": 2000,
+      "0x0000000000000000000000000000000000000042": 3000
+    },
+    "DPOS": {
+      "EligibilityBalanceThreshold": 100,
+      "VoteEligibilityBalanceStep": 10,
+      "ValidatorMaximumStake": 1000000,
+      "MinimumDeposit": 1,
+      "MaxBlockAuthorReward": 10,
+      "DagProposersReward": 50,
+      "CommissionChangeDelta": 0,
+      "CommissionChangeFrequency": 0,
+      "DelegationDelay": 0,
+      "DelegationLockingPeriod": 0,
+      "BlocksPerYear": 10,
+      "YieldPercentage": 1,
+      "InitialValidators": [
+        {
+          "Address": "0x0000000000000000000000000000000000000031",
+          "Owner": "0x0000000000000000000000000000000000000032",
+          "VrfKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "Commission": 100,
+          "Endpoint": "",
+          "Description": "",
+          "Delegations": {
+            "0x0000000000000000000000000000000000000032": 1000
+          }
+        },
+        {
+          "Address": "0x0000000000000000000000000000000000000041",
+          "Owner": "0x0000000000000000000000000000000000000042",
+          "VrfKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "Commission": 2500,
+          "Endpoint": "",
+          "Description": "",
+          "Delegations": {
+            "0x0000000000000000000000000000000000000042": 2000
+          }
+        }
+      ]
+    },
+    "Hardforks": {
+      "FixRedelegateBlockNum": 18446744073709551615,
+      "Redelegations": null,
+      "RewardsDistributionFrequency": {
+        "0": 2
+      },
+      "MagnoliaHf": {
+        "BlockNum": 0,
+        "JailTime": 0
+      },
+      "PhalaenopsisHfBlockNum": 0,
+      "FixClaimAllBlockNum": 0,
+      "AspenHf": {
+        "BlockNumPartOne": 0,
+        "BlockNumPartTwo": 1,
+        "MaxSupply": 6000,
+        "GeneratedRewards": 0
+      },
+      "FicusHf": {
+        "BlockNum": 0,
+        "PillarBlocksInterval": 0,
+        "BridgeContractAddress": "0x0000000000000000000000000000000000000000"
+      },
+      "CornusHf": {
+        "BlockNum": 0,
+        "DelegationLockingPeriod": 0,
+        "DagGasLimit": 0,
+        "PbftGasLimit": 0
+      },
+      "SoleiroliaHf": {
+        "BlockNum": 18446744073709551615,
+        "TrxMinGasPrice": 0,
+        "TrxMaxGasLimit": 0
+      },
+      "CactiHf": {
+        "BlockNum": 18446744073709551615,
+        "LambdaMin": 0,
+        "LambdaMax": 0,
+        "LambdaDefault": 0,
+        "LambdaChangeInterval": 0,
+        "LambdaChange": 0,
+        "BlockPropagationMin": 0,
+        "BlockPropagationMax": 0,
+        "ConsensusDelay": 0,
+        "DelegationLockingPeriod": 0,
+        "JailTime": 0
+      }
+    }
+  },
+  "rewards_fact": {
+    "period": 1,
+    "block_author": "0x0000000000000000000000000000000000000051",
+    "blocks_per_year": 10,
+    "caller_eligible_vote_count": 0,
+    "planner_eligible_vote_count": 10,
+    "transactions": [],
+    "dag_blocks": [],
+    "cert_votes": []
+  },
+  "rust_genesis_accounts_after_delegation": {
+    "0000000000000000000000000000000000000032": 1000,
+    "0000000000000000000000000000000000000042": 1000
+  },
+  "go_setup": "ApplyGenesis, then pinned genesis Cornus DPoS bytecode and op_stack.OpPrecompiles through value-only account/raw collector; no trie/root",
+  "synthetic_root_authenticated": false,
+  "producer_qualified": false,
+  "real_window_gate_closed": false
+}

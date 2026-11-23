@@ -6,6 +6,8 @@ use crate::SINGLE_VALUE_KEY;
 use crate::StorageError;
 use crate::db::{DbReader, DbWriter};
 
+pub(crate) const PBFT_EXECUTION_SCHEDULE_KEY: &[u8] = b"rustaxa/pbft-execution-schedule/v1";
+
 pub struct MetadataRepository<D: DbReader> {
     db: Arc<D>,
 }
@@ -24,6 +26,15 @@ impl<D: DbReader> MetadataRepository<D> {
             .get(Column::Genesis, &SINGLE_VALUE_KEY)?
             .map(|value| value.as_ref().to_vec())
             .filter(|value| !value.is_empty()))
+    }
+
+    /// Reads the exact rule schedule record. Missing and empty records stay distinct.
+    /// This read does not approve a schedule or select execution rules.
+    pub fn pbft_execution_schedule_raw(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(Column::Status, PBFT_EXECUTION_SCHEDULE_KEY)?
+            .map(|value| value.as_ref().to_vec()))
     }
 
     /// Returns up to `count` latest sortition parameter changes in chronological order.
@@ -63,11 +74,15 @@ impl<D: DbReader> MetadataRepository<D> {
     /// Loads a status counter value, defaulting to zero when the key is absent.
     /// C++ mapping: `DbStorage::getStatusField(StatusDbField const&)`.
     pub fn status_field(&self, field: u8) -> Result<u64> {
-        let Some(value) = self.db.get(Column::Status, &[field])? else {
-            return Ok(0);
-        };
+        Ok(self.status_field_optional(field)?.unwrap_or(0))
+    }
 
-        Self::decode_u64_value(value.as_ref(), Column::Status)
+    /// Reads a status value and preserves the distinction between absence and zero.
+    pub fn status_field_optional(&self, field: u8) -> Result<Option<u64>> {
+        self.db
+            .get(Column::Status, &[field])?
+            .map(|value| Self::decode_u64_value(value.as_ref(), Column::Status))
+            .transpose()
     }
 
     /// Returns the lambda value for a period, optionally falling back to the
@@ -199,6 +214,22 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
             .batch_put(batch, Column::Status, &[field], &value.to_le_bytes())
     }
 
+    /// Appends a rule schedule record to the caller's batch.
+    /// The caller must validate canonical bytes and approval before commit.
+    /// This method does not enroll or approve a schedule.
+    pub fn write_pbft_execution_schedule_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        canonical_record: &[u8],
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::Status,
+            PBFT_EXECUTION_SCHEDULE_KEY,
+            canonical_record,
+        )
+    }
+
     /// Stores sortition parameter change payload for a period.
     /// C++ mapping: `DbStorage::saveSortitionParamsChange(PbftPeriod, const SortitionParamsChange&, Batch&)`.
     pub fn write_sortition_params_change(&self, period: u64, params_rlp: &[u8]) -> Result<()> {
@@ -328,8 +359,10 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
 
+    type MemoryColumns = HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>;
+
     struct MockMetadataStore {
-        data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+        data: RwLock<MemoryColumns>,
     }
 
     enum BatchOp {
@@ -346,9 +379,7 @@ mod tests {
 
         fn put(&self, col: Column, key: &[u8], value: &[u8]) {
             let mut data = self.data.write().unwrap();
-            let cf = data
-                .entry(col.name().to_string())
-                .or_insert_with(BTreeMap::new);
+            let cf = data.entry(col.name().to_string()).or_default();
             cf.insert(key.to_vec(), value.to_vec());
         }
 

@@ -142,7 +142,7 @@ rewrite-validate-fast: ## Run fast Rust rewrite checks and whitespace validation
 	cargo test --manifest-path $(RUST_MANIFEST)
 	$(MAKE) rewrite-storage-boundary-guard
 	$(MAKE) rewrite-bridge-inventory-guard
-	git diff --check
+	git diff --check -- . ':(exclude,glob)AI.md' ':(exclude,glob)**/AI.md' ':(exclude,glob)AI.md/**' ':(exclude,glob)**/AI.md/**'
 
 .PHONY: rewrite-storage-boundary-guard
 rewrite-storage-boundary-guard: ## Reject newly added Rust-mode C++ consensus storage routes.

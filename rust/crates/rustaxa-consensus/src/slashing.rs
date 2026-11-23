@@ -173,11 +173,32 @@ pub fn verify_legacy_double_voting_proof_call_data(
 
     Ok(VerifiedLegacyDoubleVotingProof {
         offender: vote_a_offender,
-        proof_key: double_voting_proof_hash(sorted_vote_hashes[0], sorted_vote_hashes[1]),
+        proof_key: double_voting_proof_storage_key(sorted_vote_hashes[0], sorted_vote_hashes[1]),
         sorted_vote_hashes,
         vote_a: vote_a.metadata,
         vote_b: vote_b.metadata,
     })
+}
+
+/// Decodes the vote identities before the contract checks its live duplicate
+/// marker. Signature and slot validation occur only after that marker read.
+pub(crate) fn decoded_double_voting_proof_storage_key(
+    calldata: &[u8],
+) -> std::result::Result<H256, LegacyDoubleVotingProofDecodeError> {
+    let (left, right) = decode_commit_double_voting_call_data(calldata)
+        .map_err(|e| LegacyDoubleVotingProofDecodeError::OuterAbi(e.to_string()))?;
+    let left = decode_legacy_pbft_vote(left)
+        .map_err(|e| LegacyDoubleVotingProofDecodeError::NestedRlp(e.to_string()))?;
+    let right = decode_legacy_pbft_vote(right)
+        .map_err(|e| LegacyDoubleVotingProofDecodeError::NestedRlp(e.to_string()))?;
+    semantic_ensure!(
+        left.metadata.vote_hash != right.metadata.vote_hash,
+        "votes are identical"
+    );
+    Ok(double_voting_proof_storage_key(
+        left.metadata.vote_hash,
+        right.metadata.vote_hash,
+    ))
 }
 
 #[derive(Debug)]
@@ -334,8 +355,16 @@ fn ensure_exact_list_items(rlp: &Rlp<'_>, expected: usize, field: &str) -> Resul
 fn recover_validator_address(hash: &H256, signature: &[u8; SIGNATURE_SIZE]) -> Option<H160> {
     use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 
-    let recovery_id = RecoveryId::try_from(signature[64]).ok()?;
-    let signature = Signature::try_from(&signature[..SIGNATURE_SIZE - 1]).ok()?;
+    let encoded_recovery = signature[64];
+    if encoded_recovery >= 8 {
+        return None;
+    }
+    let mut recovery_id = RecoveryId::try_from(encoded_recovery & !4).ok()?;
+    let mut signature = Signature::try_from(&signature[..SIGNATURE_SIZE - 1]).ok()?;
+    if let Some(normalized) = signature.normalize_s() {
+        signature = normalized;
+        recovery_id = RecoveryId::new(!recovery_id.is_y_odd(), recovery_id.is_x_reduced());
+    }
     let public_key =
         VerifyingKey::recover_from_prehash(hash.as_bytes(), &signature, recovery_id).ok()?;
     let uncompressed = public_key.to_encoded_point(false);
@@ -814,6 +843,20 @@ fn same_pbft_slot(input: &DoubleVotingProofInput) -> bool {
         && input.vote_a_step == input.vote_b_step
 }
 
+/// Native contract key; the manager's RLP proof identity below is separate.
+fn double_voting_proof_storage_key(vote_a_hash: H256, vote_b_hash: H256) -> H256 {
+    let (first, second) = if vote_a_hash < vote_b_hash {
+        (vote_a_hash, vote_b_hash)
+    } else {
+        (vote_b_hash, vote_a_hash)
+    };
+    let mut bytes = [0; 65];
+    bytes[0] = 1;
+    bytes[1..33].copy_from_slice(first.as_bytes());
+    bytes[33..].copy_from_slice(second.as_bytes());
+    keccak256(&bytes)
+}
+
 fn double_voting_proof_hash(vote_a_hash: H256, vote_b_hash: H256) -> H256 {
     let (first, second) = if vote_a_hash < vote_b_hash {
         (vote_a_hash, vote_b_hash)
@@ -909,9 +952,10 @@ mod tests {
     }
 
     fn hex_bytes(value: &str) -> Vec<u8> {
-        let chunks = value.as_bytes().chunks_exact(2);
-        assert!(chunks.remainder().is_empty());
+        let (chunks, remainder) = value.as_bytes().as_chunks::<2>();
+        assert!(remainder.is_empty());
         chunks
+            .iter()
             .map(|chunk| (hex_nibble(chunk[0]) << 4) | hex_nibble(chunk[1]))
             .collect()
     }
@@ -965,6 +1009,78 @@ mod tests {
     }
 
     #[test]
+    fn recovery_accepts_compressed_metadata_and_rejects_high_recovery_bytes() {
+        let key = SigningKey::from_slice(&[0x11; 32]).unwrap();
+        let expected = address_from_signing_key(&key);
+        let mut seen = [false; 2];
+        for nonce in 0..256_u64 {
+            let hash = H256::from_low_u64_be(nonce);
+            let (signature, recovery) = key.sign_prehash_recoverable(hash.as_bytes()).unwrap();
+            let id = recovery.to_byte();
+            if id > 1 {
+                continue;
+            }
+            let mut bytes = [0_u8; SIGNATURE_SIZE];
+            bytes[..64].copy_from_slice(&signature.to_bytes());
+            bytes[64] = id;
+            assert_eq!(recover_validator_address(&hash, &bytes), Some(expected));
+            bytes[64] = id | 4;
+            assert_eq!(recover_validator_address(&hash, &bytes), Some(expected));
+            for invalid in [8_u8, 12, 27, 255] {
+                bytes[64] = invalid;
+                assert_eq!(recover_validator_address(&hash, &bytes), None);
+            }
+            seen[usize::from(id)] = true;
+            if seen.iter().all(|found| *found) {
+                break;
+            }
+        }
+        assert_eq!(seen, [true, true]);
+    }
+
+    #[test]
+    fn recovery_accepts_high_s_alias_with_matching_parity() {
+        let key = SigningKey::from_slice(&[0x11; 32]).unwrap();
+        let expected = address_from_signing_key(&key);
+        let order = hex_bytes("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+        let mut seen = [false; 2];
+        for nonce in 0..256_u64 {
+            let hash = H256::from_low_u64_be(nonce);
+            let (signature, recovery) = key.sign_prehash_recoverable(hash.as_bytes()).unwrap();
+            let id = recovery.to_byte();
+            if id > 1 {
+                continue;
+            }
+            assert!(signature.normalize_s().is_none());
+            let mut low = [0_u8; SIGNATURE_SIZE];
+            low[..64].copy_from_slice(&signature.to_bytes());
+            low[64] = id;
+            assert_eq!(recover_validator_address(&hash, &low), Some(expected));
+            let mut high = low;
+            let mut borrow = 0_i16;
+            for index in (0..32).rev() {
+                let difference = i16::from(order[index]) - i16::from(low[32 + index]) - borrow;
+                high[32 + index] = u8::try_from(difference.rem_euclid(256)).unwrap();
+                borrow = if difference < 0 { 1 } else { 0 };
+            }
+            assert_eq!(borrow, 0);
+            high[64] = id ^ 1;
+            let original = high;
+            assert_eq!(recover_validator_address(&hash, &high), Some(expected));
+            assert_eq!(high, original);
+            high[64] |= 4;
+            assert_eq!(recover_validator_address(&hash, &high), Some(expected));
+            high[64] = 8;
+            assert_eq!(recover_validator_address(&hash, &high), None);
+            seen[usize::from(id)] = true;
+            if seen.iter().all(|found| *found) {
+                break;
+            }
+        }
+        assert_eq!(seen, [true, true]);
+    }
+
+    #[test]
     fn verifies_valid_legacy_double_voting_call_data() {
         let signing_key = SigningKey::from_slice(&[0x11; 32]).unwrap();
         let sortition_a = encode_vrf_sortition(10, 2, 4, 0x5a);
@@ -996,7 +1112,7 @@ mod tests {
 
         assert_eq!(
             verified.proof_key,
-            double_voting_proof_hash(
+            double_voting_proof_storage_key(
                 legacy_pbft_vote_hash(H256::from_low_u64_be(7), &sortition_a),
                 legacy_pbft_vote_hash(H256::from_low_u64_be(8), &sortition_b),
             )
@@ -1207,7 +1323,7 @@ mod tests {
         );
 
         let mut invalid_signature = [0xFFu8; SIGNATURE_SIZE];
-        invalid_signature[64] = 4;
+        invalid_signature[64] = 8;
         let (vote_b, _) = sign_vote(
             &signing_key,
             H256::from_low_u64_be(22),
@@ -1751,3 +1867,7 @@ mod tests {
         assert_eq!(replay.status, DoubleVotingProofPlanStatus::Planned);
     }
 }
+
+#[cfg(test)]
+#[path = "slashing/malformed_tests.rs"]
+mod malformed_tests;

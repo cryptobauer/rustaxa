@@ -116,6 +116,7 @@ pub fn compose_value_proposal(
     dag: &DagTransactionService,
     timestamp: u64,
     eligible_wallet_indices: Vec<u64>,
+    allow_retained_admission: bool,
 ) -> Result<ConsensusValueProposalAction> {
     let live = service.manager_snapshot();
     if eligible_wallet_indices.is_empty() {
@@ -147,41 +148,53 @@ pub fn compose_value_proposal(
         previous_null,
     ) {
         PriorRoundValueDecision::Repropose(block_hash) => {
-            let admission = service.admit_proposed_block(
-                final_chain,
-                dag,
-                service.value_proposal_admission_request(live.period, block_hash),
-            )?;
-            return Ok(match admission.status {
-                PbftProposedBlockAdmissionStatus::AcceptedAlreadyValid
-                | PbftProposedBlockAdmissionStatus::AcceptedNewlyValidated => {
-                    let block = rlp::Rlp::new(&admission.block_rlp);
-                    let rewards = block.at(6)?;
-                    ensure!(
-                        rewards.is_list(),
-                        "CONSENSUS_REPROPOSAL_REWARD_VOTES_NOT_LIST"
-                    );
-                    let mut hashes = Vec::with_capacity(rewards.item_count()?);
-                    for index in 0..rewards.item_count()? {
-                        hashes.push(rewards.val_at(index)?);
+            let block_rlp = if allow_retained_admission {
+                let admission = service.admit_proposed_block(
+                    final_chain,
+                    dag,
+                    service.value_proposal_admission_request(live.period, block_hash),
+                )?;
+                match admission.status {
+                    PbftProposedBlockAdmissionStatus::AcceptedAlreadyValid
+                    | PbftProposedBlockAdmissionStatus::AcceptedNewlyValidated => {
+                        admission.block_rlp
                     }
-                    let selected = service.select_reward_vote_payloads(live.period, hashes)?;
-                    ensure!(
-                        selected.accepted,
-                        "CONSENSUS_REPROPOSAL_REWARD_VOTES_UNAVAILABLE"
-                    );
-                    ConsensusValueProposalAction::Repropose {
-                        eligible_wallet_indices,
-                        block_rlp: admission.block_rlp,
-                        reward_votes_bundle_rlp: build_reward_votes_network_bundle(
-                            &selected.selected_records,
-                        )?,
+                    PbftProposedBlockAdmissionStatus::Missing
+                    | PbftProposedBlockAdmissionStatus::Rejected => {
+                        return Ok(ConsensusValueProposalAction::NoWork);
                     }
                 }
-                PbftProposedBlockAdmissionStatus::Missing
-                | PbftProposedBlockAdmissionStatus::Rejected => {
-                    ConsensusValueProposalAction::NoWork
+            } else {
+                let Some(entry) = service.proposed_block(live.period, block_hash) else {
+                    return Ok(ConsensusValueProposalAction::NoWork);
+                };
+                let plan = service.validate_retained_proposal(final_chain, dag, &entry)?;
+                if plan.action != crate::pbft_manager::PbftManagerBlockValidationAction::Accept {
+                    return Ok(ConsensusValueProposalAction::NoWork);
                 }
+                entry.block_rlp
+            };
+            let block = rlp::Rlp::new(&block_rlp);
+            let rewards = block.at(6)?;
+            ensure!(
+                rewards.is_list(),
+                "CONSENSUS_REPROPOSAL_REWARD_VOTES_NOT_LIST"
+            );
+            let mut hashes = Vec::with_capacity(rewards.item_count()?);
+            for index in 0..rewards.item_count()? {
+                hashes.push(rewards.val_at(index)?);
+            }
+            let selected = service.select_reward_vote_payloads(live.period, hashes)?;
+            ensure!(
+                selected.accepted,
+                "CONSENSUS_REPROPOSAL_REWARD_VOTES_UNAVAILABLE"
+            );
+            return Ok(ConsensusValueProposalAction::Repropose {
+                eligible_wallet_indices,
+                block_rlp,
+                reward_votes_bundle_rlp: build_reward_votes_network_bundle(
+                    &selected.selected_records,
+                )?,
             });
         }
         PriorRoundValueDecision::NoWork => {

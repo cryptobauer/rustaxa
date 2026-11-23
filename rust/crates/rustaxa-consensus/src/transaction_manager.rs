@@ -1686,7 +1686,7 @@ mod tests {
         );
     }
 
-    fn verify_transaction_fact(
+    struct VerifyTransactionTestInput {
         tx_hash: u8,
         chain_id: u64,
         expected_chain_id: u64,
@@ -1698,7 +1698,25 @@ mod tests {
         gas_price: u64,
         minimum_gas_price: u64,
         last_block_number: u64,
+    }
+
+    fn verify_transaction_fact(
+        input: VerifyTransactionTestInput,
     ) -> TransactionManagerVerifyTransactionFact {
+        let VerifyTransactionTestInput {
+            tx_hash,
+            chain_id,
+            expected_chain_id,
+            gas_limit,
+            max_gas_limit,
+            cornus_active,
+            intrinsic_gas_covered,
+            signature_valid,
+            gas_price,
+            minimum_gas_price,
+            last_block_number,
+        } = input;
+
         TransactionManagerVerifyTransactionFact {
             tx_hash: H256::from([tx_hash; 32]),
             chain_id,
@@ -1717,18 +1735,38 @@ mod tests {
     #[test]
     fn verify_transaction_plan_applies_chain_id_and_gas_gate() {
         assert_eq!(
-            plan_verify_transaction(verify_transaction_fact(
-                1, 1, 1, 21_000, 100_000, false, true, true, 1, 1, 0,
-            ))
+            plan_verify_transaction(verify_transaction_fact(VerifyTransactionTestInput {
+                tx_hash: 1,
+                chain_id: 1,
+                expected_chain_id: 1,
+                gas_limit: 21_000,
+                max_gas_limit: 100_000,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: true,
+                gas_price: 1,
+                minimum_gas_price: 1,
+                last_block_number: 0
+            },))
             .unwrap()
             .status,
             TransactionManagerVerifyTransactionStatus::Accepted
         );
 
         assert_eq!(
-            plan_verify_transaction(verify_transaction_fact(
-                1, 2, 1, 21_000, 100_000, false, true, true, 1, 1, 0,
-            ))
+            plan_verify_transaction(verify_transaction_fact(VerifyTransactionTestInput {
+                tx_hash: 1,
+                chain_id: 2,
+                expected_chain_id: 1,
+                gas_limit: 21_000,
+                max_gas_limit: 100_000,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: true,
+                gas_price: 1,
+                minimum_gas_price: 1,
+                last_block_number: 0
+            },))
             .unwrap()
             .status,
             TransactionManagerVerifyTransactionStatus::ChainIdMismatch
@@ -1738,18 +1776,38 @@ mod tests {
     #[test]
     fn verify_transaction_plan_enforces_intrinsic_and_signature_gates() {
         assert_eq!(
-            plan_verify_transaction(verify_transaction_fact(
-                1, 1, 1, 21_000, 100_000, true, false, true, 1, 1, 0,
-            ))
+            plan_verify_transaction(verify_transaction_fact(VerifyTransactionTestInput {
+                tx_hash: 1,
+                chain_id: 1,
+                expected_chain_id: 1,
+                gas_limit: 21_000,
+                max_gas_limit: 100_000,
+                cornus_active: true,
+                intrinsic_gas_covered: false,
+                signature_valid: true,
+                gas_price: 1,
+                minimum_gas_price: 1,
+                last_block_number: 0
+            },))
             .unwrap()
             .status,
             TransactionManagerVerifyTransactionStatus::IntrinsicGasNotCovered
         );
 
         assert_eq!(
-            plan_verify_transaction(verify_transaction_fact(
-                1, 1, 1, 21_000, 100_000, false, true, false, 1, 1, 0,
-            ))
+            plan_verify_transaction(verify_transaction_fact(VerifyTransactionTestInput {
+                tx_hash: 1,
+                chain_id: 1,
+                expected_chain_id: 1,
+                gas_limit: 21_000,
+                max_gas_limit: 100_000,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: false,
+                gas_price: 1,
+                minimum_gas_price: 1,
+                last_block_number: 0
+            },))
             .unwrap()
             .status,
             TransactionManagerVerifyTransactionStatus::InvalidSignature
@@ -1759,16 +1817,26 @@ mod tests {
     #[test]
     fn verify_transaction_plan_enforces_minimum_gas_price() {
         assert_eq!(
-            plan_verify_transaction(verify_transaction_fact(
-                1, 1, 1, 21_000, 100_000, false, true, true, 4, 8, 0,
-            ))
+            plan_verify_transaction(verify_transaction_fact(VerifyTransactionTestInput {
+                tx_hash: 1,
+                chain_id: 1,
+                expected_chain_id: 1,
+                gas_limit: 21_000,
+                max_gas_limit: 100_000,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: true,
+                gas_price: 4,
+                minimum_gas_price: 8,
+                last_block_number: 0
+            },))
             .unwrap()
             .status,
             TransactionManagerVerifyTransactionStatus::GasPriceTooLow
         );
     }
 
-    fn validated_insert_fact(
+    struct ValidatedInsertTestInput {
         tx_hash: u8,
         transaction_nonce: u64,
         transaction_cost: u64,
@@ -1780,7 +1848,25 @@ mod tests {
         account_found: bool,
         account_nonce: u64,
         account_balance: u64,
+    }
+
+    fn validated_insert_fact(
+        input: ValidatedInsertTestInput,
     ) -> TransactionManagerValidatedInsertFact {
+        let ValidatedInsertTestInput {
+            tx_hash,
+            transaction_nonce,
+            transaction_cost,
+            gas_limit,
+            propose_dag_gas_limit,
+            insert_non_proposable,
+            in_non_finalized_cache,
+            in_recently_finalized_cache,
+            account_found,
+            account_nonce,
+            account_balance,
+        } = input;
+
         TransactionManagerValidatedInsertFact {
             tx_hash: H256::from([tx_hash; 32]),
             transaction_nonce: U256::from(transaction_nonce),
@@ -1814,9 +1900,19 @@ mod tests {
 
     #[test]
     fn validated_insert_plan_rejects_live_cache_hits_before_queue_mutation() {
-        let plan = plan_validated_insert(validated_insert_fact(
-            1, 1, 10, 21_000, 100_000, true, true, false, true, 0, 100,
-        ))
+        let plan = plan_validated_insert(validated_insert_fact(ValidatedInsertTestInput {
+            tx_hash: 1,
+            transaction_nonce: 1,
+            transaction_cost: 10,
+            gas_limit: 21_000,
+            propose_dag_gas_limit: 100_000,
+            insert_non_proposable: true,
+            in_non_finalized_cache: true,
+            in_recently_finalized_cache: false,
+            account_found: true,
+            account_nonce: 0,
+            account_balance: 100,
+        }))
         .unwrap();
 
         assert_eq!(plan.status, TransactionQueueInsertStatus::Known);
@@ -1825,24 +1921,54 @@ mod tests {
 
     #[test]
     fn validated_insert_plan_marks_nonce_balance_and_gas_failures_non_proposable_when_allowed() {
-        let nonce_plan = plan_validated_insert(validated_insert_fact(
-            1, 1, 10, 21_000, 100_000, true, false, false, true, 2, 100,
-        ))
+        let nonce_plan = plan_validated_insert(validated_insert_fact(ValidatedInsertTestInput {
+            tx_hash: 1,
+            transaction_nonce: 1,
+            transaction_cost: 10,
+            gas_limit: 21_000,
+            propose_dag_gas_limit: 100_000,
+            insert_non_proposable: true,
+            in_non_finalized_cache: false,
+            in_recently_finalized_cache: false,
+            account_found: true,
+            account_nonce: 2,
+            account_balance: 100,
+        }))
         .unwrap();
         assert!(nonce_plan.should_insert_queue);
         assert!(!nonce_plan.queue_proposable);
         assert!(!nonce_plan.emit_transaction_added);
 
-        let balance_plan = plan_validated_insert(validated_insert_fact(
-            2, 1, 200, 21_000, 100_000, true, false, false, true, 0, 100,
-        ))
+        let balance_plan = plan_validated_insert(validated_insert_fact(ValidatedInsertTestInput {
+            tx_hash: 2,
+            transaction_nonce: 1,
+            transaction_cost: 200,
+            gas_limit: 21_000,
+            propose_dag_gas_limit: 100_000,
+            insert_non_proposable: true,
+            in_non_finalized_cache: false,
+            in_recently_finalized_cache: false,
+            account_found: true,
+            account_nonce: 0,
+            account_balance: 100,
+        }))
         .unwrap();
         assert!(balance_plan.should_insert_queue);
         assert!(!balance_plan.queue_proposable);
 
-        let gas_plan = plan_validated_insert(validated_insert_fact(
-            3, 1, 10, 200_000, 100_000, true, false, false, true, 0, 100,
-        ))
+        let gas_plan = plan_validated_insert(validated_insert_fact(ValidatedInsertTestInput {
+            tx_hash: 3,
+            transaction_nonce: 1,
+            transaction_cost: 10,
+            gas_limit: 200_000,
+            propose_dag_gas_limit: 100_000,
+            insert_non_proposable: true,
+            in_non_finalized_cache: false,
+            in_recently_finalized_cache: false,
+            account_found: true,
+            account_nonce: 0,
+            account_balance: 100,
+        }))
         .unwrap();
         assert!(gas_plan.should_insert_queue);
         assert!(!gas_plan.queue_proposable);
@@ -1850,9 +1976,19 @@ mod tests {
 
     #[test]
     fn validated_insert_plan_returns_known_for_non_proposable_facts_when_not_allowed() {
-        let plan = plan_validated_insert(validated_insert_fact(
-            1, 1, 10, 21_000, 100_000, false, false, false, false, 0, 0,
-        ))
+        let plan = plan_validated_insert(validated_insert_fact(ValidatedInsertTestInput {
+            tx_hash: 1,
+            transaction_nonce: 1,
+            transaction_cost: 10,
+            gas_limit: 21_000,
+            propose_dag_gas_limit: 100_000,
+            insert_non_proposable: false,
+            in_non_finalized_cache: false,
+            in_recently_finalized_cache: false,
+            account_found: false,
+            account_nonce: 0,
+            account_balance: 0,
+        }))
         .unwrap();
 
         assert_eq!(plan.status, TransactionQueueInsertStatus::Known);
@@ -1861,9 +1997,19 @@ mod tests {
 
     #[test]
     fn validated_insert_plan_accepts_proposable_transactions() {
-        let plan = plan_validated_insert(validated_insert_fact(
-            1, 1, 10, 21_000, 100_000, false, false, false, true, 0, 100,
-        ))
+        let plan = plan_validated_insert(validated_insert_fact(ValidatedInsertTestInput {
+            tx_hash: 1,
+            transaction_nonce: 1,
+            transaction_cost: 10,
+            gas_limit: 21_000,
+            propose_dag_gas_limit: 100_000,
+            insert_non_proposable: false,
+            in_non_finalized_cache: false,
+            in_recently_finalized_cache: false,
+            account_found: true,
+            account_nonce: 0,
+            account_balance: 100,
+        }))
         .unwrap();
 
         assert_eq!(plan.status, TransactionQueueInsertStatus::Inserted);

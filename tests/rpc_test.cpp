@@ -71,16 +71,16 @@ void bindFinalChainReaders(net::rpc::eth::EthParams& params, const std::shared_p
     return (*query)->consensus_query_transaction_by_hash(hash.asArray());
   };
   params.query_transaction_by_block_number_and_index = [query](auto block_number, auto index) {
-    return (*query)->consensus_query_transaction_by_block_number_and_index(block_number, index);
+    return (*query)->consensus_query_transaction_by_block_and_index({false, block_number, {}}, index);
   };
   params.query_transaction_by_block_hash_and_index = [query](const auto& hash, auto index) {
-    return (*query)->consensus_query_transaction_by_block_hash_and_index(hash.asArray(), index);
+    return (*query)->consensus_query_transaction_by_block_and_index({true, 0, hash.asArray()}, index);
   };
   params.query_transaction_count_by_block_number = [query](auto block_number) {
-    return (*query)->consensus_query_transaction_count_by_block_number(block_number);
+    return (*query)->consensus_query_transaction_count_by_block({false, block_number, {}});
   };
   params.query_transaction_count_by_block_hash = [query](const auto& hash) {
-    return (*query)->consensus_query_transaction_count_by_block_hash(hash.asArray());
+    return (*query)->consensus_query_transaction_count_by_block({true, 0, hash.asArray()});
   };
   params.query_transaction_receipt = [query](const auto& hash) {
     return (*query)->consensus_query_transaction_receipt_by_hash(hash.asArray());

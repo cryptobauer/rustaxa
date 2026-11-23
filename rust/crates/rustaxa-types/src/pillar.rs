@@ -777,9 +777,10 @@ mod tests {
     }
 
     fn hex_bytes(value: &str) -> Vec<u8> {
-        let chunks = value.as_bytes().chunks_exact(2);
-        assert!(chunks.remainder().is_empty());
+        let (chunks, remainder) = value.as_bytes().as_chunks::<2>();
+        assert!(remainder.is_empty());
         chunks
+            .iter()
             .map(|chunk| (hex_nibble(chunk[0]) << 4) | hex_nibble(chunk[1]))
             .collect()
     }

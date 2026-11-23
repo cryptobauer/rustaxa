@@ -1764,8 +1764,8 @@ mod tests {
         assert!(below.inserted);
         assert!(below.threshold_decision.is_some());
         let below_decision = below.threshold_decision.expect("threshold decision");
-        assert_eq!(below_decision.t_plus_one_reached, true);
-        assert_eq!(below_decision.two_t_plus_one_reached, false);
+        assert!(below_decision.t_plus_one_reached);
+        assert!(!below_decision.two_t_plus_one_reached);
 
         let above = verified
             .add_verified_vote(soft_b, Some(5))
@@ -1773,7 +1773,7 @@ mod tests {
         assert!(above.inserted);
         assert!(above.threshold_decision.is_some());
         let above_decision = above.threshold_decision.expect("threshold decision");
-        assert_eq!(above_decision.two_t_plus_one_reached, true);
+        assert!(above_decision.two_t_plus_one_reached);
         assert!(above_decision.two_t_plus_one_insert_outcome.is_some());
         assert_eq!(
             above_decision.two_t_plus_one_kind,

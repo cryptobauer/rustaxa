@@ -1,14 +1,14 @@
 //! Thin CXX adapters for the blocking native consensus application runner.
 //! This sole host caller converts exact carriers without retaining CXX references or secret keys.
 
-use crate::application_host_ffi::application_host_ffi::*;
+use crate::application_host_bridge::application_host_ffi::*;
 use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::{
     public_transaction_report_to_ffi, public_transaction_request_to_native,
 };
 use crate::ffi::{rustaxa_ffi, rustaxa_ffi::HostConsensusLiveStatus, BridgeConsensusNetworkApi};
 use crate::network::to_bridge_network_ingress_decision;
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use rustaxa_consensus::consensus_application_runtime::{
     PillarAnchorStateReport, PillarAnchorStateRequest,
 };
@@ -224,6 +224,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                 })?;
         Ok(rustaxa_consensus::FinalChainExternalEvmPreflightReport {
             request_id: report.request_id,
+            state_api_epoch: report.state_api_epoch,
             committed: rustaxa_consensus::FinalChainExternalEvmCommittedStateDescriptor {
                 period: report.committed_period.into(),
                 state_root: report.committed_state_root,
@@ -344,25 +345,19 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                     bridge_contract_address: request.bridge_contract_address,
                     block_gas_limit: request.block_gas_limit.as_u64(),
                 })?;
-        ensure!(
-            report.succeeded
-                && report.request_id == request.request_id
-                && report.period == request.period.as_u64(),
-            "FINAL_CHAIN_SYSTEM_FACTS_FAILED: {}",
-            report.error_code
-        );
+        if !report.succeeded {
+            anyhow::bail!("FINAL_CHAIN_SYSTEM_FACTS_FAILED: {}", report.error_code);
+        }
         Ok(rustaxa_consensus::FinalChainSystemTransactionPlanFact {
             request_id: report.request_id,
             period: report.period.into(),
-            is_pillar_block_period: request.is_pillar_block_period,
-            bridge_contract_address: request.bridge_contract_address,
             bridge_contract_found: report.bridge_contract_found,
             bridge_contract_has_code: report.bridge_contract_has_code,
             should_finalize_epoch: report.should_finalize_epoch,
             system_account_nonce: rustaxa_types::FinalChainNonce::from_bytes(
                 &report.system_account_nonce,
             )?,
-            block_gas_limit: request.block_gas_limit,
+            ..Default::default()
         })
     }
 
@@ -373,6 +368,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_execute_final_chain_transactions(&HostFinalChainExecutionRequest {
+                    expected_state_api_epoch: request.state_api_epoch,
                     concrete_marker_rlp: request.concrete_marker_rlp.clone(),
                     block_author: request.block_author,
                     timestamp: request.timestamp,
@@ -398,6 +394,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         );
         Ok(rustaxa_consensus::FinalChainEvmExecutionReport {
             request_id: request.request_id,
+            state_api_epoch: report.state_api_epoch,
             status: rustaxa_consensus::FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             prior_state: request.prior_state,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
@@ -410,8 +407,8 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                 .results
                 .into_iter()
                 .zip(request.transactions.iter())
-                .map(|(result, transaction)| {
-                    Ok(rustaxa_consensus::FinalChainEvmTransactionResult {
+                .map(
+                    |(result, transaction)| rustaxa_consensus::FinalChainEvmTransactionResult {
                         position: transaction.position,
                         hash: transaction.hash,
                         status: result.status,
@@ -439,9 +436,9 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         output: result.output,
                         code_error: result.code_error,
                         consensus_error: result.consensus_error,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
+                    },
+                )
+                .collect(),
         })
     }
 
@@ -452,6 +449,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_distribute_final_chain_rewards(&HostFinalChainRewardsRequest {
+                    expected_state_api_epoch: request.state_api_epoch,
                     concrete_marker_rlp: request.concrete_marker_rlp.clone(),
                     distribution_stats: request
                         .distribution_stats
@@ -464,6 +462,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                 })?;
         Ok(rustaxa_consensus::FinalChainEvmRewardsReport {
             request_id: request.request_id,
+            state_api_epoch: report.state_api_epoch,
             period: request.period,
             status: rustaxa_consensus::FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
             prior_state: request.prior_state,
@@ -487,19 +486,15 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_commit_final_chain_state(&HostFinalChainStateCommitRequest {
+                    expected_state_api_epoch: request.state_api_epoch,
                     concrete_marker_rlp: request.concrete_marker_rlp.clone(),
                     concrete_projection_rlp: request.concrete_projection_rlp.clone(),
                     concrete_projection_hash: request.concrete_projection_hash,
                     concrete_provenance_rlp: request.concrete_provenance_rlp.clone(),
                 })?;
-        ensure!(
-            report.status != rustaxa_consensus::FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED
-                || (report.committed_period == request.period.as_u64()
-                    && report.committed_state_root == request.post_rewards_state_root),
-            "FINAL_CHAIN_STATE_COMMIT_DESCRIPTOR_MISMATCH"
-        );
         Ok(rustaxa_consensus::FinalChainExternalEvmStateCommitResult {
             request_id: request.request_id,
+            state_api_epoch: report.state_api_epoch,
             plan_id: request.plan_id,
             period: request.period,
             publication_block_hash: request.publication_block_hash,
@@ -525,13 +520,14 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         &self,
         request: &rustaxa_consensus::FinalChainExternalEvmDiscardRequest,
     ) -> Result<rustaxa_consensus::FinalChainExternalEvmDiscardReport> {
-        let report = self
-            .0
-            .consensus_discard_final_chain_state(&CanonicalBytes {
-                data: request.concrete_marker_rlp.clone(),
-            })?;
+        let report = self.0.consensus_discard_final_chain_state(
+            &request.concrete_marker_rlp,
+            request.expected_state_api_epoch,
+        )?;
         Ok(rustaxa_consensus::FinalChainExternalEvmDiscardReport {
             request_id: request.request_id,
+            previous_state_api_epoch: request.expected_state_api_epoch,
+            state_api_epoch: report.state_api_epoch,
             period: request.period,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
             marker_hash: request.marker_hash,
@@ -553,16 +549,24 @@ pub fn consensus_application_run(
     process: &ConsensusProcessPort,
     signer: &ConsensusSignerPort,
     transport: &ConsensusTransportPort,
-    external_evm: &ExternalEvmPort,
+    external_evm: &cxx::UniquePtr<ExternalEvmPort>,
 ) -> Result<ConsensusRunExit> {
     let process = ProcessPortAdapter(process);
     let signer = SigningPortAdapter(signer);
     let transport = TransportPortAdapter(transport);
-    let external_evm = ExternalEvmPortAdapter(external_evm);
-    let exit =
-        application
-            .0
-            .run_consensus(&process, &signer, &transport, &external_evm, &process)?;
+    let exit = match &application.0 {
+        crate::dag_transaction_service::ApplicationBackend::Historical(owner) => {
+            let external_evm = ExternalEvmPortAdapter(
+                external_evm
+                    .as_ref()
+                    .context("HISTORICAL_EVM_PORT_REQUIRED")?,
+            );
+            owner.run_consensus(&process, &signer, &transport, &external_evm, &process)?
+        }
+        crate::dag_transaction_service::ApplicationBackend::Production(owner) => {
+            owner.run(&process, &signer, &transport, &process)?
+        }
+    };
     let reason = match exit.reason {
         ConsensusRunReason::Stopped => 0,
         ConsensusRunReason::Completed => 1,
@@ -580,37 +584,26 @@ pub fn consensus_application_finalize(
     external_evm: &ExternalEvmPort,
     task: HostFinalChainFinalizeTask,
 ) -> Result<HostFinalChainFinalizeReport> {
+    let application = application.0.historical()?;
     let external_evm = ExternalEvmPortAdapter(external_evm);
-    let mut period_data = rlp::RlpStream::new_list(4);
-    period_data.append_raw(&task.pbft_block_rlp, 1);
-    if task.previous_cert_vote_bundle_rlp.is_empty() {
-        period_data.append_empty_data();
-    } else {
-        period_data.append_raw(&task.previous_cert_vote_bundle_rlp, 1);
-    }
-    if task.dag_block_bundle_rlp.is_empty() {
-        period_data.append_empty_data();
-    } else {
-        period_data.append_raw(&task.dag_block_bundle_rlp, 1);
-    }
-    period_data.begin_list(task.transaction_rlps.len());
-    for transaction in &task.transaction_rlps {
-        period_data.append_raw(&transaction.data, 1);
-    }
-    let report = application.0.finalize_with_external_evm(
+    let (previous_cert_vote_rlps, previous_cert_vote_weights) = task
+        .previous_cert_votes
+        .into_iter()
+        .map(|vote| (vote.rlp, vote.weight))
+        .unzip();
+    let report = application.finalize_with_external_evm(
         EvmFinalizationRequest {
             effect_id: Default::default(),
-            period_data_rlp: period_data.out().to_vec(),
-            previous_cert_vote_rlps: task
-                .previous_cert_votes
-                .iter()
-                .map(|vote| vote.rlp.clone())
-                .collect(),
-            previous_cert_vote_weights: task
-                .previous_cert_votes
-                .into_iter()
-                .map(|vote| vote.weight)
-                .collect(),
+            period_data_rlp: rustaxa_types::codec::rlp::period::encode_period_data(
+                &task.pbft_block_rlp,
+                &task.previous_cert_vote_bundle_rlp,
+                &task.dag_block_bundle_rlp,
+                task.transaction_rlps
+                    .iter()
+                    .map(|transaction| transaction.data.as_slice()),
+            ),
+            previous_cert_vote_rlps,
+            previous_cert_vote_weights,
             finalized_dag_hashes: task
                 .finalized_dag_hashes
                 .into_iter()
@@ -632,17 +625,23 @@ pub fn consensus_application_finalize(
     })
 }
 
-/// Recovers paired concrete state and native publication without exposing a
-/// chain identity or a C++-driven recovery action loop.
+/// Initializes recovery for the sole fresh application-factory composition.
+///
+/// `createConsensusApplication` is the only caller: it constructs a fresh
+/// `ExternalEvmStateOwner` and `FinalChain`, binds them exclusively, then calls
+/// this private bridge operation before publishing the application handle. It
+/// must not be used as a generic live recovery entry point.
 pub fn consensus_application_recover_final_chain(
     application: &BridgeConsensusApplication,
     external_evm: &ExternalEvmPort,
 ) -> Result<HostFinalChainFinalizeReport> {
+    let application = application.0.historical()?;
     let external_evm = ExternalEvmPortAdapter(external_evm);
-    let report = rustaxa_consensus::recover_final_chain_application_state(
-        application.0.final_chain_for_bridge(),
-        &external_evm,
-    )?;
+    let report =
+        rustaxa_consensus::initialize_and_recover_final_chain_application_state_at_joint_startup(
+            application.final_chain_for_bridge(),
+            &external_evm,
+        )?;
     Ok(HostFinalChainFinalizeReport {
         period: report.period.as_u64(),
         block_hash: report.block_hash,
@@ -657,7 +656,9 @@ pub fn consensus_application_recover_final_chain(
 pub fn consensus_network_transaction_gas_price_bid(
     network: &BridgeConsensusNetworkApi,
 ) -> Result<[u8; 32]> {
-    network.0.transaction_gas_price_bid()
+    crate::ffi::dispatch_client!(network, NetworkBackend, api, {
+        api.transaction_gas_price_bid()
+    })
 }
 
 /// Submits one host-signed network transaction without escaping to the root.
@@ -665,11 +666,13 @@ pub fn consensus_network_submit_transaction(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::PublicTransactionSubmissionRequest,
 ) -> Result<rustaxa_ffi::PublicTransactionSubmissionReport> {
-    Ok(public_transaction_report_to_ffi(
-        network
-            .0
-            .submit_transaction_from_native_state(public_transaction_request_to_native(request))?,
-    ))
+    crate::ffi::dispatch_client!(network, NetworkBackend, api, {
+        Ok(public_transaction_report_to_ffi(
+            api.submit_transaction_from_native_state(public_transaction_request_to_native(
+                request,
+            ))?,
+        ))
+    })
 }
 
 /// Routes one canonical packet through native limits, admission, facts, and effects.
@@ -677,34 +680,34 @@ pub fn consensus_network_ingest_transaction_packet(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::NetworkTransactionPacketRequest,
 ) -> Result<rustaxa_ffi::NetworkTransactionPacketReport> {
-    let context = rustaxa_consensus::NetworkTransactionPacketContext {
-        transport_lane: request.transport_lane,
-        peer_id: request.peer_id,
-        source_payload_id: request.source_payload_id,
-    };
-    let policy = rustaxa_consensus::PublicTransactionSubmissionRequest {
-        transaction_rlp: Vec::new(),
-        expected_chain_id: request.expected_chain_id,
-        maximum_gas_limit: request.maximum_gas_limit,
-        minimum_gas_price: ethereum_types::U256::from_big_endian(&request.minimum_gas_price),
-        last_block_number: request.last_block_number,
-        cornus_active: request.cornus_active,
-    };
-    let report = network
-        .0
-        .ingest_transaction_packet(context, &request.packet_rlp, policy)?;
-    Ok(rustaxa_ffi::NetworkTransactionPacketReport {
-        decision: to_bridge_network_ingress_decision(report.decision),
-        transactions: report
-            .transactions
-            .into_iter()
-            .map(transaction_packet_member_to_ffi)
-            .collect(),
-        extra_transaction_hashes: report
-            .extra_transaction_hashes
-            .into_iter()
-            .map(|hash| rustaxa_ffi::DagHash { hash })
-            .collect(),
+    crate::ffi::dispatch_client!(network, NetworkBackend, api, {
+        let context = rustaxa_consensus::NetworkTransactionPacketContext {
+            transport_lane: request.transport_lane,
+            peer_id: request.peer_id,
+            source_payload_id: request.source_payload_id,
+        };
+        let policy = rustaxa_consensus::PublicTransactionSubmissionRequest {
+            transaction_rlp: Vec::new(),
+            expected_chain_id: request.expected_chain_id,
+            maximum_gas_limit: request.maximum_gas_limit,
+            minimum_gas_price: ethereum_types::U256::from_big_endian(&request.minimum_gas_price),
+            last_block_number: request.last_block_number,
+            cornus_active: request.cornus_active,
+        };
+        let report = api.ingest_transaction_packet(context, &request.packet_rlp, policy)?;
+        Ok(rustaxa_ffi::NetworkTransactionPacketReport {
+            decision: to_bridge_network_ingress_decision(report.decision),
+            transactions: report
+                .transactions
+                .into_iter()
+                .map(transaction_packet_member_to_ffi)
+                .collect(),
+            extra_transaction_hashes: report
+                .extra_transaction_hashes
+                .into_iter()
+                .map(|hash| rustaxa_ffi::DagHash { hash })
+                .collect(),
+        })
     })
 }
 
@@ -768,15 +771,31 @@ fn dag_packet_policy(
 pub fn consensus_network_ingest_dag_block_packet(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::NetworkDagPacketRequest,
-    external_evm: &ExternalEvmPort,
+    external_evm: &cxx::UniquePtr<ExternalEvmPort>,
 ) -> Result<rustaxa_ffi::NetworkDagBlockIngressReport> {
-    let external_evm = ExternalEvmPortAdapter(external_evm);
+    use crate::ffi::NetworkBackend;
     let context = dag_ingress_context(&request, request.rebroadcast);
-    let report = network
-        .0
-        .ingest_dag_block_packet(context, &request.packet_rlp, &external_evm)?;
+    let report = match &network.0 {
+        NetworkBackend::Historical(network) => {
+            let external_evm = ExternalEvmPortAdapter(
+                external_evm
+                    .as_ref()
+                    .context("HISTORICAL_EVM_PORT_REQUIRED")?,
+            );
+            network.ingest_dag_block_packet(context, &request.packet_rlp, &external_evm)?
+        }
+        NetworkBackend::Production(client) => {
+            client.ingest_dag_block_packet(context, &request.packet_rlp)?
+        }
+    };
+    Ok(dag_block_packet_to_ffi(report))
+}
+
+fn dag_block_packet_to_ffi(
+    report: rustaxa_consensus::NetworkDagBlockIngressReport,
+) -> rustaxa_ffi::NetworkDagBlockIngressReport {
     let admission_found = report.admission.is_some();
-    Ok(rustaxa_ffi::NetworkDagBlockIngressReport {
+    rustaxa_ffi::NetworkDagBlockIngressReport {
         decision: to_bridge_network_ingress_decision(report.decision),
         admission_found,
         admission: report
@@ -784,24 +803,44 @@ pub fn consensus_network_ingest_dag_block_packet(
             .map(dag_block_ingress_report_to_ffi)
             .unwrap_or_default(),
         rejection_action: report.rejection_action,
-    })
+    }
 }
 
 /// Routes one canonical DAG-sync packet with native sequential partial commits.
 pub fn consensus_network_ingest_dag_sync_packet(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::NetworkDagPacketRequest,
-    external_evm: &ExternalEvmPort,
+    external_evm: &cxx::UniquePtr<ExternalEvmPort>,
 ) -> Result<rustaxa_ffi::NetworkDagSyncIngressReport> {
-    let external_evm = ExternalEvmPortAdapter(external_evm);
+    use crate::ffi::NetworkBackend;
     let context = dag_ingress_context(&request, false);
-    let report = network.0.ingest_dag_sync_packet(
-        context,
-        &request.packet_rlp,
-        dag_packet_policy(&request, Vec::new()),
-        &external_evm,
-    )?;
-    Ok(rustaxa_ffi::NetworkDagSyncIngressReport {
+    let policy = dag_packet_policy(&request, Vec::new());
+    let report = match &network.0 {
+        NetworkBackend::Historical(network) => {
+            let external_evm = ExternalEvmPortAdapter(
+                external_evm
+                    .as_ref()
+                    .context("HISTORICAL_EVM_PORT_REQUIRED")?,
+            );
+            network.ingest_dag_sync_packet(
+                context,
+                &request.packet_rlp,
+                policy,
+                &external_evm,
+                None,
+            )?
+        }
+        NetworkBackend::Production(client) => {
+            client.ingest_dag_sync_packet(context, &request.packet_rlp, policy)?
+        }
+    };
+    Ok(dag_sync_packet_to_ffi(report))
+}
+
+fn dag_sync_packet_to_ffi(
+    report: rustaxa_consensus::NetworkDagSyncIngressReport,
+) -> rustaxa_ffi::NetworkDagSyncIngressReport {
+    rustaxa_ffi::NetworkDagSyncIngressReport {
         decision: to_bridge_network_ingress_decision(report.decision),
         request_period: report.request_period,
         response_period: report.response_period,
@@ -815,15 +854,27 @@ pub fn consensus_network_ingest_dag_sync_packet(
             .into_iter()
             .map(dag_block_ingress_report_to_ffi)
             .collect(),
-    })
+    }
 }
 
 /// Returns the application-root hot PBFT status without an executor snapshot.
 pub fn consensus_application_live_status(
     application: &BridgeConsensusApplication,
 ) -> Result<HostConsensusLiveStatus> {
-    let status = application.0.consensus_live_status()?;
-    let vote_status = application.0.consensus_vote_status()?;
+    use crate::dag_transaction_service::ApplicationBackend;
+    let (status, vote_status) = match &application.0 {
+        ApplicationBackend::Historical(owner) => (
+            owner.consensus_live_status()?,
+            owner.consensus_vote_status()?,
+        ),
+        ApplicationBackend::Production(owner) => {
+            let query = owner.query_client();
+            (
+                query.consensus_live_status()?,
+                query.consensus_vote_status()?,
+            )
+        }
+    };
     Ok(HostConsensusLiveStatus {
         period: status.period,
         round: status.round,

@@ -325,8 +325,8 @@ mod tests {
         // Verify that all columns can be converted to name and back
         for column in Column::all() {
             let name = column.name();
-            let recovered =
-                Column::from_name(name).expect(&format!("Failed to parse column: {}", name));
+            let recovered = Column::from_name(name)
+                .unwrap_or_else(|error| panic!("Failed to parse column: {}: {:?}", name, error));
             assert_eq!(*column, recovered);
         }
     }

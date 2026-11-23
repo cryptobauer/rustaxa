@@ -1135,37 +1135,54 @@ impl PeriodDataQueue {
             return Err(anyhow!("cannot pop from empty period data queue"));
         };
 
-        if let Some(next) = self.entries.front() {
-            return Ok(PeriodDataQueuePopPlan {
-                period_data_rlp: entry.period_data_rlp,
-                source_peer_id: entry.source_peer_id,
-                entry_period: entry.period,
-                block_hash: entry.block_hash,
-                prev_block_hash: entry.prev_block_hash,
-                pivot_hash: entry.pivot_hash,
-                final_chain_hash: entry.final_chain_hash,
-                reward_vote_hashes: entry.reward_vote_hashes,
-                pillar_vote_rlps: entry.pillar_vote_rlps,
-                transaction_rlps: entry.transaction_rlps,
-                cert_vote_rlps: next.previous_cert_vote_rlps.clone(),
-                previous_cert_vote_rlps: entry.previous_cert_vote_rlps,
-                dag_transaction_hashes: entry.dag_transaction_hashes,
-                period_data_transaction_hashes: entry.period_data_transaction_hashes,
-                period_data_transaction_identities: entry.period_data_transaction_identities,
-                previous_cert_votes_present: entry.previous_cert_votes_present,
-                previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
-                pillar_votes_present: entry.pillar_votes_present,
-                extra_data_present: entry.extra_data_present,
-                extra_data_pillar_block_hash_present: entry.extra_data_pillar_block_hash_present,
-                use_last_block_cert_votes: false,
-                current_period: self.period,
-                effective_size: self.size(),
-            });
-        }
+        let next = self.entries.front();
+        let use_last = next.is_none();
+        let cert_votes = match next {
+            Some(next) => next.previous_cert_vote_rlps.clone(),
+            None => {
+                self.period = 0;
+                std::mem::take(&mut self.last_block_cert_vote_rlps)
+            }
+        };
+        Ok(Self::pop_plan(
+            entry,
+            cert_votes,
+            use_last,
+            self.period,
+            self.size(),
+        ))
+    }
 
-        self.period = 0;
-        let cert_vote_rlps = std::mem::take(&mut self.last_block_cert_vote_rlps);
-        Ok(PeriodDataQueuePopPlan {
+    /// Copies the first certified entry without consuming it or copying the rest of the queue.
+    pub(crate) fn certified_front(&self) -> Option<PeriodDataQueuePopPlan> {
+        let size = self.size();
+        if size == 0 {
+            return None;
+        }
+        let entry = self.entries.front()?.clone();
+        let next = self.entries.get(1);
+        let use_last = next.is_none();
+        let cert_votes = match next {
+            Some(next) => next.previous_cert_vote_rlps.clone(),
+            None => self.last_block_cert_vote_rlps.clone(),
+        };
+        Some(Self::pop_plan(
+            entry,
+            cert_votes,
+            use_last,
+            if use_last { 0 } else { self.period },
+            size - 1,
+        ))
+    }
+
+    fn pop_plan(
+        entry: PeriodDataQueueEntryRef,
+        cert_vote_rlps: Vec<Vec<u8>>,
+        use_last_block_cert_votes: bool,
+        current_period: u64,
+        effective_size: usize,
+    ) -> PeriodDataQueuePopPlan {
+        PeriodDataQueuePopPlan {
             period_data_rlp: entry.period_data_rlp,
             source_peer_id: entry.source_peer_id,
             entry_period: entry.period,
@@ -1186,10 +1203,10 @@ impl PeriodDataQueue {
             pillar_votes_present: entry.pillar_votes_present,
             extra_data_present: entry.extra_data_present,
             extra_data_pillar_block_hash_present: entry.extra_data_pillar_block_hash_present,
-            use_last_block_cert_votes: true,
-            current_period: self.period,
-            effective_size: self.size(),
-        })
+            use_last_block_cert_votes,
+            current_period,
+            effective_size,
+        }
     }
 
     /// Returns the last queued entry metadata, if any.
@@ -1293,7 +1310,7 @@ mod tests {
         dag_bundle: Option<&[u8]>,
     ) -> Vec<u8> {
         let mut period_data = RlpStream::new_list(4);
-        period_data.append_raw(&block, 1);
+        period_data.append_raw(block, 1);
         if let Some(previous_cert_bundle) = previous_cert_bundle {
             period_data.append_raw(previous_cert_bundle, 1);
         } else {
@@ -1719,7 +1736,7 @@ mod tests {
         max_size: u64,
         cert_votes: usize,
     ) -> bool {
-        let previous_cert_vote_rlps = if id % 2 == 0 {
+        let previous_cert_vote_rlps = if id.is_multiple_of(2) {
             vec![vec![id as u8, 0xc0]]
         } else {
             Vec::new()
@@ -1749,11 +1766,12 @@ mod tests {
                         transaction_nonce: [id as u8; 32],
                         sender: [id as u8; 20],
                     }],
-                    previous_cert_votes_present: id % 2 == 0,
-                    previous_cert_first_vote_has_weight: id % 3 == 0,
-                    pillar_votes_present: id % 5 == 0,
-                    extra_data_present: id % 7 == 0,
-                    extra_data_pillar_block_hash_present: id % 7 == 0 && id % 11 == 0,
+                    previous_cert_votes_present: id.is_multiple_of(2),
+                    previous_cert_first_vote_has_weight: id.is_multiple_of(3),
+                    pillar_votes_present: id.is_multiple_of(5),
+                    extra_data_present: id.is_multiple_of(7),
+                    extra_data_pillar_block_hash_present: id.is_multiple_of(7)
+                        && id.is_multiple_of(11),
                 },
                 max_pbft_size: max_size,
                 current_block_cert_vote_rlps,

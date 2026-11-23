@@ -81,7 +81,7 @@ proptest! {
         prop_assert_eq!(puzzle.time_bits(), time_bits);
         prop_assert_eq!(puzzle.iterations(), &(Integer::from(1u32) << time_bits));
         prop_assert!(puzzle.base() < puzzle.modulus());
-        prop_assert!(*puzzle.modulus() > Integer::from(0));
+        prop_assert!(*puzzle.modulus() > 0);
 
         // Base should be input % modulus
         let expected_base = Integer::from_digits(&input_bytes, rug::integer::Order::MsfBe)

@@ -1,0 +1,2984 @@
+//! Bounded top-level Taraxa bytecode execution through REVM.
+//!
+//! This driver composes the reviewed envelope, profile and journal for an
+//! ordinary top-level CALL or CREATE. It executes real REVM legacy bytecode,
+//! drives nested ordinary CALL/CREATE frames iteratively, and settles interpreter
+//! gas/refunds once. The default entry points keep native dispatch unavailable;
+//! explicit opt-in entry points accept a consensus-native port and period-local
+//! sequence. They also route stateless addresses 1–9 and profile-selected BLS,
+//! P-256 and Falcon without using that port or sequence. SELFDESTRUCT uses the
+//! journal-owned historical lifecycle.
+//!
+//! CALL-family opcode preparation reads authoritative account metadata while
+//! deferring referenced code bytes. The driver applies Taraxa's depth and
+//! balance pre-entry checks first, then loads and validates code before any
+//! child interpreter starts. EXTCODE operations continue to use the host's
+//! immediate authoritative code path.
+
+use num_bigint::BigInt;
+use revm::{
+    bytecode::Bytecode,
+    context_interface::Host,
+    handler::handle_reservoir_remaining_gas,
+    interpreter::{
+        CallInput, CallInputs, CallScheme as RevmCallScheme, CreateInputs, FrameInput, Gas,
+        InputsImpl, InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
+        SharedMemory,
+        interpreter::{EthInterpreter, ExtBytecode},
+        interpreter_types::{Jumps, LoopControl, MemoryTr, ReturnData, RuntimeFlag},
+    },
+    primitives::{Address, Bytes, U256, hardfork::SpecId},
+};
+use rustaxa_types::{FinalChainGas, concrete_state::execution::ConcreteExecutionRead};
+
+use crate::{
+    bls::{BlsPrecompile, BlsRegistry, PreparedBlsCall},
+    contracts::{
+        BlockHashRead, CodeExecutionError, CodeExecutionStatus, ExecutionBlockContext,
+        ExecutionTransaction, ExecutionTransactionKind, ExecutionValue, NativeCallKind,
+        NativeExecutionPort, NativeInvocation, NativeInvocationId, NativeInvocationResult,
+        NativePortError, NativeResultValidationError, NativeStatus, StatelessInvocation,
+        StatelessInvocationId, TransactionExecutionResult,
+    },
+    curve_precompiles::{OriginalCurvePrecompile, PreparedCurvePrecompileCall},
+    envelope::{
+        AdmittedTransaction, EnvelopeAdmission, EnvelopeError, EnvelopeRules, FrameSettlement,
+        FrameSettlementStatus, IntrinsicGasSchedule, admit, settle,
+    },
+    falcon::{FALCON_VERIFY_ADDRESS, PreparedFalconCall},
+    frame::{CreateScheme, create_address, settle_code_deposit},
+    host::{HostError, JournalHost},
+    journal::{ExecutionJournal, JournalCheckpoint, JournalError},
+    modexp::PreparedModexpCall,
+    native::{NativeAdapterError, NativeFrameOutcome, invoke_native},
+    openethereum_trace::stack_effect,
+    p256::{P256_VERIFY_ADDRESS, PreparedP256Call},
+    profile::{CorrectionStage, TaraxaProfile},
+    stateless::{OriginalStatelessPrecompile, PreparedStatelessCall},
+    trace::{
+        AttemptedSstore, ExecutionTraceObserver, TraceEvent, TraceFrameEnter, TraceFrameExit,
+        TraceFrameKind, TraceOpcode, TraceOpcodePhase, TraceWord,
+    },
+};
+
+/// Kind of interpreter frame request not yet implemented by this bounded driver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PendingFrameKind {
+    /// A CALL-family action could not be routed by the configured native boundary.
+    Call,
+    /// A CREATE-family action could not be represented by the iterative driver.
+    Create,
+    /// An empty frame request is not valid for this execution path.
+    Empty,
+}
+
+/// Failure outside normal consensus or bytecode completion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecutionDriverError {
+    /// Journal and interpreter rules differ; no admission or effects occurred.
+    CorrectionStageMismatch {
+        /// Immutable journal rule identity.
+        journal: CorrectionStage,
+        /// Requested interpreter rule identity.
+        profile: CorrectionStage,
+    },
+    /// Envelope admission or settlement could not mutate the journal safely.
+    Envelope(EnvelopeError),
+    /// A direct frame mutation/checkpoint operation failed.
+    Journal(JournalError),
+    /// The host could not load or mutate authoritative state.
+    Host(HostError),
+    /// This slice executes ordinary top-level calls only.
+    UnsupportedTransactionKind(ExecutionTransactionKind),
+    /// System facts or bytes differ from the application's exact bound plan.
+    InvalidSystemTransaction(String),
+    /// A native/precompile target requires the later typed native dispatcher.
+    NativeCallUnavailable { address: [u8; 20] },
+    /// A consensus-native classifier selected an address outside the complete native set.
+    NativeClassifierMismatch { address: [u8; 20] },
+    /// A reviewed stateless address was also selected by the consensus-native classifier.
+    NativeClassifierOverlap { address: [u8; 20] },
+    /// The period-local native sequence was used with another pending period.
+    NativeSequencePeriod {
+        /// Period bound to the sequence owner.
+        expected: rustaxa_types::FinalChainBlockNumber,
+        /// Period supplied by the execution block.
+        observed: rustaxa_types::FinalChainBlockNumber,
+    },
+    /// The period-local consensus-native sequence cannot advance further.
+    NativeSequenceOverflow,
+    /// A transaction-local stateless invocation ordinal cannot advance further.
+    StatelessOrdinalOverflow,
+    /// Native preparation, execution or effect application failed.
+    Native(NativeAdapterError),
+    /// A stateless helper could not prepare or execute safely.
+    Stateless(NativePortError),
+    /// A stateless helper returned a result inconsistent with its exact quote.
+    StatelessResult(NativeResultValidationError),
+    /// A stateless helper returned state or log effects outside its pure contract.
+    StatelessEffects { address: [u8; 20] },
+    /// REVM yielded a malformed or explicitly unsupported frame action.
+    PendingFrameUnavailable(PendingFrameKind),
+    /// REVM returned a terminal category that has no reviewed Taraxa mapping yet.
+    UnsupportedTerminal(String),
+    /// The pinned reference would panic for this opcode; discard the session.
+    ReferenceInstructionPanic(u8),
+    /// A successful root delta would make the cumulative journal refund negative.
+    NegativeRootRefund(i64),
+    /// The bounded observer cannot prove the reference facts for this instruction path.
+    TraceFactUnavailable {
+        /// Opcode whose fact boundary is unsupported.
+        opcode: u8,
+        /// REVM result observed without interpreting it as a Go trace cost.
+        result: InstructionResult,
+    },
+    /// An admitted instruction's actual gas movement could not form an exact cost.
+    TraceGasInconsistent {
+        /// Opcode whose gas facts were inconsistent.
+        opcode: u8,
+        /// Gas before the instruction.
+        before: u64,
+        /// Gas after the instruction.
+        after: u64,
+    },
+    /// The traced interpreter exposed a refund value Go cannot represent.
+    TraceNegativeRefund {
+        /// Opcode at the capture boundary.
+        opcode: u8,
+        /// Signed REVM refund delta for this root execution.
+        refund: i64,
+        /// Cumulative refund retained before this root execution.
+        base_refund: u64,
+    },
+    /// The interpreter memory shrank across an opcode capture boundary.
+    TraceMemoryShrank {
+        /// Opcode at the capture boundary.
+        opcode: u8,
+        /// Memory length before execution.
+        before: usize,
+        /// Memory length after execution.
+        after: usize,
+    },
+    /// A driver depth cannot be represented by the pinned Go callback type.
+    TraceDepthOverflow(usize),
+}
+
+/// Application/profile-owned classification of native/precompile addresses.
+pub trait NativeAddressClassifier {
+    /// Returns whether `address` is native at the supplied finalized period.
+    fn is_native_address(
+        &self,
+        period: rustaxa_types::FinalChainBlockNumber,
+        address: [u8; 20],
+    ) -> bool;
+}
+
+pub(crate) struct NativeExecution<'a> {
+    consensus_addresses: &'a dyn NativeAddressClassifier,
+    port: &'a mut dyn NativeExecutionPort,
+    sequence: &'a mut PeriodConsensusSequence,
+    stateless_sequence: TransactionStatelessSequence,
+}
+
+impl<'a> NativeExecution<'a> {
+    pub(crate) fn new(
+        consensus_addresses: &'a dyn NativeAddressClassifier,
+        port: &'a mut dyn NativeExecutionPort,
+        sequence: &'a mut PeriodConsensusSequence,
+    ) -> Self {
+        Self {
+            consensus_addresses,
+            port,
+            sequence,
+            stateless_sequence: TransactionStatelessSequence::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeRoute {
+    Ordinary,
+    Consensus,
+    Stateless,
+    Unsupported,
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+struct TransactionStatelessSequence {
+    next_ordinal: u64,
+}
+
+impl TransactionStatelessSequence {
+    fn allocate(
+        &mut self,
+        transaction: rustaxa_types::FinalChainTransactionPosition,
+    ) -> Result<StatelessInvocationId, ExecutionDriverError> {
+        let ordinal = self.next_ordinal;
+        self.next_ordinal = ordinal
+            .checked_add(1)
+            .ok_or(ExecutionDriverError::StatelessOrdinalOverflow)?;
+        Ok(StatelessInvocationId {
+            transaction,
+            ordinal,
+        })
+    }
+}
+
+fn bls_registry(profile: TaraxaProfile) -> Option<BlsRegistry> {
+    if profile.cacti() {
+        Some(BlsRegistry::Cacti)
+    } else if profile.ficus() {
+        Some(BlsRegistry::Ficus)
+    } else {
+        None
+    }
+}
+
+fn is_reviewed_stateless_address(address: [u8; 20], profile: TaraxaProfile) -> bool {
+    OriginalStatelessPrecompile::at_address(address).is_some()
+        || (address[..19] == [0; 19] && address[19] == 5)
+        || OriginalCurvePrecompile::at_address(address).is_some()
+        || (profile.cacti() && matches!(address, P256_VERIFY_ADDRESS | FALCON_VERIFY_ADDRESS))
+        || bls_registry(profile)
+            .is_some_and(|registry| BlsPrecompile::at_address(registry, address).is_some())
+}
+
+/// Checks rule identity before admission or any execution side effect.
+pub(crate) fn validate_profile<R: ConcreteExecutionRead>(
+    journal: &ExecutionJournal<R>,
+    profile: TaraxaProfile,
+) -> Result<(), ExecutionDriverError> {
+    if journal.correction_stage() != profile.correction_stage() {
+        return Err(ExecutionDriverError::CorrectionStageMismatch {
+            journal: journal.correction_stage(),
+            profile: profile.correction_stage(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_native_period(
+    sequence: &PeriodConsensusSequence,
+    period: rustaxa_types::FinalChainBlockNumber,
+) -> Result<(), ExecutionDriverError> {
+    if sequence.period != period {
+        return Err(ExecutionDriverError::NativeSequencePeriod {
+            expected: sequence.period,
+            observed: period,
+        });
+    }
+    Ok(())
+}
+
+fn classify_native<N: NativeAddressClassifier>(
+    all_native_addresses: &N,
+    native: Option<&NativeExecution<'_>>,
+    period: rustaxa_types::FinalChainBlockNumber,
+    address: [u8; 20],
+    profile: TaraxaProfile,
+) -> Result<NativeRoute, ExecutionDriverError> {
+    let all_native = all_native_addresses.is_native_address(period, address);
+    let consensus_native = native.is_some_and(|execution| {
+        execution
+            .consensus_addresses
+            .is_native_address(period, address)
+    });
+    if consensus_native && !all_native {
+        return Err(ExecutionDriverError::NativeClassifierMismatch { address });
+    }
+    let stateless =
+        native.is_some() && all_native && is_reviewed_stateless_address(address, profile);
+    if consensus_native && stateless {
+        return Err(ExecutionDriverError::NativeClassifierOverlap { address });
+    }
+    Ok(if consensus_native {
+        NativeRoute::Consensus
+    } else if stateless {
+        NativeRoute::Stateless
+    } else if all_native {
+        NativeRoute::Unsupported
+    } else {
+        NativeRoute::Ordinary
+    })
+}
+
+fn native_frame_status(outcome: &NativeFrameOutcome) -> FrameSettlementStatus {
+    match &outcome.status {
+        CodeExecutionStatus::Success => FrameSettlementStatus::Success,
+        CodeExecutionStatus::Failure(error) => FrameSettlementStatus::CodeFailure(error.clone()),
+    }
+}
+
+fn invoke_stateless(
+    invocation: StatelessInvocation,
+    profile: TaraxaProfile,
+) -> Result<NativeFrameOutcome, ExecutionDriverError> {
+    let expected = invocation.clone();
+    let (quote, result) = if OriginalStatelessPrecompile::at_address(invocation.contract).is_some()
+    {
+        let prepared =
+            PreparedStatelessCall::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else if invocation.contract[..19] == [0; 19] && invocation.contract[19] == 5 {
+        let prepared =
+            PreparedModexpCall::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else if invocation.contract == FALCON_VERIFY_ADDRESS {
+        let prepared = if profile.correction_stage().bounded_falcon_abi() {
+            PreparedFalconCall::prepare_bounded(invocation)
+        } else {
+            PreparedFalconCall::prepare(invocation)
+        }
+        .map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else if invocation.contract == P256_VERIFY_ADDRESS {
+        let prepared =
+            PreparedP256Call::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else if let Some(registry) = bls_registry(profile)
+        .filter(|registry| BlsPrecompile::at_address(*registry, invocation.contract).is_some())
+    {
+        let prepared = PreparedBlsCall::prepare(registry, invocation)
+            .map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else {
+        let prepared = PreparedCurvePrecompileCall::prepare(invocation)
+            .map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    };
+    result
+        .validate(&expected, quote)
+        .map_err(ExecutionDriverError::StatelessResult)?;
+    let NativeInvocationResult::Completed(outcome) = result else {
+        return Ok(NativeFrameOutcome {
+            input_aliases: Vec::new(),
+            input_mutations: Vec::new(),
+            status: CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
+            required_gas: quote.required_gas,
+            gas_left: expected.supplied_gas,
+            output: Vec::new(),
+        });
+    };
+    if !outcome.account_mutations.is_empty()
+        || !outcome.raw_mutations.is_empty()
+        || !outcome.logs.is_empty()
+    {
+        return Err(ExecutionDriverError::StatelessEffects {
+            address: expected.contract,
+        });
+    }
+    Ok(NativeFrameOutcome {
+        input_aliases: Vec::new(),
+        input_mutations: Vec::new(),
+        status: match outcome.status {
+            NativeStatus::Success => CodeExecutionStatus::Success,
+            NativeStatus::ContractFailure(error) => {
+                CodeExecutionStatus::Failure(CodeExecutionError::Native(error))
+            }
+        },
+        required_gas: quote.required_gas,
+        gas_left: FinalChainGas::new(expected.supplied_gas.as_u64() - quote.required_gas.as_u64()),
+        output: outcome.output,
+    })
+}
+
+impl std::fmt::Display for ExecutionDriverError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "execution driver: {self:?}")
+    }
+}
+
+impl std::error::Error for ExecutionDriverError {}
+
+impl From<EnvelopeError> for ExecutionDriverError {
+    fn from(error: EnvelopeError) -> Self {
+        Self::Envelope(error)
+    }
+}
+
+impl From<JournalError> for ExecutionDriverError {
+    fn from(error: JournalError) -> Self {
+        Self::Journal(error)
+    }
+}
+
+impl From<NativeAdapterError> for ExecutionDriverError {
+    fn from(error: NativeAdapterError) -> Self {
+        Self::Native(error)
+    }
+}
+
+/// Monotonic consensus-native invocation identity within one pending period.
+///
+/// Frame checkpoints never rewind this owner. Depth/funds pre-entry rejection
+/// does not allocate an identity; quote out-of-gas and normal native failure do.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PeriodConsensusSequence {
+    period: rustaxa_types::FinalChainBlockNumber,
+    next_sequence: u64,
+}
+
+impl PeriodConsensusSequence {
+    /// Starts a zero-based sequence for `period`.
+    #[must_use]
+    pub const fn new(period: rustaxa_types::FinalChainBlockNumber) -> Self {
+        Self {
+            period,
+            next_sequence: 0,
+        }
+    }
+
+    /// Returns the pending period this sequence belongs to.
+    #[must_use]
+    pub const fn period(&self) -> rustaxa_types::FinalChainBlockNumber {
+        self.period
+    }
+
+    /// Returns the sequence that the next reached consensus-native call receives.
+    #[must_use]
+    pub const fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    fn allocate(
+        &mut self,
+        period: rustaxa_types::FinalChainBlockNumber,
+        transaction: rustaxa_types::FinalChainTransactionPosition,
+    ) -> Result<NativeInvocationId, ExecutionDriverError> {
+        if period != self.period {
+            return Err(ExecutionDriverError::NativeSequencePeriod {
+                expected: self.period,
+                observed: period,
+            });
+        }
+        let sequence = self.next_sequence;
+        self.next_sequence = sequence
+            .checked_add(1)
+            .ok_or(ExecutionDriverError::NativeSequenceOverflow)?;
+        Ok(NativeInvocationId {
+            transaction,
+            sequence,
+        })
+    }
+}
+
+/// Executes and settles one ordinary top-level CALL.
+///
+/// Consensus rejections and bytecode failures are returned as transaction
+/// results. Infrastructure/unsupported errors abort the pending period; the
+/// caller must discard the journal because envelope admission may already have
+/// changed its sender balance or nonce.
+pub fn execute_top_level_call<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
+    if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_call(
+        journal,
+        block_hashes,
+        native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        None,
+        None,
+    )
+}
+
+/// Executes and settles one ordinary top-level CALL while collecting exact trace facts.
+///
+/// The observer sees facts from the same interpreter invocation used for the
+/// returned execution result. This bounded entry point emits opcode rows only
+/// and supports admitted ordinary opcodes plus the reviewed REVERT and
+/// RETURNDATACOPY fault paths.
+/// It returns [`ExecutionDriverError::TraceFactUnavailable`] before fabricating
+/// facts for gas-admission failures or nested CALL/CREATE opcodes whose reference
+/// cost boundary is not yet witnessed. The caller must discard the journal and
+/// collector after such an error.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_call_with_trace<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+    observer: &mut dyn ExecutionTraceObserver,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
+    if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_call(
+        journal,
+        block_hashes,
+        native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        None,
+        Some(observer),
+    )
+}
+
+/// Executes CALL with an explicit consensus port and reviewed stateless helpers.
+///
+/// `all_native_addresses` is the complete native/precompile set for the period;
+/// `consensus_native_addresses` is the subset owned by `native_port`. An address
+/// selected only by the complete set uses a reviewed stateless helper at exact
+/// addresses 1–9 and profile-selected BLS, P-256 and Falcon; other such addresses
+/// remain unavailable. The full classifier owns historical activation, including
+/// whether Ficus enables address 9. Overlap
+/// between consensus and reviewed stateless addresses is an integrity error.
+/// The caller owns one [`PeriodConsensusSequence`] for the pending period and must
+/// discard the journal, port and sequence together after any returned error.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_call_with_native<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_port: &mut P,
+    native_sequence: &mut PeriodConsensusSequence,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
+    crate::native::validate_native_stage(journal, native_port)?;
+    validate_native_period(native_sequence, block.period)?;
+    if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    execute_top_level_message_with_native(
+        journal,
+        block_hashes,
+        all_native_addresses,
+        consensus_native_addresses,
+        native_port,
+        native_sequence,
+        block,
+        transaction,
+        envelope_rules,
+        profile,
+    )
+}
+
+/// Executes an application-planned System CALL with ordinary envelope economics.
+///
+/// The caller supplies exact bytes from its authenticated system plan. Shape,
+/// fixed sender, zero price/value, gas limit and decoded facts are checked before
+/// journal access. This entry grants no authority to select a bridge or method.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_system_call_with_native<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_port: &mut P,
+    native_sequence: &mut PeriodConsensusSequence,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+    authorized_rlp: &[u8],
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
+    crate::native::validate_native_stage(journal, native_port)?;
+    validate_native_period(native_sequence, block.period)?;
+    crate::input::validate_system_call_input(transaction, block.gas_limit, authorized_rlp)
+        .map_err(|error| ExecutionDriverError::InvalidSystemTransaction(format!("{error:#}")))?;
+    execute_top_level_message_with_native(
+        journal,
+        block_hashes,
+        all_native_addresses,
+        consensus_native_addresses,
+        native_port,
+        native_sequence,
+        block,
+        transaction,
+        envelope_rules,
+        profile,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_top_level_message_with_native<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_port: &mut P,
+    native_sequence: &mut PeriodConsensusSequence,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_call(
+        journal,
+        block_hashes,
+        all_native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        Some(NativeExecution {
+            consensus_addresses: consensus_native_addresses,
+            port: native_port,
+            sequence: native_sequence,
+            stateless_sequence: TransactionStatelessSequence::default(),
+        }),
+        None,
+    )
+}
+
+/// Executes and settles one top-level CREATE using the exact transaction nonce.
+///
+/// Creator nonce increments survive collision and child failure, while the
+/// child checkpoint owns target account, transfer, initcode storage/logs and
+/// runtime code. Infrastructure/unsupported errors abort the pending period;
+/// callers must discard the possibly admission-mutated journal.
+pub fn execute_top_level_create<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
+    if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_create(
+        journal,
+        block_hashes,
+        native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        None,
+        None,
+    )
+}
+
+/// Executes and settles one ordinary top-level CREATE while collecting trace facts.
+///
+/// This observes the existing initcode interpreter and retains its one-based
+/// depth and exact opcode rows. Nested CALL/CREATE opcode tracing and
+/// gas-admission failures remain explicit unsupported trace facts under the same
+/// discard requirement as [`execute_top_level_call_with_trace`].
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_create_with_trace<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+    observer: &mut dyn ExecutionTraceObserver,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
+    if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_create(
+        journal,
+        block_hashes,
+        native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        None,
+        Some(observer),
+    )
+}
+
+/// Executes CREATE initcode with consensus and reviewed stateless call handling.
+///
+/// The classifiers and period-local sequence have the same invariants as
+/// [`execute_top_level_call_with_native`]. CREATE itself is ordinary; this port
+/// and reviewed helpers at addresses 1–9 are available to CALL-family actions
+/// yielded by its initcode descendants.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_create_with_native<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_port: &mut P,
+    native_sequence: &mut PeriodConsensusSequence,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_profile(journal, profile)?;
+    crate::native::validate_native_stage(journal, native_port)?;
+    validate_native_period(native_sequence, block.period)?;
+    if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_create(
+        journal,
+        block_hashes,
+        all_native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        Some(NativeExecution {
+            consensus_addresses: consensus_native_addresses,
+            port: native_port,
+            sequence: native_sequence,
+            stateless_sequence: TransactionStatelessSequence::default(),
+        }),
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_admitted_create<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    admitted: &AdmittedTransaction,
+    profile: TaraxaProfile,
+    mut native: Option<NativeExecution<'_>>,
+    mut observer: Option<&mut dyn ExecutionTraceObserver>,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    crate::journal::duration_journal_read_role(true, 5, transaction.sender);
+    crate::journal::duration_journal_read_role(false, 5, transaction.sender);
+    let attempted = create_address(
+        transaction.sender,
+        &CreateScheme::Create {
+            nonce: transaction.nonce.clone(),
+        },
+        &transaction.input,
+    );
+    let sender = journal.account(transaction.sender)?;
+    if transaction.sender != [0_u8; 20]
+        && sender.balance.value() < &BigInt::from(transaction.value.value().clone())
+    {
+        return settle(
+            journal,
+            transaction,
+            admitted,
+            FrameSettlement {
+                status: FrameSettlementStatus::InsufficientBalanceForTransfer,
+                gas_left: admitted.action_gas,
+                output: Vec::new(),
+                attempted_contract_address: Some(attempted),
+            },
+        )
+        .map_err(Into::into);
+    }
+
+    journal.set_nonce(transaction.sender, transaction.nonce.next())?;
+    let target = journal.account_metadata(attempted)?;
+    if !target.nonce.is_zero() || target.code_size != 0 {
+        return settle(
+            journal,
+            transaction,
+            admitted,
+            FrameSettlement {
+                status: FrameSettlementStatus::CodeFailure(CodeExecutionError::CreateCollision),
+                gas_left: FinalChainGas::ZERO,
+                output: Vec::new(),
+                attempted_contract_address: Some(attempted),
+            },
+        )
+        .map_err(Into::into);
+    }
+
+    let checkpoint = journal.checkpoint();
+    journal.set_nonce(attempted, rustaxa_types::FinalChainNonce::from_u64(1))?;
+    journal.subtract_balance(transaction.sender, transaction.value.value())?;
+    journal.add_balance(attempted, transaction.value.value())?;
+    observe_frame_enter(&mut observer, || TraceFrameEnter {
+        depth: 1,
+        kind: TraceFrameKind::Create,
+        caller: transaction.sender,
+        state_address: attempted,
+        code_address: None,
+        gas: admitted.action_gas.as_u64(),
+        value: transaction.value.value().to_bytes_be(),
+        input: transaction.input.clone(),
+        code: transaction.input.clone(),
+        precompile: false,
+    });
+    let (result, opcode) = match run_revm(
+        journal,
+        block_hashes,
+        native_addresses,
+        block,
+        transaction,
+        attempted,
+        transaction.input.clone(),
+        Vec::new(),
+        admitted,
+        profile,
+        &mut native,
+        &mut observer,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            journal.revert_checkpoint(checkpoint)?;
+            return Err(error);
+        }
+    };
+
+    let mut gas_left = result.gas.remaining();
+    let output = result.output.to_vec();
+    let status = match map_terminal(result.result, opcode) {
+        Ok(None) => {
+            let deposit =
+                settle_code_deposit(output.clone(), FinalChainGas::new(gas_left), 24_576, 200);
+            match deposit.result {
+                Ok(code) => {
+                    gas_left = deposit.gas_remaining.as_u64();
+                    journal.set_code(attempted, code)?;
+                    commit_root_refund(journal, checkpoint, result.gas.refunded())?;
+                    FrameSettlementStatus::Success
+                }
+                Err(error) => {
+                    gas_left = 0;
+                    crate::journal::duration_journal_no_refund(checkpoint, false, 2);
+                    journal.revert_checkpoint(checkpoint)?;
+                    FrameSettlementStatus::CodeFailure(error)
+                }
+            }
+        }
+        Ok(Some(error)) => {
+            crate::journal::duration_journal_no_refund(checkpoint, false, 2);
+            journal.revert_checkpoint(checkpoint)?;
+            if error != CodeExecutionError::Revert {
+                gas_left = 0;
+            }
+            FrameSettlementStatus::CodeFailure(error)
+        }
+        Err(error) => {
+            journal.revert_checkpoint(checkpoint)?;
+            return Err(error);
+        }
+    };
+    observe_settled_root(&mut observer, admitted, gas_left, &status, &output);
+    settle(
+        journal,
+        transaction,
+        admitted,
+        FrameSettlement {
+            status,
+            gas_left: FinalChainGas::new(gas_left),
+            output,
+            attempted_contract_address: Some(attempted),
+        },
+    )
+    .map_err(Into::into)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_admitted_call<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    admitted: &AdmittedTransaction,
+    profile: TaraxaProfile,
+    mut native: Option<NativeExecution<'_>>,
+    mut observer: Option<&mut dyn ExecutionTraceObserver>,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    let target = transaction.receiver.expect("call receiver checked");
+    let route = classify_native(
+        native_addresses,
+        native.as_ref(),
+        block.period,
+        target,
+        profile,
+    )?;
+    if route == NativeRoute::Unsupported {
+        return Err(ExecutionDriverError::NativeCallUnavailable { address: target });
+    }
+    if route != NativeRoute::Ordinary {
+        crate::journal::duration_journal_read_role(true, 1, target);
+    }
+    let ordinary_probe = route == NativeRoute::Ordinary
+        && transaction.value.value() != &num_bigint::BigUint::default();
+    if ordinary_probe {
+        crate::journal::duration_journal_ordinary_metadata(
+            "ordinary_probe_entry",
+            transaction.sender,
+            target,
+            transaction.value.value(),
+        );
+        crate::journal::duration_journal_ordinary_metadata(
+            "ordinary_probe_begin",
+            transaction.sender,
+            target,
+            transaction.value.value(),
+        );
+    }
+    let target_metadata = journal.account_metadata(target);
+    if ordinary_probe {
+        crate::journal::duration_journal_ordinary_metadata(
+            "ordinary_probe_end",
+            transaction.sender,
+            target,
+            transaction.value.value(),
+        );
+    }
+    if route != NativeRoute::Ordinary {
+        crate::journal::duration_journal_read_role(false, 1, target);
+    }
+    let target_metadata = target_metadata?;
+    if ordinary_probe {
+        crate::journal::duration_journal_ordinary_metadata(
+            "ordinary_probe_terminal",
+            transaction.sender,
+            target,
+            transaction.value.value(),
+        );
+    }
+    if route == NativeRoute::Ordinary
+        && !target_metadata.exists
+        && transaction.value.value() == &num_bigint::BigUint::default()
+    {
+        observe_root_call(&mut observer, transaction, target, admitted, &[], false);
+        observe_settled_root(
+            &mut observer,
+            admitted,
+            admitted.action_gas.as_u64(),
+            &FrameSettlementStatus::Success,
+            &[],
+        );
+        return settle(
+            journal,
+            transaction,
+            admitted,
+            FrameSettlement {
+                status: FrameSettlementStatus::Success,
+                gas_left: admitted.action_gas,
+                output: Vec::new(),
+                attempted_contract_address: None,
+            },
+        )
+        .map_err(Into::into);
+    }
+    let checkpoint = journal.checkpoint();
+
+    crate::journal::duration_journal_read_role(true, 2, transaction.sender);
+    let sender = journal.account(transaction.sender);
+    crate::journal::duration_journal_read_role(false, 2, transaction.sender);
+    let sender = sender?;
+    let checked = transaction.sender != [0_u8; 20];
+    let insufficient =
+        checked && sender.balance.value() < &BigInt::from(transaction.value.value().clone());
+    crate::journal::duration_journal_transfer_decision(
+        crate::journal::DurationTransferDecisionObservation {
+            depth: 0,
+            opcode: 0xf1,
+            sender: transaction.sender,
+            target,
+            state_target: target,
+            amount: transaction.value.value(),
+            balance: Some(sender.balance.value()),
+            checked,
+            allowed: !insufficient,
+        },
+    );
+    if insufficient {
+        crate::journal::duration_journal_no_refund(checkpoint, false, 2);
+        journal.revert_checkpoint(checkpoint)?;
+        let result: Result<TransactionExecutionResult, ExecutionDriverError> = settle(
+            journal,
+            transaction,
+            admitted,
+            FrameSettlement {
+                status: FrameSettlementStatus::InsufficientBalanceForTransfer,
+                gas_left: admitted.action_gas,
+                output: Vec::new(),
+                attempted_contract_address: None,
+            },
+        )
+        .map_err(Into::into);
+        if ordinary_probe && result.is_ok() {
+            crate::journal::duration_journal_ordinary_metadata(
+                "ordinary_probe_failed",
+                transaction.sender,
+                target,
+                transaction.value.value(),
+            );
+        }
+        return result;
+    }
+    journal.subtract_balance(transaction.sender, transaction.value.value())?;
+    journal.add_balance(target, transaction.value.value())?;
+    if route != NativeRoute::Ordinary
+        && observer
+            .as_ref()
+            .is_some_and(|observer| observer.call_frames())
+    {
+        let code = journal.account_code(target)?;
+        observe_root_call(&mut observer, transaction, target, admitted, &code, true);
+    }
+    let native_outcome = match route {
+        NativeRoute::Consensus => {
+            let native = native
+                .as_mut()
+                .expect("consensus route has native execution");
+            let id = match native.sequence.allocate(block.period, transaction.position) {
+                Ok(id) => id,
+                Err(error) => {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error);
+                }
+            };
+            let invocation = NativeInvocation {
+                id,
+                period: block.period,
+                depth: 0,
+                kind: NativeCallKind::Call,
+                is_static: false,
+                caller: transaction.sender,
+                contract: target,
+                state_address: target,
+                value: transaction.value.clone(),
+                input: transaction.input.clone(),
+                supplied_gas: admitted.action_gas,
+            };
+            Some(invoke_native(journal, native.port, &invocation).map_err(Into::into))
+        }
+        NativeRoute::Stateless => {
+            let id = match native
+                .as_mut()
+                .expect("stateless route has native execution")
+                .stateless_sequence
+                .allocate(transaction.position)
+            {
+                Ok(id) => id,
+                Err(error) => {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error);
+                }
+            };
+            Some(invoke_stateless(
+                StatelessInvocation {
+                    id,
+                    period: block.period,
+                    depth: 0,
+                    kind: NativeCallKind::Call,
+                    is_static: false,
+                    caller: transaction.sender,
+                    contract: target,
+                    state_address: target,
+                    value: transaction.value.clone(),
+                    input: transaction.input.clone(),
+                    supplied_gas: admitted.action_gas,
+                },
+                profile,
+            ))
+        }
+        NativeRoute::Ordinary | NativeRoute::Unsupported => None,
+    };
+    if let Some(outcome) = native_outcome {
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                journal.revert_checkpoint(checkpoint)?;
+                return Err(error);
+            }
+        };
+        let status = native_frame_status(&outcome);
+        if observer
+            .as_ref()
+            .is_some_and(|observer| observer.call_frames())
+        {
+            // The reference tracer uses the native gas charge as the remaining gas.
+            let charge = admitted.action_gas.as_u64() - outcome.gas_left.as_u64();
+            observe_settled_root(&mut observer, admitted, charge, &status, &outcome.output);
+        }
+        crate::journal::duration_journal_no_refund(
+            checkpoint,
+            outcome.status == CodeExecutionStatus::Success,
+            0,
+        );
+        if outcome.status == CodeExecutionStatus::Success {
+            journal.commit_checkpoint(checkpoint)?;
+        } else {
+            journal.revert_checkpoint(checkpoint)?;
+        }
+        return settle(
+            journal,
+            transaction,
+            admitted,
+            FrameSettlement {
+                status,
+                gas_left: outcome.gas_left,
+                output: outcome.output,
+                attempted_contract_address: None,
+            },
+        )
+        .map_err(Into::into);
+    }
+    let code = journal.account_code(target)?;
+    observe_root_call(&mut observer, transaction, target, admitted, &code, false);
+    let (result, opcode) = match run_revm(
+        journal,
+        block_hashes,
+        native_addresses,
+        block,
+        transaction,
+        target,
+        code,
+        transaction.input.clone(),
+        admitted,
+        profile,
+        &mut native,
+        &mut observer,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            journal.revert_checkpoint(checkpoint)?;
+            return Err(error);
+        }
+    };
+
+    let status = match map_terminal(result.result, opcode) {
+        Ok(None) => {
+            commit_root_refund(journal, checkpoint, result.gas.refunded())?;
+            FrameSettlementStatus::Success
+        }
+        Ok(Some(error)) => {
+            crate::journal::duration_journal_no_refund(checkpoint, false, 2);
+            journal.revert_checkpoint(checkpoint)?;
+            FrameSettlementStatus::CodeFailure(error)
+        }
+        Err(error) => {
+            journal.revert_checkpoint(checkpoint)?;
+            return Err(error);
+        }
+    };
+    let gas_left = match &status {
+        FrameSettlementStatus::Success
+        | FrameSettlementStatus::CodeFailure(CodeExecutionError::Revert) => result.gas.remaining(),
+        FrameSettlementStatus::CodeFailure(_)
+        | FrameSettlementStatus::InsufficientBalanceForTransfer => 0,
+    };
+    observe_settled_root(&mut observer, admitted, gas_left, &status, &result.output);
+    settle(
+        journal,
+        transaction,
+        admitted,
+        FrameSettlement {
+            status,
+            gas_left: FinalChainGas::new(gas_left),
+            output: result.output.to_vec(),
+            attempted_contract_address: None,
+        },
+    )
+    .map_err(Into::into)
+}
+
+fn observe_frame_enter(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    frame: impl FnOnce() -> TraceFrameEnter,
+) {
+    if let Some(observer) = observer.as_mut().filter(|observer| observer.call_frames()) {
+        observer.observe(TraceEvent::FrameEnter(frame()));
+    }
+}
+
+fn observe_frame_exit(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    frame: impl FnOnce() -> TraceFrameExit,
+) {
+    if let Some(observer) = observer.as_mut().filter(|observer| observer.call_frames()) {
+        observer.observe(TraceEvent::FrameExit(frame()));
+    }
+}
+
+fn observe_root_call(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    transaction: &ExecutionTransaction,
+    target: [u8; 20],
+    admitted: &AdmittedTransaction,
+    code: &[u8],
+    precompile: bool,
+) {
+    observe_frame_enter(observer, || TraceFrameEnter {
+        depth: 1,
+        kind: TraceFrameKind::Call,
+        caller: transaction.sender,
+        state_address: target,
+        code_address: Some(target),
+        gas: admitted.action_gas.as_u64(),
+        value: transaction.value.value().to_bytes_be(),
+        input: transaction.input.clone(),
+        code: code.to_vec(),
+        precompile,
+    });
+}
+
+fn observe_settled_root(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    admitted: &AdmittedTransaction,
+    remaining_gas: u64,
+    status: &FrameSettlementStatus,
+    output: &[u8],
+) {
+    observe_frame_exit(observer, || TraceFrameExit {
+        depth: 1,
+        supplied_gas: admitted.action_gas.as_u64(),
+        remaining_gas,
+        error: match status {
+            FrameSettlementStatus::CodeFailure(error) => Some(error.clone()),
+            _ => None,
+        },
+        output: output.to_vec(),
+    });
+}
+
+/// Applies the root-local refund delta under its still-open rollback checkpoint.
+/// Ordinary periods settle/reset between transactions; TraceRunner deliberately
+/// retains a cumulative counter, which can absorb a negative later root delta.
+fn commit_root_refund<R: ConcreteExecutionRead>(
+    journal: &mut ExecutionJournal<R>,
+    checkpoint: JournalCheckpoint,
+    delta: i64,
+) -> Result<(), ExecutionDriverError> {
+    crate::journal::duration_journal_refund_root(checkpoint, delta);
+    if let Err(error) = journal.apply_refund_delta(delta) {
+        journal.revert_checkpoint(checkpoint)?;
+        return Err(if error == JournalError::RefundUnderflow {
+            ExecutionDriverError::NegativeRootRefund(delta)
+        } else {
+            error.into()
+        });
+    }
+    journal.commit_checkpoint(checkpoint)?;
+    Ok(())
+}
+
+#[derive(Debug)]
+enum ParentInsertion {
+    Root,
+    Call {
+        checkpoint: JournalCheckpoint,
+        return_memory: std::ops::Range<usize>,
+    },
+    Create {
+        checkpoint: JournalCheckpoint,
+        attempted_address: [u8; 20],
+    },
+}
+
+struct ActiveFrame {
+    memory: crate::borrowed_memory::FrameMemory,
+    interpreter: Interpreter<EthInterpreter>,
+    insertion: ParentInsertion,
+    full_value: num_bigint::BigUint,
+    last_opcode: u8,
+    trace_cost: u64,
+}
+
+struct TraceBeforeOpcode {
+    pc: u64,
+    opcode: u8,
+    gas: u64,
+    depth: usize,
+    state_address: [u8; 20],
+    stack: Vec<TraceWord>,
+    memory: Vec<u8>,
+    memory_cost: u64,
+}
+
+fn trace_depth(depth: usize) -> Result<u16, ExecutionDriverError> {
+    let depth = depth
+        .checked_add(1)
+        .ok_or(ExecutionDriverError::TraceDepthOverflow(depth))?;
+    u16::try_from(depth).map_err(|_| ExecutionDriverError::TraceDepthOverflow(depth))
+}
+
+fn trace_stack(stack: &revm::interpreter::Stack) -> Vec<TraceWord> {
+    stack
+        .data()
+        .iter()
+        .map(|word| word.to_be_bytes::<32>())
+        .collect()
+}
+
+fn attempted_sstore(opcode: u8, stack: &[TraceWord]) -> Option<AttemptedSstore> {
+    (opcode == 0x55 && stack.len() >= 2).then(|| AttemptedSstore {
+        key: stack[stack.len() - 1],
+        value: stack[stack.len() - 2],
+    })
+}
+
+fn trace_refund(
+    opcode: u8,
+    interpreter: &Interpreter<EthInterpreter>,
+    base_refund: u64,
+) -> Result<u64, ExecutionDriverError> {
+    let refund = interpreter.gas.refunded();
+    base_refund.checked_add_signed(refund).ok_or_else(|| {
+        if refund < 0 {
+            ExecutionDriverError::TraceNegativeRefund {
+                opcode,
+                refund,
+                base_refund,
+            }
+        } else {
+            JournalError::RefundOverflow.into()
+        }
+    })
+}
+
+fn observe_opcode_step(
+    observer: &mut dyn ExecutionTraceObserver,
+    interpreter: &Interpreter<EthInterpreter>,
+    before: TraceBeforeOpcode,
+    step: Result<(), InstructionResult>,
+    base_refund: u64,
+    correction_stage: CorrectionStage,
+) -> Result<(), ExecutionDriverError> {
+    let fault = match step {
+        Ok(())
+        | Err(
+            InstructionResult::Stop | InstructionResult::Return | InstructionResult::SelfDestruct,
+        ) => None,
+        Err(InstructionResult::Revert) => Some(InstructionResult::Revert),
+        // A CALL to a consensus precompile suspends only to enter the native
+        // adapter. Its opcode cost already includes forwarded gas, as in the
+        // Go pre-execution logger; native execution emits no bytecode steps.
+        Err(InstructionResult::Suspend)
+            if before.opcode == 0xf1
+                && before.stack.len() >= 7
+                && before.stack[before.stack.len() - 2][12..31] == [0; 19]
+                && matches!(before.stack[before.stack.len() - 2][31], 0xee | 0xfe) =>
+        {
+            None
+        }
+        Err(InstructionResult::OutOfOffset) if before.opcode == 0x3e => {
+            Some(InstructionResult::OutOfOffset)
+        }
+        // Fault rows record actual opcode gas movement and memory. Frame
+        // settlement consumes the remaining gas separately.
+        Err(
+            result @ (InstructionResult::InvalidOperandOOG
+            | InstructionResult::OutOfGas
+            | InstructionResult::MemoryOOG
+            | InstructionResult::MemoryLimitOOG
+            | InstructionResult::StackUnderflow),
+        ) if before.opcode == 0x3e && correction_stage.checked_return_data_copy() => Some(result),
+        Err(result) => {
+            return Err(ExecutionDriverError::TraceFactUnavailable {
+                opcode: before.opcode,
+                result,
+            });
+        }
+    };
+    let after_gas = interpreter.gas.remaining();
+    let gas_cost =
+        before
+            .gas
+            .checked_sub(after_gas)
+            .ok_or(ExecutionDriverError::TraceGasInconsistent {
+                opcode: before.opcode,
+                before: before.gas,
+                after: after_gas,
+            })?;
+    let refund = trace_refund(before.opcode, interpreter, base_refund)?;
+    let after_memory_len = interpreter.memory.len();
+    if after_memory_len < before.memory.len() {
+        return Err(ExecutionDriverError::TraceMemoryShrank {
+            opcode: before.opcode,
+            before: before.memory.len(),
+            after: after_memory_len,
+        });
+    }
+    let mut expanded_memory = before.memory;
+    expanded_memory.resize(after_memory_len, 0);
+    let attempted_write = attempted_sstore(before.opcode, &before.stack);
+    observer.observe(TraceEvent::Opcode(TraceOpcode {
+        pc: before.pc,
+        opcode: before.opcode,
+        gas: before.gas,
+        gas_cost,
+        depth: trace_depth(before.depth)?,
+        state_address: before.state_address,
+        stack: before.stack,
+        memory: expanded_memory,
+        refund,
+        phase: TraceOpcodePhase::BeforeExecution,
+        attempted_sstore: attempted_write,
+    }));
+    if let Some(fault) = fault {
+        let stack = trace_stack(&interpreter.stack);
+        let attempted_sstore = attempted_sstore(before.opcode, &stack);
+        observer.observe(TraceEvent::Opcode(TraceOpcode {
+            pc: before.pc,
+            opcode: before.opcode,
+            gas: before.gas,
+            gas_cost,
+            depth: trace_depth(before.depth)?,
+            state_address: before.state_address,
+            stack,
+            memory: interpreter.memory.context_memory().to_vec(),
+            refund,
+            phase: TraceOpcodePhase::Fault(fault),
+            attempted_sstore,
+        }));
+    }
+    Ok(())
+}
+
+fn openethereum_opcode_available(opcode: u8, profile: TaraxaProfile) -> bool {
+    match opcode {
+        0x5c | 0x5d => profile.cacti(),
+        0x5e => profile.ficus(),
+        0x00..=0x0b
+        | 0x10..=0x1d
+        | 0x20
+        | 0x30..=0x47
+        | 0x50..=0x5b
+        | 0x5f..=0xa4
+        | 0xb3
+        | 0xb4
+        | 0xf0..=0xf5
+        | 0xfa
+        | 0xfd
+        | 0xff => true,
+        _ => false,
+    }
+}
+
+fn openethereum_admission(
+    opcode: u8,
+    stack: &[TraceWord],
+    is_static: bool,
+) -> Option<InstructionResult> {
+    use InstructionResult as I;
+    let (inputs, outputs) = stack_effect(opcode)?;
+    if stack.len() < inputs {
+        return Some(I::StackUnderflow);
+    }
+    if stack.len() - inputs + outputs > 1024 {
+        return Some(I::StackOverflow);
+    }
+    let writes = matches!(opcode, 0x55 | 0xa0..=0xa4 | 0xf0 | 0xf5 | 0xff);
+    let transfers = opcode == 0xf1
+        && stack
+            .iter()
+            .rev()
+            .nth(2)
+            .is_some_and(|word| *word != [0; 32]);
+    (is_static && (writes || transfers)).then_some(I::StateChangeDuringStaticCall)
+}
+
+fn openethereum_gas_quote<R: ConcreteExecutionRead, B: BlockHashRead>(
+    host: &mut JournalHost<'_, R, B>,
+    before: &TraceBeforeOpcode,
+    static_cost: u16,
+) -> Result<Option<u64>, HostError> {
+    let word = |offset| {
+        before
+            .stack
+            .iter()
+            .rev()
+            .nth(offset)
+            .map_or(U256::ZERO, |word| U256::from_be_bytes(*word))
+    };
+    let end = |offset, len: U256| {
+        if len.is_zero() {
+            U256::ZERO
+        } else {
+            word(offset).wrapping_add(len)
+        }
+    };
+    let memory = match before.opcode {
+        0x20 | 0xa0..=0xa4 | 0xf3 | 0xfd => end(0, word(1)),
+        0x37 | 0x39 | 0x3e => end(0, word(2)),
+        0x3c => end(1, word(3)),
+        0x51 | 0x52 => end(0, U256::from(32)),
+        0x53 => end(0, U256::from(1)),
+        0x5e => end(0, word(2)).max(end(1, word(2))),
+        0xf0 | 0xf5 => end(1, word(2)),
+        0xf1 | 0xf2 => end(3, word(4)).max(end(5, word(6))),
+        0xf4 | 0xfa => end(2, word(3)).max(end(4, word(5))),
+        _ => U256::ZERO,
+    };
+    let Ok(memory) = u64::try_from(memory) else {
+        return Ok(None);
+    };
+    let words = memory.div_ceil(32);
+    let Some(bytes) = words.checked_mul(32) else {
+        return Ok(None);
+    };
+    if bytes > 0xff_ffff_ffe0 {
+        return Ok(Some(0));
+    }
+    let gas = host.gas_params();
+    let expansion = gas
+        .memory_cost(words as usize)
+        .saturating_sub(before.memory_cost);
+    let base = u64::from(static_cost);
+    let cost = match before.opcode {
+        0x0a => Some(base + gas.exp_cost(word(1))),
+        0x20 => u64::try_from(word(1))
+            .ok()
+            .map(|len| base.saturating_add(gas.keccak256_cost(len as usize))),
+        0x37 | 0x39 | 0x3e | 0x5e => u64::try_from(word(2))
+            .ok()
+            .map(|len| 3_u64.saturating_add(gas.copy_cost(len as usize))),
+        0x3c => u64::try_from(word(3))
+            .ok()
+            .map(|len| 700_u64.saturating_add(gas.copy_cost(len as usize))),
+        0x55 => Some(host.trace_sstore_cost(before.state_address, word(0), word(1))?),
+        0xa0..=0xa4 => u64::try_from(word(1))
+            .ok()
+            .map(|len| base.saturating_add(gas.log_cost(before.opcode - 0xa0, len))),
+        0xf1 | 0xf2 | 0xf4 | 0xfa => {
+            let mut base = 700 + expansion;
+            if matches!(before.opcode, 0xf1 | 0xf2) && !word(2).is_zero() {
+                base += 9_000;
+                if before.opcode == 0xf1 && host.trace_ext_account_empty(word(1))? {
+                    base += 25_000;
+                }
+            }
+            let available = before.gas.wrapping_sub(base);
+            let forwarded =
+                (available - available / 64).min(u64::try_from(word(0)).unwrap_or(u64::MAX));
+            return Ok(Some(base.checked_add(forwarded).unwrap_or(0)));
+        }
+        0xf0 => Some(32_000),
+        0xf5 => u64::try_from(word(2))
+            .ok()
+            .map(|len| 32_000_u64.saturating_add(gas.keccak256_cost(len as usize))),
+        0xff => Some(
+            if host.trace_ext_account_empty(word(0))?
+                && host.trace_source_has_balance(before.state_address)?
+            {
+                30_000
+            } else {
+                5_000
+            },
+        ),
+        _ => Some(base),
+    };
+    Ok(Some(
+        cost.and_then(|cost| cost.checked_add(expansion))
+            .unwrap_or(0),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe_openethereum_step<R: ConcreteExecutionRead, B: BlockHashRead>(
+    observer: &mut dyn ExecutionTraceObserver,
+    host: &mut JournalHost<'_, R, B>,
+    interpreter: &Interpreter<EthInterpreter>,
+    before: TraceBeforeOpcode,
+    step: Result<(), InstructionResult>,
+    forwarded_create_gas: u64,
+    static_cost: u16,
+    profile: TaraxaProfile,
+    previous_cost: &mut u64,
+) -> Result<(), ExecutionDriverError> {
+    use InstructionResult as I;
+    let mut fault = step
+        .err()
+        .filter(|result| !matches!(result, I::Stop | I::Return | I::SelfDestruct | I::Suspend));
+    let gas_fault = matches!(
+        fault,
+        Some(I::OutOfGas | I::MemoryOOG | I::MemoryLimitOOG | I::InvalidOperandOOG)
+    );
+    let static_fault = matches!(
+        fault,
+        Some(I::StateChangeDuringStaticCall | I::CallNotAllowedInsideStatic)
+    );
+    if gas_fault || static_fault {
+        fault = if openethereum_opcode_available(before.opcode, profile) {
+            openethereum_admission(
+                before.opcode,
+                &before.stack,
+                interpreter.runtime_flag.is_static(),
+            )
+            .or(fault)
+        } else {
+            Some(I::NotActivated)
+        };
+    }
+    let after_gas = interpreter.gas.remaining();
+    let charged = before
+        .gas
+        .wrapping_sub(after_gas)
+        .wrapping_sub(forwarded_create_gas);
+    let transient_write_fault =
+        matches!(before.opcode, 0x5d | 0xb4) && fault == Some(I::StateChangeDuringStaticCall);
+    let before_cost = match fault {
+        _ if transient_write_fault => charged,
+        Some(
+            I::StackUnderflow
+            | I::StackOverflow
+            | I::OpcodeNotFound
+            | I::InvalidFEOpcode
+            | I::NotActivated
+            | I::StateChangeDuringStaticCall
+            | I::CallNotAllowedInsideStatic,
+        ) => *previous_cost,
+        Some(I::OutOfGas | I::MemoryOOG | I::MemoryLimitOOG | I::InvalidOperandOOG) => {
+            openethereum_gas_quote(host, &before, static_cost)
+                .map_err(ExecutionDriverError::Host)?
+                .unwrap_or(*previous_cost)
+        }
+        _ => charged,
+    };
+    let depth = trace_depth(before.depth)?;
+    let log_row = |stack: Vec<TraceWord>, memory, phase| TraceOpcode {
+        pc: before.pc,
+        opcode: before.opcode,
+        gas: before.gas,
+        gas_cost: before_cost,
+        depth,
+        state_address: before.state_address,
+        attempted_sstore: attempted_sstore(before.opcode, &stack),
+        stack,
+        memory,
+        refund: 0,
+        phase,
+    };
+    match fault {
+        Some(fault)
+            if transient_write_fault
+                || matches!(fault, I::Revert | I::InvalidJump | I::OutOfOffset) =>
+        {
+            let mut memory = before.memory;
+            memory.resize(interpreter.memory.len(), 0);
+            observer.observe(TraceEvent::Opcode(log_row(
+                before.stack,
+                memory,
+                TraceOpcodePhase::BeforeExecution,
+            )));
+            observer.observe(TraceEvent::Opcode(log_row(
+                trace_stack(&interpreter.stack),
+                interpreter.memory.context_memory().to_vec(),
+                TraceOpcodePhase::Fault(fault),
+            )));
+        }
+        Some(fault) => observer.observe(TraceEvent::Opcode(log_row(
+            before.stack,
+            before.memory,
+            TraceOpcodePhase::Fault(fault),
+        ))),
+        None => {
+            let mut memory = before.memory;
+            memory.resize(interpreter.memory.len(), 0);
+            observer.observe(TraceEvent::Opcode(log_row(
+                before.stack,
+                memory,
+                TraceOpcodePhase::BeforeExecution,
+            )));
+        }
+    }
+    *previous_cost = before_cost;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifier>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    target: [u8; 20],
+    code: Vec<u8>,
+    input: Vec<u8>,
+    admitted: &AdmittedTransaction,
+    profile: TaraxaProfile,
+    native: &mut Option<NativeExecution<'_>>,
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+) -> Result<(revm::interpreter::InterpreterResult, u8), ExecutionDriverError> {
+    // Go CALL skips interpreter entry for empty code; CREATE still executes
+    // empty initcode and observes STOP. Preserve that operation distinction.
+    if code.is_empty()
+        && matches!(
+            transaction.kind,
+            ExecutionTransactionKind::Call | ExecutionTransactionKind::System
+        )
+    {
+        return Ok((
+            immediate_result(InstructionResult::Stop, admitted.action_gas.as_u64()),
+            0,
+        ));
+    }
+    let mut interpreter = Interpreter::<EthInterpreter>::new(
+        SharedMemory::new(),
+        ExtBytecode::new(Bytecode::new_legacy(Bytes::from(code))),
+        InputsImpl {
+            target_address: Address::from(target),
+            bytecode_address: Some(Address::from(target)),
+            caller_address: Address::from(transaction.sender),
+            input: CallInput::Bytes(Bytes::from(input)),
+            call_value: U256::from_be_bytes(transaction.value.low_word()),
+            depth: 0,
+        },
+        false,
+        SpecId::ISTANBUL,
+        admitted.action_gas.as_u64(),
+    );
+    profile.configure_interpreter(&mut interpreter);
+    let mut frames = vec![ActiveFrame {
+        memory: journal.native_memory_frame(),
+        interpreter,
+        insertion: ParentInsertion::Root,
+        full_value: transaction.value.value().clone(),
+        last_opcode: 0,
+        trace_cost: 0,
+    }];
+
+    loop {
+        let action = {
+            let active = frames.last_mut().expect("root frame remains active");
+            match run_until_action(
+                &mut active.interpreter,
+                &mut active.memory,
+                journal,
+                block_hashes,
+                block,
+                transaction,
+                profile,
+                &mut active.last_opcode,
+                &mut active.trace_cost,
+                observer,
+            ) {
+                Ok(action) => action,
+                Err(error) => {
+                    unwind_active_frames(journal, &frames)?;
+                    return Err(error);
+                }
+            }
+        };
+
+        match action {
+            InterpreterAction::Return(result) => {
+                let active = frames.pop().expect("returning frame exists");
+                journal.release_native_memory(active.memory);
+                let frame_depth = active.interpreter.input.depth;
+                match active.insertion {
+                    ParentInsertion::Root => return Ok((result, active.last_opcode)),
+                    ParentInsertion::Call {
+                        checkpoint,
+                        return_memory,
+                    } => {
+                        if let Err(error) =
+                            settle_call_checkpoint(journal, checkpoint, result.result)
+                        {
+                            unwind_active_frames(journal, &frames)?;
+                            return Err(error);
+                        }
+                        let parent = frames.last_mut().expect("child call has parent");
+                        parent.interpreter.memory.free_child_context();
+                        let before = parent.interpreter.gas.refunded();
+                        let child = result.gas.refunded();
+                        let success = result.result.is_ok();
+                        if let Err(error) =
+                            observe_child_exit(observer, frame_depth, active.last_opcode, &result)
+                        {
+                            unwind_active_frames(journal, &frames)?;
+                            return Err(error);
+                        }
+                        insert_call_result(&mut parent.interpreter, result, return_memory);
+                        crate::journal::duration_journal_refund_frame(
+                            false,
+                            frame_depth,
+                            checkpoint,
+                            before,
+                            child,
+                            parent.interpreter.gas.refunded(),
+                            success,
+                        );
+                    }
+                    ParentInsertion::Create {
+                        checkpoint,
+                        attempted_address,
+                    } => {
+                        let result = match settle_create_result(
+                            journal,
+                            checkpoint,
+                            attempted_address,
+                            result,
+                        ) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                unwind_active_frames(journal, &frames)?;
+                                return Err(error);
+                            }
+                        };
+                        let parent = frames.last_mut().expect("child creation has parent");
+                        parent.interpreter.memory.free_child_context();
+                        let before = parent.interpreter.gas.refunded();
+                        let child = result.gas.refunded();
+                        let success = result.result.is_ok();
+                        if let Err(error) =
+                            observe_child_exit(observer, frame_depth, active.last_opcode, &result)
+                        {
+                            unwind_active_frames(journal, &frames)?;
+                            return Err(error);
+                        }
+                        insert_create_result(&mut parent.interpreter, attempted_address, result);
+                        crate::journal::duration_journal_refund_frame(
+                            false,
+                            frame_depth,
+                            checkpoint,
+                            before,
+                            child,
+                            parent.interpreter.gas.refunded(),
+                            success,
+                        );
+                    }
+                }
+            }
+            InterpreterAction::NewFrame(FrameInput::Call(inputs)) => {
+                let child = match prepare_call_frame(
+                    journal,
+                    native_addresses,
+                    block,
+                    profile,
+                    frames.last_mut().expect("call parent exists"),
+                    *inputs,
+                    transaction.position,
+                    native,
+                    observer,
+                ) {
+                    Ok(child) => child,
+                    Err(error) => {
+                        unwind_active_frames(journal, &frames)?;
+                        return Err(error);
+                    }
+                };
+                if let Some(child) = child {
+                    let checkpoint = match &child.insertion {
+                        ParentInsertion::Call { checkpoint, .. }
+                        | ParentInsertion::Create { checkpoint, .. } => *checkpoint,
+                        ParentInsertion::Root => unreachable!("child cannot be root"),
+                    };
+                    let parent = frames
+                        .last()
+                        .expect("child frame has parent")
+                        .interpreter
+                        .gas
+                        .refunded();
+                    crate::journal::duration_journal_refund_frame(
+                        true,
+                        child.interpreter.input.depth,
+                        checkpoint,
+                        parent,
+                        0,
+                        parent,
+                        false,
+                    );
+                    frames.push(child);
+                }
+            }
+            InterpreterAction::NewFrame(FrameInput::Create(inputs)) => {
+                let child = match prepare_create_frame(
+                    journal,
+                    profile,
+                    frames.last_mut().expect("creation parent exists"),
+                    *inputs,
+                    observer,
+                ) {
+                    Ok(child) => child,
+                    Err(error) => {
+                        unwind_active_frames(journal, &frames)?;
+                        return Err(error);
+                    }
+                };
+                if let Some(child) = child {
+                    let checkpoint = match &child.insertion {
+                        ParentInsertion::Call { checkpoint, .. }
+                        | ParentInsertion::Create { checkpoint, .. } => *checkpoint,
+                        ParentInsertion::Root => unreachable!("child cannot be root"),
+                    };
+                    let parent = frames
+                        .last()
+                        .expect("child frame has parent")
+                        .interpreter
+                        .gas
+                        .refunded();
+                    crate::journal::duration_journal_refund_frame(
+                        true,
+                        child.interpreter.input.depth,
+                        checkpoint,
+                        parent,
+                        0,
+                        parent,
+                        false,
+                    );
+                    frames.push(child);
+                }
+            }
+            InterpreterAction::NewFrame(FrameInput::Empty) => {
+                unwind_active_frames(journal, &frames)?;
+                return Err(ExecutionDriverError::PendingFrameUnavailable(
+                    PendingFrameKind::Empty,
+                ));
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
+    interpreter: &mut Interpreter<EthInterpreter>,
+    memory: &mut crate::borrowed_memory::FrameMemory,
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    profile: TaraxaProfile,
+    last_opcode: &mut u8,
+    trace_cost: &mut u64,
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+) -> Result<InterpreterAction, ExecutionDriverError> {
+    journal.synchronize_native_memory(memory, &interpreter.memory.context_memory());
+    let base_refund = journal.refund();
+    let (table, costs) = profile.execution_instruction_table::<JournalHost<'_, R, B>>();
+    let mut host = JournalHost::new(
+        journal,
+        block_hashes,
+        block,
+        transaction,
+        profile.gas_params(),
+    );
+    loop {
+        *last_opcode = interpreter.bytecode.opcode();
+        let trace_before = observer.as_ref().map(|_| TraceBeforeOpcode {
+            pc: interpreter.bytecode.pc() as u64,
+            opcode: *last_opcode,
+            gas: interpreter.gas.remaining(),
+            depth: interpreter.input.depth,
+            state_address: interpreter.input.target_address.into_array(),
+            stack: trace_stack(&interpreter.stack),
+            memory: interpreter.memory.context_memory().to_vec(),
+            memory_cost: interpreter.gas.memory().expansion_cost,
+        });
+        let refund_before = interpreter.gas.refunded();
+        let refund_pc = interpreter.bytecode.pc() as u64;
+        let refund_depth = interpreter.input.depth;
+        crate::journal::duration_journal_consumer(true, refund_depth, refund_pc, *last_opcode);
+        if observer
+            .as_ref()
+            .is_some_and(|observer| observer.call_frames())
+        {
+            host.capture_trace_gas();
+        }
+        let step = interpreter.step(&table, &costs, &mut host);
+        host.synchronize_native_memory(memory, &interpreter.memory.context_memory());
+        crate::journal::duration_journal_consumer(false, refund_depth, refund_pc, *last_opcode);
+        if matches!(*last_opcode, 0x55 | 0xff) {
+            crate::journal::duration_journal_refund_opcode(
+                refund_depth,
+                refund_pc,
+                *last_opcode,
+                refund_before,
+                interpreter.gas.refunded(),
+                matches!(&step, Ok(()) | Err(InstructionResult::SelfDestruct)),
+            );
+        }
+        if let (Some(before), Some(observer)) = (trace_before, observer.as_mut()) {
+            if let Some(error) = host.take_error() {
+                return Err(ExecutionDriverError::Host(error));
+            }
+            if step == Err(InstructionResult::FatalExternalError) && *last_opcode == 0x3e {
+                return Err(ExecutionDriverError::ReferenceInstructionPanic(0x3e));
+            }
+            if observer.call_frames() {
+                let forwarded_create_gas = match interpreter.bytecode.action().as_ref() {
+                    Some(InterpreterAction::NewFrame(FrameInput::Create(inputs))) => {
+                        inputs.gas_limit()
+                    }
+                    _ => 0,
+                };
+                observe_openethereum_step(
+                    &mut **observer,
+                    &mut host,
+                    interpreter,
+                    before,
+                    step,
+                    forwarded_create_gas,
+                    costs[usize::from(*last_opcode)],
+                    profile,
+                    trace_cost,
+                )?;
+            } else {
+                observe_opcode_step(
+                    &mut **observer,
+                    interpreter,
+                    before,
+                    step,
+                    base_refund,
+                    profile.correction_stage(),
+                )?;
+            }
+        }
+        match step {
+            Ok(()) => {
+                if let Some(error) = host.take_error() {
+                    return Err(ExecutionDriverError::Host(error));
+                }
+            }
+            Err(result) => {
+                if result == InstructionResult::FatalExternalError && *last_opcode == 0x3e {
+                    return Err(ExecutionDriverError::ReferenceInstructionPanic(0x3e));
+                }
+                if let Some(error) = host.take_error() {
+                    return Err(ExecutionDriverError::Host(error));
+                }
+                if interpreter.bytecode.action().is_none() {
+                    interpreter.halt(result);
+                }
+                return Ok(interpreter.take_next_action());
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
+    journal: &mut ExecutionJournal<R>,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    profile: TaraxaProfile,
+    parent: &mut ActiveFrame,
+    inputs: CallInputs,
+    transaction_position: rustaxa_types::FinalChainTransactionPosition,
+    native: &mut Option<NativeExecution<'_>>,
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+) -> Result<Option<ActiveFrame>, ExecutionDriverError> {
+    let input = if inputs.input.is_empty() {
+        Bytes::new()
+    } else {
+        Bytes::copy_from_slice(&inputs.input.as_bytes_memory(&parent.interpreter.memory))
+    };
+    let child_depth = parent.interpreter.input.depth.saturating_add(1);
+    if child_depth > 1_024 {
+        insert_call_result(
+            &mut parent.interpreter,
+            immediate_result(InstructionResult::CallTooDeep, inputs.gas_limit),
+            inputs.return_memory_offset,
+        );
+        return Ok(None);
+    }
+
+    let value = big_uint(inputs.value.get());
+    if matches!(
+        inputs.scheme,
+        RevmCallScheme::Call | RevmCallScheme::CallCode
+    ) {
+        let caller = inputs.caller.into_array();
+        let checked = inputs.caller != Address::ZERO;
+        let balance = if checked {
+            crate::journal::duration_journal_read_role(true, 2, caller);
+            let account = journal.account(caller);
+            crate::journal::duration_journal_read_role(false, 2, caller);
+            Some(account?.balance)
+        } else {
+            None
+        };
+        let insufficient = balance
+            .as_ref()
+            .is_some_and(|balance| balance.value() < &BigInt::from(value.clone()));
+        let opcode = if inputs.scheme == RevmCallScheme::Call {
+            0xf1
+        } else {
+            0xf2
+        };
+        crate::journal::duration_journal_transfer_decision(
+            crate::journal::DurationTransferDecisionObservation {
+                depth: child_depth as u64,
+                opcode,
+                sender: caller,
+                target: inputs.bytecode_address.into_array(),
+                state_target: inputs.target_address.into_array(),
+                amount: &value,
+                balance: balance.as_ref().map(|balance| balance.value()),
+                checked,
+                allowed: !insufficient,
+            },
+        );
+        if insufficient {
+            insert_call_result(
+                &mut parent.interpreter,
+                immediate_result(InstructionResult::OutOfFunds, inputs.gas_limit),
+                inputs.return_memory_offset,
+            );
+            return Ok(None);
+        }
+    }
+
+    let code_address = inputs.bytecode_address.into_array();
+    let kind = match inputs.scheme {
+        RevmCallScheme::Call => TraceFrameKind::Call,
+        RevmCallScheme::CallCode => TraceFrameKind::CallCode,
+        RevmCallScheme::StaticCall => TraceFrameKind::StaticCall,
+        RevmCallScheme::DelegateCall => TraceFrameKind::DelegateCall,
+    };
+    let depth = u16::try_from(child_depth + 1).expect("bounded frame depth");
+    let enter = |code: &[u8], precompile: bool| TraceFrameEnter {
+        depth,
+        kind,
+        caller: parent.interpreter.input.target_address.into_array(),
+        state_address: inputs.target_address.into_array(),
+        code_address: Some(code_address),
+        gas: inputs.gas_limit,
+        value: inputs.value.get().to_be_bytes::<32>().to_vec(),
+        input: input.to_vec(),
+        code: code.to_vec(),
+        precompile,
+    };
+    let empty_exit = || TraceFrameExit {
+        depth,
+        supplied_gas: inputs.gas_limit,
+        remaining_gas: inputs.gas_limit,
+        error: None,
+        output: Vec::new(),
+    };
+    let route = classify_native(
+        native_addresses,
+        native.as_ref(),
+        block.period,
+        code_address,
+        profile,
+    )?;
+    if route == NativeRoute::Unsupported {
+        return Err(ExecutionDriverError::NativeCallUnavailable {
+            address: code_address,
+        });
+    }
+    if route != NativeRoute::Ordinary {
+        crate::journal::duration_journal_read_role(true, 1, code_address);
+    }
+    let metadata = journal.account_metadata(code_address);
+    if route != NativeRoute::Ordinary {
+        crate::journal::duration_journal_read_role(false, 1, code_address);
+    }
+    let metadata = metadata?;
+    if route == NativeRoute::Ordinary
+        && inputs.scheme == RevmCallScheme::Call
+        && value == num_bigint::BigUint::default()
+        && !metadata.exists
+    {
+        observe_frame_enter(observer, || enter(&[], false));
+        observe_frame_exit(observer, empty_exit);
+        insert_call_result(
+            &mut parent.interpreter,
+            immediate_result(InstructionResult::Stop, inputs.gas_limit),
+            inputs.return_memory_offset,
+        );
+        return Ok(None);
+    }
+
+    let checkpoint = journal.checkpoint();
+    let mutation = match inputs.scheme {
+        RevmCallScheme::Call => journal
+            .subtract_balance(inputs.caller.into_array(), &value)
+            .and_then(|()| journal.add_balance(inputs.target_address.into_array(), &value)),
+        RevmCallScheme::StaticCall => journal.add_balance(
+            inputs.target_address.into_array(),
+            &num_bigint::BigUint::default(),
+        ),
+        RevmCallScheme::CallCode | RevmCallScheme::DelegateCall => Ok(()),
+    };
+    if let Err(error) = mutation {
+        journal.revert_checkpoint(checkpoint)?;
+        return Err(error.into());
+    }
+
+    let full_value = if inputs.scheme == RevmCallScheme::DelegateCall {
+        parent.full_value.clone()
+    } else {
+        value
+    };
+    if route != NativeRoute::Ordinary
+        && observer
+            .as_ref()
+            .is_some_and(|observer| observer.call_frames())
+    {
+        let code = journal.account_code(code_address)?;
+        observe_frame_enter(observer, || enter(&code, true));
+    }
+    let native_outcome = match route {
+        NativeRoute::Consensus => {
+            let native = native
+                .as_mut()
+                .expect("consensus route has native execution");
+            let id = match native.sequence.allocate(block.period, transaction_position) {
+                Ok(id) => id,
+                Err(error) => {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error);
+                }
+            };
+            let invocation = NativeInvocation {
+                id,
+                period: block.period,
+                depth: u16::try_from(child_depth).expect("bounded frame depth"),
+                kind: native_call_kind(inputs.scheme),
+                is_static: inputs.is_static,
+                caller: inputs.caller.into_array(),
+                contract: code_address,
+                state_address: inputs.target_address.into_array(),
+                value: ExecutionValue::new(full_value.clone()),
+                input: input.to_vec(),
+                supplied_gas: FinalChainGas::new(inputs.gas_limit),
+            };
+            Some(invoke_native(journal, native.port, &invocation).map_err(Into::into))
+        }
+        NativeRoute::Stateless => {
+            let id = match native
+                .as_mut()
+                .expect("stateless route has native execution")
+                .stateless_sequence
+                .allocate(transaction_position)
+            {
+                Ok(id) => id,
+                Err(error) => {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error);
+                }
+            };
+            Some(invoke_stateless(
+                StatelessInvocation {
+                    id,
+                    period: block.period,
+                    depth: u16::try_from(child_depth).expect("bounded frame depth"),
+                    kind: native_call_kind(inputs.scheme),
+                    is_static: inputs.is_static,
+                    caller: inputs.caller.into_array(),
+                    contract: code_address,
+                    state_address: inputs.target_address.into_array(),
+                    value: ExecutionValue::new(full_value.clone()),
+                    input: input.to_vec(),
+                    supplied_gas: FinalChainGas::new(inputs.gas_limit),
+                },
+                profile,
+            ))
+        }
+        NativeRoute::Ordinary | NativeRoute::Unsupported => None,
+    };
+    if let Some(outcome) = native_outcome {
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                journal.revert_checkpoint(checkpoint)?;
+                return Err(error);
+            }
+        };
+        if !outcome.input_mutations.is_empty()
+            && let CallInput::SharedBuffer(range) = &inputs.input
+        {
+            let local = range
+                .start
+                .checked_sub(parent.interpreter.memory.local_memory_offset())
+                .ok_or(ExecutionDriverError::Native(
+                    NativeAdapterError::InputMutation {
+                        offset: range.start,
+                    },
+                ))?;
+            let mut memory = parent.interpreter.memory.context_memory_mut();
+            let mut updates = std::collections::BTreeMap::new();
+            for mutation in &outcome.input_mutations {
+                let offset =
+                    local
+                        .checked_add(mutation.offset)
+                        .ok_or(ExecutionDriverError::Native(
+                            NativeAdapterError::InputMutation {
+                                offset: mutation.offset,
+                            },
+                        ))?;
+                let byte = memory.get_mut(offset).ok_or(ExecutionDriverError::Native(
+                    NativeAdapterError::InputMutation { offset },
+                ))?;
+                if updates.get(&offset).copied().unwrap_or(*byte) != mutation.expected {
+                    return Err(ExecutionDriverError::Native(
+                        NativeAdapterError::InputMutation { offset },
+                    ));
+                }
+                updates.insert(offset, mutation.replacement);
+            }
+            for (offset, replacement) in updates {
+                memory[offset] = replacement;
+            }
+        }
+        if !outcome.input_aliases.is_empty()
+            && let CallInput::SharedBuffer(range) = &inputs.input
+        {
+            if outcome
+                .input_aliases
+                .iter()
+                .any(|alias| alias.scope == crate::contracts::NativeInputAliasScope::OwnedInputOnly)
+            {
+                journal.revert_checkpoint(checkpoint)?;
+                return Err(ExecutionDriverError::Native(
+                    NativeAdapterError::InputAliasLifetime,
+                ));
+            }
+            let local = range
+                .start
+                .checked_sub(parent.interpreter.memory.local_memory_offset())
+                .ok_or(ExecutionDriverError::Native(
+                    NativeAdapterError::InputMutation {
+                        offset: range.start,
+                    },
+                ))?;
+            journal.synchronize_native_memory(
+                &mut parent.memory,
+                &parent.interpreter.memory.context_memory(),
+            );
+            for alias in &outcome.input_aliases {
+                let start = local
+                    .checked_add(alias.offset)
+                    .ok_or(ExecutionDriverError::Native(
+                        NativeAdapterError::InputMutation {
+                            offset: alias.offset,
+                        },
+                    ))?;
+                let end = start
+                    .checked_add(alias.length)
+                    .ok_or(ExecutionDriverError::Native(
+                        NativeAdapterError::InputMutation {
+                            offset: alias.offset,
+                        },
+                    ))?;
+                if alias
+                    .offset
+                    .checked_add(alias.length)
+                    .is_none_or(|end| end > range.len())
+                    || !journal.bind_native_input(
+                        alias,
+                        &parent.memory,
+                        start..end,
+                        &parent.interpreter.memory.context_memory(),
+                    )
+                {
+                    return Err(ExecutionDriverError::Native(
+                        NativeAdapterError::InputMutation {
+                            offset: alias.offset,
+                        },
+                    ));
+                }
+            }
+        }
+        crate::journal::duration_journal_no_refund(
+            checkpoint,
+            outcome.status == CodeExecutionStatus::Success,
+            0,
+        );
+        if outcome.status == CodeExecutionStatus::Success {
+            journal.commit_checkpoint(checkpoint)?;
+        } else {
+            journal.revert_checkpoint(checkpoint)?;
+        }
+        observe_frame_exit(observer, || TraceFrameExit {
+            depth,
+            supplied_gas: inputs.gas_limit,
+            remaining_gas: inputs.gas_limit - outcome.gas_left.as_u64(),
+            error: match &outcome.status {
+                CodeExecutionStatus::Success => None,
+                CodeExecutionStatus::Failure(error) => Some(error.clone()),
+            },
+            output: outcome.output.clone(),
+        });
+        insert_native_call_result(
+            &mut parent.interpreter,
+            outcome,
+            inputs.return_memory_offset,
+        );
+        return Ok(None);
+    }
+
+    let code = match journal.account_code(code_address) {
+        Ok(code) => code,
+        Err(error) => {
+            journal.revert_checkpoint(checkpoint)?;
+            return Err(error.into());
+        }
+    };
+    observe_frame_enter(observer, || enter(&code, false));
+    if code.is_empty() {
+        observe_frame_exit(observer, empty_exit);
+        crate::journal::duration_journal_no_refund(checkpoint, true, 1);
+        journal.commit_checkpoint(checkpoint)?;
+        insert_call_result(
+            &mut parent.interpreter,
+            immediate_result(InstructionResult::Stop, inputs.gas_limit),
+            inputs.return_memory_offset,
+        );
+        return Ok(None);
+    }
+
+    let child_memory = parent.interpreter.memory.new_child_context();
+    let code_hash = revm::primitives::keccak256(&code);
+    let mut interpreter = Interpreter::<EthInterpreter>::new(
+        child_memory,
+        ExtBytecode::new_with_hash(Bytecode::new_legacy(Bytes::from(code)), code_hash),
+        InputsImpl {
+            target_address: inputs.target_address,
+            bytecode_address: Some(inputs.bytecode_address),
+            caller_address: inputs.caller,
+            input: CallInput::Bytes(input),
+            call_value: U256::from_be_slice(&low_word_bytes(&full_value)),
+            depth: child_depth,
+        },
+        inputs.is_static,
+        SpecId::ISTANBUL,
+        inputs.gas_limit,
+    );
+    profile.configure_interpreter(&mut interpreter);
+    Ok(Some(ActiveFrame {
+        memory: journal.native_memory_frame(),
+        interpreter,
+        insertion: ParentInsertion::Call {
+            checkpoint,
+            return_memory: inputs.return_memory_offset,
+        },
+        full_value,
+        last_opcode: 0,
+        trace_cost: 0,
+    }))
+}
+
+fn prepare_create_frame<R: ConcreteExecutionRead>(
+    journal: &mut ExecutionJournal<R>,
+    profile: TaraxaProfile,
+    parent: &mut ActiveFrame,
+    inputs: CreateInputs,
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+) -> Result<Option<ActiveFrame>, ExecutionDriverError> {
+    let child_depth = parent.interpreter.input.depth.saturating_add(1);
+    if child_depth > 1_024 {
+        insert_create_result(
+            &mut parent.interpreter,
+            [0_u8; 20],
+            immediate_result(InstructionResult::CallTooDeep, inputs.gas_limit()),
+        );
+        return Ok(None);
+    }
+
+    let creator = inputs.caller().into_array();
+    crate::journal::duration_journal_read_role(true, 5, creator);
+    crate::journal::duration_journal_read_role(false, 5, creator);
+    let value = big_uint(inputs.value());
+    if creator != [0_u8; 20]
+        && journal.account(creator)?.balance.value() < &BigInt::from(value.clone())
+    {
+        insert_create_result(
+            &mut parent.interpreter,
+            [0_u8; 20],
+            immediate_result(InstructionResult::OutOfFunds, inputs.gas_limit()),
+        );
+        return Ok(None);
+    }
+
+    let nonce = journal.account(creator)?.nonce;
+    let scheme = match inputs.scheme() {
+        revm::context_interface::CreateScheme::Create => CreateScheme::Create {
+            nonce: nonce.clone(),
+        },
+        revm::context_interface::CreateScheme::Create2 { salt } => CreateScheme::Create2 {
+            salt: salt.to_be_bytes(),
+        },
+        revm::context_interface::CreateScheme::Custom { .. } => {
+            return Err(ExecutionDriverError::PendingFrameUnavailable(
+                PendingFrameKind::Create,
+            ));
+        }
+    };
+    let attempted_address = create_address(creator, &scheme, inputs.init_code());
+    journal.set_nonce(creator, nonce.next())?;
+    let target = journal.account_metadata(attempted_address)?;
+    if !target.nonce.is_zero() || target.code_size != 0 {
+        insert_create_result(
+            &mut parent.interpreter,
+            attempted_address,
+            spent_result(InstructionResult::CreateCollision, inputs.gas_limit()),
+        );
+        return Ok(None);
+    }
+
+    let checkpoint = journal.checkpoint();
+    let mutation = journal
+        .set_nonce(
+            attempted_address,
+            rustaxa_types::FinalChainNonce::from_u64(1),
+        )
+        .and_then(|()| journal.subtract_balance(creator, &value))
+        .and_then(|()| journal.add_balance(attempted_address, &value));
+    if let Err(error) = mutation {
+        journal.revert_checkpoint(checkpoint)?;
+        return Err(error.into());
+    }
+
+    observe_frame_enter(observer, || TraceFrameEnter {
+        depth: u16::try_from(child_depth + 1).expect("bounded frame depth"),
+        kind: match scheme {
+            CreateScheme::Create { .. } => TraceFrameKind::Create,
+            CreateScheme::Create2 { .. } => TraceFrameKind::Create2,
+        },
+        caller: creator,
+        state_address: attempted_address,
+        code_address: None,
+        gas: inputs.gas_limit(),
+        value: value.to_bytes_be(),
+        input: inputs.init_code().to_vec(),
+        code: inputs.init_code().to_vec(),
+        precompile: false,
+    });
+    let child_memory = parent.interpreter.memory.new_child_context();
+    let mut interpreter = Interpreter::<EthInterpreter>::new(
+        child_memory,
+        ExtBytecode::new(Bytecode::new_legacy(inputs.init_code().clone())),
+        InputsImpl {
+            target_address: Address::from(attempted_address),
+            bytecode_address: None,
+            caller_address: Address::from(creator),
+            input: CallInput::Bytes(Bytes::new()),
+            call_value: inputs.value(),
+            depth: child_depth,
+        },
+        false,
+        SpecId::ISTANBUL,
+        inputs.gas_limit(),
+    );
+    profile.configure_interpreter(&mut interpreter);
+    Ok(Some(ActiveFrame {
+        memory: journal.native_memory_frame(),
+        interpreter,
+        insertion: ParentInsertion::Create {
+            checkpoint,
+            attempted_address,
+        },
+        full_value: value,
+        last_opcode: 0,
+        trace_cost: 0,
+    }))
+}
+
+fn observe_child_exit(
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
+    depth: usize,
+    opcode: u8,
+    result: &InterpreterResult,
+) -> Result<(), ExecutionDriverError> {
+    if let Some(observer) = observer.as_mut().filter(|observer| observer.call_frames()) {
+        observer.observe(TraceEvent::FrameExit(TraceFrameExit {
+            depth: trace_depth(depth)?,
+            supplied_gas: result.gas.limit(),
+            remaining_gas: result.gas.remaining(),
+            error: map_terminal(result.result, opcode)?,
+            output: result.output.to_vec(),
+        }));
+    }
+    Ok(())
+}
+
+fn settle_call_checkpoint<R: ConcreteExecutionRead>(
+    journal: &mut ExecutionJournal<R>,
+    checkpoint: JournalCheckpoint,
+    result: InstructionResult,
+) -> Result<(), ExecutionDriverError> {
+    if result.is_ok() {
+        journal.commit_checkpoint(checkpoint)?;
+    } else {
+        journal.revert_checkpoint(checkpoint)?;
+    }
+    Ok(())
+}
+
+fn settle_create_result<R: ConcreteExecutionRead>(
+    journal: &mut ExecutionJournal<R>,
+    checkpoint: JournalCheckpoint,
+    attempted_address: [u8; 20],
+    mut result: InterpreterResult,
+) -> Result<InterpreterResult, ExecutionDriverError> {
+    if result.result.is_ok() {
+        let deposit = settle_code_deposit(
+            result.output.to_vec(),
+            FinalChainGas::new(result.gas.remaining()),
+            24_576,
+            200,
+        );
+        match deposit.result {
+            Ok(code) => {
+                result.gas.set_remaining(deposit.gas_remaining.as_u64());
+                if let Err(error) = journal.set_code(attempted_address, code) {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error.into());
+                }
+                journal.commit_checkpoint(checkpoint)?;
+            }
+            Err(error) => {
+                result.result = match error {
+                    CodeExecutionError::ContractSize => InstructionResult::CreateContractSizeLimit,
+                    CodeExecutionError::CodeDepositOutOfGas => InstructionResult::OutOfGas,
+                    other => {
+                        journal.revert_checkpoint(checkpoint)?;
+                        return Err(ExecutionDriverError::UnsupportedTerminal(format!(
+                            "unexpected code deposit error: {other:?}"
+                        )));
+                    }
+                };
+                result.gas.spend_all();
+                journal.revert_checkpoint(checkpoint)?;
+            }
+        }
+    } else {
+        journal.revert_checkpoint(checkpoint)?;
+    }
+    Ok(result)
+}
+
+fn insert_call_result(
+    parent: &mut Interpreter<EthInterpreter>,
+    mut child: InterpreterResult,
+    return_memory: std::ops::Range<usize>,
+) {
+    let result = child.result;
+    let copy_len = return_memory.len().min(child.output.len());
+    parent.return_data.set_buffer(child.output.clone());
+    let _ = parent.stack.push(if result.is_ok() {
+        U256::from(1)
+    } else {
+        U256::ZERO
+    });
+    if result.is_ok_or_revert() && copy_len != 0 {
+        parent.memory.set(
+            return_memory.start,
+            &parent.return_data.buffer()[..copy_len],
+        );
+    }
+    handle_reservoir_remaining_gas(result, parent.gas.tracker_mut(), child.gas.tracker_mut());
+}
+
+fn insert_native_call_result(
+    parent: &mut Interpreter<EthInterpreter>,
+    outcome: NativeFrameOutcome,
+    return_memory: std::ops::Range<usize>,
+) {
+    let success = outcome.status == CodeExecutionStatus::Success;
+    let copy_len = return_memory.len().min(outcome.output.len());
+    parent.return_data.set_buffer(Bytes::from(outcome.output));
+    let _ = parent
+        .stack
+        .push(if success { U256::from(1) } else { U256::ZERO });
+    if success && copy_len != 0 {
+        parent.memory.set(
+            return_memory.start,
+            &parent.return_data.buffer()[..copy_len],
+        );
+    }
+    parent.gas.erase_cost(outcome.gas_left.as_u64());
+}
+
+const fn native_call_kind(scheme: RevmCallScheme) -> NativeCallKind {
+    match scheme {
+        RevmCallScheme::Call => NativeCallKind::Call,
+        RevmCallScheme::CallCode => NativeCallKind::CallCode,
+        RevmCallScheme::DelegateCall => NativeCallKind::DelegateCall,
+        RevmCallScheme::StaticCall => NativeCallKind::StaticCall,
+    }
+}
+
+fn insert_create_result(
+    parent: &mut Interpreter<EthInterpreter>,
+    attempted_address: [u8; 20],
+    mut child: InterpreterResult,
+) {
+    let result = child.result;
+    if result == InstructionResult::Revert {
+        parent.return_data.set_buffer(child.output.clone());
+    } else {
+        parent.return_data.clear();
+    }
+    handle_reservoir_remaining_gas(result, parent.gas.tracker_mut(), child.gas.tracker_mut());
+    let _ = parent.stack.push(if result.is_ok() {
+        U256::from_be_slice(&attempted_address)
+    } else {
+        U256::ZERO
+    });
+}
+
+fn immediate_result(result: InstructionResult, gas_limit: u64) -> InterpreterResult {
+    InterpreterResult {
+        result,
+        output: Bytes::new(),
+        gas: Gas::new(gas_limit),
+    }
+}
+
+fn spent_result(result: InstructionResult, gas_limit: u64) -> InterpreterResult {
+    let mut result = immediate_result(result, gas_limit);
+    result.gas.spend_all();
+    result
+}
+
+fn unwind_active_frames<R: ConcreteExecutionRead>(
+    journal: &mut ExecutionJournal<R>,
+    frames: &[ActiveFrame],
+) -> Result<(), ExecutionDriverError> {
+    for frame in frames.iter().rev() {
+        match frame.insertion {
+            ParentInsertion::Root => {}
+            ParentInsertion::Call { checkpoint, .. }
+            | ParentInsertion::Create { checkpoint, .. } => {
+                journal.revert_checkpoint(checkpoint)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn low_word_bytes(value: &num_bigint::BigUint) -> [u8; 32] {
+    let bytes = value.to_bytes_be();
+    let low = &bytes[bytes.len().saturating_sub(32)..];
+    let mut word = [0_u8; 32];
+    word[32 - low.len()..].copy_from_slice(low);
+    word
+}
+
+fn big_uint(value: U256) -> num_bigint::BigUint {
+    num_bigint::BigUint::from_bytes_be(&value.to_be_bytes::<32>())
+}
+
+fn map_terminal(
+    result: revm::interpreter::InstructionResult,
+    opcode: u8,
+) -> Result<Option<CodeExecutionError>, ExecutionDriverError> {
+    use revm::interpreter::InstructionResult as I;
+    let mapped = match result {
+        I::Stop | I::Return | I::SelfDestruct => None,
+        I::Revert => Some(CodeExecutionError::Revert),
+        I::InvalidOperandOOG if opcode == 0x3e => Some(CodeExecutionError::GasUintOverflow),
+        I::OutOfGas
+        | I::MemoryOOG
+        | I::MemoryLimitOOG
+        | I::PrecompileOOG
+        | I::InvalidOperandOOG
+        | I::ReentrancySentryOOG => Some(CodeExecutionError::OutOfGas),
+        I::OpcodeNotFound | I::InvalidFEOpcode | I::NotActivated => {
+            Some(CodeExecutionError::InvalidOpcode(opcode))
+        }
+        I::StackUnderflow => Some(CodeExecutionError::StackUnderflow),
+        I::StackOverflow => Some(CodeExecutionError::StackOverflow),
+        I::CallNotAllowedInsideStatic | I::StateChangeDuringStaticCall => {
+            Some(CodeExecutionError::StaticViolation)
+        }
+        I::CallTooDeep => Some(CodeExecutionError::Depth),
+        I::CreateCollision => Some(CodeExecutionError::CreateCollision),
+        I::CreateContractSizeLimit => Some(CodeExecutionError::ContractSize),
+        I::InvalidJump => Some(CodeExecutionError::InvalidJump),
+        I::OutOfOffset => Some(CodeExecutionError::ReturnDataOutOfBounds),
+        other => {
+            return Err(ExecutionDriverError::UnsupportedTerminal(format!(
+                "{other:?}"
+            )));
+        }
+    };
+    Ok(mapped)
+}
+
+#[cfg(test)]
+mod stateless_sequence_tests {
+    use super::*;
+
+    #[test]
+    fn transaction_stateless_sequence_is_zero_based_monotonic_and_checked() {
+        let transaction = rustaxa_types::FinalChainTransactionPosition::new(9);
+        let mut sequence = TransactionStatelessSequence::default();
+        assert_eq!(
+            sequence.allocate(transaction).unwrap(),
+            StatelessInvocationId {
+                transaction,
+                ordinal: 0,
+            }
+        );
+        assert_eq!(
+            sequence.allocate(transaction).unwrap(),
+            StatelessInvocationId {
+                transaction,
+                ordinal: 1,
+            }
+        );
+        sequence.next_ordinal = u64::MAX;
+        assert_eq!(
+            sequence.allocate(transaction),
+            Err(ExecutionDriverError::StatelessOrdinalOverflow)
+        );
+        assert_eq!(sequence.next_ordinal, u64::MAX);
+    }
+}

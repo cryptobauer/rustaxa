@@ -803,16 +803,10 @@ fn i128_to_i32(value: i128) -> Result<i32> {
 mod tests {
     use super::*;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should be available")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::test_paths::new_path(name)
     }
 
     fn addr(value: u64) -> H160 {
@@ -878,7 +872,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -910,7 +904,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -940,7 +934,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]

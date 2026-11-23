@@ -1,5 +1,4 @@
 use crate::consensus_host_ports::*;
-pub(crate) use crate::dag_transaction_service::BridgeApp;
 pub use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::*;
 use crate::network::*;
@@ -8,29 +7,32 @@ use crate::storage_admin::*;
 use rustaxa_consensus::ConsensusQueryApi;
 use std::sync::Arc;
 
-/// Rust-owned public consensus query facade.
-///
-/// Production instances combine a cloned Rust storage handle with a live PBFT
-/// read handle owned by the application root. Storage-only instances remain
-/// available for isolated query fixtures. The facade returns stable read DTOs
-/// without exposing consensus managers, storage iterators, or mutable sidecars.
-pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
+macro_rules! dispatch_client {
+    ($client:expr, $backend:ident, $api:ident, $body:block) => {
+        match &($client).0 {
+            crate::ffi::$backend::Historical($api) => $body,
+            crate::ffi::$backend::Production($api) => $body,
+        }
+    };
+}
+pub(crate) use dispatch_client;
 
-/// Thin CXX adapter over the PBFT-root-owned native network service.
-///
-/// Cloning the service shares the root's ordered effect queue and sibling
-/// protocol owners; this bridge owns no mutex, configuration, or standalone
-/// consensus runtime.
-pub struct BridgeConsensusNetworkApi(pub(crate) Arc<rustaxa_consensus::ConsensusNetworkApi>);
+pub struct BridgeConsensusQueryApi(pub(crate) QueryBackend);
 
-/// Thin CXX adapter over the CXX-free native PBFT application root.
-///
-/// The bridge owns no sibling protocol state, storage handle, mutex, or
-/// readiness flag. It maps stable CXX inputs and outputs around the native
-/// composition without changing the native siblings' lock domains.
+pub(crate) enum QueryBackend {
+    Historical(ConsensusQueryApi),
+    Production(rustaxa_execution::production_owner::ProductionQueryClient),
+}
+
+pub struct BridgeConsensusNetworkApi(pub(crate) NetworkBackend);
+
+pub(crate) enum NetworkBackend {
+    Historical(Arc<rustaxa_consensus::ConsensusNetworkApi>),
+    Production(rustaxa_execution::production_owner::ProductionNetworkClient),
+}
+
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
-    /// Public/query JSON view for PBFT block extra data.
     struct PbftBlockExtraDataView {
         found: bool,
         major_version: u16,
@@ -42,7 +44,6 @@ pub mod rustaxa_ffi {
         pillar_block_hash: [u8; 32],
     }
 
-    /// Public/query JSON view for `taraxa_getScheduleBlockByPeriod`.
     struct PbftScheduleBlockView {
         found: bool,
         prev_block_hash: [u8; 32],
@@ -60,7 +61,6 @@ pub mod rustaxa_ffi {
         dag_blocks_order: Vec<DagHash>,
     }
 
-    /// PBFT block author/version facts for `taraxa_getNodeVersions`.
     struct PbftNodeVersionView {
         found: bool,
         beneficiary: [u8; 20],
@@ -69,12 +69,10 @@ pub mod rustaxa_ffi {
         patch_version: u16,
     }
 
-    /// Canonical signed PBFT certificate-vote bytes shared by query and queue boundaries.
     struct PbftCertVoteRlp {
         vote_rlp: Vec<u8>,
     }
 
-    /// Previous-block PBFT cert votes decoded from finalized period data.
     struct PbftPeriodCertVotesView {
         found: bool,
         period: u64,
@@ -85,8 +83,6 @@ pub mod rustaxa_ffi {
         votes: Vec<PbftCertVoteRlp>,
     }
 
-    /// Optional canonical hash lookup result.
-    ///
     /// `found = false` means the backing storage row was absent. Decode and
     /// backend failures are returned as bridge errors instead.
     struct HashLookup {
@@ -99,7 +95,6 @@ pub mod rustaxa_ffi {
         value: u32,
     }
 
-    /// Exact exclusive cutoffs for the application-root light-history admin task.
     struct LightHistoryPruneRequest {
         end_period_exclusive: u64,
         first_retained_dag_level: u64,
@@ -107,7 +102,6 @@ pub mod rustaxa_ffi {
         non_block_periods_to_keep: u64,
     }
 
-    /// Typed outcome of one atomic application-root light-history admin task.
     struct LightHistoryPruneReport {
         changed: bool,
         end_period_exclusive: u64,
@@ -115,7 +109,6 @@ pub mod rustaxa_ffi {
         rebuilt_secondary_indexes: bool,
     }
 
-    /// One ordered key/value result from the closed v1 storage conformance scenario.
     struct StorageConformanceObservation {
         key: String,
         value: String,
@@ -132,7 +125,6 @@ pub mod rustaxa_ffi {
         transactions_executed: u64,
     }
 
-    /// Storage-backed finalized head and DAG index status facts.
     struct ConsensusStatusView {
         final_block_number: u64,
         latest_dag_level: u64,
@@ -140,7 +132,6 @@ pub mod rustaxa_ffi {
         latest_dag_period: u64,
     }
 
-    /// Lock-owned live DAG status for public and operational clients.
     ///
     /// The DTO contains only scalar/hash projections and never exposes the
     /// native graph, manager, service handle, or mutable lock domain.
@@ -156,7 +147,6 @@ pub mod rustaxa_ffi {
         non_finalized_blocks: u64,
     }
 
-    /// Lock-owned live transaction-pool status for public clients and metrics.
     struct LiveTransactionStatusView {
         transaction_count: u64,
         queue_size: u64,
@@ -166,7 +156,6 @@ pub mod rustaxa_ffi {
         non_proposable_over_limit: bool,
     }
 
-    /// Read-only projection of the application-owned PBFT-sync lifecycle.
     ///
     /// The DTO contains stable scalar and peer-identity facts only. It exposes
     /// neither a network-service handle nor mutable lifecycle state; elapsed
@@ -203,16 +192,22 @@ pub mod rustaxa_ffi {
         threshold_upper_min: u16,
     }
 
-    /// Rewards distribution frequency rule active from `from_period` onward.
-    struct RewardsFrequencyRule {
-        from_period: u64,
-        frequency: u32,
-    }
-
-    /// Previous-block cert-vote fact for rewards-stat planning.
-    /// TransactionQueue construction limits.
-    struct TransactionQueueConfig {
-        max_size: usize,
+    unsafe extern "C++" {
+        include!("rustaxa-native-config/src/lib.rs.h");
+        type RewardsFrequencyRule = rustaxa_native_config::RewardsFrequencyRule;
+        type GasPricerConfig = rustaxa_native_config::GasPricerConfig;
+        type PbftServiceConfig = rustaxa_native_config::PbftServiceConfig;
+        type GenesisAccount = rustaxa_native_config::GenesisAccount;
+        type GenesisValidator = rustaxa_native_config::GenesisValidator;
+        type GenesisDelegation = rustaxa_native_config::GenesisDelegation;
+        type GenesisDposConfig = rustaxa_native_config::GenesisDposConfig;
+        type RedelegationCorrection = rustaxa_native_config::RedelegationCorrection;
+        type FinalChainRewardsConfig = rustaxa_native_config::FinalChainRewardsConfig;
+        type SortitionRuntimeConfig = rustaxa_native_config::SortitionRuntimeConfig;
+        type SigningIdentity = rustaxa_native_config::SigningIdentity;
+        type DagProposerConfig = rustaxa_native_config::DagProposerConfig;
+        type ConsensusApplicationBootstrapConfig =
+            rustaxa_native_config::ConsensusApplicationBootstrapConfig;
     }
 
     /// Canonical public transaction plus immutable chain-policy facts.
@@ -633,15 +628,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// GasPricer construction limits and mode flags supplied by C++ genesis config.
-    struct GasPricerConfig {
-        percentile: u64,
-        minimum_price: [u8; 32],
-        history_blocks: usize,
-        is_light_node: bool,
-        blocks_gas_pricer: bool,
-    }
-
     /// Bootstrap identity or live concrete-EVM slashing account fact in stable wallet order.
     struct SlashingSubmitterIdentity {
         wallet_index: usize,
@@ -663,51 +649,6 @@ pub mod rustaxa_ffi {
         value: [u8; 32],
         gas_limit: u64,
         call_data: Vec<u8>,
-    }
-
-    /// Immutable application configuration for coherent PBFT service restore.
-    ///
-    /// The restored chain head supplies the current period and determines
-    /// whether Cacti is active; callers cannot inject either derived fact.
-    /// Slashing/hardfork facts and PBFT-sync service limits are copied into the
-    /// service-owned planners and cannot change during the service lifetime.
-    /// `sync_level_size` must be nonzero.
-    struct PbftServiceConfig {
-        genesis_lambda_ms: u64,
-        cacti_lambda_max_ms: u64,
-        cacti_lambda_default_ms: u64,
-        cacti_block: u64,
-        max_exponential_lambda_ms: u64,
-        max_steps: u64,
-        deadline_ms: u64,
-        polling_interval_ms: u64,
-        report_malicious_behaviour: bool,
-        magnolia_activation_period: u64,
-        ficus_activation_period: u64,
-        pillar_blocks_interval: u64,
-        sync_level_size: u64,
-        deep_syncing_threshold: u64,
-        is_light_node: bool,
-        light_node_history: u64,
-        committee_size: u64,
-        number_of_proposers: u64,
-        dag_blocks_size: u64,
-        ghost_path_move_back: u64,
-        node_version_major: u16,
-        node_version_minor: u16,
-        node_version_patch: u16,
-        node_version_network: u16,
-        node_version_suffix: Vec<u8>,
-        default_pbft_gas_limit: u64,
-        cornus_activation_period: u64,
-        cornus_pbft_gas_limit: u64,
-        lambda_min_ms: u64,
-        lambda_change_interval: u64,
-        lambda_change_ms: u64,
-        consensus_delay_ms: u64,
-        dpos_blocks_per_year: u64,
-        recently_finalized_factor: u64,
-        chain_id: u64,
     }
 
     /// One terminal or slashing-resumable native PBFT-sync ingress step.
@@ -780,78 +721,41 @@ pub mod rustaxa_ffi {
         pbft_block_hash: [u8; 32],
     }
 
-    struct FinalChainBlockNumberLookup {
-        found: bool,
-        value: u64,
+    enum FinalizedAccountField {
+        Account,
+        Storage,
+        Code,
+    }
+    struct FinalizedBlockTarget {
+        by_hash: bool,
+        number: u64,
+        hash: [u8; 32],
     }
 
-    /// Genesis account carried across the CXX bootstrap boundary.
-    ///
-    /// `address` identifies the account and `balance` is its validated U256 byte representation.
-    struct GenesisAccount {
-        address: [u8; 20],
-        balance: Vec<u8>,
+    enum DposPeriodMetric {
+        Delegated,
+        Yield,
+        Supply,
     }
-
-    struct GenesisValidator {
-        address: [u8; 20],
-        owner: [u8; 20],
-        vrf_key: [u8; 32],
-        commission: u16,
-        description: String,
-        endpoint: String,
-        total_stake: Vec<u8>,
-        delegations: Vec<GenesisDelegation>,
-    }
-
-    struct GenesisDelegation {
-        delegator: [u8; 20],
-        stake: Vec<u8>,
-    }
-
-    struct GenesisDposConfig {
-        eligibility_balance_threshold: Vec<u8>,
-        vote_eligibility_balance_step: Vec<u8>,
-        validator_maximum_stake: Vec<u8>,
-        minimum_deposit: Vec<u8>,
-        commission_change_delta: u16,
-        commission_change_frequency: u32,
-        delegation_delay: u64,
-        // Exclusive period boundary below which legacy DAG VDF sortition uses
-        // the snapshot total eligible vote count as denominator.
-        dag_vdf_sortition_total_vote_count_until_period: u64,
-    }
-
-    struct RedelegationCorrection {
-        validator: [u8; 20],
-        delegator: [u8; 20],
+    struct DposPeriodValue {
+        number: u64,
         amount: Vec<u8>,
     }
 
-    struct FinalChainRewardsConfig {
-        committee_size: u32,
-        magnolia_period: u64,
-        phalaenopsis_period: u64,
-        aspen_part_one_period: u64,
-        fix_claim_all_block_num: u64,
-        fix_redelegate_block_num: u64,
-        aspen_part_two_period: u64,
-        max_block_author_reward_percent: u16,
-        dag_proposers_reward_percent: u16,
-        yield_percentage: u16,
-        dpos_blocks_per_year: u32,
-        dpos_delegation_locking_period: u64,
-        cornus_period: u64,
-        cornus_delegation_locking_period: u64,
-        genesis_balance_sum: Vec<u8>,
-        aspen_max_supply: Vec<u8>,
-        aspen_generated_rewards: Vec<u8>,
-        cacti_period: u64,
-        cacti_delegation_locking_period: u64,
-        magnolia_jail_time: u64,
-        cacti_jail_time: u64,
-        frequency_rules: Vec<RewardsFrequencyRule>,
-        redelegations: Vec<RedelegationCorrection>,
+    struct FinalizedAccountView {
+        found: bool,
+        nonce: Vec<u8>,
+        balance: Vec<u8>,
+        storage_root: [u8; 32],
+        code_hash: [u8; 32],
+        code_size: u64,
+        storage_word: [u8; 32],
+        code: Vec<u8>,
+    }
+
+    struct FinalChainBlockNumberLookup {
+        found: bool,
+        value: u64,
     }
 
     struct DposValidatorStake {
@@ -892,7 +796,6 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
-    /// Public/query JSON view for one finalized DAG block.
     struct DagBlockPublicView {
         found: bool,
         pivot: [u8; 32],
@@ -943,38 +846,6 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
-    struct SortitionRuntimeConfig {
-        threshold_upper: u16,
-        difficulty_min: u16,
-        difficulty_max: u16,
-        difficulty_stale: u16,
-        lambda_bound: u16,
-        changes_count_for_average: u16,
-        dag_efficiency_target_low: u16,
-        dag_efficiency_target_high: u16,
-        changing_interval: u16,
-        computation_interval: u16,
-    }
-
-    /// Public identity of one configured signing wallet.
-    ///
-    /// The stable index selects host-held key material for later effects;
-    /// only public address and verification keys enter native configuration.
-    struct SigningIdentity {
-        wallet_index: u64,
-        address: [u8; 20],
-        node_public_key: [u8; 64],
-        vrf_public_key: [u8; 32],
-    }
-
-    /// Key-custody-free native DAG proposer policy for one signing identity.
-    struct DagProposerConfig {
-        total_transaction_shards: u16,
-        proposal_dag_gas_limit: u64,
-        default_dag_gas_limit: u64,
-        cornus_dag_gas_limit: u64,
-    }
-
     /// Hot application-root PBFT status used by App scheduling and networking.
     struct HostConsensusLiveStatus {
         period: u64,
@@ -1015,6 +886,14 @@ pub mod rustaxa_ffi {
             period: u64,
             vote_type: u8,
         ) -> Result<PbftTwoTPlusOneThresholdPlan>;
+        pub fn consensus_query_finalized_account(
+            self: &BridgeConsensusQueryApi,
+            field: FinalizedAccountField,
+            latest: bool,
+            period: u64,
+            address: &[u8; 20],
+            storage_key: &[u8; 32],
+        ) -> Result<FinalizedAccountView>;
         pub fn consensus_query_final_chain_block_by_number(
             self: &BridgeConsensusQueryApi,
             number: u64,
@@ -1039,21 +918,15 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             block_number: u64,
         ) -> Result<Vec<DposValidatorStake>>;
-        pub fn consensus_query_final_chain_dpos_total_amount_delegated(
+        pub fn consensus_query_final_chain_dpos_period_value(
             self: &BridgeConsensusQueryApi,
             block_number: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn consensus_query_final_chain_dpos_yield(
-            self: &BridgeConsensusQueryApi,
-            block_number: u64,
-        ) -> Result<u64>;
-        pub fn consensus_query_final_chain_dpos_total_supply(
-            self: &BridgeConsensusQueryApi,
-            block_number: u64,
-        ) -> Result<Vec<u8>>;
+            metric: DposPeriodMetric,
+        ) -> Result<DposPeriodValue>;
         pub fn consensus_query_final_chain_native_call(
             self: &BridgeConsensusQueryApi,
             request: FinalChainNativeCall,
+            trace_request_rlp: &[u8],
         ) -> Result<FinalChainNativeCallOutcome>;
         pub fn consensus_query_period_lambda_by_period(
             self: &BridgeConsensusQueryApi,
@@ -1122,23 +995,14 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             hash: &[u8; 32],
         ) -> Result<TransactionPublicView>;
-        pub fn consensus_query_transaction_by_block_number_and_index(
+        pub fn consensus_query_transaction_by_block_and_index(
             self: &BridgeConsensusQueryApi,
-            block_number: u64,
+            block: FinalizedBlockTarget,
             transaction_index: u64,
         ) -> Result<TransactionPublicView>;
-        pub fn consensus_query_transaction_by_block_hash_and_index(
+        pub fn consensus_query_transaction_count_by_block(
             self: &BridgeConsensusQueryApi,
-            block_hash: &[u8; 32],
-            transaction_index: u64,
-        ) -> Result<TransactionPublicView>;
-        pub fn consensus_query_transaction_count_by_block_number(
-            self: &BridgeConsensusQueryApi,
-            block_number: u64,
-        ) -> Result<u64>;
-        pub fn consensus_query_transaction_count_by_block_hash(
-            self: &BridgeConsensusQueryApi,
-            block_hash: &[u8; 32],
+            block: FinalizedBlockTarget,
         ) -> Result<u64>;
         pub fn consensus_query_transaction_receipt_by_hash(
             self: &BridgeConsensusQueryApi,
@@ -1253,12 +1117,16 @@ pub mod rustaxa_ffi {
             packet_rlp: &[u8],
             source_payload_id: u64,
             source_peer_id: [u8; 64],
+            sync_generation: u64,
             slashing_submitters: Vec<SlashingSubmitterIdentity>,
         ) -> Result<PbftSyncIngressStep>;
         pub fn consensus_network_report_pbft_sync_ingress_slashing(
             self: &BridgeConsensusNetworkApi,
             proof_hash: [u8; 32],
             transaction_inserted: bool,
+            source_payload_id: u64,
+            source_peer_id: [u8; 64],
+            sync_generation: u64,
         ) -> Result<PbftSyncIngressStep>;
         pub fn consensus_network_report_verified_vote_slashing_submission(
             self: &BridgeConsensusNetworkApi,
@@ -1270,30 +1138,26 @@ pub mod rustaxa_ffi {
 
         type BridgeConsensusApplication;
 
+        /// Returns the native bid for one host-signed network transaction.
+        pub fn consensus_network_transaction_gas_price_bid(
+            network: &BridgeConsensusNetworkApi,
+        ) -> Result<[u8; 32]>;
+
+        /// Submits one host-signed network transaction through the bound native API.
+        pub fn consensus_network_submit_transaction(
+            network: &BridgeConsensusNetworkApi,
+            request: PublicTransactionSubmissionRequest,
+        ) -> Result<PublicTransactionSubmissionReport>;
+
+        /// Routes one canonical transaction packet through native network and
+        /// application owners while borrowing only the external-EVM leaf.
+        pub fn consensus_network_ingest_transaction_packet(
+            network: &BridgeConsensusNetworkApi,
+            request: NetworkTransactionPacketRequest,
+        ) -> Result<NetworkTransactionPacketReport>;
+
         pub fn create_consensus_application(
-            storage_path: &str,
-            schema_major: u32,
-            schema_minor: u32,
-            storage_genesis: &[u8; 32],
-            dag_genesis: &[u8; 32],
-            dag_expiry_limit: u32,
-            max_levels_per_period: u64,
-            sortition_config: SortitionRuntimeConfig,
-            transaction_queue_config: TransactionQueueConfig,
-            gas_pricer_config: GasPricerConfig,
-            proposal_dag_gas_limit: u64,
-            pbft_config: PbftServiceConfig,
-            signing_identities: Vec<SigningIdentity>,
-            dag_proposer: DagProposerConfig,
-            final_chain_block_gas_limit: u64,
-            final_chain_genesis_timestamp: u64,
-            final_chain_state_api_committed_period: u64,
-            final_chain_state_api_committed_root: [u8; 32],
-            final_chain_bridge_contract_address: [u8; 20],
-            final_chain_genesis_accounts: Vec<GenesisAccount>,
-            final_chain_genesis_validators: Vec<GenesisValidator>,
-            final_chain_genesis_dpos_config: GenesisDposConfig,
-            final_chain_rewards_config: FinalChainRewardsConfig,
+            config: ConsensusApplicationBootstrapConfig,
         ) -> Result<Box<BridgeConsensusApplication>>;
         /// Returns one lock-coherent hot status snapshot without exposing the
         /// native PBFT manager or its internal executor cursor.

@@ -1,0 +1,533 @@
+//! Narrow REVM host backed by the authoritative execution journal.
+//!
+//! The host projects arbitrary-width Taraxa values only where the EVM operand
+//! stack requires a 256-bit word. It preserves journal storage, transient,
+//! refund and log ownership and fails explicitly when immutable state or code
+//! cannot be loaded. The execution driver routes ordinary nested frames around
+//! this host and owns native dispatch. SELFDESTRUCT uses an execution-only
+//! quote/apply boundary so gas failure cannot leak account touch effects.
+//!
+//! During CALL-family opcode preparation only, the profile asks this host for
+//! metadata without referenced bytes. The driver discards that internal empty
+//! code carrier and loads validated code after Taraxa's pre-entry checks.
+
+use std::borrow::Cow;
+
+use num_bigint::BigUint;
+use revm::{
+    bytecode::Bytecode,
+    context_interface::{
+        Host,
+        cfg::GasParams,
+        context::{SStoreResult, SelfDestructResult, StateLoad},
+        host::LoadError,
+        journaled_state::AccountInfoLoad,
+    },
+    primitives::{Address, B256, KECCAK_EMPTY, Log, StorageKey, StorageValue, U256},
+    state::AccountInfo,
+};
+use rustaxa_types::{
+    FinalChainBlockNumber,
+    concrete_state::{ConcreteStorageKey, execution::ConcreteExecutionRead},
+};
+
+use crate::{
+    contracts::{
+        BlockHashRead, BlockHashReadError, ExecutionBlockContext, ExecutionLog,
+        ExecutionTransaction,
+    },
+    journal::{ExecutionJournal, JournalError},
+    profile::{DeferredCallCodeLoad, DeferredSelfDestruct},
+};
+
+/// A host-side failure that must abort the pending transaction/period.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HostError {
+    /// Concrete state or journal mutation failed.
+    Journal(JournalError),
+    /// Canonical historical block data was unavailable or invalid.
+    BlockHash(BlockHashReadError),
+    /// SELFDESTRUCT requires the execution table that defers mutation until gas admission.
+    SelfDestructUnavailable,
+    /// A SELFDESTRUCT opcode has no existing execution account; the Go quote panics here.
+    SelfDestructSourceAbsent,
+}
+
+impl std::fmt::Display for HostError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "execution host: {self:?}")
+    }
+}
+
+impl std::error::Error for HostError {}
+
+/// REVM host for one active bytecode frame.
+pub struct JournalHost<'a, R, B> {
+    journal: &'a mut ExecutionJournal<R>,
+    block_hashes: &'a B,
+    block: &'a ExecutionBlockContext,
+    transaction: &'a ExecutionTransaction,
+    gas_params: GasParams,
+    defer_call_code_load: bool,
+    defer_selfdestruct: bool,
+    pending_selfdestruct: Option<([u8; 20], [u8; 20])>,
+    fault: Option<HostError>,
+    trace_sstore_cost: Option<u64>,
+    trace_gas: bool,
+}
+
+impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
+    pub(crate) fn synchronize_native_memory(
+        &mut self,
+        frame: &mut crate::borrowed_memory::FrameMemory,
+        memory: &[u8],
+    ) {
+        self.journal.synchronize_native_memory(frame, memory);
+    }
+
+    pub(crate) fn capture_trace_gas(&mut self) {
+        self.trace_gas = true;
+        self.trace_sstore_cost = None;
+    }
+
+    pub(crate) fn trace_sstore_cost(
+        &mut self,
+        address: [u8; 20],
+        key: U256,
+        value: U256,
+    ) -> Result<u64, HostError> {
+        if let Some(cost) = self.trace_sstore_cost.take() {
+            return Ok(cost);
+        }
+        let (original, current) = self
+            .journal
+            .ordinary_storage(address, ConcreteStorageKey(key.to_be_bytes()))
+            .map_err(HostError::Journal)?;
+        Ok(self.sstore_cost(&sstore_gas_values(original, current, value)))
+    }
+
+    fn sstore_cost(&self, values: &SStoreResult) -> u64 {
+        self.gas_params.sstore_static_gas()
+            + self.gas_params.sstore_dynamic_gas(true, values, false)
+    }
+
+    pub(crate) fn trace_ext_account_empty(&mut self, word: U256) -> Result<bool, HostError> {
+        let address = word.to_be_bytes::<32>()[12..]
+            .try_into()
+            .expect("address is twenty bytes");
+        match self.account_info(address, false) {
+            Ok((_, _, empty)) => Ok(empty),
+            Err(_) => Err(self
+                .take_error()
+                .expect("account load recorded a host error")),
+        }
+    }
+
+    pub(crate) fn trace_source_has_balance(
+        &mut self,
+        address: [u8; 20],
+    ) -> Result<bool, HostError> {
+        let account = self
+            .journal
+            .account_metadata(address)
+            .map_err(HostError::Journal)?;
+        if !account.exists {
+            return Err(HostError::SelfDestructSourceAbsent);
+        }
+        Ok(account.balance.value() != &num_bigint::BigInt::default())
+    }
+
+    /// Binds one interpreter to its transaction, block and journal authority.
+    pub fn new(
+        journal: &'a mut ExecutionJournal<R>,
+        block_hashes: &'a B,
+        block: &'a ExecutionBlockContext,
+        transaction: &'a ExecutionTransaction,
+        gas_params: GasParams,
+    ) -> Self {
+        Self {
+            journal,
+            block_hashes,
+            block,
+            transaction,
+            gas_params,
+            defer_call_code_load: false,
+            defer_selfdestruct: false,
+            pending_selfdestruct: None,
+            fault: None,
+            trace_sstore_cost: None,
+            trace_gas: false,
+        }
+    }
+
+    /// Takes the first host failure recorded by an instruction.
+    pub fn take_error(&mut self) -> Option<HostError> {
+        self.fault.take()
+    }
+
+    fn fail<T>(&mut self, error: HostError) -> Result<T, LoadError> {
+        if self.fault.is_none() {
+            self.fault = Some(error);
+        }
+        Err(LoadError::DBError)
+    }
+
+    fn account_info(
+        &mut self,
+        address: [u8; 20],
+        load_code: bool,
+    ) -> Result<(AccountInfo, bool, bool), LoadError> {
+        let metadata = match self.journal.account_metadata(address) {
+            Ok(metadata) => metadata,
+            Err(error) => return self.fail(HostError::Journal(error)),
+        };
+        let balance = U256::from_be_bytes(metadata.balance.low_word());
+        let semantic_empty = metadata.nonce.is_zero()
+            && metadata.balance.value() == &num_bigint::BigInt::default()
+            && metadata.code_size == 0;
+        let mut nonce = metadata.nonce.as_u64().unwrap_or(1);
+        let deferred_call_code = load_code && self.defer_call_code_load;
+        let code_hash = if !metadata.exists {
+            B256::ZERO
+        } else if metadata.code_size == 0 {
+            KECCAK_EMPTY
+        } else if deferred_call_code {
+            metadata.code_hash.map(B256::from).unwrap_or(B256::ZERO)
+        } else {
+            match metadata.code_hash {
+                Some(hash) => B256::from(hash),
+                None => {
+                    return self.fail(HostError::Journal(JournalError::MissingCodeHash {
+                        address,
+                    }));
+                }
+            }
+        };
+        let code = if load_code && !deferred_call_code {
+            let bytes = match self.journal.account_code(address) {
+                Ok(bytes) => bytes,
+                Err(error) => return self.fail(HostError::Journal(error)),
+            };
+            Some(Bytecode::new_legacy(bytes.into()))
+        } else {
+            None
+        };
+        // REVM uses AccountInfo::is_empty for EXTCODEHASH. Preserve the
+        // reference's full-width EIP-161 test when a wide nonce/balance projects
+        // to zero in the bounded host representation.
+        if metadata.exists
+            && !semantic_empty
+            && nonce == 0
+            && balance.is_zero()
+            && code_hash == KECCAK_EMPTY
+        {
+            nonce = 1;
+        }
+        Ok((
+            AccountInfo {
+                balance,
+                nonce,
+                code_hash,
+                account_id: None,
+                code,
+            },
+            !metadata.exists,
+            semantic_empty,
+        ))
+    }
+}
+
+impl<R, B> DeferredCallCodeLoad for JournalHost<'_, R, B> {
+    fn set_call_code_load_deferred(&mut self, deferred: bool) {
+        self.defer_call_code_load = deferred;
+    }
+}
+
+impl<R: ConcreteExecutionRead, B: BlockHashRead> DeferredSelfDestruct for JournalHost<'_, R, B> {
+    fn begin_selfdestruct(&mut self) {
+        self.defer_selfdestruct = true;
+        self.pending_selfdestruct = None;
+    }
+
+    fn finish_selfdestruct(&mut self, admitted: bool) -> Result<(), LoadError> {
+        self.defer_selfdestruct = false;
+        if let Some((address, beneficiary)) = self.pending_selfdestruct.take()
+            && admitted
+            && let Err(error) = self.journal.selfdestruct(address, beneficiary)
+        {
+            return self.fail(HostError::Journal(error));
+        }
+        Ok(())
+    }
+}
+
+impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> {
+    fn basefee(&self) -> U256 {
+        U256::ZERO
+    }
+    fn blob_gasprice(&self) -> U256 {
+        U256::ZERO
+    }
+    fn gas_limit(&self) -> U256 {
+        U256::from(self.block.gas_limit.as_u64())
+    }
+    fn gas_params(&self) -> &GasParams {
+        &self.gas_params
+    }
+    fn is_amsterdam_eip8037_enabled(&self) -> bool {
+        false
+    }
+    fn difficulty(&self) -> U256 {
+        low_word(self.block.difficulty.clone())
+    }
+    fn prevrandao(&self) -> Option<U256> {
+        None
+    }
+    fn block_number(&self) -> U256 {
+        U256::from(self.block.period.as_u64())
+    }
+    fn timestamp(&self) -> U256 {
+        U256::from(self.block.timestamp)
+    }
+    fn beneficiary(&self) -> Address {
+        Address::from(self.block.author)
+    }
+    fn slot_num(&self) -> U256 {
+        U256::ZERO
+    }
+    fn chain_id(&self) -> U256 {
+        U256::from(self.block.chain_id)
+    }
+    fn effective_gas_price(&self) -> U256 {
+        U256::from_be_bytes(self.transaction.gas_price.low_word())
+    }
+    fn caller(&self) -> Address {
+        Address::from(self.transaction.sender)
+    }
+    fn blob_hash(&self, _number: usize) -> Option<U256> {
+        None
+    }
+    fn max_initcode_size(&self) -> usize {
+        49_152
+    }
+
+    fn block_hash(&mut self, number: u64) -> Option<B256> {
+        let current = self.block.period.as_u64();
+        if number >= current || current - number > 256 {
+            return Some(B256::ZERO);
+        }
+        match self
+            .block_hashes
+            .block_hash(FinalChainBlockNumber::new(number))
+        {
+            Ok(hash) => Some(B256::from(hash)),
+            Err(error) => {
+                if self.fault.is_none() {
+                    self.fault = Some(HostError::BlockHash(error));
+                }
+                None
+            }
+        }
+    }
+
+    fn selfdestruct(
+        &mut self,
+        address: Address,
+        target: Address,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
+        if !self.defer_selfdestruct {
+            return self.fail(HostError::SelfDestructUnavailable);
+        }
+        let source = match self.journal.account_metadata(address.into_array()) {
+            Ok(value) => value,
+            Err(error) => return self.fail(HostError::Journal(error)),
+        };
+        if !source.exists {
+            return self.fail(HostError::SelfDestructSourceAbsent);
+        }
+        let beneficiary = match self.journal.account_metadata(target.into_array()) {
+            Ok(value) => value,
+            Err(error) => return self.fail(HostError::Journal(error)),
+        };
+        let target_empty = beneficiary.nonce.is_zero()
+            && beneficiary.balance.value() == &num_bigint::BigInt::default()
+            && beneficiary.code_size == 0;
+        let previously_destroyed = if self.journal.correction_stage().single_selfdestruct_refund() {
+            match self.journal.previously_destroyed(address.into_array()) {
+                Ok(value) => value,
+                Err(error) => return self.fail(HostError::Journal(error)),
+            }
+        } else {
+            // Historical Go reports false for every existing source.
+            false
+        };
+        self.pending_selfdestruct = Some((address.into_array(), target.into_array()));
+        Ok(StateLoad::new(
+            SelfDestructResult {
+                had_value: source.balance.value() != &num_bigint::BigInt::default(),
+                target_exists: !target_empty,
+                previously_destroyed,
+            },
+            false,
+        ))
+    }
+
+    fn log(&mut self, log: Log) {
+        self.journal.push_log(ExecutionLog {
+            address: log.address.into_array(),
+            topics: log.data.topics().iter().map(|topic| topic.0).collect(),
+            data: log.data.data.to_vec(),
+        });
+    }
+
+    fn sstore_skip_cold_load(
+        &mut self,
+        address: Address,
+        key: StorageKey,
+        value: StorageValue,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<SStoreResult>, LoadError> {
+        let address = address.into_array();
+        let key = ConcreteStorageKey(key.to_be_bytes());
+        let (original, present) = match self.journal.ordinary_storage(address, key) {
+            Ok(values) => values,
+            Err(error) => return self.fail(HostError::Journal(error)),
+        };
+        crate::journal::duration_journal_storage_consumer(false, address, key, &present);
+        if present != big_uint(value) {
+            crate::journal::duration_journal_storage_consumer(true, address, key, &original);
+        }
+        if let Err(error) = self
+            .journal
+            .set_ordinary_storage(address, key, big_uint(value))
+        {
+            return self.fail(HostError::Journal(error));
+        }
+        let values = sstore_gas_values(original, present, value);
+        if self.trace_gas {
+            self.trace_sstore_cost = Some(self.sstore_cost(&values));
+        }
+        Ok(StateLoad::new(values, false))
+    }
+
+    fn sload_skip_cold_load(
+        &mut self,
+        address: Address,
+        key: StorageKey,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<StorageValue>, LoadError> {
+        let owner = address.into_array();
+        let slot = ConcreteStorageKey(key.to_be_bytes());
+        let values = self.journal.ordinary_storage(owner, slot);
+        match values {
+            Ok((_, current)) => {
+                crate::journal::duration_journal_storage_consumer(false, owner, slot, &current);
+                Ok(StateLoad::new(low_word(current), false))
+            }
+            Err(error) => self.fail(HostError::Journal(error)),
+        }
+    }
+
+    fn tstore(&mut self, address: Address, key: StorageKey, value: StorageValue) {
+        self.journal.set_transient_storage(
+            address.into_array(),
+            ConcreteStorageKey(key.to_be_bytes()),
+            value.to_be_bytes(),
+        );
+    }
+
+    fn tload(&mut self, address: Address, key: StorageKey) -> StorageValue {
+        U256::from_be_bytes(
+            self.journal
+                .transient_storage(address.into_array(), ConcreteStorageKey(key.to_be_bytes())),
+        )
+    }
+
+    fn load_account_info_skip_cold_load(
+        &mut self,
+        address: Address,
+        load_code: bool,
+        _skip_cold_load: bool,
+    ) -> Result<AccountInfoLoad<'_>, LoadError> {
+        let (account, _absent, semantic_empty) =
+            self.account_info(address.into_array(), load_code)?;
+        Ok(AccountInfoLoad {
+            account: Cow::Owned(account),
+            is_cold: false,
+            is_empty: semantic_empty,
+        })
+    }
+
+    fn load_account_code_hash(&mut self, address: Address) -> Option<StateLoad<B256>> {
+        let (account, absent, _semantic_empty) =
+            self.account_info(address.into_array(), false).ok()?;
+        Some(StateLoad::new(
+            if absent {
+                B256::ZERO
+            } else {
+                account.code_hash
+            },
+            false,
+        ))
+    }
+}
+
+fn big_uint(value: U256) -> BigUint {
+    BigUint::from_bytes_be(&value.to_be_bytes::<32>())
+}
+
+fn low_word(value: BigUint) -> U256 {
+    let bytes = value.to_bytes_be();
+    let tail = bytes.len().saturating_sub(32);
+    let mut word = [0_u8; 32];
+    word[32 - (bytes.len() - tail)..].copy_from_slice(&bytes[tail..]);
+    U256::from_be_bytes(word)
+}
+
+/// Projects full-width Taraxa storage into REVM's gas-only relation carrier.
+///
+/// REVM's SSTORE accounting observes only zero/nonzero state and pairwise
+/// equality among the original, present and new values. Narrow inputs retain
+/// their exact words. If either stored value is wider than the EVM stack, each
+/// distinct nonzero full-width value receives a distinct nonzero word while
+/// numeric zero remains zero. The journal separately stores the actual new EVM
+/// word, so these representatives never become account state.
+fn sstore_gas_values(original: BigUint, present: BigUint, new_value: StorageValue) -> SStoreResult {
+    if original.bits() <= 256 && present.bits() <= 256 {
+        return SStoreResult {
+            original_value: low_word(original),
+            present_value: low_word(present),
+            new_value,
+        };
+    }
+
+    let zero = BigUint::default();
+    let new = big_uint(new_value);
+    let original_value = if original == zero {
+        U256::ZERO
+    } else {
+        U256::from(1_u8)
+    };
+    let present_value = if present == zero {
+        U256::ZERO
+    } else if present == original {
+        original_value
+    } else {
+        U256::from(2_u8)
+    };
+    let new_value = if new == zero {
+        U256::ZERO
+    } else if new == original {
+        original_value
+    } else if new == present {
+        present_value
+    } else {
+        U256::from(3_u8)
+    };
+    SStoreResult {
+        original_value,
+        present_value,
+        new_value,
+    }
+}

@@ -82,13 +82,13 @@ response::Value Account::getTransactionCount() const noexcept {
   return response::Value(0);
 }
 
-response::Value Account::getCode() const noexcept {
-  const auto block_number = block_number_.value_or(reader_.latest_finalized_block_number());
+response::Value Account::getCode() const {
+  const auto block_number = block_number_ ? *block_number_ : reader_.latest_finalized_block_number();
   return response::Value(dev::toJS(reader_.code_at(kAddress, block_number)));
 }
 
 response::Value Account::getStorage(response::Value&& slotArg) const {
-  const auto block_number = block_number_.value_or(reader_.latest_finalized_block_number());
+  const auto block_number = block_number_ ? *block_number_ : reader_.latest_finalized_block_number();
   return response::Value(dev::toJS(reader_.storage_at(kAddress, dev::u256(slotArg.get<std::string>()), block_number)));
 }
 

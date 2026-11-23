@@ -11,11 +11,18 @@ pub mod dag;
 pub(crate) mod dag_service;
 pub(crate) mod dag_transaction_service;
 pub(crate) mod dpos_reward_graph;
+mod execution_configuration;
 pub mod gas_pricer;
 pub mod maybe_broadcast_votes;
+pub mod native_projection_context;
 pub mod network_api;
 pub mod pbft_application_finalization;
 pub mod pbft_chain;
+pub mod pbft_execution_guard;
+pub use execution_configuration::{ConfigurationUnavailable, ExecutionConfiguration};
+
+mod pbft_execution_inputs;
+pub mod pbft_execution_validation;
 pub mod pbft_finalize;
 pub mod pbft_leader_selection;
 pub mod pbft_manager;
@@ -64,9 +71,12 @@ pub use concrete_state_projection::{
     FinalChainConcreteStorageProjection, FinalChainConcreteTransactionEffect,
     concrete_state_bytes_digest, concrete_storage_catalog_hash, decode_concrete_execution_marker,
     decode_concrete_state_projection, decode_concrete_state_provenance,
-    encode_concrete_execution_marker, encode_concrete_state_projection,
-    encode_concrete_state_provenance, validate_concrete_state_pair,
+    encode_concrete_evm_transaction, encode_concrete_execution_marker,
+    encode_concrete_execution_result, encode_concrete_rewards_input,
+    encode_concrete_state_projection, encode_concrete_state_provenance,
+    validate_concrete_state_pair,
 };
+pub use consensus_application::production_application::DagGasState;
 pub use consensus_application::{
     ConsensusApplication, ConsensusApplicationBootstrap, ConsensusApplicationConfig,
     ConsensusFinalChainConfig, ConsensusLiveStatus, ConsensusVoteStatus, DagBlockIngressReport,
@@ -77,13 +87,14 @@ pub use consensus_application::{
 pub use consensus_application_runtime::{
     ConsensusApplicationRuntime, ConsensusEffectId, ConsensusExecutionPort,
     ConsensusObservationReport, ConsensusObservationRequest, ConsensusObserverPort,
-    ConsensusProcessPort, ConsensusRunExit, ConsensusRunReason, ConsensusSignReport,
-    ConsensusSignRequest, ConsensusSigningPort, ConsensusTransportPort, ConsensusTransportReport,
-    ConsensusTransportStatus, ConsensusVrfReport, ConsensusVrfRequest, ConsensusWaitOutcome,
-    ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateInput, DagGasEstimateReport,
-    DagGasEstimateRequest, DagGasEstimateResult, EvmFinalizationReport, EvmFinalizationRequest,
-    GossipDagBlockRequest, GossipPillarVoteRequest, GossipVoteBundleRequest, GossipVoteRequest,
-    PillarAnchorStateReport, PillarAnchorStateRequest, ReportMaliciousPeerRequest, SigningIdentity,
+    ConsensusProcessPort, ConsensusRunExit, ConsensusRunReason, ConsensusRuntimeServices,
+    ConsensusSignReport, ConsensusSignRequest, ConsensusSigningPort, ConsensusTransportPort,
+    ConsensusTransportReport, ConsensusTransportStatus, ConsensusVrfReport, ConsensusVrfRequest,
+    ConsensusWaitOutcome, ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateInput,
+    DagGasEstimateReport, DagGasEstimateRequest, DagGasEstimateResult, EvmFinalizationReport,
+    EvmFinalizationRequest, GossipDagBlockRequest, GossipPillarVoteRequest,
+    GossipVoteBundleRequest, GossipVoteRequest, PillarAnchorStateReport, PillarAnchorStateRequest,
+    ReportMaliciousPeerRequest, SigningIdentity,
 };
 pub use consensus_network_api::ConsensusNetworkApi;
 pub use consensus_pipeline::{
@@ -113,7 +124,10 @@ pub use dag_transaction_service::{
     PublicTransactionSubmissionReport, PublicTransactionSubmissionRequest,
     TransactionGossipAccount, TransactionGossipEntry, TransactionPoolStatus,
 };
-pub use final_chain::FinalChain;
+#[cfg(feature = "synthetic-fixtures")]
+pub use final_chain::FinalChainSyntheticDonor;
+pub use final_chain::native_session;
+pub use final_chain::{FinalChain, FinalChainGenesisAllocation};
 pub use final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED,
     FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED, FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED,
@@ -146,6 +160,7 @@ pub use final_chain_execution::{
     FinalChainExternalEvmTransactionPublication, FinalChainSystemTransactionFactsRequest,
     FinalChainSystemTransactionPlan, FinalChainSystemTransactionPlanFact,
     FinalChainSystemTransactionReport, FinalChainSystemTransactionRequest,
+    initialize_and_recover_final_chain_application_state_at_joint_startup,
     recover_final_chain_application_state,
 };
 pub(crate) use final_chain_execution::{
@@ -444,4 +459,20 @@ pub use dag::{
     ensure_proposal_period_mapping, load_dag_block_from_storage, period_block_hash_from_storage,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     verify_precheck_from_storage,
+};
+
+#[cfg(test)]
+#[path = "../../rustaxa-storage/src/test_paths.rs"]
+mod test_paths;
+
+pub use consensus_application::production_application::{
+    ApplicationExecutionView, BoundConsensusApplication, ProductionAdmissionPolicy,
+    ProductionConfiguration,
+};
+
+pub mod production_bootstrap;
+pub use consensus_application::production_application::{
+    ApplicationTransitionContext, ProductionCertificateProofError,
+    ProductionOwnerPublicationAuthority, ProductionPreparationUnavailable, ProposalExecutionCheck,
+    ScheduledCertificateStale, VerifiedCertificateEvidence,
 };

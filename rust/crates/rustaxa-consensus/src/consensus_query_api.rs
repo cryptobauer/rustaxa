@@ -7,6 +7,9 @@
 //! callers receive stable DTOs plus canonical bytes when compatibility
 //! materializers still need legacy encodings.
 
+use crate::consensus_application::production_application::{
+    ApplicationComposition, ApplicationScopeSource,
+};
 use anyhow::{Context, Result};
 use ethereum_types::{H160, H256};
 use rlp::{Rlp, RlpStream};
@@ -398,6 +401,7 @@ pub struct PillarBlockDataView {
 /// legacy JSON or objects while this facade remains the single consensus read
 /// boundary.
 pub struct ConsensusQueryApi {
+    composition: ApplicationComposition,
     storage: Arc<Storage>,
     live_pbft: Option<Arc<PbftService>>,
     live_final_chain: Option<Arc<FinalChain>>,
@@ -408,6 +412,7 @@ impl ConsensusQueryApi {
     /// Creates a public query facade over a shared Rust storage owner.
     pub fn new(storage: Arc<Storage>) -> Self {
         Self {
+            composition: ApplicationComposition::Historical,
             storage,
             live_pbft: None,
             live_final_chain: None,
@@ -427,12 +432,32 @@ impl ConsensusQueryApi {
         final_chain: Arc<FinalChain>,
         dag_transaction: Arc<DagTransactionService>,
     ) -> Self {
+        Self::new_live_composed(
+            storage,
+            pbft,
+            final_chain,
+            dag_transaction,
+            ApplicationComposition::Historical,
+        )
+    }
+
+    pub(crate) fn new_live_composed(
+        storage: Arc<Storage>,
+        pbft: Arc<PbftService>,
+        final_chain: Arc<FinalChain>,
+        dag_transaction: Arc<DagTransactionService>,
+        composition: ApplicationComposition,
+    ) -> Self {
         Self {
+            composition,
             storage,
             live_pbft: Some(pbft),
             live_final_chain: Some(final_chain),
             live_dag_transaction: Some(dag_transaction),
         }
+    }
+    pub(crate) fn is_bound_to_scope(&self, source: &Arc<ApplicationScopeSource>) -> bool {
+        self.composition.is_bound_to(source)
     }
 
     /// Returns a lock-coherent live DAG graph/head snapshot.
@@ -995,42 +1020,10 @@ impl ConsensusQueryApi {
     /// vote bytes are returned as errors so public adapters can preserve their
     /// existing invalid-params behavior.
     pub fn pillar_block_data_by_period(&self, period: u64) -> Result<PillarBlockDataView> {
-        let Some(pillar_block_rlp) = self.storage.pillar().rlp(period)? else {
+        let Some(data) = finalized_pillar_data(&self.storage, period)? else {
             return Ok(PillarBlockDataView::default());
         };
-        let votes_period = period
-            .checked_add(1)
-            .context("CONSENSUS_QUERY_PILLAR_VOTES_PERIOD_OVERFLOW")?;
-        let period_data = self
-            .storage
-            .period()
-            .data_raw(votes_period)
-            .context("CONSENSUS_QUERY_PILLAR_PERIOD_DATA")?;
-        if period_data.is_empty() {
-            return Ok(PillarBlockDataView::default());
-        }
-
-        let period_rlp = Rlp::new(&period_data);
-        if period_rlp.item_count()? <= PILLAR_VOTES_POS_IN_PERIOD_DATA {
-            return Ok(PillarBlockDataView::default());
-        }
-        let votes = period_rlp
-            .at(PILLAR_VOTES_POS_IN_PERIOD_DATA)
-            .context("CONSENSUS_QUERY_PILLAR_VOTES")?;
-        if votes.item_count()? == 0 {
-            return Ok(PillarBlockDataView::default());
-        }
-
-        let block_data_rlp = RawPillarBlockData {
-            pillar_block_rlp,
-            pillar_votes_bundle_rlp: votes.as_raw().to_vec(),
-        }
-        .encode_rlp()
-        .context("CONSENSUS_QUERY_PILLAR_BLOCK_DATA_RLP")?;
-        let block_data = PillarBlockData::decode_rlp(&block_data_rlp)
-            .context("CONSENSUS_QUERY_PILLAR_BLOCK_DATA_DECODE")?;
-
-        Ok(pillar_block_data_view(block_data))
+        Ok(pillar_block_data_view(data))
     }
 
     /// Returns a public DAG block view by block hash.
@@ -1930,6 +1923,47 @@ fn dag_bundle_is_empty(bundle: &Rlp<'_>) -> Result<bool> {
     Ok(bundle.data()?.is_empty())
 }
 
+pub(crate) fn finalized_pillar_data(
+    storage: &Storage,
+    period: u64,
+) -> Result<Option<PillarBlockData>> {
+    let Some(pillar_block_rlp) = storage.pillar().rlp(period)? else {
+        return Ok(None);
+    };
+    let votes_period = period
+        .checked_add(1)
+        .context("CONSENSUS_QUERY_PILLAR_VOTES_PERIOD_OVERFLOW")?;
+    let period_data = storage
+        .period()
+        .data_raw(votes_period)
+        .context("CONSENSUS_QUERY_PILLAR_PERIOD_DATA")?;
+    if period_data.is_empty() {
+        return Ok(None);
+    }
+
+    let period_rlp = Rlp::new(&period_data);
+    if period_rlp.item_count()? <= PILLAR_VOTES_POS_IN_PERIOD_DATA {
+        return Ok(None);
+    }
+    let votes = period_rlp
+        .at(PILLAR_VOTES_POS_IN_PERIOD_DATA)
+        .context("CONSENSUS_QUERY_PILLAR_VOTES")?;
+    if votes.item_count()? == 0 {
+        return Ok(None);
+    }
+
+    let block_data_rlp = RawPillarBlockData {
+        pillar_block_rlp,
+        pillar_votes_bundle_rlp: votes.as_raw().to_vec(),
+    }
+    .encode_rlp()
+    .context("CONSENSUS_QUERY_PILLAR_BLOCK_DATA_RLP")?;
+    let block_data = PillarBlockData::decode_rlp(&block_data_rlp)
+        .context("CONSENSUS_QUERY_PILLAR_BLOCK_DATA_DECODE")?;
+
+    Ok(Some(block_data))
+}
+
 fn pillar_block_data_view(block_data: PillarBlockData) -> PillarBlockDataView {
     let block_hash = block_data.pillar_block.hash();
     PillarBlockDataView {
@@ -1974,12 +2008,7 @@ mod tests {
     use std::sync::Arc;
 
     fn test_storage(name: &str) -> (std::path::PathBuf, Arc<Storage>) {
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_consensus_query_api_{}_{}",
-            name,
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
+        let path = crate::test_paths::new_path(name);
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         (path, storage)
     }

@@ -236,29 +236,16 @@ pub fn prepare_consensus_startup(
 }
 
 fn restore_cert_voted_metadata(pbft: &PbftService) -> Result<()> {
-    let payload = pbft.cert_voted_block_in_round()?;
-    if payload.is_empty() {
+    let Some(retained) = pbft.decoded_cert_voted_block_in_round()? else {
         return Ok(());
-    }
-    let payload = Rlp::new(&payload);
-    ensure!(
-        payload.item_count()? == 2,
-        "CONSENSUS_STARTUP_CERT_VOTED_PAYLOAD_SHAPE"
-    );
-    let round: u64 = payload.val_at(0)?;
-    let block_rlp = payload
-        .at(1)
-        .context("CONSENSUS_STARTUP_CERT_VOTED_BLOCK")?
-        .as_raw()
-        .to_vec();
-    let link = rustaxa_types::pbft::PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block_rlp))?;
-    pbft.publish_proposed_block_effect(block_rlp)?;
+    };
+    pbft.publish_proposed_block_effect(retained.block_rlp)?;
     let snapshot = pbft.manager_snapshot();
-    if snapshot.period == link.period && snapshot.round == round {
+    if snapshot.period == retained.link.period && snapshot.round == retained.round {
         pbft.apply_cert_voted_block_metadata(
-            link.period,
-            u32::try_from(round).context("CONSENSUS_STARTUP_CERT_VOTED_ROUND_OVERFLOW")?,
-            link.block_hash,
+            retained.link.period,
+            u32::try_from(retained.round).context("CONSENSUS_STARTUP_CERT_VOTED_ROUND_OVERFLOW")?,
+            retained.link.block_hash,
         );
     }
     Ok(())

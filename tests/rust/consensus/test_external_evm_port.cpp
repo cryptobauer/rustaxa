@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <array>
 #include <filesystem>
@@ -71,7 +72,8 @@ std::array<uint8_t, 32> concreteChainIdentity(const FullNodeConfig& config) {
 class ExternalEvmPortTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    test_dir = std::filesystem::temp_directory_path() / "rustaxa_external_evm_port_test";
+    test_dir =
+        std::filesystem::temp_directory_path() / ("rustaxa_external_evm_port_test_" + std::to_string(::getpid()));
     std::filesystem::remove_all(test_dir);
   }
 
@@ -103,6 +105,7 @@ TEST_F(ExternalEvmPortTest, MixedOrphanedConcreteStageIsDiscardedOnApplicationRe
   preflight_request.concrete_chain_identity = concreteChainIdentity(config);
   const auto before = port->consensusLoadFinalChainCommittedState(preflight_request);
   ASSERT_TRUE(before.succeeded) << std::string(before.error_code);
+  ASSERT_NE(before.state_api_epoch, 0);
   TestConcreteStateProvenance before_provenance;
   const auto before_provenance_rlp =
       dev::bytes(before.concrete_provenance_rlp.begin(), before.concrete_provenance_rlp.end());
@@ -118,6 +121,7 @@ TEST_F(ExternalEvmPortTest, MixedOrphanedConcreteStageIsDiscardedOnApplicationRe
       .rewards_hash = h256::random(),
   });
   rustaxa::HostFinalChainExecutionRequest execution_request{};
+  execution_request.expected_state_api_epoch = before.state_api_epoch;
   execution_request.concrete_marker_rlp.reserve(marker_rlp.size());
   for (const auto byte : marker_rlp) execution_request.concrete_marker_rlp.push_back(byte);
   execution_request.block_author = sender.address().asArray();
@@ -152,6 +156,7 @@ TEST_F(ExternalEvmPortTest, MixedOrphanedConcreteStageIsDiscardedOnApplicationRe
   execution_request.transactions.push_back(std::move(arbitrary_evm));
 
   const auto staged = port->consensusExecuteFinalChainTransactions(execution_request);
+  EXPECT_EQ(staged.state_api_epoch, before.state_api_epoch);
   ASSERT_EQ(staged.results.size(), 3);
   EXPECT_EQ(staged.results[0].status, 1);
   EXPECT_EQ(staged.results[1].status, 1);
@@ -173,6 +178,8 @@ TEST_F(ExternalEvmPortTest, MixedOrphanedConcreteStageIsDiscardedOnApplicationRe
   preflight_request.request_id[0] = 3;
   const auto reopened = reopened_port.consensusLoadFinalChainCommittedState(preflight_request);
   ASSERT_TRUE(reopened.succeeded) << std::string(reopened.error_code);
+  EXPECT_NE(reopened.state_api_epoch, 0);
+  EXPECT_NE(reopened.state_api_epoch, before.state_api_epoch);
   EXPECT_TRUE(reopened.pending_concrete_marker_rlp.empty());
   EXPECT_EQ(reopened.committed_period, before.committed_period);
   EXPECT_EQ(reopened.committed_state_root, before.committed_state_root);
@@ -201,6 +208,7 @@ TEST_F(ExternalEvmPortTest, PruneFailsClosedWhileConcreteExecutionIsStaged) {
   preflight_request.concrete_chain_identity = concreteChainIdentity(config);
   const auto preflight = port.consensusLoadFinalChainCommittedState(preflight_request);
   ASSERT_TRUE(preflight.succeeded) << std::string(preflight.error_code);
+  ASSERT_NE(preflight.state_api_epoch, 0);
 
   TestConcreteStateProvenance provenance;
   const auto provenance_rlp =
@@ -218,12 +226,14 @@ TEST_F(ExternalEvmPortTest, PruneFailsClosedWhileConcreteExecutionIsStaged) {
   });
 
   rustaxa::HostFinalChainExecutionRequest execution_request{};
+  execution_request.expected_state_api_epoch = preflight.state_api_epoch;
   execution_request.concrete_marker_rlp.reserve(marker_rlp.size());
   for (const auto byte : marker_rlp) execution_request.concrete_marker_rlp.push_back(byte);
   execution_request.block_gas_limit = config.genesis.pbft.gas_limit;
   execution_request.timestamp = 1;
   const auto execution = port.consensusExecuteFinalChainTransactions(execution_request);
   EXPECT_TRUE(execution.results.empty());
+  EXPECT_EQ(execution.state_api_epoch, preflight.state_api_epoch);
 
   try {
     application->pruneFinalChain(0);
@@ -238,11 +248,11 @@ TEST_F(ExternalEvmPortTest, PruneFailsClosedWhileConcreteExecutionIsStaged) {
   EXPECT_EQ(dev::bytes(staged.pending_concrete_marker_rlp.begin(), staged.pending_concrete_marker_rlp.end()),
             marker_rlp);
 
-  rustaxa::CanonicalBytes exact_marker{};
-  exact_marker.data.reserve(marker_rlp.size());
-  for (const auto byte : marker_rlp) exact_marker.data.push_back(byte);
-  const auto discarded = port.consensusDiscardFinalChainState(exact_marker);
+  const auto discarded = port.consensusDiscardFinalChainState(
+      rust::Slice<const uint8_t>(marker_rlp.data(), marker_rlp.size()), preflight.state_api_epoch);
   ASSERT_TRUE(discarded.succeeded) << std::string(discarded.error_code);
+  EXPECT_NE(discarded.state_api_epoch, 0);
+  EXPECT_NE(discarded.state_api_epoch, preflight.state_api_epoch);
   EXPECT_NO_THROW(application->pruneFinalChain(0));
 }
 
@@ -257,6 +267,7 @@ TEST_F(ExternalEvmPortTest, ExecutionReportPreservesExactStateApiCodeRetval) {
   preflight_request.concrete_chain_identity = concreteChainIdentity(config);
   const auto preflight = port.consensusLoadFinalChainCommittedState(preflight_request);
   ASSERT_TRUE(preflight.succeeded) << std::string(preflight.error_code);
+  ASSERT_NE(preflight.state_api_epoch, 0);
 
   TestConcreteStateProvenance provenance;
   const auto provenance_rlp =
@@ -274,6 +285,7 @@ TEST_F(ExternalEvmPortTest, ExecutionReportPreservesExactStateApiCodeRetval) {
   });
 
   rustaxa::HostFinalChainExecutionRequest request{};
+  request.expected_state_api_epoch = preflight.state_api_epoch;
   request.concrete_marker_rlp.reserve(marker_rlp.size());
   for (const auto byte : marker_rlp) request.concrete_marker_rlp.push_back(byte);
   request.block_author = sender.address().asArray();
@@ -291,16 +303,17 @@ TEST_F(ExternalEvmPortTest, ExecutionReportPreservesExactStateApiCodeRetval) {
   request.transactions.push_back(std::move(transaction));
 
   const auto execution = port.consensusExecuteFinalChainTransactions(request);
+  EXPECT_EQ(execution.state_api_epoch, preflight.state_api_epoch);
   ASSERT_EQ(execution.results.size(), 1);
   ASSERT_EQ(execution.results[0].status, 1);
   const auto expected_output = util::EncodingSolidity::pack(uint64_t{0});
   EXPECT_EQ(dev::bytes(execution.results[0].output.begin(), execution.results[0].output.end()), expected_output);
 
-  rustaxa::CanonicalBytes exact_marker{};
-  exact_marker.data.reserve(marker_rlp.size());
-  for (const auto byte : marker_rlp) exact_marker.data.push_back(byte);
-  const auto discarded = port.consensusDiscardFinalChainState(exact_marker);
+  const auto discarded = port.consensusDiscardFinalChainState(
+      rust::Slice<const uint8_t>(marker_rlp.data(), marker_rlp.size()), preflight.state_api_epoch);
   ASSERT_TRUE(discarded.succeeded) << std::string(discarded.error_code);
+  EXPECT_NE(discarded.state_api_epoch, 0);
+  EXPECT_NE(discarded.state_api_epoch, preflight.state_api_epoch);
 }
 
 TEST_F(ExternalEvmPortTest, ApplicationAccountQueriesPreservePresentAndMissingRows) {
@@ -347,6 +360,45 @@ TEST_F(ExternalEvmPortTest, DagGasEstimatePreservesIdentityAndCanonicalResult) {
   EXPECT_EQ(report.transaction_hashes[0].hash, transaction->getHash().asArray());
   EXPECT_GT(report.gas_used[0], 0);
   EXPECT_FALSE(report.result_rlps[0].data.empty());
+}
+
+// A rejected stale request cannot poison the owner; a failure after entering
+// fallible Go discard must prevent reads/mutations until owner reconstruction.
+TEST_F(ExternalEvmPortTest, EpochMismatchAndAmbiguousDiscardHaveDistinctLifetimes) {
+  initialize();
+  ExternalEvmPort port(application);
+  rustaxa::HostFinalChainPreflightRequest preflight_request{};
+  preflight_request.request_id[0] = 1;
+  preflight_request.concrete_chain_identity = concreteChainIdentity(config);
+  const auto before = port.consensusLoadFinalChainCommittedState(preflight_request);
+  ASSERT_TRUE(before.succeeded);
+  ASSERT_NE(before.state_api_epoch, 0);
+
+  const std::array<uint8_t, 1> marker{0xc0};  // Not a valid execution marker.
+  const auto marker_view = rust::Slice<const uint8_t>(marker.data(), marker.size());
+  const auto stale = port.consensusDiscardFinalChainState(marker_view, 0);
+  EXPECT_FALSE(stale.succeeded);
+  EXPECT_NE(std::string(stale.error_code).find("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH"), std::string::npos);
+  const auto still_live = port.consensusLoadFinalChainCommittedState(preflight_request);
+  ASSERT_TRUE(still_live.succeeded);
+  EXPECT_EQ(still_live.state_api_epoch, before.state_api_epoch);
+
+  const auto failed = port.consensusDiscardFinalChainState(marker_view, before.state_api_epoch);
+  EXPECT_FALSE(failed.succeeded);
+  EXPECT_EQ(failed.state_api_epoch, 0);
+  const auto poisoned = port.consensusLoadFinalChainCommittedState(preflight_request);
+  EXPECT_FALSE(poisoned.succeeded);
+  EXPECT_NE(std::string(poisoned.error_code).find("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED"), std::string::npos);
+  const auto expect_poisoned = [](auto operation) {
+    try {
+      operation();
+      FAIL() << "poisoned StateAPI owner must reject the operation";
+    } catch (const std::exception& error) {
+      EXPECT_STREQ(error.what(), "FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
+    }
+  };
+  expect_poisoned([&] { application->getAccount(addr_t::random()); });
+  expect_poisoned([&] { application->pruneFinalChain(0); });
 }
 
 }  // namespace

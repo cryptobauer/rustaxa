@@ -189,10 +189,29 @@ rust::Box<rustaxa::BridgeConsensusApplication> createConformanceApplication(cons
   auto genesis = h256Array(0xAB);
   auto dag_genesis = h256Array(0xAC);
   auto concrete_genesis_root = h256Array(0xAD);
-  return rustaxa::create_consensus_application(path.string(), 1, 0, genesis, dag_genesis, 32, 1'000'000, sortition,
-                                               rustaxa::TransactionQueueConfig{16}, gas_pricer, 1'000'000,
-                                               std::move(pbft), {}, {}, 1'000'000, 0, 0, concrete_genesis_root, {}, {},
-                                               {}, std::move(dpos), std::move(rewards));
+  return rustaxa::create_consensus_application(rustaxa::ConsensusApplicationBootstrapConfig{rust::String(path.string()),
+                                                                                            1,
+                                                                                            0,
+                                                                                            genesis,
+                                                                                            dag_genesis,
+                                                                                            32,
+                                                                                            1'000'000,
+                                                                                            sortition,
+                                                                                            16,
+                                                                                            gas_pricer,
+                                                                                            1'000'000,
+                                                                                            std::move(pbft),
+                                                                                            {},
+                                                                                            {},
+                                                                                            1'000'000,
+                                                                                            0,
+                                                                                            0,
+                                                                                            concrete_genesis_root,
+                                                                                            {},
+                                                                                            {},
+                                                                                            {},
+                                                                                            std::move(dpos),
+                                                                                            std::move(rewards)});
 }
 
 void runConformance(const fs::path& db_path, Transcript& transcript) {

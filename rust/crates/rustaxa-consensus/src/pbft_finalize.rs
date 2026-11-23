@@ -1288,7 +1288,7 @@ pub fn append_pbft_finalization_executed_status_storage_write(
     append_pbft_finalization_executed_status_storage_write_impl(storage, batch, write_set)
 }
 
-fn apply_pbft_finalization_storage_writes_to_batch(
+pub(crate) fn apply_pbft_finalization_storage_writes_to_batch(
     storage: &Storage,
     batch: &mut StorageWriteBatch,
     write_set: &PbftFinalizationStorageWriteIntent,
@@ -1989,10 +1989,10 @@ fn check_existing_value(
     error_code: &str,
 ) -> Result<bool> {
     let _ = error_code;
-    if let Some(existing) = storage.get_raw(column, key)? {
-        if existing != expected {
-            return Ok(true);
-        }
+    if let Some(existing) = storage.get_raw(column, key)?
+        && existing != expected
+    {
+        return Ok(true);
     }
     Ok(false)
 }
@@ -3300,7 +3300,15 @@ fn is_dynamic_lambda_change_interval(
             && block_number.is_multiple_of(u64::from(lambda_change_interval)))
 }
 
-fn calc_blocks_per_year(lambda_ms: u32, delay_ms: u32) -> Option<u32> {
+/// Computes the annualized finalized-block rate from the period's consensus
+/// lambda and additional consensus delay, both in milliseconds.
+///
+/// Uses a fixed 365-day year and truncating integer division by `2 * lambda +
+/// delay`, matching the existing finalization policy. This function has no
+/// storage or runtime dependencies and does not validate hardfork activation or
+/// the caller's lambda policy. Returns `None` for a zero denominator, checked
+/// arithmetic failure, or a rate that cannot fit in `u32`.
+pub fn calc_blocks_per_year(lambda_ms: u32, delay_ms: u32) -> Option<u32> {
     let expected_block_time = u64::from(lambda_ms)
         .checked_mul(2)?
         .checked_add(u64::from(delay_ms))?;
@@ -3334,16 +3342,19 @@ fn unique_positioned_hash_count(writes: &[PbftFinalizationPositionedHash]) -> u6
 mod tests {
     use super::*;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn annualized_rate_preserves_checked_arithmetic_and_truncation() {
+        assert_eq!(calc_blocks_per_year(500, 400), Some(22_525_714));
+        assert_eq!(calc_blocks_per_year(2_000, 400), Some(7_167_272));
+        assert_eq!(calc_blocks_per_year(0, 0), None);
+        assert_eq!(calc_blocks_per_year(0, 1), None);
+        assert_eq!(calc_blocks_per_year(u32::MAX, u32::MAX), Some(2));
+    }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should be available")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::test_paths::new_path(name)
     }
 
     fn hash(v: u64) -> H256 {
@@ -3590,7 +3601,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3620,7 +3631,7 @@ mod tests {
                 .expect("idempotent commit should succeed");
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3701,7 +3712,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3733,7 +3744,7 @@ mod tests {
                 "PBFT_FINALIZE_MALFORMED_PREPARED_PILLAR_BLOCK"
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3774,7 +3785,7 @@ mod tests {
                 "PBFT_FINALIZE_PREPARED_PILLAR_BLOCK_PERIOD_MISMATCH"
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3807,7 +3818,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3896,7 +3907,7 @@ mod tests {
             assert_eq!(storage.extra_reward_votes_reset_generation(), 2);
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3959,7 +3970,7 @@ mod tests {
                 .is_empty()
         );
         drop(storage);
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -4008,7 +4019,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -4071,7 +4082,7 @@ mod tests {
                 .expect("idempotent dynamic lambda commit should succeed");
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -4112,7 +4123,7 @@ mod tests {
                 .expect("executed status commit should succeed");
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     fn dynamic_lambda_fact() -> PbftDynamicLambdaFact {
@@ -4527,7 +4538,7 @@ mod tests {
             assert!(complete.replay_actions.is_empty());
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -5415,7 +5426,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -5437,7 +5448,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]

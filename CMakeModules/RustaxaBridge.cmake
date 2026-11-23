@@ -9,7 +9,7 @@ find_package(RocksDB REQUIRED)
 get_target_property(RUSTAXA_ROCKSDB_INCLUDE_DIRS RocksDB::rocksdb INTERFACE_INCLUDE_DIRECTORIES)
 get_target_property(RUSTAXA_ROCKSDB_LIB_DIRS RocksDB::rocksdb INTERFACE_LINK_DIRECTORIES)
 if(NOT RUSTAXA_ROCKSDB_INCLUDE_DIRS)
-    set(RUSTAXA_ROCKSDB_INCLUDE_DIRS "")
+    set(RUSTAXA_ROCKSDB_INCLUDE_DIRS "${RocksDB_INCLUDE_DIRS}")
 endif()
 if(NOT RUSTAXA_ROCKSDB_LIB_DIRS)
     get_target_property(RUSTAXA_ROCKSDB_LOCATION_RELEASE RocksDB::rocksdb IMPORTED_LOCATION_RELEASE)
@@ -21,6 +21,18 @@ if(NOT RUSTAXA_ROCKSDB_LIB_DIRS)
     else()
         set(RUSTAXA_ROCKSDB_LIB_DIRS "")
     endif()
+endif()
+if(NOT RUSTAXA_ROCKSDB_LIB_DIRS)
+    foreach(ROCKSDB_INCLUDE_DIR IN LISTS RUSTAXA_ROCKSDB_INCLUDE_DIRS)
+        get_filename_component(ROCKSDB_PACKAGE_DIR "${ROCKSDB_INCLUDE_DIR}" DIRECTORY)
+        if(EXISTS "${ROCKSDB_PACKAGE_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}rocksdb${CMAKE_STATIC_LIBRARY_SUFFIX}")
+            set(RUSTAXA_ROCKSDB_LIB_DIRS "${ROCKSDB_PACKAGE_DIR}/lib")
+            break()
+        endif()
+    endforeach()
+endif()
+if(NOT RUSTAXA_ROCKSDB_INCLUDE_DIRS OR NOT RUSTAXA_ROCKSDB_LIB_DIRS)
+    message(FATAL_ERROR "Rustaxa requires the headers and library of the configured RocksDB package")
 endif()
 
 set(RUST_ROOT "${PROJECT_SOURCE_DIR}/rust")
@@ -35,6 +47,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 else()
     set(CARGO_MODE_ARGS "--release")
     set(RUST_LIB_DIR "${RUST_TARGET_DIR}/release")
+endif()
+
+if(RUSTAXA_APP_OFFLINE_TEST)
+    list(APPEND CARGO_MODE_ARGS --features production_integration_test)
 endif()
 
 set(RUST_LIB "${RUST_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}rustaxa_bridge${CMAKE_STATIC_LIBRARY_SUFFIX}")
@@ -59,6 +75,14 @@ file(WRITE "${SYNC_SCRIPT}" "
         configure_file(\"\${HEADER}\" \"${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/\${FNAME}\" COPYONLY)
         configure_file(\"\${HEADER}\" \"${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/src/\${FNAME}\" COPYONLY)
     endforeach()
+
+    set(NATIVE_CONFIG_HEADER \"\${TARGET_DIR}/cxxbridge/rustaxa-native-config/src/lib.rs.h\")
+    if(NOT EXISTS \"\${NATIVE_CONFIG_HEADER}\")
+        message(FATAL_ERROR \"Missing generated Rustaxa native config header\")
+    endif()
+    file(MAKE_DIRECTORY \"${BRIDGE_INCLUDE_DIR}/rustaxa-native-config/src\")
+    configure_file(\"\${NATIVE_CONFIG_HEADER}\"
+        \"${BRIDGE_INCLUDE_DIR}/rustaxa-native-config/src/lib.rs.h\" COPYONLY)
 
     # Copy rust/cxx.h
     file(MAKE_DIRECTORY \"${BRIDGE_INCLUDE_DIR}/rust\")
@@ -101,7 +125,7 @@ add_custom_target(rust-workspace-build ALL
         "ROCKSDB_STATIC=1"
         "TARAXA_VRF_LIB_DIR=${PROJECT_BINARY_DIR}/deps/taraxa-vrf/lib"
         "RUSTAXA_APPLICATION_HOST_BRIDGE_OUT=${RUST_APPLICATION_HOST_LIB}"
-        "${CARGO_EXE}" build ${CARGO_MODE_ARGS} --target-dir "${RUST_TARGET_DIR}" -p rustaxa-bridge
+        "${CARGO_EXE}" build --locked ${CARGO_MODE_ARGS} --target-dir "${RUST_TARGET_DIR}" -p rustaxa-bridge
 
     COMMAND ${CMAKE_COMMAND} -P "${FILTER_SCRIPT}"
 

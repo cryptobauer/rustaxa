@@ -80,6 +80,11 @@ pub struct DagTransactionServiceConfig {
 /// restoration, lifetime, and cross-domain lock domains. Its lock accessors are
 /// a Rust-only application-composition boundary and never expose raw mutexes or
 /// guards through CXX.
+///
+/// ```compile_fail
+/// use rustaxa_consensus::pbft_execution_inputs::PbftCandidateInputs;
+/// fn cannot_construct() { let _ = PbftCandidateInputs {}; }
+/// ```
 pub struct DagTransactionService {
     transaction: TransactionService,
     dag: DagService,
@@ -493,7 +498,144 @@ pub struct TransactionGossipAccount {
     pub transactions: Vec<TransactionGossipEntry>,
 }
 
+pub(crate) struct OwnerDagSuccessor {
+    prior_period: u64,
+    prior_anchor: H256,
+    prior_transaction_count: u64,
+    dag: crate::dag::DagManagerState,
+    transactions: crate::transaction_service::PreparedFinalizedTransactionUpdate,
+    gas_prices: Vec<U256>,
+}
+
 impl DagTransactionService {
+    /// Stages the next DAG, transaction state and their writes in the certified batch.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_owner_dag_successor(
+        &self,
+        anchor: H256,
+        period: u64,
+        certified_blocks: &[DagSyncBlockRlp],
+        period_data_rlp: &[u8],
+        retention_window: u64,
+        nonces: Vec<TransactionServiceAccountNonceFact>,
+        batch: &mut rustaxa_storage::StorageWriteBatch,
+    ) -> Result<OwnerDagSuccessor> {
+        let (dag, transaction) = self.lock_dag_and_transaction()?;
+        let mut metadata = std::collections::BTreeMap::new();
+        let mut order = Vec::with_capacity(certified_blocks.len());
+        for entry in certified_blocks {
+            let block = dag_manager_block_from_rlp(&entry.block_rlp)?;
+            ensure!(
+                block.hash == entry.hash,
+                "PRODUCTION_CERTIFIED_DAG_HASH_MISMATCH"
+            );
+            ensure!(
+                metadata
+                    .insert(block.hash, (block.level, block.tips.len() as u64))
+                    .is_none(),
+                "PRODUCTION_CERTIFIED_DAG_DUPLICATE"
+            );
+            order.push(block.hash);
+        }
+        let anchor_level = if anchor.is_zero() {
+            None
+        } else {
+            Some(
+                metadata
+                    .get(&anchor)
+                    .context("PRODUCTION_CERTIFIED_DAG_ANCHOR_UNAVAILABLE")?
+                    .0,
+            )
+        };
+        let (next_dag, plan) =
+            dag.prepare_finalized_order_state(anchor, period, &order, anchor_level)?;
+        let facts =
+            crate::transaction_service::finalized_status_facts_from_period_data(period_data_rlp)?;
+        let finalized = facts.iter().map(|fact| fact.hash).collect::<Vec<_>>();
+        let gas_prices = facts
+            .iter()
+            .map(|fact| {
+                rlp::Rlp::new(&fact.tx_rlp)
+                    .val_at::<U256>(1)
+                    .map_err(anyhow::Error::from)
+            })
+            .collect::<Result<_>>()?;
+        let cleanup = crate::dag::collect_finalization_cleanup_for_batch(
+            &transaction.storage,
+            &plan.counter_update_hashes,
+            &plan.expired_hashes,
+            &plan.remaining_hashes,
+            &finalized,
+            |hash| {
+                metadata
+                    .get(&hash)
+                    .copied()
+                    .context("PRODUCTION_CERTIFIED_DAG_METADATA_UNAVAILABLE")
+            },
+        )?;
+        let counter_updates = cleanup
+            .counter_updates
+            .iter()
+            .map(|update| (update.hash, update.level, update.tips_count))
+            .collect::<Vec<_>>();
+        transaction.storage.dag().append_finalization_cleanup(
+            batch,
+            &counter_updates,
+            &cleanup.expired_hashes,
+            &cleanup.remove_transaction_hashes,
+        )?;
+        let transactions = transaction.prepare_finalized_status(
+            period,
+            retention_window,
+            nonces,
+            facts,
+            &cleanup.remove_transaction_hashes,
+        )?;
+        if let Some(count) = transactions.count_write {
+            transaction.storage.batch_put_raw(
+                batch,
+                rustaxa_storage::Column::Status,
+                &[rustaxa_storage::StatusField::TrxCount as u8],
+                &count.to_le_bytes(),
+            )?;
+        }
+        Ok(OwnerDagSuccessor {
+            prior_period: plan.previous_period,
+            prior_anchor: plan.previous_anchor,
+            prior_transaction_count: transaction.sidecar.transaction_count(),
+            dag: next_dag,
+            transactions,
+            gas_prices,
+        })
+    }
+
+    pub(crate) fn install_owner_dag_successor(
+        &self,
+        update: OwnerDagSuccessor,
+        sortition: Option<crate::sortition::SortitionParamsManager>,
+        scope: &rustaxa_storage::application_control::ApplicationReadScope<'_>,
+    ) -> Result<()> {
+        let mut dag = self.lock_dag()?;
+        let mut sortition_guard = self.lock_sortition()?;
+        let mut transactions = self.lock_transaction()?;
+        ensure!(
+            scope.is_current()
+                && dag.state.period() == update.prior_period
+                && dag.state.anchor() == update.prior_anchor
+                && transactions.sidecar.transaction_count() == update.prior_transaction_count,
+            "PRODUCTION_DAG_SUCCESSOR_SOURCE_CHANGED"
+        );
+        if let Some(sortition) = sortition {
+            *sortition_guard = sortition;
+        }
+        update.transactions.install(&mut transactions);
+        transactions
+            .gas_price_oracle
+            .update_from_gas_prices(update.gas_prices);
+        dag.state = update.dag;
+        Ok(())
+    }
+
     /// Restores all sibling services and publishes one coherent application root.
     ///
     /// Transaction restoration runs before DAG restoration, which runs before
@@ -622,6 +764,10 @@ impl DagTransactionService {
                 .as_ref()
                 .is_some_and(|value| value.emit_transaction_added),
         })
+    }
+
+    pub(crate) fn transactions_are_proposable(&self, hashes: &[H256]) -> Result<bool> {
+        Ok(self.transaction.lock()?.transactions_are_proposable(hashes))
     }
 
     /// Returns one lock-coherent transaction-pool status snapshot.
@@ -922,6 +1068,10 @@ impl DagTransactionService {
     /// storage errors leave prior live sidecar state intact.
     pub fn transaction_recover_non_finalized(&self) -> Result<u64> {
         self.transaction.recover_non_finalized()
+    }
+
+    pub(crate) fn transaction_recover_non_finalized_read_only(&self) -> Result<u64> {
+        self.transaction.recover_non_finalized_read_only()
     }
 
     /// Validates a candidate level against pivot and tip metadata.
@@ -1311,6 +1461,38 @@ impl DagTransactionService {
     /// Returns the current proposer instruction without bridge-owned state transitions.
     pub fn next_proposer_session(&self, session_id: u64) -> Result<DagProposerSessionStep> {
         Ok(self.dag.lock()?.proposer_session_next(session_id))
+    }
+
+    pub(crate) fn active_proposer_pack_period(&self, session_id: u64) -> Result<Option<u64>> {
+        Ok(self.dag.lock()?.active_proposer_pack_period(session_id))
+    }
+
+    pub(crate) fn matches_verify_gas_cursor(
+        &self,
+        cursor_id: u64,
+        block_hash: H256,
+        proposal_period: u64,
+    ) -> Result<bool> {
+        let dag = self.dag.lock()?;
+        Ok(dag.verify_block_session.as_ref().is_some_and(|session| {
+            session.cursor_id == cursor_id
+                && session.fingerprint == block_hash.0
+                && session.proposal_period == proposal_period
+                && matches!(
+                    session.action,
+                    crate::dag_service::DagVerifyBlockSessionAction::Gas
+                )
+        }))
+    }
+
+    pub(crate) fn abort_block_verification(&self, cursor_id: u64, block_hash: H256) -> Result<()> {
+        let mut dag = self.dag.lock()?;
+        if dag.verify_block_session.as_ref().is_some_and(|session| {
+            session.cursor_id == cursor_id && session.fingerprint == block_hash.0
+        }) {
+            dag.verify_block_session = None;
+        }
+        Ok(())
     }
 
     /// Idempotently removes the exact DAG cursor and any paired packing cursor.
@@ -2295,6 +2477,27 @@ impl DagTransactionService {
         )
     }
 
+    pub(crate) fn prepare_owner_finalized_sortition(
+        &self,
+        request: DagTransactionSortitionFinalizationRequest,
+    ) -> Result<(
+        crate::sortition::SortitionParamsManager,
+        Option<SortitionParamsChange>,
+    )> {
+        let efficiency = dag_efficiency_for_period(
+            request.efficiency_counts.has_pivot,
+            request.efficiency_counts.unique_transactions,
+            request.efficiency_counts.total_dag_transaction_refs,
+        )?;
+        let mut next = self.lock_sortition()?.clone();
+        let change = next.record_finalized_period(
+            request.period,
+            efficiency,
+            request.non_empty_pbft_chain_size,
+        )?;
+        Ok((next, change))
+    }
+
     /// Commits one finalized PBFT period sortition transition and publishes live state.
     ///
     /// The method acquires the sortition lock once, clones live state for
@@ -2411,15 +2614,10 @@ mod tests {
     use rustaxa_vdf::vrf::public_key_from_secret;
     use std::path::PathBuf;
     use std::sync::Barrier;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use tiny_keccak::{Hasher, Keccak};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should be available")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::test_paths::new_path(name)
     }
 
     fn service_config() -> DagTransactionServiceConfig {
@@ -3008,6 +3206,478 @@ mod tests {
         Ok(())
     }
 
+    struct InputFixture {
+        path: PathBuf,
+        storage: Arc<Storage>,
+        root: DagTransactionService,
+    }
+    impl InputFixture {
+        fn new() -> Result<Self> {
+            let path = unique_temp_dir("pbft_input_capture");
+            let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+            let root = DagTransactionService::restore(storage.clone(), service_config())?;
+            root.lock_dag()?.state.advance_empty_period(1)?;
+            let head = serde_json::json!({"head_hash": format!("{:#x}", H256::zero()), "last_pbft_block_hash": format!("{:#x}", H256::repeat_byte(0xaa)), "size": 1, "non_empty_size": 0});
+            storage
+                .pbft()
+                .write_head(H256::zero(), &serde_json::to_vec(&head)?)?;
+            let header = rustaxa_types::StoredFinalChainBlockHeader {
+                parent_hash: H256::zero(),
+                state_root: H256::repeat_byte(0x31),
+                transactions_root: H256::zero(),
+                receipts_root: H256::zero(),
+                log_bloom: Default::default(),
+                gas_used: 0.into(),
+                total_reward: Default::default(),
+            };
+            let header =
+                rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlpOwned::from(&header);
+            storage.final_chain().write_block_header(
+                1,
+                H256::repeat_byte(0x32),
+                header.as_bytes(),
+                &[0xc0],
+            )?;
+            Ok(Self {
+                path,
+                storage,
+                root,
+            })
+        }
+        fn tx(seed: u8) -> Vec<u8> {
+            signed_legacy_transaction_rlp(&SigningKey::from_slice(&[seed; 32]).unwrap())
+        }
+        fn include(&self, raw: &[u8]) -> Result<H256> {
+            let hash = keccak256(raw);
+            self.root
+                .lock_transaction()?
+                .sidecar
+                .insert_non_finalized(hash, raw.to_vec())?;
+            Ok(hash)
+        }
+        fn block(&self, pivot: H256, level: u64, transactions: &[H256]) -> Result<H256> {
+            let raw = composed_add_block_rlp(pivot, level, transactions);
+            let decoded = DagBlock::try_from(DagBlockRlp::new(&raw))?;
+            let (signature, recovery) = SigningKey::from_slice(&[0x71; 32])
+                .unwrap()
+                .sign_prehash_recoverable(decoded.signing_hash().as_bytes())?;
+            let mut signature = signature.to_bytes().to_vec();
+            signature.push(recovery.to_byte());
+            let view = rlp::Rlp::new(&raw);
+            let mut signed = RlpStream::new_list(8);
+            for i in 0..8 {
+                if i == 6 {
+                    signed.append(&signature);
+                } else {
+                    signed.append_raw(view.at(i)?.as_raw(), 1);
+                }
+            }
+            let raw = signed.out().to_vec();
+            let block = dag_manager_block_from_rlp(&raw)?;
+            self.root.lock_dag()?.state.add_block(block.clone())?;
+            save_dag_block_to_storage(self.storage.as_ref(), block.hash, level, 1, &raw)?;
+            Ok(block.hash)
+        }
+        fn candidate(&self, pivot: H256) -> Result<Vec<u8>> {
+            let order = if pivot.is_zero() {
+                vec![]
+            } else {
+                self.root.lock_dag()?.state.compute_order(pivot).unwrap()
+            };
+            let order_hash = if order.is_empty() {
+                H256::zero()
+            } else {
+                let mut raw = RlpStream::new_list(1);
+                raw.begin_list(order.len());
+                for hash in order {
+                    raw.append(&hash);
+                }
+                keccak256(&raw.out())
+            };
+            let fields = |raw: &mut RlpStream| {
+                raw.append(&H256::repeat_byte(0xaa))
+                    .append(&pivot)
+                    .append(&order_hash)
+                    .append(&H256::zero())
+                    .append(&2_u64)
+                    .append(&10_u64)
+                    .begin_list(0);
+            };
+            let mut unsigned = RlpStream::new_list(7);
+            fields(&mut unsigned);
+            let (signature, recovery) = SigningKey::from_slice(&[0x72; 32])
+                .unwrap()
+                .sign_prehash_recoverable(keccak256(&unsigned.out()).as_bytes())?;
+            let mut signature = signature.to_bytes().to_vec();
+            signature.push(recovery.to_byte());
+            let mut signed = RlpStream::new_list(8);
+            fields(&mut signed);
+            signed.append(&signature);
+            Ok(signed.out().to_vec())
+        }
+        fn limits() -> crate::pbft_execution_validation::PbftExecutionInputLimits {
+            crate::pbft_execution_validation::PbftExecutionInputLimits {
+                maximum_bytes: 4 * 1024 * 1024,
+                maximum_dag_blocks: 32,
+                maximum_transactions: 128,
+            }
+        }
+        fn rows(storage: &Storage) -> Result<Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>> {
+            rustaxa_storage::Column::all()
+                .iter()
+                .copied()
+                .map(|column| {
+                    let rows = storage
+                        .iter(column)
+                        .map(|row| {
+                            let (k, v) = row?;
+                            Ok((k.to_vec(), v.to_vec()))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok((column.name().to_owned(), rows))
+                })
+                .collect()
+        }
+        fn capture(
+            &self,
+            raw: &[u8],
+            limits: crate::pbft_execution_validation::PbftExecutionInputLimits,
+        ) -> Result<
+            crate::pbft_execution_inputs::PbftInputCapture<
+                crate::pbft_execution_inputs::PbftCandidateInputs,
+            >,
+        > {
+            let before = Self::rows(&self.storage)?;
+            let result = self.root.snapshot_pbft_execution_inputs(raw, limits);
+            assert_eq!(Self::rows(&self.storage)?, before);
+            result
+        }
+        fn ready(&self, raw: &[u8]) -> Result<crate::pbft_execution_inputs::PbftCandidateInputs> {
+            match self.capture(raw, Self::limits())? {
+                crate::pbft_execution_inputs::PbftInputCapture::Ready(input) => Ok(input),
+                other => anyhow::bail!("expected captured inputs: {other:?}"),
+            }
+        }
+        fn raw_put(&self, column: rustaxa_storage::Column, key: &[u8], value: &[u8]) -> Result<()> {
+            let mut batch = self.storage.create_write_batch();
+            self.storage.batch_put_raw(&mut batch, column, key, value)?;
+            self.storage.commit_write_batch_with_sync(batch, true)
+        }
+        fn period_data(transactions: &[Vec<u8>]) -> Vec<u8> {
+            let mut out = RlpStream::new_list(4);
+            out.begin_list(0)
+                .begin_list(0)
+                .begin_list(0)
+                .begin_list(transactions.len());
+            for tx in transactions {
+                out.append_raw(tx, 1);
+            }
+            out.out().to_vec()
+        }
+        fn finish(self) -> Result<()> {
+            let before = Self::rows(&self.storage)?;
+            let Self {
+                path,
+                root,
+                storage,
+            } = self;
+            drop(root);
+            drop(storage);
+            let mut cfg = Config::new(path.clone());
+            cfg.create_if_missing = false;
+            cfg.create_missing_column_families = false;
+            let reopened = Storage::new(cfg)?;
+            assert_eq!(Self::rows(&reopened)?, before);
+            drop(reopened);
+            std::fs::remove_dir_all(path)?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn pbft_execution_inputs_ordered_dag_and_first_occurrence() -> Result<()> {
+        use crate::pbft_execution_validation::PbftExecutionTransactionLookup as L;
+        let f = InputFixture::new()?;
+        let a = InputFixture::tx(0x51);
+        let b = InputFixture::tx(0x52);
+        let ah = f.include(&a)?;
+        let bh = f.include(&b)?;
+        let first = f.block(service_config().dag.genesis_hash, 1, &[ah, bh, ah])?;
+        let last = f.block(first, 2, &[bh, ah])?;
+        let raw = f.candidate(last)?;
+        let inputs = f.ready(&raw)?;
+        assert_eq!(inputs.block_rlp(), raw);
+        assert_eq!(
+            inputs
+                .dag_blocks()
+                .iter()
+                .map(|b| b.hash)
+                .collect::<Vec<_>>(),
+            vec![first, last]
+        );
+        assert_eq!(
+            inputs.lookups(),
+            &[
+                L::Included { hash: ah, rlp: a },
+                L::Included { hash: bh, rlp: b }
+            ]
+        );
+        assert_eq!(inputs.prior().period.as_u64(), 1);
+        assert_eq!(inputs.prior().state_root, [0x31; 32]);
+        assert!(inputs.finalized_payloads().is_empty());
+        assert!(!inputs.captured_heads().0.is_empty());
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_durable_prior_exclusion_wins_over_sidecar() -> Result<()> {
+        use crate::pbft_execution_validation::PbftExecutionTransactionLookup as L;
+        let f = InputFixture::new()?;
+        let a = InputFixture::tx(0x53);
+        let hash = f.include(&a)?;
+        f.root
+            .lock_transaction()?
+            .sidecar
+            .insert_non_finalized(hash, vec![0x80])?;
+        f.storage.transaction().write_location(hash, 1, 0, false)?;
+        f.raw_put(
+            rustaxa_storage::Column::PeriodData,
+            &1_u64.to_le_bytes(),
+            &InputFixture::period_data(&[a.clone()]),
+        )?;
+        let mut system = RlpStream::new_list(9);
+        system
+            .append(&1_u64)
+            .append(&0_u8)
+            .append(&1_000_000_u64)
+            .append(&H160::repeat_byte(0xfe))
+            .append(&0_u8)
+            .append(&Vec::<u8>::new())
+            .append(&0_u8)
+            .append(&0_u8)
+            .append(&0_u8);
+        let system = system.out().to_vec();
+        let system_hash = keccak256(&system);
+        f.storage
+            .transaction()
+            .write_location(system_hash, 1, 1, true)?;
+        f.storage.transaction().write_system(system_hash, &system)?;
+        let mut hashes = RlpStream::new_list(1);
+        hashes.append(&system_hash);
+        f.storage
+            .transaction()
+            .write_period_system_hashes(1, &hashes.out())?;
+        let block = f.block(
+            service_config().dag.genesis_hash,
+            1,
+            &[hash, system_hash, hash],
+        )?;
+        let inputs = f.ready(&f.candidate(block)?)?;
+        assert_eq!(inputs.lookups().len(), 2);
+        assert!(
+            matches!(&inputs.lookups()[0],L::Finalized{hash:h,period,..} if *h==hash&&period.as_u64()==1)
+        );
+        assert!(matches!(&inputs.lookups()[1],L::Finalized{hash:h,..} if *h==system_hash));
+        assert_eq!(
+            inputs.finalized_payloads(),
+            &[(hash, a), (system_hash, system)]
+        );
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_missing_is_unavailable() -> Result<()> {
+        let f = InputFixture::new()?;
+        let hash = H256::repeat_byte(0x61);
+        let block = f.block(service_config().dag.genesis_hash, 1, &[hash])?;
+        assert!(
+            matches!(f.capture(&f.candidate(block)?,InputFixture::limits())?,crate::pbft_execution_inputs::PbftInputCapture::Unavailable(crate::pbft_execution_inputs::PbftInputUnavailable::MissingTransaction(h)) if h==hash)
+        );
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_queue_only_is_unavailable() -> Result<()> {
+        let f = InputFixture::new()?;
+        let tx = insert_pack_transaction(&f.root, &SigningKey::from_slice(&[0x54; 32]).unwrap())?;
+        let block = f.block(service_config().dag.genesis_hash, 1, &[tx.hash])?;
+        assert!(
+            matches!(f.capture(&f.candidate(block)?,InputFixture::limits())?,crate::pbft_execution_inputs::PbftInputCapture::Unavailable(crate::pbft_execution_inputs::PbftInputUnavailable::MissingTransaction(h)) if h==tx.hash)
+        );
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_pending_only_is_unavailable() -> Result<()> {
+        let f = InputFixture::new()?;
+        let a = InputFixture::tx(0x55);
+        let hash = keccak256(&a);
+        f.storage.transaction().write(hash, &a)?;
+        let block = f.block(service_config().dag.genesis_hash, 1, &[hash])?;
+        assert!(
+            matches!(f.capture(&f.candidate(block)?,InputFixture::limits())?,crate::pbft_execution_inputs::PbftInputCapture::Unavailable(crate::pbft_execution_inputs::PbftInputUnavailable::MissingTransaction(h)) if h==hash)
+        );
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_recent_sidecar_without_durable_location_is_unavailable() -> Result<()>
+    {
+        let f = InputFixture::new()?;
+        let a = InputFixture::tx(0x56);
+        let hash = keccak256(&a);
+        f.root
+            .lock_transaction()?
+            .sidecar
+            .insert_recently_finalized(1, hash, a)?;
+        let block = f.block(service_config().dag.genesis_hash, 1, &[hash])?;
+        assert!(
+            matches!(f.capture(&f.candidate(block)?,InputFixture::limits())?,crate::pbft_execution_inputs::PbftInputCapture::Unavailable(crate::pbft_execution_inputs::PbftInputUnavailable::MissingTransaction(h)) if h==hash)
+        );
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_future_location_is_unavailable() -> Result<()> {
+        let f = InputFixture::new()?;
+        let a = InputFixture::tx(0x57);
+        let hash = f.include(&a)?;
+        f.storage.transaction().write_location(hash, 2, 0, false)?;
+        let block = f.block(service_config().dag.genesis_hash, 1, &[hash])?;
+        assert!(
+            matches!(f.capture(&f.candidate(block)?,InputFixture::limits())?,crate::pbft_execution_inputs::PbftInputCapture::Unavailable(crate::pbft_execution_inputs::PbftInputUnavailable::FutureLocation(h)) if h==hash)
+        );
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_bad_location_is_operational_error() -> Result<()> {
+        let f = InputFixture::new()?;
+        let a = InputFixture::tx(0x58);
+        let hash = f.include(&a)?;
+        let block = f.block(service_config().dag.genesis_hash, 1, &[hash])?;
+        let raw = f.candidate(block)?;
+        f.raw_put(rustaxa_storage::Column::TrxPeriod, hash.as_bytes(), &[0xc0])?;
+        assert!(f.capture(&raw, InputFixture::limits()).is_err());
+        f.raw_put(
+            rustaxa_storage::Column::TrxPeriod,
+            hash.as_bytes(),
+            &[0xc3, 0x81, 0x01, 0x80],
+        )?;
+        assert!(f.capture(&raw, InputFixture::limits()).is_err());
+        f.storage.transaction().write_location(hash, 1, 0, false)?;
+        f.raw_put(
+            rustaxa_storage::Column::PeriodData,
+            &1_u64.to_le_bytes(),
+            &InputFixture::period_data(&[InputFixture::tx(0x59)]),
+        )?;
+        assert!(f.capture(&raw, InputFixture::limits()).is_err());
+        f.storage.transaction().write_location(hash, 1, 3, false)?;
+        assert!(f.capture(&raw, InputFixture::limits()).is_err());
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_head_or_pending_mismatch_is_unavailable() -> Result<()> {
+        use crate::pbft_execution_inputs::PbftInputCapture as C;
+        let f = InputFixture::new()?;
+        let raw = f.candidate(H256::zero())?;
+        f.storage
+            .final_chain()
+            .write_external_evm_pending_publication(
+                rustaxa_storage::FinalChainExternalEvmPendingPublication {
+                    payload: b"pending",
+                },
+            )?;
+        assert!(matches!(
+            f.capture(&raw, InputFixture::limits())?,
+            C::Unavailable(_)
+        ));
+        f.storage
+            .final_chain()
+            .delete_external_evm_pending_publication()?;
+        f.raw_put(
+            rustaxa_storage::Column::FinalChainMeta,
+            &FinalChain::DB_META_LAST_NUMBER.to_le_bytes(),
+            &0_u64.to_le_bytes(),
+        )?;
+        assert!(matches!(
+            f.capture(&raw, InputFixture::limits())?,
+            C::Unavailable(_)
+        ));
+        f.raw_put(
+            rustaxa_storage::Column::FinalChainMeta,
+            &FinalChain::DB_META_LAST_NUMBER.to_le_bytes(),
+            &1_u64.to_le_bytes(),
+        )?;
+        f.root.lock_dag()?.state.advance_empty_period(2)?;
+        assert!(matches!(
+            f.capture(&raw, InputFixture::limits())?,
+            C::Unavailable(_)
+        ));
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_null_pivot_captures_empty_inputs() -> Result<()> {
+        let f = InputFixture::new()?;
+        let raw = f.candidate(H256::zero())?;
+        let input = f.ready(&raw)?;
+        assert!(input.dag_blocks().is_empty());
+        assert!(input.lookups().is_empty());
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_capture_survives_later_owner_changes() -> Result<()> {
+        let f = InputFixture::new()?;
+        let a = InputFixture::tx(0x5a);
+        let hash = f.include(&a)?;
+        let block = f.block(service_config().dag.genesis_hash, 1, &[hash])?;
+        let raw = f.candidate(block)?;
+        let inputs = f.ready(&raw)?;
+        let heads = (
+            inputs.captured_heads().0.to_vec(),
+            inputs.captured_heads().1.to_vec(),
+        );
+        f.root
+            .lock_transaction()?
+            .sidecar
+            .remove_non_finalized(hash);
+        f.storage.transaction().write(hash, &a)?;
+        assert!(matches!(
+            f.capture(&raw, InputFixture::limits())?,
+            crate::pbft_execution_inputs::PbftInputCapture::Unavailable(_)
+        ));
+        assert_eq!(inputs.block_rlp(), raw);
+        assert!(
+            matches!(&inputs.lookups()[0],crate::pbft_execution_validation::PbftExecutionTransactionLookup::Included{rlp,..} if *rlp==a)
+        );
+        assert_eq!(
+            inputs.captured_heads(),
+            (heads.0.as_slice(), heads.1.as_slice())
+        );
+        f.finish()
+    }
+    #[test]
+    fn pbft_execution_inputs_limits_and_corrupt_dag_fail_without_effects() -> Result<()> {
+        use crate::pbft_execution_inputs::{PbftInputCapture as C, PbftInputUnavailable as U};
+        let f = InputFixture::new()?;
+        let a = InputFixture::tx(0x5b);
+        let hash = f.include(&a)?;
+        let block = f.block(service_config().dag.genesis_hash, 1, &[hash])?;
+        let raw = f.candidate(block)?;
+        for kind in 0..3 {
+            let mut limits = InputFixture::limits();
+            match kind {
+                0 => limits.maximum_bytes = 0,
+                1 => limits.maximum_dag_blocks = 0,
+                _ => limits.maximum_transactions = 0,
+            };
+            assert!(matches!(
+                f.capture(&raw, limits)?,
+                C::Unavailable(U::LocalLimit)
+            ));
+        }
+        f.raw_put(
+            rustaxa_storage::Column::DagBlocks,
+            block.as_bytes(),
+            &[0x80],
+        )?;
+        assert!(f.capture(&raw, InputFixture::limits()).is_err());
+        f.finish()
+    }
+
     #[test]
     fn pbft_candidate_payload_enforces_period_anchor_and_u256_gas() -> Result<()> {
         let path = unique_temp_dir("rustaxa_consensus_pbft_candidate_payload");
@@ -3383,7 +4053,7 @@ mod tests {
             1,
             std::slice::from_ref(&omitted_transaction_hash),
         );
-        let canonical_hash = H256::from(keccak256(&canonical_block_rlp));
+        let canonical_hash = keccak256(&canonical_block_rlp);
         let object_hash = H256::repeat_byte(0xBE);
         let preparation = root.prepare_add_block(DagAddBlockPrepareRequest {
             expected_hash: object_hash,
@@ -3631,7 +4301,7 @@ mod tests {
         })?;
 
         let initial_step = root.next_verify_block_session()?;
-        assert_eq!(initial_step.complete, false);
+        assert!(!initial_step.complete);
         let plan = root.prepare_verify_block_transactions()?;
         assert!(plan.transactions.is_empty());
         assert_eq!(
@@ -3676,7 +4346,7 @@ mod tests {
                 proposal_period: plan.proposal_period,
                 account_nonce_facts: Vec::new(),
             })?;
-        assert_eq!(resolved.complete, false);
+        assert!(!resolved.complete);
         assert_eq!(resolved.action, 2);
 
         let wrong_stage = root
@@ -4003,7 +4673,7 @@ mod tests {
         assert!(step.complete);
         assert_eq!(step.status, 2);
         let query = root.next_verify_block_session()?;
-        assert_eq!(query.complete, true);
+        assert!(query.complete);
 
         drop(root);
         drop(storage);

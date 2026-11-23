@@ -1,0 +1,5966 @@
+//! Ordered, unpublished execution of selected FinalChain native mutations.
+//!
+//! This module exposes consensus-owned staged sessions for DPoS reads and the
+//! selected `setCommission`, `delegate`, V1/V2 `undelegate`, and V1/V2
+//! confirmation, cancellation, reward claims and validator metadata mutations.
+//! Partial redelegation authenticates complete zero-reward snapshots; its
+//! selector uses funding/depth/value admission before fixed-word Go ABI unpack.
+//! The exact active Phalaenopsis escrow selector reuses a pure native kernel;
+//! its value transfer remains owned by the ordinary frame.
+//! Metadata updates use selector-first admission, a pinned Go ABI codec and
+//! consistent owner/info/membership rows; sparse/orphan metadata remains a gap.
+//! Sessions reuse existing decoders,
+//! gas policy and business kernels. Pending execution advances from the
+//! finalized parent; historical simulation starts from an exact finalized
+//! snapshot behind a wrapper that cannot finish rewards or publish. Transaction fees, CALL value
+//! transfer, nonces, frame rollback, receipts, and publication remain outside
+//! this boundary.
+
+use super::*;
+use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
+
+pub(super) mod account;
+mod claim_all;
+pub(super) mod claims;
+mod concrete_checkpoint;
+pub(super) mod context_replay;
+pub(super) mod custody;
+mod execution_probe;
+pub mod frozen_eligibility;
+mod prepared_transition;
+mod query;
+pub(super) mod raw;
+mod registration;
+pub(super) mod rewards;
+pub(super) mod semantic_port;
+mod slashing;
+mod trace_reads;
+mod validator_info;
+pub mod vote_inputs;
+
+#[cfg(test)]
+mod cancel_custody_reference_tests;
+#[cfg(test)]
+mod claim_all_reference_tests;
+#[cfg(test)]
+mod claims_reference_tests;
+#[cfg(test)]
+mod native_integration_tests;
+#[cfg(test)]
+mod registry_reference_tests;
+#[cfg(test)]
+mod retained_commission_reference_tests;
+#[cfg(test)]
+mod v1_custody_reference_tests;
+
+pub use account::{FinalChainNativeAccount, FinalChainNativeOrdinaryMutation};
+pub use concrete_checkpoint::ConcreteCheckpointNativeStateRead;
+pub use execution_probe::FinalChainNativeExecutionProbe;
+pub use prepared_transition::{
+    FinalChainFinishedNativeTransition, FinalChainPreparedNativeSession,
+};
+pub use raw::{
+    FinalChainNativeRawMutation, FinalChainNativeRawOperation, FinalChainNativeRawValue,
+    FinalChainNativeRawValueError,
+};
+pub use rewards::FinalChainNativeRewardsOutcome;
+
+/// Contract registered by the required consensus-native composition.
+/// Registry membership is independent of account presence and stored bytecode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeContractKind {
+    /// DPoS is registered at every period.
+    Dpos,
+    /// Slashing is registered from the configured Magnolia period.
+    Slashing,
+}
+
+impl FinalChain {
+    /// Selects the retained physical identity from this owner's finalized header.
+    pub fn pending_delayed_identity(
+        &self,
+        pending: FinalChainBlockNumber,
+        parent: FinalChainBlockNumber,
+    ) -> anyhow::Result<rustaxa_types::concrete_state::ConcreteStateIdentity> {
+        anyhow::ensure!(
+            self.last_block_number_typed()? == parent && parent.checked_next() == Some(pending),
+            "FINAL_CHAIN_DELAYED_PARENT_MISMATCH"
+        );
+        let period =
+            FinalChainBlockNumber::new(parent.as_u64().saturating_sub(self.dpos_delegation_delay));
+        let raw = self
+            .storage
+            .final_chain()
+            .block_header_raw(period.as_u64())?
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_DELAYED_HEADER_MISSING"))?;
+        let header = StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&raw))?;
+        Ok(rustaxa_types::concrete_state::ConcreteStateIdentity {
+            period,
+            state_root: header.state_root.into(),
+        })
+    }
+
+    /// Binds an owner-held checkpoint to the pending request and finalized headers.
+    pub fn bind_pending_delayed_view(
+        &self,
+        request_id: [u8; 32],
+        epoch: u64,
+        generation: u64,
+        pending: FinalChainBlockNumber,
+        parent: FinalChainBlockNumber,
+        reader: std::sync::Arc<rustaxa_storage::ConcreteCheckpointReaders>,
+    ) -> anyhow::Result<std::rc::Rc<frozen_eligibility::FrozenEligibility>> {
+        let basis = self.reward_scheduler_basis(request_id, epoch, pending, parent)?;
+        let selected = self.pending_delayed_identity(pending, parent)?;
+        let committed = self.committed_state_descriptor()?;
+        anyhow::ensure!(
+            reader.committed_identity().period == committed.period
+                && reader.committed_identity().state_root == committed.state_root,
+            "FINAL_CHAIN_DELAYED_COMMITTED_MISMATCH"
+        );
+        Ok(std::rc::Rc::new(
+            frozen_eligibility::FrozenEligibility::from_owner(
+                reader,
+                selected,
+                request_id,
+                (epoch, generation),
+                parent.as_u64(),
+                pending.as_u64(),
+                basis,
+            )?,
+        ))
+    }
+    /// Classifies a native contract with this owner's immutable hardfork policy.
+    /// Returns `None` for ordinary addresses, including slashing before Magnolia.
+    pub fn native_contract_kind(
+        &self,
+        period: FinalChainBlockNumber,
+        address: [u8; 20],
+    ) -> Option<FinalChainNativeContractKind> {
+        if address == DPOS_CONTRACT_ADDRESS {
+            Some(FinalChainNativeContractKind::Dpos)
+        } else if address == SLASHING_CONTRACT_ADDRESS && self.magnolia_active(period) {
+            Some(FinalChainNativeContractKind::Slashing)
+        } else {
+            None
+        }
+    }
+}
+
+/// Arbitrary-width unsigned value carried by a native child call.
+///
+/// Payability and admission checks use the complete value. `delegate` passes
+/// these exact bytes to the existing DPoS kernel; values outside that kernel's
+/// native `u256` domain fail explicitly instead of being narrowed.
+#[repr(transparent)]
+#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FinalChainNativeValue(BigUint);
+
+impl FinalChainNativeValue {
+    /// Wraps an arbitrary-width unsigned call value.
+    pub fn new(value: BigUint) -> Self {
+        Self(value)
+    }
+
+    /// Borrows the complete unsigned value.
+    pub fn value(&self) -> &BigUint {
+        &self.0
+    }
+
+    /// Reports whether the complete value is zero.
+    pub fn is_zero(&self) -> bool {
+        self.0 == BigUint::default()
+    }
+}
+
+/// Monotonic identity of one native call in a pending period.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FinalChainNativeInvocationId {
+    /// Ordered transaction containing the call.
+    pub transaction: FinalChainTransactionPosition,
+    /// Zero-based native-port call sequence across the pending period.
+    pub sequence: u64,
+}
+
+/// CALL-family operation presented to the FinalChain native session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeCallKind {
+    /// Ordinary CALL.
+    Call,
+    /// CALLCODE, currently rejected by this bounded session.
+    CallCode,
+    /// DELEGATECALL, currently rejected by this bounded session.
+    DelegateCall,
+    /// STATICCALL, including the historical native-mutation exception.
+    StaticCall,
+}
+
+/// Immutable facts bound by native preparation and invocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalChainNativeRequest {
+    /// Monotonic pending-period invocation identity.
+    pub id: FinalChainNativeInvocationId,
+    /// Pending FinalChain period whose native rules apply.
+    pub period: FinalChainBlockNumber,
+    /// Zero-based EVM frame depth, retained in the exact request binding.
+    pub depth: u16,
+    /// CALL-family operation used to reach native code.
+    pub kind: FinalChainNativeCallKind,
+    /// Effective static mode inherited from enclosing frames.
+    pub is_static: bool,
+    /// Effective native method caller.
+    pub caller: [u8; 20],
+    /// Native code address selected by dispatch.
+    pub contract: [u8; 20],
+    /// Account whose state is the call context.
+    pub state_address: [u8; 20],
+    /// Complete unsigned CALL value.
+    pub value: FinalChainNativeValue,
+    /// Exact ABI input.
+    pub input: Vec<u8>,
+    /// Child/action gas supplied by the frame driver.
+    pub supplied_gas: FinalChainGas,
+}
+
+/// Action-gas requirement bound to one exact native request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalChainNativeGasQuote {
+    /// Invocation whose preparation produced this quote.
+    pub invocation: FinalChainNativeInvocationId,
+    /// Native action gas required for invocation.
+    pub required_gas: FinalChainGas,
+}
+
+/// An operation observed at the native staging boundary.
+#[derive(Clone, Debug)]
+pub enum FinalChainNativeStageEvent<'a> {
+    /// The native prepare or admitted invoke phase begins or ends.
+    Phase { prepare: bool, begin: bool },
+    /// A source-owned reward preflight, distribution, or deferred phase.
+    RewardPhase {
+        kind: u8,
+        period: u64,
+        ordinal: u64,
+        begin: bool,
+    },
+    /// A source-owned validator-map boundary and its actual iteration.
+    RewardMap {
+        begin: bool,
+        map_scope: bool,
+        address: [u8; 20],
+        ordinal: u64,
+    },
+    /// Existence checked by the actual validator reward branch.
+    RewardValidatorExists { address: [u8; 20], exists: bool },
+    /// Fee value from the actual decoded validator statistics.
+    RewardFeeSource { address: [u8; 20], value: [u8; 32] },
+    /// The actual disabled reward branch and its ordered source periods.
+    RewardDisabled { period: u64, sources: &'a [u64] },
+    /// An account value read by the staged operation.
+    AccountRead {
+        address: [u8; 20],
+        account: &'a FinalChainNativeAccount,
+    },
+    /// An account-existence check used to select a source path.
+    AccountProbe {
+        address: [u8; 20],
+        account: &'a FinalChainNativeAccount,
+        /// Zero identifies cleanup, one identifies claim qualification, and two identifies a mutation prior.
+        purpose: u8,
+    },
+    /// An ordinary account operation staged by the native kernel.
+    AccountWrite(&'a FinalChainNativeOrdinaryMutation),
+    /// An exact raw value read by the staged operation.
+    RawRead {
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+        value: &'a ConcreteRead<Vec<u8>>,
+        /// Whether this read is consumed by the kernel rather than used to bind a write.
+        semantic: bool,
+    },
+    #[cfg(feature = "synthetic-fixtures")]
+    SlashingCurrentGet {
+        begin: bool,
+        purpose: u8,
+        key: ConcreteStorageKey,
+        expected: &'a [u8],
+    },
+    /// The actual selected slashing eligibility list and retained view, when observed.
+    #[cfg(feature = "synthetic-fixtures")]
+    SlashingDelayedList {
+        origin: u8,
+        selected_period: Option<u64>,
+        retained_identity: Option<rustaxa_types::concrete_state::ConcreteStateIdentity>,
+        validators: &'a [[u8; 20]],
+        proof_status: u8,
+        proof_validators: &'a [[u8; 20]],
+    },
+    /// An exact raw operation staged by the native kernel.
+    RawWrite(&'a FinalChainNativeRawMutation),
+}
+
+/// Exact current-state access required by the bounded native session.
+///
+/// Implementations expose authoritative ordinary account facts and the current
+/// raw lane, including earlier same-period native puts and tombstones. Reads
+/// must observe all preceding journal effects. Errors abort the pending period;
+/// they are never converted to absence.
+pub trait FinalChainNativeStateRead {
+    /// Reads a retained input span even when its account is not visible.
+    fn borrowed_raw_storage(
+        &self,
+        _address: [u8; 20],
+        _key: &ConcreteStorageKey,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Observes an actual staged operation when a caller requests it.
+    fn observe_stage(&self, _event: FinalChainNativeStageEvent<'_>) {}
+
+    /// Loads exact current ordinary-account facts for one native kernel read.
+    ///
+    /// The default keeps the original `setCommission`-only readers source
+    /// compatible. Account-consuming operations fail explicitly instead of
+    /// interpreting an unavailable read as an absent account.
+    fn account(
+        &self,
+        _address: [u8; 20],
+    ) -> std::result::Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        Err(FinalChainNativeStateReadError::Invariant(
+            "current native account reads are unavailable".to_owned(),
+        ))
+    }
+
+    /// Loads one native logical storage key from the current raw lane.
+    fn raw_storage(
+        &self,
+        address: [u8; 20],
+        key: &ConcreteStorageKey,
+    ) -> std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError>;
+}
+
+/// Failure to read authoritative current state for native preparation or invocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeStateReadError {
+    /// The immutable concrete-state fallback failed.
+    State(ConcreteReadError),
+    /// Current journal overlays or lifecycle facts are inconsistent.
+    Invariant(String),
+}
+
+impl std::fmt::Display for FinalChainNativeStateReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "FinalChain native state read: {self:?}")
+    }
+}
+
+impl std::error::Error for FinalChainNativeStateReadError {}
+
+impl From<ConcreteReadError> for FinalChainNativeStateReadError {
+    fn from(error: ConcreteReadError) -> Self {
+        Self::State(error)
+    }
+}
+
+/// Contract-level status of one admitted native operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeStatus {
+    /// The business mutation succeeded.
+    Success,
+    /// The native contract rejected the operation under normal semantics.
+    ContractFailure {
+        /// Exact legacy diagnostic exposed by native call execution.
+        error: String,
+    },
+}
+
+/// Lifetime admitted for retained native input spans.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeInputAliasScope {
+    /// Caller memory cannot survive this transaction's settlement boundary.
+    OwnedInputOnly,
+    /// One disposable journal retains raw storage for the entire execution.
+    SharedJournal,
+}
+
+/// A native raw Put that retained a span of its borrowed invocation input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalChainNativeInputAlias {
+    /// Lifetime required by the native session owner.
+    pub scope: FinalChainNativeInputAliasScope,
+    /// Native storage account.
+    pub address: [u8; 20],
+    /// Exact raw storage key.
+    pub key: ConcreteStorageKey,
+    /// First byte in the completed invocation input.
+    pub offset: usize,
+    /// Length of the retained input span.
+    pub length: usize,
+}
+
+/// One mutation of the Go precompile's borrowed input slice. This never changes
+/// canonical signed bytes or the immutable completed invocation identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalChainNativeInputMutation {
+    /// Byte offset within the exact invocation input.
+    pub offset: usize,
+    /// Byte observed before the mutation.
+    pub expected: u8,
+    /// Byte stored by the precompile.
+    pub replacement: u8,
+}
+
+/// Complete result of an admitted native operation.
+///
+/// Ordered raw mutations survive ordinary EVM frame rollback. Account
+/// mutations and logs belong to the enclosing ordinary frame and are discarded
+/// when that frame reverts. Business failure exposes none of these effects.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalChainNativeOutcome {
+    /// Business status returned by the reused FinalChain kernel.
+    pub status: FinalChainNativeStatus,
+    /// Native action gas charged by the admitted call.
+    pub gas_used: FinalChainGas,
+    /// Native return bytes.
+    pub output: Vec<u8>,
+    /// Ordered ordinary account effects owned by the enclosing EVM frame.
+    pub account_mutations: Vec<FinalChainNativeOrdinaryMutation>,
+    /// Ordered exact raw replacements. This is empty on business failure.
+    pub raw_mutations: Vec<FinalChainNativeRawMutation>,
+    /// Ordered EVM-compatible logs. These are empty on business failure.
+    pub logs: Vec<FinalChainCallLog>,
+}
+
+/// Terminal result of the invocation phase.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeInvocationResult {
+    /// Supplied child gas was below the prepared requirement. No kernel ran and
+    /// no effect was produced.
+    InsufficientGas {
+        /// Required native gas returned to the frame driver.
+        required_gas: FinalChainGas,
+    },
+    /// The request completed as a success or ordinary contract failure.
+    Completed(FinalChainNativeOutcome),
+}
+
+/// Integrity or sequencing failure at the staged native boundary.
+///
+/// State-read, raw-integrity, kernel and serializer failures poison the session
+/// and expose no partial semantic or raw mutation. Request/order/unsupported
+/// errors occur before preparation. A quote mismatch retains the original
+/// preparation so its exact request can still invoke it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FinalChainNativeSessionError {
+    /// A prior integrity or infrastructure failure invalidated the session.
+    Aborted,
+    /// The requested parent is not the currently selected finalized head.
+    ParentMismatch {
+        /// Finalized parent requested by the caller.
+        expected: FinalChainBlockNumber,
+        /// Current finalized head observed by FinalChain.
+        actual: FinalChainBlockNumber,
+    },
+    /// The pending period is not exactly one after its finalized parent.
+    PendingPeriodMismatch,
+    /// The specialized measured adapter requires Cornus native behavior.
+    PreCornusUnsupported,
+    /// Neither the legacy Cornus scope nor the Magnolia layout is active.
+    PreMagnoliaUnsupported,
+    /// Reward-claim storage behavior outside the source-proven staged slice.
+    ClaimsScopeUnsupported,
+    /// Historical simulation requested state beyond the committed finalized head.
+    HistoricalPeriodNotFinalized {
+        /// Historical period requested by the simulation caller.
+        requested: FinalChainBlockNumber,
+        /// Finalized head observed when the disposable session was created.
+        finalized_head: FinalChainBlockNumber,
+    },
+    /// A request targeted a different pending period.
+    PeriodMismatch,
+    /// The request sequence is not the next session sequence.
+    OutOfSequence {
+        /// Sequence expected by the session.
+        expected: u64,
+        /// Sequence supplied by the request.
+        actual: u64,
+    },
+    /// Preparation was attempted while a prior quote remained outstanding.
+    QuoteOutstanding,
+    /// Invocation was attempted without a prepared request.
+    NotPrepared,
+    /// Invocation request or quote differs from the exact prepared values.
+    QuoteMismatch,
+    /// This bounded session does not support the requested CALL-family kind.
+    UnsupportedCallKind,
+    /// The code or state address is outside the bounded DPoS route.
+    UnsupportedAddress,
+    /// The ABI input is outside the selected staged operation set.
+    UnsupportedOperation,
+    /// Authoritative current state could not be read safely.
+    StateRead(FinalChainNativeStateReadError),
+    /// Rewards require the request identity retained by the bound constructor.
+    UnboundRewards,
+    /// The opaque rewards plan belongs to another request or period.
+    RewardsPlanMismatch,
+    /// The terminal rewards phase was already completed.
+    RewardsAlreadyFinished,
+    /// The prepared rewards profile is outside this first bounded adapter.
+    RewardsScopeUnsupported,
+    /// The selected custody transition is outside this first bounded adapter.
+    CustodyScopeUnsupported,
+    /// Current raw bytes do not exactly encode the staged semantic state.
+    RawIntegrity(String),
+    /// The corrected slashing kernel reached malformed nested proof RLP.
+    MalformedNestedSlashingProof(String),
+    /// Existing FinalChain state or kernel execution failed.
+    Domain(String),
+}
+
+impl std::fmt::Display for FinalChainNativeSessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "FinalChain native session: {self:?}")
+    }
+}
+
+impl std::error::Error for FinalChainNativeSessionError {}
+
+impl From<FinalChainNativeStateReadError> for FinalChainNativeSessionError {
+    fn from(error: FinalChainNativeStateReadError) -> Self {
+        Self::StateRead(error)
+    }
+}
+
+#[derive(Clone)]
+struct PreparedSetCommission {
+    transaction: DposTransaction,
+    validator: [u8; 20],
+    validator_key: ConcreteStorageKey,
+    validator_read: ConcreteRead<Vec<u8>>,
+    owner_key: ConcreteStorageKey,
+    owner_read: ConcreteRead<Vec<u8>>,
+}
+
+#[derive(Clone)]
+enum PreparedKind {
+    NestedCallRejected,
+    NonPayable,
+    InsufficientGas,
+    AbiFailure(String),
+    EscrowTransfer,
+    SetCommission(Box<PreparedSetCommission>),
+    SelectedCustody(DposTransaction),
+    ClaimAll(claim_all::PreparedClaimAll),
+    CurrentClaimAll(claim_all::PreparedCurrentClaimAll),
+    LegacyClaimAll(claim_all::PreparedLegacyClaimAll),
+    Query {
+        transaction: DposTransaction,
+        abi_data_len: usize,
+    },
+    Slashing(Vec<u8>),
+}
+
+#[derive(Clone)]
+struct PreparedCall {
+    request: FinalChainNativeRequest,
+    quote: FinalChainNativeGasQuote,
+    kind: PreparedKind,
+}
+
+/// Constructor provenance for bounded historical mutation authority.
+/// An unbound pending session is not a historical simulation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeSessionOrigin {
+    PendingPeriod,
+    HistoricalSimulation,
+    CurrentHistoricalTrace,
+    HistoricalTrace,
+    HistoricalTraceBoundary,
+    ClaimAllNonPayable,
+}
+
+impl NativeSessionOrigin {
+    fn is_claim_all_trace(self) -> bool {
+        matches!(self, Self::HistoricalTrace | Self::HistoricalTraceBoundary)
+    }
+}
+
+enum NativeSessionOwner<'a> {
+    Borrowed(&'a FinalChain),
+    Owned(std::sync::Arc<FinalChain>),
+}
+
+impl std::ops::Deref for NativeSessionOwner<'_> {
+    type Target = FinalChain;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(chain) => chain,
+            Self::Owned(chain) => chain.as_ref(),
+        }
+    }
+}
+
+/// Test-only bounded cleanup observations.
+#[cfg(feature = "synthetic-fixtures")]
+pub mod cleanup_diagnostic;
+
+/// A successful source selection used by a synthetic historical session.
+#[cfg(feature = "synthetic-fixtures")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyntheticNativeOrigin {
+    /// The selected source role.
+    pub role: &'static str,
+    /// The coordinate passed to the actual source operation.
+    pub period: FinalChainBlockNumber,
+}
+
+/// Single-period staged native kernel state.
+///
+/// The session begins from an exact finalized DPoS snapshot. Pending sessions
+/// advance the reward-reference graph; historical simulation retains its exact
+/// finalized period. Neither constructor publishes state. Successful raw mutations advance this state even when a surrounding
+/// ordinary EVM frame later rolls back.
+pub struct FinalChainNativeSession<'a> {
+    final_chain: NativeSessionOwner<'a>,
+    origin: NativeSessionOrigin,
+    #[cfg(feature = "synthetic-fixtures")]
+    synthetic_origins: Vec<SyntheticNativeOrigin>,
+    request_id: Option<[u8; 32]>,
+    /// Immutable process-local cleanup timer issued by this FinalChain. It is
+    /// present only for execution bound to a live StateAPI epoch.
+    reward_scheduler_basis: Option<reward_scheduler::FinalChainRewardSchedulerBasis>,
+    pending_period: FinalChainBlockNumber,
+    period_start_total_vote_count: u64,
+    period_start_amount_delegated: U256,
+    next_sequence: u64,
+    completed_input_invocation: Option<FinalChainNativeInvocationId>,
+    input_mutations: Vec<FinalChainNativeInputMutation>,
+    input_aliases: Vec<FinalChainNativeInputAlias>,
+    borrowed_vrf_keys: std::collections::BTreeMap<[u8; 20], ConcreteStorageKey>,
+    dpos_state: DposSnapshot,
+    captured_rewards_parent: Option<std::sync::Arc<DposSnapshot>>,
+    eligibility_state: DposSnapshot,
+    eligibility_period: FinalChainBlockNumber,
+    delayed_physical: Option<std::rc::Rc<frozen_eligibility::FrozenEligibility>>,
+    prepared: Option<PreparedCall>,
+    aborted: bool,
+    finished_rewards: bool,
+    /// Exact slashing state last produced by a verified staged proof.
+    verified_slashing: Option<slashing::VerifiedSlashingState>,
+    trace_readers: std::cell::RefCell<trace_reads::TraceReadCaches>,
+}
+
+/// Disposable native execution over one finalized historical DPoS state.
+/// A bounded trace uses a separate origin and private execution context.
+///
+/// This owning wrapper exposes the normal prepare/invoke protocol but no
+/// rewards, persistence, snapshot extraction or publication surface. Dropping
+/// it discards the complete staged DPoS state and invocation sequence.
+pub struct FinalChainNativeSimulation<'a> {
+    session: FinalChainNativeSession<'a>,
+}
+
+impl FinalChain {
+    fn legacy_slashing_account_present(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> std::result::Result<bool, FinalChainNativeSessionError> {
+        Ok(self
+            .account_at_block(period, SLASHING_CONTRACT_ADDRESS)
+            .map_err(custody::map_kernel_error)?
+            .is_some())
+    }
+
+    fn normalize_disposable_slashing_snapshot(
+        period: FinalChainBlockNumber,
+        snapshot: &mut DposSnapshot,
+        account_present: &impl Fn(
+            FinalChainBlockNumber,
+        ) -> std::result::Result<bool, FinalChainNativeSessionError>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        if snapshot.slashing_jail_blocks.is_empty()
+            && snapshot.slashing_jailed_validators.is_empty()
+            && snapshot.slashing_double_voting_proofs.is_empty()
+        {
+            return Ok(());
+        }
+        // A fresh Go reader cannot see cached slots of an absent account.
+        if !account_present(period)? {
+            snapshot.slashing_jail_blocks.clear();
+            snapshot.slashing_jailed_validators.clear();
+            snapshot.slashing_double_voting_proofs.clear();
+        }
+        Ok(())
+    }
+
+    /// Opens one disposable trace for the Magnolia or current-profile layout.
+    /// Prefix and targets share native writes and per-reader Go byte caches.
+    /// No rewards, persistence, or publication capability escapes this wrapper.
+    pub fn begin_native_trace(
+        &self,
+        reader_period: FinalChainBlockNumber,
+        execution_period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        self.begin_native_trace_with_slashing_accounts(reader_period, execution_period, |period| {
+            self.legacy_slashing_account_present(period)
+        })
+    }
+
+    pub(crate) fn begin_native_trace_with_slashing_accounts(
+        &self,
+        reader_period: FinalChainBlockNumber,
+        execution_period: FinalChainBlockNumber,
+        account_present: impl Fn(
+            FinalChainBlockNumber,
+        ) -> std::result::Result<bool, FinalChainNativeSessionError>,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        if reader_period.as_u64() != execution_period.as_u64().saturating_sub(1) {
+            return Err(FinalChainNativeSessionError::PeriodMismatch);
+        }
+        let head = self
+            .last_block_number_typed()
+            .map_err(custody::map_kernel_error)?;
+        if reader_period > head {
+            return Err(FinalChainNativeSessionError::HistoricalPeriodNotFinalized {
+                requested: reader_period,
+                finalized_head: head,
+            });
+        }
+        let mut snapshot = self
+            .dpos_snapshot_at_finalized_block(reader_period)
+            .map_err(custody::map_kernel_error)?;
+        Self::normalize_disposable_slashing_snapshot(
+            reader_period,
+            &mut snapshot,
+            &account_present,
+        )?;
+        if execution_period != reader_period {
+            self.advance_reward_reference_graph_block(&mut snapshot, execution_period)
+                .map_err(custody::map_kernel_error)?;
+        }
+        self.native_session_from_state(
+            None,
+            execution_period,
+            snapshot,
+            NativeSessionOrigin::CurrentHistoricalTrace,
+        )
+        .map(|session| {
+            #[cfg(feature = "synthetic-fixtures")]
+            let session = {
+                let mut session = session;
+                session.synthetic_origins.insert(
+                    0,
+                    SyntheticNativeOrigin {
+                        role: "trace_advance",
+                        period: execution_period,
+                    },
+                );
+                session.synthetic_origins.insert(
+                    0,
+                    SyntheticNativeOrigin {
+                        role: "trace_parent_historical",
+                        period: reader_period,
+                    },
+                );
+                session
+            };
+            FinalChainNativeSimulation { session }
+        })
+    }
+    /// Begins an unpublished native session for the block immediately after an
+    /// exact currently finalized parent.
+    ///
+    /// The call rejects stale parents and skipped periods. Earlier layouts
+    /// outside the qualified Magnolia/Cornus scope require Complete current and
+    /// delayed validator-row authority.
+    /// It clones and advances DPoS state but does not acquire publication
+    /// authority or alter FinalChain snapshots.
+    pub fn begin_native_session(
+        &self,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        self.begin_native_session_inner(None, pending_period, expected_parent)
+    }
+
+    /// Begins an unpublished native session bound to one exact external-EVM
+    /// application request.
+    ///
+    /// Invocation execution is identical to [`Self::begin_native_session`]. The
+    /// non-optional binding is retained for the terminal rewards phase, which
+    /// rejects a plan prepared for another request.
+    pub fn begin_native_session_bound(
+        &self,
+        request_id: [u8; 32],
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        self.begin_native_session_inner(Some(request_id), pending_period, expected_parent)
+    }
+
+    /// Begins a publication-bound native session from one authenticated live
+    /// StateAPI epoch.
+    ///
+    /// Application execution must use this constructor after the joint-startup
+    /// operation has paired FinalChain with its newly constructed StateAPI.
+    /// The scheduler basis is process-local and authorizes only this exact
+    /// request, parent, period, and runtime generation.
+    pub fn begin_native_session_bound_at_state_api_epoch(
+        &self,
+        request_id: [u8; 32],
+        state_api_epoch: u64,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let basis = self.reward_scheduler_basis(
+            request_id,
+            state_api_epoch,
+            pending_period,
+            expected_parent,
+        )?;
+        self.begin_native_session_bound_with_scheduler_basis(
+            request_id,
+            pending_period,
+            expected_parent,
+            basis,
+        )
+    }
+
+    /// Opens the same epoch-bound pending session while retaining this exact owner.
+    /// This does not grant publication authority or concurrent access.
+    pub fn begin_owned_native_session_bound_at_state_api_epoch(
+        self: &std::sync::Arc<Self>,
+        request_id: [u8; 32],
+        state_api_epoch: u64,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'static>, FinalChainNativeSessionError> {
+        let session = self.begin_native_session_bound_at_state_api_epoch(
+            request_id,
+            state_api_epoch,
+            pending_period,
+            expected_parent,
+        )?;
+        session.into_owned(self)
+    }
+
+    pub(super) fn reward_scheduler_basis(
+        &self,
+        request_id: [u8; 32],
+        state_api_epoch: u64,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<
+        reward_scheduler::FinalChainRewardSchedulerBasis,
+        FinalChainNativeSessionError,
+    > {
+        let mut runtime = self.reward_scheduler_runtime.lock().map_err(|_| {
+            FinalChainNativeSessionError::Domain(
+                "final-chain reward scheduler lock poisoned".to_owned(),
+            )
+        })?;
+        runtime
+            .observe_live_epoch(state_api_epoch)
+            .and_then(|()| {
+                runtime.basis(state_api_epoch, expected_parent, pending_period, request_id)
+            })
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))
+    }
+
+    pub(super) fn begin_native_session_bound_with_scheduler_basis(
+        &self,
+        request_id: [u8; 32],
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+        basis: reward_scheduler::FinalChainRewardSchedulerBasis,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let mut session =
+            self.begin_native_session_inner(Some(request_id), pending_period, expected_parent)?;
+        session.reward_scheduler_basis = Some(basis);
+        Ok(session)
+    }
+
+    /// Begins an unpublished native session over one exact finalized state.
+    ///
+    /// Unlike the pending-period constructors, this does not advance the reward
+    /// reference graph. Current-state queries and mutations start from the
+    /// requested finalized DPoS snapshot. Eligibility queries use an immutable
+    /// snapshot selected at `period - delegation_delay`, matching the public Go
+    /// dry runner rather than its trace runner's live-block reader. The returned
+    /// session has no persistence or publication capability and remains unbound
+    /// to terminal rewards.
+    pub fn begin_native_simulation(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        self.begin_native_simulation_with_slashing_accounts(period, |period| {
+            self.legacy_slashing_account_present(period)
+        })
+    }
+
+    pub(crate) fn begin_native_simulation_with_slashing_accounts(
+        &self,
+        period: FinalChainBlockNumber,
+        account_present: impl Fn(
+            FinalChainBlockNumber,
+        ) -> std::result::Result<bool, FinalChainNativeSessionError>,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        let finalized_head = self
+            .last_block_number_typed()
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        if period > finalized_head {
+            return Err(FinalChainNativeSessionError::HistoricalPeriodNotFinalized {
+                requested: period,
+                finalized_head,
+            });
+        }
+        let mut dpos_state = self
+            .dpos_snapshot_at_finalized_block(period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        Self::normalize_disposable_slashing_snapshot(period, &mut dpos_state, &account_present)?;
+        let mut session = self.native_session_from_state(
+            None,
+            period,
+            dpos_state,
+            NativeSessionOrigin::HistoricalSimulation,
+        )?;
+        Self::normalize_disposable_slashing_snapshot(
+            session.eligibility_period,
+            &mut session.eligibility_state,
+            &account_present,
+        )?;
+        #[cfg(feature = "synthetic-fixtures")]
+        session.synthetic_origins.insert(
+            0,
+            SyntheticNativeOrigin {
+                role: "simulation_historical",
+                period,
+            },
+        );
+        Ok(FinalChainNativeSimulation { session })
+    }
+
+    /// Fixture-only private view after an empty block's BeginBlock and before
+    /// distribution. The caller authenticates its empty transaction/raw-write
+    /// prefix against the independently computed concrete parent. This view
+    /// has no publication binding and cannot be used as a committed reader.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn begin_synthetic_empty_pre_reward_simulation(
+        &self,
+        parent: FinalChainBlockNumber,
+        period: FinalChainBlockNumber,
+        expected_slots: &BTreeMap<([u8; 20], [u8; 32]), Vec<u8>>,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        if parent.checked_next() != Some(period)
+            || ![25_706_900, 25_707_000].contains(&period.as_u64())
+        {
+            return Err(FinalChainNativeSessionError::PeriodMismatch);
+        }
+        if !self.cacti_active(period) || !self.aspen_part_two_active(period) {
+            return Err(FinalChainNativeSessionError::CustodyScopeUnsupported);
+        }
+        let head = self
+            .last_block_number_typed()
+            .map_err(custody::map_kernel_error)?;
+        if parent > head {
+            return Err(FinalChainNativeSessionError::HistoricalPeriodNotFinalized {
+                requested: parent,
+                finalized_head: head,
+            });
+        }
+        let mut snapshot = self
+            .dpos_snapshot_at_finalized_block(parent)
+            .map_err(custody::map_kernel_error)?;
+        let before = canonical_concrete_precompile_storage(&snapshot, true)
+            .map_err(custody::map_kernel_error)?;
+        self.advance_reward_reference_graph_block(&mut snapshot, period)
+            .map_err(custody::map_kernel_error)?;
+        let canonical = canonical_concrete_precompile_storage(&snapshot, true)
+            .map_err(custody::map_kernel_error)?;
+        if before != canonical {
+            return Err(FinalChainNativeSessionError::Domain(
+                "synthetic empty phase changed serialized native state".into(),
+            ));
+        }
+        for (key, value) in expected_slots {
+            // This is the active semantic topology. Physical retained rows
+            // (for example a removed V1 queue's uint32 zero count) remain
+            // independently checked by the caller's complete concrete reader.
+            if !value.is_empty()
+                && canonical
+                    .get(key)
+                    .is_some_and(|allowed| !allowed.contains(value))
+            {
+                return Err(FinalChainNativeSessionError::Domain(format!(
+                    "synthetic pre-reward native row mismatch: {key:?}, actual {value:?}, allowed {:?}",
+                    canonical.get(key)
+                )));
+            }
+        }
+        for (key, allowed) in &canonical {
+            let actual = expected_slots.get(key).cloned().unwrap_or_default();
+            let mut jail_list_key = [0; 32];
+            jail_list_key[31] = 2;
+            // Reviewed bootstrap's fresh-list representation: no proof has
+            // created the empty-list row. Complete physical absence is proved
+            // by the caller, independently of this semantic representation.
+            let fresh_empty_jail_list = key.0 == SLASHING_CONTRACT_ADDRESS
+                && key.1 == jail_list_key
+                && actual.is_empty()
+                && snapshot.slashing_jailed_validators.is_empty()
+                && allowed.contains(&vec![0xc0]);
+            if !allowed.contains(&actual) && !fresh_empty_jail_list {
+                return Err(FinalChainNativeSessionError::Domain(format!(
+                    "synthetic pre-reward incomplete native inventory: {key:?}, actual {actual:?}, allowed {allowed:?}"
+                )));
+            }
+        }
+        self.native_session_from_state(
+            None,
+            period,
+            snapshot,
+            NativeSessionOrigin::HistoricalSimulation,
+        )
+        .map(|session| FinalChainNativeSimulation { session })
+    }
+
+    /// Begins the measured empty-prefix H1 claim-all trace from finalized P0.
+    ///
+    /// Only reader0/execution1 is supported. The complete zero-reward genesis
+    /// topology is checked before changing the private graph context to1. This
+    /// does not distribute rewards, advance the source, or publish state. The
+    /// caller must bind the concrete P0 source identity to this same history.
+    /// The returned port admits only the first direct claim-all at transaction0,
+    /// with native gas178728; it rejects queries and other mutations. It has no
+    /// rewards, persistence or publication surface. Other trace shapes require
+    /// separate qualification at the trace owner.
+    pub fn begin_native_trace_claim_all(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        self.begin_native_trace_claim_all_inner(
+            execution_period,
+            reader_period,
+            NativeSessionOrigin::HistoricalTrace,
+        )
+    }
+
+    /// Begins the seven measured H1/P0 claim-all gas-boundary traces.
+    ///
+    /// Source qualification and private context binding match
+    /// [`Self::begin_native_trace_claim_all`], but a distinct origin admits only
+    /// native gas0/1/68728/89999/90000/90001 at first transaction0. Underfunded
+    /// preparation authenticates the caller count and binds a read-free terminal;
+    /// funded calls use the same zero-payout scalar kernel. Other gas caps and
+    /// trace shapes are rejected. This disposable wrapper cannot publish state.
+    pub fn begin_native_trace_claim_all_gas_boundaries(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        self.begin_native_trace_claim_all_inner(
+            execution_period,
+            reader_period,
+            NativeSessionOrigin::HistoricalTraceBoundary,
+        )
+    }
+
+    /// Begins the measured value1 Cornus claim-all guard over finalized P1.
+    ///
+    /// Only reader1/execution1 or2 is supported. Complete positive P1 semantics
+    /// are qualified before advancing private graph context for execution2.
+    /// The composition owner must associate its concrete account/raw source
+    /// with this same accepted history; this API does not authenticate a generic
+    /// independently supplied reader. Only the first direct transaction0 call,
+    /// exact selector/value1 and six measured native gas caps are admitted.
+    /// Preparation quotes0 without native callbacks; invocation returns the
+    /// nonpayable failure. Ordinary value transfer and rollback belong to the
+    /// EVM owner. No terminal rewards, persistence or publication are exposed.
+    pub fn begin_native_claim_all_nonpayable(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        if reader_period.as_u64() != 1 || !matches!(execution_period.as_u64(), 1 | 2) {
+            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+        }
+        if execution_period < self.dpos_cornus_period {
+            return Err(FinalChainNativeSessionError::PreCornusUnsupported);
+        }
+        let dpos_state = self
+            .dpos_snapshot_at_finalized_block(reader_period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let mut session = self.native_session_from_state(
+            None,
+            execution_period,
+            dpos_state,
+            NativeSessionOrigin::ClaimAllNonPayable,
+        )?;
+        session.qualify_nonpayable_claim_all_source(1)?;
+        if execution_period.as_u64() == 2 {
+            self.advance_reward_reference_graph_block(&mut session.dpos_state, execution_period)
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        }
+        session.qualify_nonpayable_claim_all_source(execution_period.as_u64())?;
+        Ok(FinalChainNativeSimulation { session })
+    }
+
+    fn begin_native_trace_claim_all_inner(
+        &self,
+        execution_period: FinalChainBlockNumber,
+        reader_period: FinalChainBlockNumber,
+        origin: NativeSessionOrigin,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        if execution_period.as_u64() != 1 || reader_period != FinalChainBlockNumber::GENESIS {
+            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+        }
+        if execution_period < self.dpos_cornus_period {
+            return Err(FinalChainNativeSessionError::PreCornusUnsupported);
+        }
+        let dpos_state = self
+            .dpos_snapshot_at_finalized_block(reader_period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let mut session =
+            self.native_session_from_state(None, execution_period, dpos_state, origin)?;
+        session.qualify_trace_claim_all_source()?;
+        self.advance_reward_reference_graph_block(&mut session.dpos_state, execution_period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        Ok(FinalChainNativeSimulation { session })
+    }
+
+    fn begin_native_session_inner(
+        &self,
+        request_id: Option<[u8; 32]>,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let actual_parent = self
+            .last_block_number_typed()
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        if actual_parent != expected_parent {
+            return Err(FinalChainNativeSessionError::ParentMismatch {
+                expected: expected_parent,
+                actual: actual_parent,
+            });
+        }
+        if expected_parent.checked_next() != Some(pending_period) {
+            return Err(FinalChainNativeSessionError::PendingPeriodMismatch);
+        }
+        let mut dpos_state = self
+            .dpos_snapshot_at_finalized_block(expected_parent)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        self.advance_reward_reference_graph_block(&mut dpos_state, pending_period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        self.native_session_from_state(
+            request_id,
+            pending_period,
+            dpos_state,
+            NativeSessionOrigin::PendingPeriod,
+        )
+    }
+
+    // Earlier layouts require persisted, authenticated shape authority. Keep
+    // each existing origin's independently qualified compatibility union.
+    pub(super) fn pending_native_session_requires_complete_layout(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> bool {
+        self.native_session_requires_complete_layout(period, NativeSessionOrigin::PendingPeriod)
+    }
+
+    fn native_session_requires_complete_layout(
+        &self,
+        period: FinalChainBlockNumber,
+        origin: NativeSessionOrigin,
+    ) -> bool {
+        match origin {
+            NativeSessionOrigin::CurrentHistoricalTrace => {
+                !self.magnolia_active(period)
+                    && !(self.cacti_active(period) && self.aspen_part_two_active(period))
+            }
+            NativeSessionOrigin::PendingPeriod | NativeSessionOrigin::HistoricalSimulation => {
+                period < self.dpos_cornus_period && !self.magnolia_active(period)
+            }
+            _ => false,
+        }
+    }
+
+    fn native_session_from_state(
+        &self,
+        request_id: Option<[u8; 32]>,
+        period: FinalChainBlockNumber,
+        dpos_state: DposSnapshot,
+        origin: NativeSessionOrigin,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let complete_layout_required = self.native_session_requires_complete_layout(period, origin);
+        if complete_layout_required && !dpos_state.has_complete_validator_shapes() {
+            return Err(FinalChainNativeSessionError::PreMagnoliaUnsupported);
+        }
+        // StateTransition retains the reader installed after the preceding
+        // commit. A dry runner instead constructs its reader at the selected
+        // finalized head. Even delay zero must freeze the pending parent.
+        let reader_head = if origin == NativeSessionOrigin::PendingPeriod {
+            period.as_u64().saturating_sub(1)
+        } else {
+            period.as_u64()
+        };
+        let eligibility_period =
+            FinalChainBlockNumber::new(reader_head.saturating_sub(self.dpos_delegation_delay));
+        // No delayed query is admitted for the bounded trace origin. Retain its
+        // source clone without claiming general live-reader query support.
+        #[cfg(feature = "synthetic-fixtures")]
+        let mut synthetic_origins = Vec::new();
+        let eligibility_state = if origin.is_claim_all_trace()
+            || origin == NativeSessionOrigin::CurrentHistoricalTrace
+            || origin == NativeSessionOrigin::ClaimAllNonPayable
+            || eligibility_period == period
+        {
+            let selected = dpos_state.clone();
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins.push(SyntheticNativeOrigin {
+                role: "eligibility_live_clone",
+                period,
+            });
+            selected
+        } else {
+            let selected = self
+                .dpos_snapshot_at_finalized_block(eligibility_period)
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins.push(SyntheticNativeOrigin {
+                role: "eligibility_historical",
+                period: eligibility_period,
+            });
+            selected
+        };
+        self.native_session_from_states(
+            request_id,
+            period,
+            dpos_state,
+            origin,
+            eligibility_period,
+            eligibility_state,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
+        )
+    }
+
+    pub(super) fn native_session_from_captured_states(
+        &self,
+        request_id: [u8; 32],
+        period: FinalChainBlockNumber,
+        mut current: DposSnapshot,
+        eligibility_period: FinalChainBlockNumber,
+        delayed: DposSnapshot,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let expected = period
+            .checked_sub_distance(1)
+            .ok_or(FinalChainNativeSessionError::PendingPeriodMismatch)?
+            .saturating_sub_distance(self.dpos_delegation_delay);
+        if eligibility_period != expected {
+            return Err(FinalChainNativeSessionError::PendingPeriodMismatch);
+        }
+        self.advance_reward_reference_graph_block(&mut current, period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        if self.pending_native_session_requires_complete_layout(period)
+            && !current.has_complete_validator_shapes()
+        {
+            return Err(FinalChainNativeSessionError::PreMagnoliaUnsupported);
+        }
+        self.native_session_from_states(
+            Some(request_id),
+            period,
+            current,
+            NativeSessionOrigin::PendingPeriod,
+            eligibility_period,
+            delayed,
+            #[cfg(feature = "synthetic-fixtures")]
+            vec![SyntheticNativeOrigin {
+                role: "eligibility_captured",
+                period: eligibility_period,
+            }],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn native_session_from_states(
+        &self,
+        request_id: Option<[u8; 32]>,
+        period: FinalChainBlockNumber,
+        dpos_state: DposSnapshot,
+        origin: NativeSessionOrigin,
+        eligibility_period: FinalChainBlockNumber,
+        eligibility_state: DposSnapshot,
+        #[cfg(feature = "synthetic-fixtures")] synthetic_origins: Vec<SyntheticNativeOrigin>,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let complete_layout_required = self.native_session_requires_complete_layout(period, origin);
+        // TraceRunner supplies one live blockstate to every reader callback;
+        // normal pending and dry-run origins load real delayed snapshots above.
+        if complete_layout_required
+            && origin != NativeSessionOrigin::CurrentHistoricalTrace
+            && !eligibility_state.has_complete_validator_shapes()
+        {
+            return Err(FinalChainNativeSessionError::PreMagnoliaUnsupported);
+        }
+        let period_start_total_vote_count = dpos_state.total_vote_count;
+        let period_start_amount_delegated = total_staked_amount(&dpos_state)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        Ok(FinalChainNativeSession {
+            final_chain: NativeSessionOwner::Borrowed(self),
+            origin,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
+            request_id,
+            reward_scheduler_basis: None,
+            pending_period: period,
+            period_start_total_vote_count,
+            period_start_amount_delegated,
+            next_sequence: 0,
+            completed_input_invocation: None,
+            input_mutations: Vec::new(),
+            input_aliases: Vec::new(),
+            borrowed_vrf_keys: Default::default(),
+            dpos_state,
+            captured_rewards_parent: None,
+            eligibility_state,
+            eligibility_period,
+            delayed_physical: None,
+            prepared: None,
+            aborted: false,
+            finished_rewards: false,
+            verified_slashing: None,
+            trace_readers: std::cell::RefCell::new(trace_reads::TraceReadCaches::default()),
+        })
+    }
+}
+
+impl FinalChainNativeSimulation<'_> {
+    /// Returns the fixed correction identity of this disposable simulation.
+    pub fn correction_stage(&self) -> rustaxa_types::evm_correction::CorrectionStage {
+        self.session.correction_stage()
+    }
+
+    /// Returns retained input spans for exactly the last completed invocation.
+    pub fn input_aliases(
+        &mut self,
+        id: FinalChainNativeInvocationId,
+    ) -> Result<Vec<FinalChainNativeInputAlias>, FinalChainNativeSessionError> {
+        self.session.input_aliases(id)
+    }
+
+    /// Returns observations recorded after successful source selections.
+    #[cfg(feature = "synthetic-fixtures")]
+    pub fn synthetic_origins(&self) -> &[SyntheticNativeOrigin] {
+        &self.session.synthetic_origins
+    }
+
+    /// Reads borrowed-input effects without exposing publication authority.
+    pub fn input_mutations(
+        &mut self,
+        id: FinalChainNativeInvocationId,
+    ) -> std::result::Result<Vec<FinalChainNativeInputMutation>, FinalChainNativeSessionError> {
+        self.session.input_mutations(id)
+    }
+
+    /// Prepares one exact native request against this private historical view.
+    pub fn prepare(
+        &mut self,
+        request: &FinalChainNativeRequest,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        self.session.prepare(request, state)
+    }
+
+    /// Invokes the exact prepared request and advances only this private view.
+    pub fn invoke(
+        &mut self,
+        request: &FinalChainNativeRequest,
+        quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        self.session.invoke(request, quote, state)
+    }
+}
+
+impl FinalChainNativeSession<'_> {
+    fn into_owned(
+        self,
+        owner: &std::sync::Arc<FinalChain>,
+    ) -> Result<FinalChainNativeSession<'static>, FinalChainNativeSessionError> {
+        let FinalChainNativeSession {
+            final_chain,
+            origin,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
+            request_id,
+            reward_scheduler_basis,
+            pending_period,
+            period_start_total_vote_count,
+            period_start_amount_delegated,
+            next_sequence,
+            completed_input_invocation,
+            input_mutations,
+            input_aliases,
+            borrowed_vrf_keys,
+            dpos_state,
+            captured_rewards_parent,
+            eligibility_state,
+            eligibility_period,
+            delayed_physical,
+            prepared,
+            aborted,
+            finished_rewards,
+            verified_slashing,
+            trace_readers,
+        } = self;
+        match final_chain {
+            NativeSessionOwner::Borrowed(actual_owner)
+                if std::ptr::eq(actual_owner, owner.as_ref()) => {}
+            _ => {
+                return Err(FinalChainNativeSessionError::Domain(
+                    "native session owner mismatch".to_owned(),
+                ));
+            }
+        }
+        Ok(FinalChainNativeSession {
+            final_chain: NativeSessionOwner::Owned(std::sync::Arc::clone(owner)),
+            origin,
+            #[cfg(feature = "synthetic-fixtures")]
+            synthetic_origins,
+            request_id,
+            reward_scheduler_basis,
+            pending_period,
+            period_start_total_vote_count,
+            period_start_amount_delegated,
+            next_sequence,
+            completed_input_invocation,
+            input_mutations,
+            input_aliases,
+            borrowed_vrf_keys,
+            dpos_state,
+            captured_rewards_parent,
+            eligibility_state,
+            eligibility_period,
+            delayed_physical,
+            prepared,
+            aborted,
+            finished_rewards,
+            verified_slashing,
+            trace_readers,
+        })
+    }
+
+    /// Returns the fixed correction identity retained by the session owner.
+    pub fn correction_stage(&self) -> rustaxa_types::evm_correction::CorrectionStage {
+        self.final_chain.correction_stage_at(self.pending_period)
+    }
+
+    /// Installs the independently bound view before any native invocation.
+    pub fn install_pending_delayed_view(
+        &mut self,
+        view: std::rc::Rc<frozen_eligibility::FrozenEligibility>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.origin == NativeSessionOrigin::PendingPeriod
+                && self.next_sequence == 0
+                && self.prepared.is_none()
+                && self.request_id == Some(view.request_id)
+                && self.reward_scheduler_basis == Some(view.basis)
+                && self.pending_period.as_u64() == view.pending
+                && self.eligibility_period.as_u64() == view.identity.period.as_u64(),
+            "FINAL_CHAIN_DELAYED_SESSION_BINDING_MISMATCH"
+        );
+        anyhow::ensure!(
+            self.delayed_physical.is_none(),
+            "FINAL_CHAIN_DELAYED_VIEW_ALREADY_SET"
+        );
+        self.delayed_physical = Some(view);
+        Ok(())
+    }
+    /// Returns aliases before input_mutations consumes the completed invocation.
+    pub fn input_aliases(
+        &mut self,
+        id: FinalChainNativeInvocationId,
+    ) -> Result<Vec<FinalChainNativeInputAlias>, FinalChainNativeSessionError> {
+        if self.aborted || self.completed_input_invocation != Some(id) {
+            return Err(FinalChainNativeSessionError::NotPrepared);
+        }
+        Ok(std::mem::take(&mut self.input_aliases))
+    }
+
+    fn synchronize_borrowed_vrf(
+        &mut self,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        for (validator, key) in &self.borrowed_vrf_keys {
+            if let Some(current) = self.dpos_state.vrf_keys.get_mut(validator)
+                && let Some(value) = state.borrowed_raw_storage(DPOS_CONTRACT_ADDRESS, key)
+            {
+                *current = value.try_into().map_err(|_| {
+                    FinalChainNativeSessionError::RawIntegrity("borrowed VRF input width".into())
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns borrowed-input effects for exactly the last completed invocation.
+    /// The frame applies these once to aliased caller memory, before return copy.
+    pub fn input_mutations(
+        &mut self,
+        id: FinalChainNativeInvocationId,
+    ) -> std::result::Result<Vec<FinalChainNativeInputMutation>, FinalChainNativeSessionError> {
+        if self.aborted || self.completed_input_invocation != Some(id) {
+            return Err(FinalChainNativeSessionError::NotPrepared);
+        }
+        self.completed_input_invocation = None;
+        Ok(std::mem::take(&mut self.input_mutations))
+    }
+    /// Prepares one exact supported native call and returns its gas quote.
+    ///
+    /// Nonzero value and insufficient-gas paths bind a terminal result before
+    /// any raw read. Queries bind the current or frozen delayed session view.
+    /// `setCommission` validates and retains its validator and owner observations
+    /// during preparation. Selected custody calls defer raw and ordinary-account
+    /// reads until invocation so business preflight errors preserve the
+    /// reference read order. A selector-only `claimRewards` request binds its
+    /// measured ABI failure after gas, depth and nonpayability admission; this
+    /// path reads no state and does not admit other malformed claim shapes.
+    /// The finite positive claim-all profile authenticates only its count for
+    /// gas; invocation authenticates ordered items and both scalar transitions.
+    pub fn prepare(
+        &mut self,
+        request: &FinalChainNativeRequest,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        self.completed_input_invocation = None;
+        self.input_mutations.clear();
+        self.input_aliases.clear();
+        if self.aborted {
+            return Err(FinalChainNativeSessionError::Aborted);
+        }
+        if self.finished_rewards {
+            return Err(FinalChainNativeSessionError::RewardsAlreadyFinished);
+        }
+        if self.prepared.is_some() {
+            return Err(FinalChainNativeSessionError::QuoteOutstanding);
+        }
+        self.validate_request(request)?;
+        self.synchronize_borrowed_vrf(state)
+            .inspect_err(|_| self.aborted = true)?;
+
+        if request.contract == SLASHING_CONTRACT_ADDRESS {
+            return self.prepare_slashing(request);
+        }
+
+        if (self.origin.is_claim_all_trace()
+            || self.origin == NativeSessionOrigin::ClaimAllNonPayable)
+            && request.input != DPOS_CLAIM_ALL_REWARDS_SELECTOR
+        {
+            self.aborted = true;
+            return Err(FinalChainNativeSessionError::ClaimsScopeUnsupported);
+        }
+
+        // Pinned DPoS RequiredGas returns zero before selector lookup. Run
+        // returns this ABI error before depth, value, or native state reads.
+        // Go's historical "% b" formatting is a space-prefixed binary length.
+        if request.input.len() < 4 {
+            let quote = FinalChainNativeGasQuote {
+                invocation: request.id,
+                required_gas: FinalChainGas::ZERO,
+            };
+            self.prepared = Some(PreparedCall {
+                request: request.clone(),
+                quote,
+                kind: PreparedKind::AbiFailure(format!(
+                    "data too short ( {:b}ytes) for abi method lookup",
+                    request.input.len()
+                )),
+            });
+            return Ok(quote);
+        }
+
+        if request.input.starts_with(&DPOS_SET_VALIDATOR_INFO_SELECTOR) {
+            return self.prepare_validator_info(request);
+        }
+        if request.input.starts_with(&DPOS_REGISTER_VALIDATOR_SELECTOR) {
+            return self.prepare_registration(request);
+        }
+        if request
+            .input
+            .starts_with(&DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR)
+        {
+            let result = self.prepare_legacy_claim_all(request, state);
+            if result.is_err() {
+                self.aborted = true;
+            }
+            return result;
+        }
+        if request.input.starts_with(&DPOS_CLAIM_ALL_REWARDS_SELECTOR) {
+            let result = self.prepare_claim_all(request, state);
+            if result.is_err() {
+                self.aborted = true;
+            }
+            return result;
+        }
+        if request.input.starts_with(&DPOS_REDELEGATE_SELECTOR) {
+            return self.prepare_redelegate(request);
+        }
+
+        let mut transaction = decode_dpos_transaction_for_execution(
+            &request.input,
+            request.caller,
+            request.period,
+            self.final_chain.rewards_config.fix_claim_all_block_num,
+            self.final_chain.dpos_cornus_period,
+            self.final_chain.rewards_config.phalaenopsis_period,
+        );
+        // The exact escrow selector is absent from the ABI. Its activation and
+        // exact-length exception are decided by the shared execution decoder.
+        // Failed lookup precedes Cornus payability and never reads native rows.
+        if matches!(transaction, DposTransaction::UnrecognizedInput)
+            && request
+                .input
+                .starts_with(&DPOS_PHALA_ESCROW_TRANSFER_SELECTOR)
+        {
+            let quote = FinalChainNativeGasQuote {
+                invocation: request.id,
+                required_gas: FinalChainGas::ZERO,
+            };
+            self.prepared = Some(PreparedCall {
+                request: request.clone(),
+                quote,
+                kind: if request.period < self.final_chain.rewards_config.fix_redelegate_block_num
+                    && request.depth != 0
+                {
+                    PreparedKind::NestedCallRejected
+                } else {
+                    PreparedKind::AbiFailure(format!(
+                        "no method with id: 0x{}",
+                        request.input[..4]
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    ))
+                },
+            });
+            return Ok(quote);
+        }
+        let validator = match &mut transaction {
+            DposTransaction::SetCommission { validator, .. } => Some(*validator),
+            DposTransaction::Delegate { amount, .. } => {
+                *amount = request.value.value().to_bytes_be();
+                None
+            }
+            DposTransaction::Undelegate { .. }
+            | DposTransaction::Redelegate { .. }
+            | DposTransaction::ConfirmUndelegate { .. }
+            | DposTransaction::CancelUndelegate { .. }
+            | DposTransaction::UndelegateV2 { .. }
+            | DposTransaction::ConfirmUndelegateV2 { .. }
+            | DposTransaction::CancelUndelegateV2 { .. }
+            | DposTransaction::ClaimRewards { .. }
+            | DposTransaction::ClaimCommissionRewards { .. }
+            | DposTransaction::PhalaenopsisEscrowTransfer
+            | DposTransaction::MethodNotSupported
+            | DposTransaction::SetValidatorInfo { .. } => None,
+            DposTransaction::MalformedMutation { selector }
+                if request.input.len() == 4
+                    && (*selector == DPOS_CLAIM_REWARDS_SELECTOR
+                        || (self.final_chain.cacti_active(self.pending_period)
+                            && self.final_chain.aspen_part_two_active(self.pending_period))) =>
+            {
+                None
+            }
+            transaction if query::is_query(transaction) => {
+                let admission = match self.final_chain.native_invocation_admission(
+                    transaction,
+                    request.period,
+                    request.depth,
+                    request.value.value(),
+                    request.supplied_gas,
+                    Some(&self.dpos_state),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.aborted = true;
+                        return Err(FinalChainNativeSessionError::Domain(error.to_string()));
+                    }
+                };
+                let quote = FinalChainNativeGasQuote {
+                    invocation: request.id,
+                    required_gas: admission.required_gas,
+                };
+                if let Some(failure) = admission.failure {
+                    use super::native_admission::NativeAdmissionFailure as Failure;
+                    self.prepared = Some(PreparedCall {
+                        request: request.clone(),
+                        quote,
+                        kind: match failure {
+                            Failure::InsufficientGas => PreparedKind::InsufficientGas,
+                            Failure::NestedBeforeFix => PreparedKind::NestedCallRejected,
+                            Failure::NonPayable => PreparedKind::NonPayable,
+                        },
+                    });
+                } else {
+                    self.prepared = Some(PreparedCall {
+                        request: request.clone(),
+                        quote,
+                        kind: PreparedKind::Query {
+                            transaction: (*transaction).clone(),
+                            abi_data_len: request.input.len().saturating_sub(4),
+                        },
+                    });
+                }
+                return Ok(quote);
+            }
+            _ => return Err(FinalChainNativeSessionError::UnsupportedOperation),
+        };
+
+        let admission = match self.final_chain.native_invocation_admission(
+            &transaction,
+            request.period,
+            request.depth,
+            request.value.value(),
+            request.supplied_gas,
+            None,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                self.aborted = true;
+                return Err(FinalChainNativeSessionError::Domain(error.to_string()));
+            }
+        };
+        let quote = FinalChainNativeGasQuote {
+            invocation: request.id,
+            required_gas: admission.required_gas,
+        };
+        if let Some(failure) = admission.failure {
+            use super::native_admission::NativeAdmissionFailure as Failure;
+            self.prepared = Some(PreparedCall {
+                request: request.clone(),
+                quote,
+                kind: match failure {
+                    Failure::InsufficientGas => PreparedKind::InsufficientGas,
+                    Failure::NestedBeforeFix => PreparedKind::NestedCallRejected,
+                    Failure::NonPayable => PreparedKind::NonPayable,
+                },
+            });
+            return Ok(quote);
+        }
+
+        let Some(validator) = validator else {
+            self.prepared = Some(PreparedCall {
+                request: request.clone(),
+                quote,
+                kind: if matches!(transaction, DposTransaction::PhalaenopsisEscrowTransfer) {
+                    PreparedKind::EscrowTransfer
+                } else if matches!(transaction, DposTransaction::MethodNotSupported) {
+                    PreparedKind::AbiFailure(DposContractError::MethodNotSupported.legacy_message())
+                } else if matches!(transaction, DposTransaction::MalformedMutation { .. }) {
+                    // Only a recognized selector-only request passed above.
+                    // Go quotes the selector before ABI unpack; no state is read.
+                    PreparedKind::AbiFailure(
+                        "abi: cannot marshal in to go type: length insufficient 0 require 32"
+                            .into(),
+                    )
+                } else {
+                    PreparedKind::SelectedCustody(transaction)
+                },
+            });
+            return Ok(quote);
+        };
+        let validator_key = ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &validator]));
+        let owner_key = ConcreteStorageKey(concrete_storage_key(&[&[0, 3], &validator]));
+        if self.final_chain.cacti_active(self.pending_period)
+            && self.final_chain.aspen_part_two_active(self.pending_period)
+            && !self.dpos_state.validator_metadata.contains_key(&validator)
+            && !FinalChain::dpos_validator_owned_rows_exist(&self.dpos_state, validator)
+        {
+            let owner = state.raw_storage(DPOS_CONTRACT_ADDRESS, &owner_key)?;
+            if !matches!(&owner, ConcreteRead::Absent | ConcreteRead::Tombstone)
+                && !matches!(&owner, ConcreteRead::Present(bytes) if bytes.is_empty())
+            {
+                self.aborted = true;
+                return Err(FinalChainNativeSessionError::RawIntegrity(
+                    "setCommission absent owner".into(),
+                ));
+            }
+            self.prepared = Some(PreparedCall {
+                request: request.clone(),
+                quote,
+                kind: PreparedKind::AbiFailure(
+                    "This account is not owner of specified validator".into(),
+                ),
+            });
+            return Ok(quote);
+        }
+        let validation = (|| {
+            let validator_read = state.raw_storage(DPOS_CONTRACT_ADDRESS, &validator_key)?;
+            let owner_read = state.raw_storage(DPOS_CONTRACT_ADDRESS, &owner_key)?;
+            semantic_port::CheckpointJournalCommissionPort::from_authenticated_reads(
+                &self.dpos_state,
+                validator,
+                &validator_read,
+                &owner_read,
+                &validator_read,
+                &owner_read,
+                self.final_chain.magnolia_active(self.pending_period),
+            )?;
+            Ok::<_, FinalChainNativeSessionError>((validator_read, owner_read))
+        })();
+        let (validator_read, owner_read) = match validation {
+            Ok(reads) => reads,
+            Err(error) => {
+                self.aborted = true;
+                return Err(error);
+            }
+        };
+
+        self.prepared = Some(PreparedCall {
+            request: request.clone(),
+            quote,
+            kind: PreparedKind::SetCommission(Box::new(PreparedSetCommission {
+                transaction,
+                validator,
+                validator_key,
+                validator_read,
+                owner_key,
+                owner_read,
+            })),
+        });
+        Ok(quote)
+    }
+
+    /// Invokes the one exact prepared call.
+    ///
+    /// A mismatched request or quote leaves the valid preparation available for
+    /// its original invocation. Normal terminal results consume the quote and
+    /// sequence. Admitted execution runs the selected existing kernel against a
+    /// cloned DPoS snapshot and invocation-local account overlay. The session
+    /// advances semantic state only after exact ordered raw serialization
+    /// succeeds; infrastructure or integrity failure poisons the session.
+    pub fn invoke(
+        &mut self,
+        request: &FinalChainNativeRequest,
+        quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        if self.aborted {
+            return Err(FinalChainNativeSessionError::Aborted);
+        }
+        if self.finished_rewards {
+            return Err(FinalChainNativeSessionError::RewardsAlreadyFinished);
+        }
+        let Some(prepared) = self.prepared.as_ref() else {
+            return Err(FinalChainNativeSessionError::NotPrepared);
+        };
+        if prepared.request != *request || prepared.quote != quote {
+            return Err(FinalChainNativeSessionError::QuoteMismatch);
+        }
+        let Some(next_sequence) = self.next_sequence.checked_add(1) else {
+            self.prepared = None;
+            self.aborted = true;
+            return Err(FinalChainNativeSessionError::Domain(
+                "native invocation sequence overflow".to_owned(),
+            ));
+        };
+        let prepared = prepared.clone();
+        let invoke_admitted = !matches!(&prepared.kind, PreparedKind::InsufficientGas);
+        if invoke_admitted {
+            state.observe_stage(FinalChainNativeStageEvent::Phase {
+                prepare: false,
+                begin: true,
+            });
+        }
+
+        let result = match prepared.kind {
+            PreparedKind::Slashing(input) => self.invoke_slashing(&input, quote, state),
+            PreparedKind::AbiFailure(error) => Ok(FinalChainNativeInvocationResult::Completed(
+                FinalChainNativeOutcome {
+                    status: FinalChainNativeStatus::ContractFailure { error },
+                    gas_used: quote.required_gas,
+                    output: Vec::new(),
+                    account_mutations: Vec::new(),
+                    raw_mutations: Vec::new(),
+                    logs: Vec::new(),
+                },
+            )),
+            PreparedKind::NestedCallRejected => Ok(FinalChainNativeInvocationResult::Completed(
+                FinalChainNativeOutcome {
+                    status: FinalChainNativeStatus::ContractFailure {
+                        error: "only top-level calls are allowed".to_owned(),
+                    },
+                    gas_used: quote.required_gas,
+                    output: Vec::new(),
+                    account_mutations: Vec::new(),
+                    raw_mutations: Vec::new(),
+                    logs: Vec::new(),
+                },
+            )),
+            PreparedKind::NonPayable => Ok(FinalChainNativeInvocationResult::Completed(
+                FinalChainNativeOutcome {
+                    status: FinalChainNativeStatus::ContractFailure {
+                        error: "Method is not payable".to_owned(),
+                    },
+                    gas_used: FinalChainGas::ZERO,
+                    output: Vec::new(),
+                    account_mutations: Vec::new(),
+                    raw_mutations: Vec::new(),
+                    logs: Vec::new(),
+                },
+            )),
+            PreparedKind::InsufficientGas => {
+                Ok(FinalChainNativeInvocationResult::InsufficientGas {
+                    required_gas: quote.required_gas,
+                })
+            }
+            PreparedKind::EscrowTransfer => {
+                // The frame already owns value transfer. This pure shared
+                // kernel does not consult readers or modify either snapshot.
+                let outcome = FinalChain::apply_dpos_escrow_transfer();
+                Ok(FinalChainNativeInvocationResult::Completed(
+                    FinalChainNativeOutcome {
+                        status: FinalChainNativeStatus::Success,
+                        gas_used: quote.required_gas,
+                        output: outcome.code_retval,
+                        account_mutations: Vec::new(),
+                        raw_mutations: Vec::new(),
+                        logs: outcome
+                            .logs
+                            .into_iter()
+                            .map(|log| FinalChainCallLog {
+                                address: log.address,
+                                topics: log.topics,
+                                data: log.data,
+                            })
+                            .collect(),
+                    },
+                ))
+            }
+            PreparedKind::SetCommission(prepared) => {
+                self.invoke_set_commission(prepared, quote, state)
+            }
+            PreparedKind::LegacyClaimAll(prepared) => {
+                self.invoke_legacy_claim_all(prepared, quote, state, request)
+            }
+            PreparedKind::ClaimAll(prepared) => self.invoke_claim_all(prepared, quote, state),
+            PreparedKind::CurrentClaimAll(prepared) => {
+                self.invoke_current_claim_all(prepared, quote, state)
+            }
+            PreparedKind::SelectedCustody(transaction) => {
+                if matches!(transaction, DposTransaction::Register(_)) {
+                    self.invoke_registration(transaction, quote, state, request)
+                } else if matches!(transaction, DposTransaction::SetValidatorInfo { .. }) {
+                    self.invoke_validator_info(transaction, quote, state)
+                } else if claims::is_claim(&transaction) {
+                    self.invoke_selected_claim(transaction, quote, state)
+                } else {
+                    self.invoke_selected_custody(transaction, quote, state)
+                }
+            }
+            PreparedKind::Query {
+                transaction,
+                abi_data_len,
+            } => self.invoke_query(transaction, abi_data_len, quote, state),
+        };
+        if invoke_admitted {
+            state.observe_stage(FinalChainNativeStageEvent::Phase {
+                prepare: false,
+                begin: false,
+            });
+        }
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.prepared = None;
+                self.aborted = true;
+                return Err(error);
+            }
+        };
+        self.prepared = None;
+        if self.origin == NativeSessionOrigin::CurrentHistoricalTrace
+            && let FinalChainNativeInvocationResult::Completed(outcome) = &result
+        {
+            self.trace_readers
+                .borrow_mut()
+                .record(&outcome.raw_mutations);
+        }
+        self.next_sequence = next_sequence;
+        self.completed_input_invocation = Some(request.id);
+        Ok(result)
+    }
+
+    fn invoke_set_commission(
+        &mut self,
+        prepared: Box<PreparedSetCommission>,
+        quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        let current_validator =
+            state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.validator_key)?;
+        let current_owner = state.raw_storage(DPOS_CONTRACT_ADDRESS, &prepared.owner_key)?;
+        state.observe_stage(FinalChainNativeStageEvent::RawRead {
+            address: DPOS_CONTRACT_ADDRESS,
+            key: prepared.validator_key,
+            value: &current_validator,
+            semantic: true,
+        });
+        state.observe_stage(FinalChainNativeStageEvent::RawRead {
+            address: DPOS_CONTRACT_ADDRESS,
+            key: prepared.owner_key,
+            value: &current_owner,
+            semantic: true,
+        });
+        let DposTransaction::SetCommission {
+            owner,
+            validator,
+            commission,
+        } = prepared.transaction
+        else {
+            return Err(FinalChainNativeSessionError::Domain(
+                "setCommission preparation retained another transaction".to_owned(),
+            ));
+        };
+        if validator != prepared.validator {
+            return Err(FinalChainNativeSessionError::RawIntegrity(
+                "setCommission prepared validator identity changed".to_owned(),
+            ));
+        }
+        let mut port = semantic_port::CheckpointJournalCommissionPort::from_authenticated_reads(
+            &self.dpos_state,
+            validator,
+            &prepared.validator_read,
+            &prepared.owner_read,
+            &current_validator,
+            &current_owner,
+            self.final_chain.magnolia_active(self.pending_period),
+        )?;
+        let outcome = semantic_port::apply_set_commission(
+            &mut port,
+            owner,
+            commission,
+            self.pending_period,
+            self.final_chain.dpos_commission_change_frequency,
+            self.final_chain.dpos_commission_change_delta,
+        )
+        .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let status = if outcome.status_code == 1 {
+            FinalChainNativeStatus::Success
+        } else {
+            FinalChainNativeStatus::ContractFailure {
+                error: outcome
+                    .contract_error
+                    .as_ref()
+                    .map(DposContractError::legacy_message)
+                    .unwrap_or_default(),
+            }
+        };
+        let mut raw_mutations = Vec::new();
+        if outcome.status_code == 1 {
+            let update = port.take_authenticated_update().ok_or_else(|| {
+                FinalChainNativeSessionError::Domain(
+                    "setCommission kernel produced no authenticated update".to_owned(),
+                )
+            })?;
+            let replacement = semantic_port::apply_authenticated_checkpoint_to_snapshot(
+                &mut self.dpos_state,
+                update,
+            )
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+            if replacement.is_empty() {
+                return Err(FinalChainNativeSessionError::Domain(
+                    "setCommission serializer produced an empty put".to_owned(),
+                ));
+            }
+            let mutation = FinalChainNativeRawMutation {
+                address: DPOS_CONTRACT_ADDRESS,
+                key: prepared.validator_key,
+                expected: prepared.validator_read,
+                operation: FinalChainNativeRawOperation::Put(
+                    FinalChainNativeRawValue::new(replacement)
+                        .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?,
+                ),
+            };
+            state.observe_stage(FinalChainNativeStageEvent::RawWrite(&mutation));
+            raw_mutations.push(mutation);
+        } else if port.take_authenticated_update().is_some() {
+            return Err(FinalChainNativeSessionError::Domain(
+                "setCommission failed kernel produced an authenticated update".to_owned(),
+            ));
+        }
+        Ok(FinalChainNativeInvocationResult::Completed(
+            FinalChainNativeOutcome {
+                status,
+                gas_used: quote.required_gas,
+                output: outcome.code_retval,
+                account_mutations: Vec::new(),
+                raw_mutations,
+                logs: outcome
+                    .logs
+                    .into_iter()
+                    .map(|log| FinalChainCallLog {
+                        address: log.address,
+                        topics: log.topics,
+                        data: log.data,
+                    })
+                    .collect(),
+            },
+        ))
+    }
+
+    fn validate_request(
+        &self,
+        request: &FinalChainNativeRequest,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        if request.period != self.pending_period {
+            return Err(FinalChainNativeSessionError::PeriodMismatch);
+        }
+        if request.id.sequence != self.next_sequence {
+            return Err(FinalChainNativeSessionError::OutOfSequence {
+                expected: self.next_sequence,
+                actual: request.id.sequence,
+            });
+        }
+        if !matches!(
+            request.kind,
+            FinalChainNativeCallKind::Call | FinalChainNativeCallKind::StaticCall
+        ) {
+            return Err(FinalChainNativeSessionError::UnsupportedCallKind);
+        }
+        if self
+            .final_chain
+            .native_contract_kind(request.period, request.contract)
+            .is_none()
+            || request.state_address != request.contract
+        {
+            return Err(FinalChainNativeSessionError::UnsupportedAddress);
+        }
+        Ok(())
+    }
+
+    fn validator_facts(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+    ) -> std::result::Result<(U256, u16, u64, u64, u16), FinalChainNativeSessionError> {
+        semantic_port::snapshot_validator_facts(snapshot, validator)
+    }
+
+    fn encode_validator_row(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+    ) -> std::result::Result<Vec<u8>, FinalChainNativeSessionError> {
+        encode_persisted_validator_row(
+            snapshot,
+            validator,
+            self.final_chain.magnolia_active(self.pending_period),
+        )
+        .map_err(custody::map_kernel_error)
+    }
+}
+
+type ValidatorFacts = (U256, u16, u64, u64, u16);
+
+fn exact_rlp<'a>(
+    bytes: &'a [u8],
+    label: &str,
+) -> std::result::Result<Rlp<'a>, FinalChainNativeSessionError> {
+    let rlp = Rlp::new(bytes);
+    if rlp
+        .payload_info()
+        .map_err(|error| raw_integrity(label, error))?
+        .total()
+        != bytes.len()
+    {
+        return Err(FinalChainNativeSessionError::RawIntegrity(format!(
+            "{label} has trailing bytes"
+        )));
+    }
+    Ok(rlp)
+}
+
+fn decode_legacy_validator(
+    rlp: &Rlp<'_>,
+    undelegations_count: u16,
+) -> std::result::Result<ValidatorFacts, FinalChainNativeSessionError> {
+    if rlp
+        .item_count()
+        .map_err(|error| raw_integrity("legacy validator item count", error))?
+        != 4
+    {
+        return Err(FinalChainNativeSessionError::RawIntegrity(
+            "setCommission embedded validator row has the wrong shape".to_owned(),
+        ));
+    }
+    Ok((
+        rlp.val_at(0)
+            .map_err(|error| raw_integrity("validator stake", error))?,
+        rlp.val_at(1)
+            .map_err(|error| raw_integrity("validator commission", error))?,
+        rlp.val_at(2)
+            .map_err(|error| raw_integrity("validator last commission change", error))?,
+        rlp.val_at(3)
+            .map_err(|error| raw_integrity("validator reward head", error))?,
+        undelegations_count,
+    ))
+}
+
+fn raw_integrity(label: &str, error: impl std::fmt::Display) -> FinalChainNativeSessionError {
+    FinalChainNativeSessionError::RawIntegrity(format!("{label}: {error}"))
+}
+
+fn checked_undelegations_count(
+    snapshot: &DposSnapshot,
+    validator: [u8; 20],
+) -> std::result::Result<u16, FinalChainNativeSessionError> {
+    checked_dpos_undelegations_count_for_validator(snapshot, validator)
+        .map_err(custody::map_kernel_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    mod captured_execution_probe;
+    mod commission_lifecycle;
+    mod owned_delayed_real_fixture;
+    mod validator_info_reference_tests;
+
+    mod escrow_transfer_reference_tests;
+    use ethereum_types::{H160, H256};
+    use rustaxa_storage::Config;
+    use rustaxa_types::GenesisValidatorMetadata;
+    use std::cell::{Cell, RefCell};
+    use std::path::PathBuf;
+
+    const OWNER: [u8; 20] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbb,
+    ];
+    const WRONG_OWNER: [u8; 20] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa,
+    ];
+    const VALIDATOR: [u8; 20] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x31,
+    ];
+    const VALIDATOR_KEY: [u8; 32] = [
+        0x4e, 0xc8, 0xe9, 0x87, 0xae, 0x8c, 0x32, 0xd5, 0xe6, 0xa9, 0x3d, 0x7f, 0x1a, 0x07, 0xe4,
+        0x06, 0x8c, 0xaa, 0x26, 0x97, 0xc4, 0xe2, 0x6d, 0x84, 0x44, 0xfd, 0x89, 0x96, 0x5b, 0xf0,
+        0x66, 0x0a,
+    ];
+    const LEGACY_VALIDATOR_100: [u8; 7] = [0xc6, 0x82, 0x27, 0x10, 0x64, 0x80, 0x80];
+    const EXTENDED_VALIDATOR_200: [u8; 10] =
+        [0xc9, 0xc7, 0x82, 0x27, 0x10, 0x81, 0xc8, 0x01, 0x80, 0x80];
+    const LEGACY_VALIDATOR_200: [u8; 8] = [0xc7, 0x82, 0x27, 0x10, 0x81, 0xc8, 0x01, 0x80];
+
+    type RawRows = BTreeMap<([u8; 20], [u8; 32]), ConcreteRead<Vec<u8>>>;
+
+    #[derive(Default)]
+    struct RawState {
+        rows: RefCell<RawRows>,
+        accounts: BTreeMap<[u8; 20], FinalChainNativeAccount>,
+        reads: Cell<usize>,
+        read_keys: RefCell<Vec<ConcreteStorageKey>>,
+        account_reads: Cell<usize>,
+        fail_reads: bool,
+    }
+
+    impl RawState {
+        fn fixture() -> Self {
+            let state = Self::default();
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                VALIDATOR_KEY,
+                ConcreteRead::Present(LEGACY_VALIDATOR_100.to_vec()),
+            );
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[0, 3], &VALIDATOR]),
+                ConcreteRead::Present(OWNER.to_vec()),
+            );
+            state
+        }
+
+        fn erroring() -> Self {
+            Self {
+                fail_reads: true,
+                ..Self::default()
+            }
+        }
+
+        fn reward_fixture(total_vote_count: u64, amount_delegated: U256) -> Self {
+            let state = Self {
+                accounts: BTreeMap::from([(
+                    DPOS_CONTRACT_ADDRESS,
+                    FinalChainNativeAccount {
+                        exists: true,
+                        nonce: FinalChainNonce::zero(),
+                        balance: (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64),
+                    },
+                )]),
+                ..Self::default()
+            };
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[0, 2], &VALIDATOR]),
+                ConcreteRead::Present(vec![0xc2, 0x80, 0x80]),
+            );
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[4]]),
+                ConcreteRead::Present(concrete_compact_u64(total_vote_count)),
+            );
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[5]]),
+                ConcreteRead::Present(concrete_u256_bytes(amount_delegated)),
+            );
+            state
+        }
+
+        fn from_snapshot(
+            snapshot: &DposSnapshot,
+            accounts: BTreeMap<[u8; 20], FinalChainNativeAccount>,
+        ) -> Self {
+            let rows = canonical_concrete_precompile_storage(snapshot, true)
+                .unwrap()
+                .into_iter()
+                .map(|(identity, candidates)| {
+                    let value = candidates
+                        .into_iter()
+                        .next()
+                        .expect("canonical storage has at least one candidate");
+                    (identity, ConcreteRead::Present(value))
+                })
+                .collect();
+            Self {
+                rows: RefCell::new(rows),
+                accounts,
+                ..Self::default()
+            }
+        }
+
+        fn set(&self, address: [u8; 20], key: [u8; 32], value: ConcreteRead<Vec<u8>>) {
+            self.rows.borrow_mut().insert((address, key), value);
+        }
+
+        fn apply(&self, mutation: &FinalChainNativeRawMutation) {
+            let value = match &mutation.operation {
+                FinalChainNativeRawOperation::Put(value) => {
+                    ConcreteRead::Present(value.as_bytes().to_vec())
+                }
+                FinalChainNativeRawOperation::Delete => ConcreteRead::Present(Vec::new()),
+            };
+            self.set(mutation.address, mutation.key.0, value);
+        }
+    }
+
+    impl FinalChainNativeStateRead for RawState {
+        fn account(
+            &self,
+            address: [u8; 20],
+        ) -> std::result::Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+            self.account_reads.set(self.account_reads.get() + 1);
+            self.accounts.get(&address).cloned().ok_or_else(|| {
+                FinalChainNativeStateReadError::Invariant(format!(
+                    "fixture account is unavailable: {address:?}"
+                ))
+            })
+        }
+
+        fn raw_storage(
+            &self,
+            address: [u8; 20],
+            key: &ConcreteStorageKey,
+        ) -> std::result::Result<ConcreteRead<Vec<u8>>, FinalChainNativeStateReadError> {
+            self.reads.set(self.reads.get() + 1);
+            self.read_keys.borrow_mut().push(*key);
+            if self.fail_reads {
+                return Err(FinalChainNativeStateReadError::Invariant(
+                    "reader must not run on this path".to_owned(),
+                ));
+            }
+            Ok(self
+                .rows
+                .borrow()
+                .get(&(address, key.0))
+                .cloned()
+                .unwrap_or(ConcreteRead::Absent))
+        }
+    }
+
+    fn temp_db_path(test_name: &str) -> PathBuf {
+        crate::test_paths::new_path(&format!("rustaxa-consensus-native-session-{test_name}"))
+    }
+
+    fn with_chain(
+        test_name: &str,
+        fix_redelegate_block_num: FinalChainBlockNumber,
+        test: impl FnOnce(&FinalChain),
+    ) {
+        with_chain_config(
+            test_name,
+            FinalChainRewardsConfig {
+                // The oracle base row was created before Magnolia; writes at1 upgrade it.
+                magnolia_period: 1.into(),
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                fix_redelegate_block_num,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            test,
+        );
+    }
+
+    fn with_chain_ficus(
+        test_name: &str,
+        fix_redelegate_block_num: FinalChainBlockNumber,
+        test: impl FnOnce(&FinalChain),
+    ) {
+        with_chain_config_and_ficus(
+            test_name,
+            FinalChainRewardsConfig {
+                // The oracle base row was created before Magnolia; writes at1 upgrade it.
+                magnolia_period: 1.into(),
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                fix_redelegate_block_num,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            FinalChainBlockNumber::GENESIS,
+            test,
+        );
+    }
+
+    fn with_chain_config(
+        test_name: &str,
+        rewards_config: FinalChainRewardsConfig,
+        test: impl FnOnce(&FinalChain),
+    ) {
+        with_chain_config_and_ficus(test_name, rewards_config, FinalChainBlockNumber::MAX, test);
+    }
+
+    fn with_chain_config_and_ficus(
+        test_name: &str,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
+        test: impl FnOnce(&FinalChain),
+    ) {
+        with_chain_dpos_config(
+            test_name,
+            rewards_config,
+            ficus_activation_period,
+            GenesisDposConfig {
+                eligibility_balance_threshold: U256::from(1_000).into(),
+                vote_eligibility_balance_step: U256::from(1_000).into(),
+                validator_maximum_stake: U256::from(30_000).into(),
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                ..Default::default()
+            },
+            test,
+        );
+    }
+
+    fn with_chain_dpos_config(
+        test_name: &str,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
+        dpos_config: GenesisDposConfig,
+        test: impl FnOnce(&FinalChain),
+    ) {
+        with_arc_chain_dpos_config(
+            test_name,
+            rewards_config,
+            ficus_activation_period,
+            dpos_config,
+            |chain| test(&chain),
+        );
+    }
+
+    fn with_arc_chain_dpos_config(
+        test_name: &str,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
+        dpos_config: GenesisDposConfig,
+        test: impl FnOnce(Arc<FinalChain>),
+    ) {
+        let path = temp_db_path(test_name);
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = Arc::new(
+            FinalChain::new_with_rewards_config_and_ficus_activation(
+                storage.clone(),
+                1_000_000.into(),
+                0,
+                crate::FinalChainGenesisAllocation {
+                    accounts: Vec::new(),
+                    validators: vec![GenesisValidator {
+                        address: VALIDATOR,
+                        vrf_key: [0; 32],
+                        total_stake: U256::from(10_000).to_big_endian().to_vec(),
+                        delegations: vec![(VALIDATOR, U256::from(10_000).to_big_endian().to_vec())],
+                        metadata: GenesisValidatorMetadata {
+                            owner: OWNER,
+                            commission: 100,
+                            ..Default::default()
+                        },
+                    }],
+                },
+                dpos_config,
+                rewards_config,
+                ficus_activation_period,
+            )
+            .unwrap(),
+        );
+        test(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    fn commission_input(validator: [u8; 20], commission: u16) -> Vec<u8> {
+        let mut input = Vec::with_capacity(68);
+        input.extend_from_slice(&DPOS_SET_COMMISSION_SELECTOR);
+        input.extend_from_slice(&[0; 12]);
+        input.extend_from_slice(&validator);
+        input.extend_from_slice(&[0; 30]);
+        input.extend_from_slice(&commission.to_be_bytes());
+        input
+    }
+
+    fn address_word_input(selector: [u8; 4], validator: [u8; 20]) -> Vec<u8> {
+        let mut input = Vec::with_capacity(36);
+        input.extend_from_slice(&selector);
+        input.extend_from_slice(&[0; 12]);
+        input.extend_from_slice(&validator);
+        input
+    }
+
+    fn address_amount_input(selector: [u8; 4], validator: [u8; 20], amount: U256) -> Vec<u8> {
+        let mut input = address_word_input(selector, validator);
+        input.extend_from_slice(&amount.to_big_endian());
+        input
+    }
+
+    fn address_id_input(selector: [u8; 4], validator: [u8; 20], id: u64) -> Vec<u8> {
+        let mut input = address_word_input(selector, validator);
+        input.extend_from_slice(&U256::from(id).to_big_endian());
+        input
+    }
+
+    fn custody_request(
+        sequence: u64,
+        caller: [u8; 20],
+        value: u64,
+        input: Vec<u8>,
+        gas: u64,
+    ) -> FinalChainNativeRequest {
+        FinalChainNativeRequest {
+            id: FinalChainNativeInvocationId {
+                transaction: FinalChainTransactionPosition::new(sequence as u32),
+                sequence,
+            },
+            period: FinalChainBlockNumber::new(1),
+            depth: 1,
+            kind: FinalChainNativeCallKind::Call,
+            is_static: false,
+            caller,
+            contract: DPOS_CONTRACT_ADDRESS,
+            state_address: DPOS_CONTRACT_ADDRESS,
+            value: FinalChainNativeValue::new(BigUint::from(value)),
+            input,
+            supplied_gas: gas.into(),
+        }
+    }
+
+    fn request(
+        sequence: u64,
+        caller: [u8; 20],
+        commission: u16,
+        supplied_gas: u64,
+    ) -> FinalChainNativeRequest {
+        FinalChainNativeRequest {
+            id: FinalChainNativeInvocationId {
+                transaction: FinalChainTransactionPosition::new(0),
+                sequence,
+            },
+            period: FinalChainBlockNumber::new(1),
+            depth: 1,
+            kind: FinalChainNativeCallKind::Call,
+            is_static: false,
+            caller,
+            contract: DPOS_CONTRACT_ADDRESS,
+            state_address: DPOS_CONTRACT_ADDRESS,
+            value: FinalChainNativeValue::default(),
+            input: commission_input(VALIDATOR, commission),
+            supplied_gas: supplied_gas.into(),
+        }
+    }
+
+    fn completed(result: FinalChainNativeInvocationResult) -> FinalChainNativeOutcome {
+        match result {
+            FinalChainNativeInvocationResult::Completed(outcome) => outcome,
+            FinalChainNativeInvocationResult::InsufficientGas { .. } => {
+                panic!("expected completed native result")
+            }
+        }
+    }
+
+    fn invoke_custody(
+        session: &mut FinalChainNativeSession<'_>,
+        state: &RawState,
+        request: &FinalChainNativeRequest,
+    ) -> FinalChainNativeOutcome {
+        let quote = session.prepare(request, state).unwrap();
+        completed(session.invoke(request, quote, state).unwrap())
+    }
+
+    fn apply_raw_mutations(state: &RawState, outcome: &FinalChainNativeOutcome) {
+        for mutation in &outcome.raw_mutations {
+            state.apply(mutation);
+        }
+    }
+
+    fn simulation_request(
+        period: FinalChainBlockNumber,
+        sequence: u64,
+        input: Vec<u8>,
+        supplied_gas: u64,
+    ) -> FinalChainNativeRequest {
+        FinalChainNativeRequest {
+            id: FinalChainNativeInvocationId {
+                transaction: FinalChainTransactionPosition::new(0),
+                sequence,
+            },
+            period,
+            depth: 0,
+            kind: FinalChainNativeCallKind::Call,
+            is_static: false,
+            caller: OWNER,
+            contract: DPOS_CONTRACT_ADDRESS,
+            state_address: DPOS_CONTRACT_ADDRESS,
+            value: FinalChainNativeValue::default(),
+            input,
+            supplied_gas: supplied_gas.into(),
+        }
+    }
+
+    #[test]
+    fn selector_only_claim_admission_is_read_free_and_finite() {
+        with_chain(
+            "selector-only-claim",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut state = RawState::fixture();
+                state.fail_reads = true;
+                for value in [0_u8, 1] {
+                    let mut simulation = chain
+                        .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+                        .unwrap();
+                    let before = simulation.session.dpos_state.clone();
+                    let mut request = simulation_request(
+                        FinalChainBlockNumber::GENESIS,
+                        0,
+                        DPOS_CLAIM_REWARDS_SELECTOR.to_vec(),
+                        40000,
+                    );
+                    request.value = FinalChainNativeValue::new(value.into());
+                    let quote = simulation.prepare(&request, &state).unwrap();
+                    assert_eq!(
+                        quote.required_gas,
+                        if value == 0 {
+                            40000.into()
+                        } else {
+                            FinalChainGas::ZERO
+                        }
+                    );
+                    let outcome = completed(simulation.invoke(&request, quote, &state).unwrap());
+                    assert_eq!(outcome.status, FinalChainNativeStatus::ContractFailure { error: if value == 0 { "abi: cannot marshal in to go type: length insufficient 0 require 32" } else { "Method is not payable" }.into() });
+                    assert_eq!(
+                        outcome.gas_used,
+                        if value == 0 {
+                            40000.into()
+                        } else {
+                            FinalChainGas::ZERO
+                        }
+                    );
+                    assert!(
+                        outcome.account_mutations.is_empty()
+                            && outcome.raw_mutations.is_empty()
+                            && outcome.logs.is_empty()
+                    );
+                    assert_eq!(simulation.session.dpos_state, before);
+                }
+                let mut simulation = chain
+                    .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let request = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    0,
+                    DPOS_CLAIM_REWARDS_SELECTOR.to_vec(),
+                    39999,
+                );
+                let quote = simulation.prepare(&request, &state).unwrap();
+                assert!(matches!(
+                    simulation.invoke(&request, quote, &state).unwrap(),
+                    FinalChainNativeInvocationResult::InsufficientGas { .. }
+                ));
+                for input in [
+                    [DPOS_CLAIM_REWARDS_SELECTOR.as_slice(), &[0]].concat(),
+                    DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR.to_vec(),
+                ] {
+                    let mut simulation = chain
+                        .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+                        .unwrap();
+                    let request =
+                        simulation_request(FinalChainBlockNumber::GENESIS, 0, input, 40000);
+                    assert_eq!(
+                        simulation.prepare(&request, &state),
+                        Err(FinalChainNativeSessionError::UnsupportedOperation)
+                    );
+                }
+                assert_eq!(state.reads.get(), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn historical_simulation_reads_its_staged_snapshot_without_rewards_authority() {
+        with_chain(
+            "historical-query-after-mutation",
+            FinalChainBlockNumber::GENESIS,
+            |final_chain| {
+                let state = RawState::fixture();
+                let mut simulation = final_chain
+                    .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let finalized = final_chain
+                    .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                assert_eq!(simulation.session.dpos_state, finalized);
+                assert_eq!(simulation.session.eligibility_state, finalized);
+                assert_eq!(
+                    simulation.session.eligibility_period,
+                    FinalChainBlockNumber::GENESIS
+                );
+                assert_eq!(simulation.session.request_id, None);
+
+                let read = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    0,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, VALIDATOR),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&read, &state).unwrap();
+                assert_eq!(quote.required_gas, DPOS_GET_METHOD_GAS.into());
+                let initial = completed(simulation.invoke(&read, quote, &state).unwrap());
+                assert_eq!(initial.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    BigUint::from_bytes_be(&initial.output[96..128]),
+                    100_u32.into()
+                );
+                assert!(initial.account_mutations.is_empty());
+                assert!(initial.raw_mutations.is_empty());
+                assert!(initial.logs.is_empty());
+                assert_eq!(state.reads.get(), 0);
+
+                let mutation = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    1,
+                    commission_input(VALIDATOR, 200),
+                    DPOS_SET_COMMISSION_GAS,
+                );
+                let quote = simulation.prepare(&mutation, &state).unwrap();
+                let changed = completed(simulation.invoke(&mutation, quote, &state).unwrap());
+                assert_eq!(changed.status, FinalChainNativeStatus::Success);
+                assert_eq!(changed.raw_mutations.len(), 1);
+                assert_eq!(
+                    checked_validator_row_shape(&simulation.session.dpos_state, VALIDATOR).unwrap(),
+                    Some(ValidatorRowShape::LegacyV1)
+                );
+                let FinalChainNativeRawOperation::Put(row) = &changed.raw_mutations[0].operation
+                else {
+                    panic!("commission must write its legacy row")
+                };
+                assert_eq!(rlp::Rlp::new(row.as_bytes()).item_count().unwrap(), 4);
+                apply_raw_mutations(&state, &changed);
+
+                let reread = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    2,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, VALIDATOR),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&reread, &state).unwrap();
+                let current = completed(simulation.invoke(&reread, quote, &state).unwrap());
+                assert_eq!(current.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    BigUint::from_bytes_be(&current.output[96..128]),
+                    200_u32.into()
+                );
+                assert!(current.raw_mutations.is_empty());
+
+                // `accounts/abi/unpack.go::toGoType` reports the ABI data
+                // length after the selector and the first missing word end.
+                let malformed = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    3,
+                    DPOS_GET_TOTAL_DELEGATION_SELECTOR.to_vec(),
+                    0,
+                );
+                let quote = simulation.prepare(&malformed, &state).unwrap();
+                assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+                let malformed = completed(simulation.invoke(&malformed, quote, &state).unwrap());
+                assert_eq!(
+                    malformed.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error:
+                            "abi: cannot marshal in to go type: length insufficient 0 require 32"
+                                .to_owned(),
+                    }
+                );
+
+                let missing = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    4,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, [0x99; 20]),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&missing, &state).unwrap();
+                let missing = completed(simulation.invoke(&missing, quote, &state).unwrap());
+                assert_eq!(
+                    missing.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Validator does not exist".to_owned(),
+                    }
+                );
+
+                let short_page = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    5,
+                    address_word_input(DPOS_GET_DELEGATIONS_SELECTOR, OWNER),
+                    0,
+                );
+                let quote = simulation.prepare(&short_page, &state).unwrap();
+                let short_page = completed(simulation.invoke(&short_page, quote, &state).unwrap());
+                assert_eq!(
+                    short_page.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error:
+                            "abi: cannot marshal in to go type: length insufficient 32 require 64"
+                                .to_owned(),
+                    }
+                );
+
+                let mut padded_address =
+                    address_word_input(DPOS_GET_TOTAL_DELEGATION_SELECTOR, [0x99; 20]);
+                padded_address[4..16].fill(0xaa);
+                let padded_address =
+                    simulation_request(FinalChainBlockNumber::GENESIS, 6, padded_address, 0);
+                let quote = simulation.prepare(&padded_address, &state).unwrap();
+                let padded_address =
+                    completed(simulation.invoke(&padded_address, quote, &state).unwrap());
+                assert_eq!(padded_address.status, FinalChainNativeStatus::Success);
+                assert_eq!(padded_address.output, vec![0; 32]);
+
+                assert!(matches!(
+                    final_chain.begin_native_simulation(FinalChainBlockNumber::new(1)),
+                    Err(FinalChainNativeSessionError::HistoricalPeriodNotFinalized {
+                        requested,
+                        finalized_head,
+                    }) if requested == FinalChainBlockNumber::new(1)
+                        && finalized_head == FinalChainBlockNumber::GENESIS
+                ));
+            },
+        );
+    }
+
+    fn owned_test_signed_block(period: u64) -> Vec<u8> {
+        let key = k256::ecdsa::SigningKey::from_slice(&[1; 32]).unwrap();
+        let fields = |stream: &mut rlp::RlpStream| {
+            for n in 10..14 {
+                stream.append(&H256::from_low_u64_be(n));
+            }
+            stream.append(&period);
+            stream.append(&period);
+            stream.begin_list(0);
+        };
+        let mut unsigned = rlp::RlpStream::new_list(7);
+        fields(&mut unsigned);
+        use tiny_keccak::{Hasher, Keccak};
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+        let (signature, recovery) = key.sign_prehash_recoverable(&digest).unwrap();
+        let mut bytes = signature.to_bytes().to_vec();
+        bytes.push(recovery.to_byte());
+        let mut signed = rlp::RlpStream::new_list(8);
+        fields(&mut signed);
+        signed.append(&bytes);
+        signed.out().to_vec()
+    }
+
+    #[test]
+    fn pending_jail_getters_replay_checks_frozen_view_and_forged_results() {
+        use crate::native_projection_context::FinalChainNativeInvocationContext;
+        use rustaxa_storage::{ConcreteStateLifecycle, ConcreteStateMutationBatch};
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: 1.into(),
+            cornus_period: FinalChainBlockNumber::MAX,
+            ..Default::default()
+        };
+        with_arc_chain_dpos_config(
+            "pending-jail-frozen-replay",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig::default(),
+            |chain| {
+                chain
+                    .authorize_reward_scheduler_joint_startup(91, 0.into())
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(91).unwrap();
+                let path = crate::test_paths::new_path("jail-frozen-replay");
+                let lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+                    &path,
+                    [7; 32],
+                    ConcreteStateMutationBatch::default(),
+                    vec![],
+                )
+                .unwrap();
+                let identity = lifecycle.prior_reader().identity();
+                let reader =
+                    std::sync::Arc::new(lifecycle.open_retained_checkpoint(identity).unwrap());
+                let seed = chain
+                    .begin_native_session_bound_at_state_api_epoch(
+                        [0x39; 32],
+                        91,
+                        1.into(),
+                        0.into(),
+                    )
+                    .unwrap();
+                let view = std::rc::Rc::new(
+                    frozen_eligibility::FrozenEligibility::from_owner(
+                        reader,
+                        identity,
+                        [0x39; 32],
+                        (91, 1),
+                        0,
+                        1,
+                        seed.reward_scheduler_basis.unwrap(),
+                    )
+                    .unwrap(),
+                );
+                drop(seed);
+                for (input, output) in [
+                    (
+                        address_word_input(SLASHING_GET_JAIL_BLOCK_SELECTOR, VALIDATOR),
+                        abi_word_from_u64(0).to_vec(),
+                    ),
+                    (
+                        SLASHING_GET_JAILED_VALIDATORS_SELECTOR.to_vec(),
+                        encode_abi_address_array(&[]),
+                    ),
+                ] {
+                    let mut request =
+                        simulation_request(1.into(), 0, input, SLASHING_GET_METHOD_GAS);
+                    request.contract = SLASHING_CONTRACT_ADDRESS;
+                    request.state_address = SLASHING_CONTRACT_ADDRESS;
+                    let context = FinalChainNativeInvocationContext {
+                        request: request.clone(),
+                        accounts: vec![],
+                        raw_reads: vec![],
+                        ordinary_mutations: vec![],
+                        raw_mutations: vec![],
+                    };
+                    let expected = crate::concrete_state_projection::FinalChainConcreteInvocation {
+                        supplied_gas: SLASHING_GET_METHOD_GAS,
+                        required_gas: SLASHING_GET_METHOD_GAS,
+                        gas_used: SLASHING_GET_METHOD_GAS,
+                        output,
+                        ..Default::default()
+                    };
+                    for change in 0..7 {
+                        let mut session = chain
+                            .begin_native_session_bound_at_state_api_epoch(
+                                [0x39; 32],
+                                91,
+                                1.into(),
+                                0.into(),
+                            )
+                            .unwrap();
+                        session
+                            .eligibility_state
+                            .slashing_jail_blocks
+                            .insert(VALIDATOR, 99);
+                        session
+                            .eligibility_state
+                            .slashing_jailed_validators
+                            .push(VALIDATOR);
+                        session
+                            .install_pending_delayed_view(std::rc::Rc::clone(&view))
+                            .unwrap();
+                        let mut candidate = expected.clone();
+                        let mut forged_context = context.clone();
+                        match change {
+                            1 => candidate.output.push(1),
+                            2 => candidate.gas_used += 1,
+                            3 => candidate.error = "forged".into(),
+                            4 => candidate.logs.push(
+                                crate::final_chain_execution::FinalChainEvmLog {
+                                    address: SLASHING_CONTRACT_ADDRESS,
+                                    topics: vec![],
+                                    data: vec![1],
+                                },
+                            ),
+                            5 => forged_context.ordinary_mutations.push(
+                                FinalChainNativeOrdinaryMutation::EnsureExists {
+                                    address: SLASHING_CONTRACT_ADDRESS,
+                                    expected_exists: false,
+                                },
+                            ),
+                            6 => forged_context
+                                .raw_mutations
+                                .push(FinalChainNativeRawMutation {
+                                    address: SLASHING_CONTRACT_ADDRESS,
+                                    key: rustaxa_types::concrete_state::ConcreteStorageKey([1; 32]),
+                                    expected: rustaxa_types::concrete_state::ConcreteRead::Absent,
+                                    operation: FinalChainNativeRawOperation::Delete,
+                                }),
+                            _ => (),
+                        }
+                        assert_eq!(
+                            session.replay_context(&forged_context, &candidate).is_ok(),
+                            change == 0
+                        );
+                    }
+                    let state = RawState::fixture();
+                    let mut live = chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into(),
+                        )
+                        .unwrap();
+                    live.eligibility_state
+                        .slashing_jail_blocks
+                        .insert(VALIDATOR, 99);
+                    live.eligibility_state
+                        .slashing_jailed_validators
+                        .push(VALIDATOR);
+                    live.install_pending_delayed_view(std::rc::Rc::clone(&view))
+                        .unwrap();
+                    let quote = live.prepare(&request, &state).unwrap();
+                    let result = completed(live.invoke(&request, quote, &state).unwrap());
+                    assert_eq!(result.output, expected.output);
+                }
+                drop(view);
+                drop(lifecycle);
+                std::fs::remove_dir_all(path).unwrap();
+            },
+        );
+    }
+
+    #[test]
+    fn pending_jail_getters_reject_missing_physical_view() {
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: 1.into(),
+            cornus_period: FinalChainBlockNumber::MAX,
+            ..Default::default()
+        };
+        with_arc_chain_dpos_config(
+            "pending-jail-missing-view",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig::default(),
+            |chain| {
+                chain
+                    .authorize_reward_scheduler_joint_startup(91, 0.into())
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(91).unwrap();
+                for (input, gas) in [
+                    (
+                        SLASHING_GET_JAIL_BLOCK_SELECTOR.to_vec(),
+                        SLASHING_GET_METHOD_GAS,
+                    ),
+                    (
+                        address_word_input(SLASHING_GET_JAIL_BLOCK_SELECTOR, VALIDATOR),
+                        0,
+                    ),
+                ] {
+                    let mut session = chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into(),
+                        )
+                        .unwrap();
+                    let state = RawState::fixture();
+                    let mut request = simulation_request(1.into(), 0, input, gas);
+                    request.contract = SLASHING_CONTRACT_ADDRESS;
+                    request.state_address = SLASHING_CONTRACT_ADDRESS;
+                    let quote = session.prepare(&request, &state).unwrap();
+                    match session.invoke(&request, quote, &state).unwrap() {
+                        FinalChainNativeInvocationResult::InsufficientGas { .. } => {
+                            assert_eq!(gas, 0)
+                        }
+                        FinalChainNativeInvocationResult::Completed(outcome) => {
+                            assert_eq!(gas, SLASHING_GET_METHOD_GAS);
+                            assert!(
+                                matches!(outcome.status, FinalChainNativeStatus::ContractFailure { error } if error == "abi: cannot marshal in to go type: length insufficient 0 require 32")
+                            );
+                        }
+                    }
+                }
+                for input in [
+                    address_word_input(SLASHING_GET_JAIL_BLOCK_SELECTOR, VALIDATOR),
+                    SLASHING_GET_JAILED_VALIDATORS_SELECTOR.to_vec(),
+                ] {
+                    let mut session = chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into(),
+                        )
+                        .unwrap();
+                    let state = RawState::fixture();
+                    let mut request =
+                        simulation_request(1.into(), 0, input, SLASHING_GET_METHOD_GAS);
+                    request.contract = SLASHING_CONTRACT_ADDRESS;
+                    request.state_address = SLASHING_CONTRACT_ADDRESS;
+                    let quote = session.prepare(&request, &state).unwrap();
+                    assert!(matches!(session.invoke(&request, quote, &state),
+                        Err(FinalChainNativeSessionError::Domain(message)) if message == "FINAL_CHAIN_DELAYED_VIEW_REQUIRED"));
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn owned_pending_delayed_authority_and_real_query_parity() {
+        for delay in [0_u64, 2] {
+            let rewards = FinalChainRewardsConfig {
+                magnolia_period: 7.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            };
+            let dpos = GenesisDposConfig {
+                eligibility_balance_threshold: U256::from(1_000).into(),
+                vote_eligibility_balance_step: U256::from(1_000).into(),
+                validator_maximum_stake: U256::from(30_000).into(),
+                delegation_delay: delay,
+                ..Default::default()
+            };
+            owned_delayed_real_fixture::with_real_owner(rewards, dpos, |chain, reader| {
+                let parent = FinalChainBlockNumber::new(1);
+                chain
+                    .authorize_reward_scheduler_joint_startup(91, parent)
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(91).unwrap();
+                let request_id = [0x39; 32];
+                let selected = FinalChainBlockNumber::new(1_u64.saturating_sub(delay));
+                let mut borrowed = chain
+                    .begin_native_session_bound_at_state_api_epoch(request_id, 91, 2.into(), parent)
+                    .unwrap();
+                let mut owned = chain
+                    .begin_owned_native_session_bound_at_state_api_epoch(
+                        request_id,
+                        91,
+                        2.into(),
+                        parent,
+                    )
+                    .unwrap();
+                let view = chain
+                    .bind_pending_delayed_view(request_id, 91, 1, 2.into(), parent, reader)
+                    .unwrap();
+                assert_eq!(view.identity.period, selected);
+                borrowed
+                    .install_pending_delayed_view(std::rc::Rc::clone(&view))
+                    .unwrap();
+                owned.install_pending_delayed_view(view).unwrap();
+                let expected = chain.dpos_snapshot_at_finalized_block(selected).unwrap();
+                assert_eq!(borrowed.eligibility_period, selected);
+                assert_eq!(owned.eligibility_period, selected);
+                assert_eq!(borrowed.eligibility_state, expected);
+                assert_eq!(owned.eligibility_state, expected);
+                if delay == 0 {
+                    assert_eq!(selected, parent);
+                }
+                let state_a = RawState::fixture();
+                let state_b = RawState::fixture();
+                let request = simulation_request(
+                    2.into(),
+                    0,
+                    address_word_input(DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let qa = borrowed.prepare(&request, &state_a).unwrap();
+                let qb = owned.prepare(&request, &state_b).unwrap();
+                assert_eq!(qa, qb);
+                let left = borrowed.invoke(&request, qa, &state_a).unwrap();
+                let right = owned.invoke(&request, qb, &state_b).unwrap();
+                assert_eq!(left, right);
+                let result = completed(left);
+                assert_eq!(result.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    BigUint::from_bytes_be(&result.output),
+                    BigUint::from(*expected.vote_counts.get(&VALIDATOR).unwrap())
+                );
+                drop(borrowed);
+                drop(owned);
+                let current = chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .get(&parent)
+                    .unwrap()
+                    .clone();
+                chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&parent)
+                    .unwrap()
+                    .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                assert!(matches!(
+                    chain.begin_owned_native_session_bound_at_state_api_epoch(
+                        request_id,
+                        91,
+                        2.into(),
+                        parent
+                    ),
+                    Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                ));
+                chain.dpos_snapshots.lock().unwrap().insert(parent, current);
+                if delay != 0 {
+                    let old = chain
+                        .dpos_snapshots
+                        .lock()
+                        .unwrap()
+                        .get(&selected)
+                        .unwrap()
+                        .clone();
+                    chain
+                        .dpos_snapshots
+                        .lock()
+                        .unwrap()
+                        .get_mut(&selected)
+                        .unwrap()
+                        .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                    assert!(matches!(
+                        chain.begin_owned_native_session_bound_at_state_api_epoch(
+                            request_id,
+                            91,
+                            2.into(),
+                            parent
+                        ),
+                        Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                    ));
+                    chain.dpos_snapshots.lock().unwrap().remove(&selected);
+                    assert!(matches!(
+                        chain.begin_owned_native_session_bound_at_state_api_epoch(
+                            request_id,
+                            91,
+                            2.into(),
+                            parent
+                        ),
+                        Err(FinalChainNativeSessionError::Domain(_))
+                    ));
+                    chain.dpos_snapshots.lock().unwrap().insert(selected, old);
+                }
+                assert!(
+                    chain
+                        .begin_owned_native_session_bound_at_state_api_epoch(
+                            request_id,
+                            91,
+                            2.into(),
+                            parent
+                        )
+                        .is_ok()
+                );
+                assert_eq!(chain.last_block_number_typed().unwrap(), parent);
+            });
+        }
+    }
+
+    #[test]
+    fn owned_compatibility_authority_is_accepted_in_existing_cornus_scope() {
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: 7.into(),
+            cornus_period: FinalChainBlockNumber::GENESIS,
+            ..Default::default()
+        };
+        with_arc_chain_dpos_config(
+            "owned-compatibility-cornus",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig::default(),
+            |chain| {
+                chain
+                    .authorize_reward_scheduler_joint_startup(91, FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                chain.complete_reward_scheduler_recovery(91).unwrap();
+                chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&FinalChainBlockNumber::GENESIS)
+                    .unwrap()
+                    .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                assert!(
+                    chain
+                        .begin_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into()
+                        )
+                        .is_ok()
+                );
+                assert!(
+                    chain
+                        .begin_owned_native_session_bound_at_state_api_epoch(
+                            [0x39; 32],
+                            91,
+                            1.into(),
+                            0.into()
+                        )
+                        .is_ok()
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn historical_slashing_views_select_account_presence_per_period() {
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: FinalChainBlockNumber::GENESIS,
+            cornus_period: FinalChainBlockNumber::GENESIS,
+            cacti_period: FinalChainBlockNumber::MAX,
+            ..Default::default()
+        };
+        with_chain_dpos_config(
+            "historical-slashing-account-periods",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig {
+                delegation_delay: 1,
+                ..Default::default()
+            },
+            |chain| {
+                let mut orphan = chain
+                    .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                orphan.slashing_jail_blocks.insert(VALIDATOR, 7);
+                orphan.slashing_jailed_validators.push(VALIDATOR);
+                orphan.slashing_double_voting_proofs.insert([0x51; 32]);
+                let mut empty = orphan.clone();
+                empty.slashing_jail_blocks.clear();
+                empty.slashing_jailed_validators.clear();
+                empty.slashing_double_voting_proofs.clear();
+                for period in [0, 1] {
+                    chain
+                        .insert_dpos_snapshot(period.into(), orphan.clone())
+                        .unwrap();
+                }
+                chain
+                    .storage
+                    .final_chain()
+                    .write_block_header(1, H256::from_low_u64_be(1), &[0xc0], &[0xc0])
+                    .unwrap();
+                let present = HashMap::from([(
+                    SLASHING_CONTRACT_ADDRESS,
+                    Account {
+                        nonce: 1.into(),
+                        balance: rustaxa_types::FinalChainAccountBalance::zero_new(),
+                        storage_root_hash: [0; 32],
+                        code_hash: [0; 32],
+                        code_size: 0,
+                    },
+                )]);
+                for (current_present, delayed_present) in
+                    [(true, false), (false, true), (true, true), (false, false)]
+                {
+                    {
+                        let mut accounts = chain.account_snapshots.lock().unwrap();
+                        accounts.insert(
+                            0.into(),
+                            if delayed_present {
+                                present.clone()
+                            } else {
+                                HashMap::new()
+                            },
+                        );
+                        accounts.insert(
+                            1.into(),
+                            if current_present {
+                                present.clone()
+                            } else {
+                                HashMap::new()
+                            },
+                        );
+                    }
+                    let simulation = chain.begin_native_simulation(1.into()).unwrap();
+                    assert_eq!(simulation.session.eligibility_period, 0.into());
+                    assert_eq!(
+                        &simulation.session.dpos_state,
+                        if current_present { &orphan } else { &empty }
+                    );
+                    assert_eq!(
+                        &simulation.session.eligibility_state,
+                        if delayed_present { &orphan } else { &empty }
+                    );
+                    assert_eq!(
+                        chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+                        orphan
+                    );
+                    assert_eq!(
+                        chain.dpos_snapshot_at_finalized_block(1.into()).unwrap(),
+                        orphan
+                    );
+                }
+
+                chain.account_snapshots.lock().unwrap().remove(&1.into());
+                assert!(matches!(
+                    chain.begin_native_simulation(1.into()),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
+                {
+                    let mut accounts = chain.account_snapshots.lock().unwrap();
+                    accounts.insert(1.into(), present);
+                    accounts.remove(&0.into());
+                }
+                assert!(matches!(
+                    chain.begin_native_simulation(1.into()),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
+                chain.insert_dpos_snapshot(0.into(), empty.clone()).unwrap();
+                chain.insert_dpos_snapshot(1.into(), empty.clone()).unwrap();
+                chain.account_snapshots.lock().unwrap().remove(&1.into());
+                let simulation = chain.begin_native_simulation(1.into()).unwrap();
+                assert_eq!(simulation.session.dpos_state, empty);
+                assert_eq!(simulation.session.eligibility_state, empty);
+            },
+        );
+    }
+
+    #[test]
+    fn historical_slashing_trace_normalizes_only_parent_initial_state() {
+        with_chain_dpos_config(
+            "historical-slashing-trace-parent",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::GENESIS,
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig::default(),
+            |chain| {
+                let mut orphan = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+                orphan.slashing_jail_blocks.insert(VALIDATOR, 7);
+                orphan.slashing_jailed_validators.push(VALIDATOR);
+                orphan.slashing_double_voting_proofs.insert([0x51; 32]);
+                chain
+                    .insert_dpos_snapshot(0.into(), orphan.clone())
+                    .unwrap();
+                chain
+                    .account_snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&0.into())
+                    .unwrap()
+                    .remove(&SLASHING_CONTRACT_ADDRESS);
+                assert!(
+                    !chain
+                        .account_snapshots
+                        .lock()
+                        .unwrap()
+                        .contains_key(&1.into())
+                );
+
+                let mut trace = chain.begin_native_trace(0.into(), 1.into()).unwrap();
+                assert!(trace.session.dpos_state.slashing_jail_blocks.is_empty());
+                assert!(
+                    trace
+                        .session
+                        .dpos_state
+                        .slashing_jailed_validators
+                        .is_empty()
+                );
+                assert!(
+                    trace
+                        .session
+                        .dpos_state
+                        .slashing_double_voting_proofs
+                        .is_empty()
+                );
+                trace.session.dpos_state.slashing_jail_blocks = orphan.slashing_jail_blocks.clone();
+                trace.session.dpos_state.slashing_jailed_validators =
+                    orphan.slashing_jailed_validators.clone();
+                trace.session.dpos_state.slashing_double_voting_proofs =
+                    orphan.slashing_double_voting_proofs.clone();
+                let request = simulation_request(
+                    1.into(),
+                    0,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, VALIDATOR),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let state = RawState::fixture();
+                let quote = trace.prepare(&request, &state).unwrap();
+                completed(trace.invoke(&request, quote, &state).unwrap());
+                assert_eq!(
+                    trace.session.dpos_state.slashing_jail_blocks,
+                    orphan.slashing_jail_blocks
+                );
+                assert_eq!(
+                    trace.session.dpos_state.slashing_jailed_validators,
+                    orphan.slashing_jailed_validators
+                );
+                assert_eq!(
+                    trace.session.dpos_state.slashing_double_voting_proofs,
+                    orphan.slashing_double_voting_proofs
+                );
+                assert_eq!(
+                    chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+                    orphan
+                );
+
+                let fresh = chain.begin_native_trace(0.into(), 1.into()).unwrap();
+                assert!(fresh.session.dpos_state.slashing_jail_blocks.is_empty());
+                assert!(
+                    fresh
+                        .session
+                        .dpos_state
+                        .slashing_jailed_validators
+                        .is_empty()
+                );
+                assert!(
+                    fresh
+                        .session
+                        .dpos_state
+                        .slashing_double_voting_proofs
+                        .is_empty()
+                );
+                drop(fresh);
+                chain.account_snapshots.lock().unwrap().remove(&0.into());
+                assert!(matches!(
+                    chain.begin_native_trace(0.into(), 1.into()),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn historical_simulation_selects_exact_current_and_delayed_snapshots() {
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: FinalChainBlockNumber::GENESIS,
+            cornus_period: FinalChainBlockNumber::GENESIS,
+            cacti_period: FinalChainBlockNumber::MAX,
+            ..Default::default()
+        };
+        with_chain_dpos_config(
+            "historical-query-delayed-state",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig {
+                eligibility_balance_threshold: U256::from(1_000).into(),
+                vote_eligibility_balance_step: U256::from(1_000).into(),
+                validator_maximum_stake: U256::from(30_000).into(),
+                delegation_delay: 1,
+                ..Default::default()
+            },
+            |final_chain| {
+                let genesis = final_chain
+                    .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let mut at_one = genesis.clone();
+                at_one
+                    .validator_metadata
+                    .get_mut(&VALIDATOR)
+                    .unwrap()
+                    .commission = 111;
+                at_one.vote_counts.insert(VALIDATOR, 11);
+                let mut at_two = at_one.clone();
+                at_two
+                    .validator_metadata
+                    .get_mut(&VALIDATOR)
+                    .unwrap()
+                    .commission = 222;
+                at_two.vote_counts.insert(VALIDATOR, 22);
+                final_chain
+                    .insert_dpos_snapshot(1.into(), at_one.clone())
+                    .unwrap();
+                final_chain
+                    .insert_dpos_snapshot(2.into(), at_two.clone())
+                    .unwrap();
+                final_chain
+                    .storage
+                    .final_chain()
+                    .write_block_header(1, H256::from_low_u64_be(1), &[0xc0], &[0xc0])
+                    .unwrap();
+                final_chain
+                    .storage
+                    .final_chain()
+                    .write_block_header(2, H256::from_low_u64_be(2), &[0xc0], &[0xc0])
+                    .unwrap();
+                assert_eq!(
+                    final_chain.last_block_number_typed().unwrap(),
+                    FinalChainBlockNumber::new(2)
+                );
+
+                let state = RawState::fixture();
+                let mut simulation = final_chain
+                    .begin_native_simulation(FinalChainBlockNumber::new(1))
+                    .unwrap();
+                assert_eq!(simulation.session.dpos_state, at_one);
+                assert_eq!(simulation.session.eligibility_state, genesis);
+                assert_eq!(
+                    simulation.session.eligibility_period,
+                    FinalChainBlockNumber::GENESIS
+                );
+
+                let validator = simulation_request(
+                    1.into(),
+                    0,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, VALIDATOR),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&validator, &state).unwrap();
+                let result = completed(simulation.invoke(&validator, quote, &state).unwrap());
+                assert_eq!(
+                    BigUint::from_bytes_be(&result.output[96..128]),
+                    111_u32.into()
+                );
+
+                let votes = simulation_request(
+                    1.into(),
+                    1,
+                    address_word_input(DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&votes, &state).unwrap();
+                let result = completed(simulation.invoke(&votes, quote, &state).unwrap());
+                assert_eq!(BigUint::from_bytes_be(&result.output), 10_u32.into());
+                drop(simulation);
+
+                final_chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .remove(&FinalChainBlockNumber::new(1));
+                assert!(matches!(
+                    final_chain.begin_native_simulation(FinalChainBlockNumber::new(2)),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn real_kernel_matches_public_set_commission_fixture_and_survives_ordinary_rollback() {
+        with_chain("fixture", FinalChainBlockNumber::GENESIS, |final_chain| {
+            let state = RawState::fixture();
+            let mut session = final_chain
+                .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                .unwrap();
+            let first = request(0, OWNER, 200, 79_000);
+            let quote = session.prepare(&first, &state).unwrap();
+            assert_eq!(quote.required_gas, 20_000.into());
+            assert_eq!(state.reads.get(), 2);
+            let outcome = completed(session.invoke(&first, quote, &state).unwrap());
+            assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+            assert_eq!(outcome.gas_used, 20_000.into());
+            assert!(outcome.output.is_empty());
+            assert_eq!(outcome.raw_mutations.len(), 1);
+            let mutation = &outcome.raw_mutations[0];
+            assert_eq!(mutation.address, DPOS_CONTRACT_ADDRESS);
+            assert_eq!(mutation.key, ConcreteStorageKey(VALIDATOR_KEY));
+            assert_eq!(
+                mutation.expected,
+                ConcreteRead::Present(LEGACY_VALIDATOR_100.to_vec())
+            );
+            assert_eq!(
+                mutation.operation,
+                FinalChainNativeRawOperation::Put(
+                    FinalChainNativeRawValue::new(EXTENDED_VALIDATOR_200.to_vec()).unwrap()
+                )
+            );
+            assert_eq!(outcome.logs.len(), 1);
+            assert_eq!(
+                outcome.logs[0],
+                FinalChainCallLog {
+                    address: DPOS_CONTRACT_ADDRESS,
+                    topics: vec![DPOS_COMMISSION_SET_TOPIC, address_topic(VALIDATOR)],
+                    data: abi_word_from_u64(200).to_vec(),
+                }
+            );
+
+            // The outer frame may discard the returned log, but its raw lane
+            // applies the put and the session's semantic DPoS state stays live.
+            state.apply(mutation);
+            let mut second = request(1, OWNER, 300, 20_000);
+            second.kind = FinalChainNativeCallKind::StaticCall;
+            second.is_static = true;
+            let second_quote = session.prepare(&second, &state).unwrap();
+            let second_outcome = completed(session.invoke(&second, second_quote, &state).unwrap());
+            assert_eq!(second_outcome.status, FinalChainNativeStatus::Success);
+            assert_eq!(second_outcome.raw_mutations.len(), 1);
+            assert_eq!(
+                second_outcome.raw_mutations[0].expected,
+                ConcreteRead::Present(EXTENDED_VALIDATOR_200.to_vec())
+            );
+
+            state.apply(&second_outcome.raw_mutations[0]);
+            let overflow = request(2, OWNER, 10_001, 20_000);
+            let overflow_quote = session.prepare(&overflow, &state).unwrap();
+            let overflow_outcome =
+                completed(session.invoke(&overflow, overflow_quote, &state).unwrap());
+            assert_eq!(
+                overflow_outcome.status,
+                FinalChainNativeStatus::ContractFailure {
+                    error: "Commission is bigger than maximum value".to_owned(),
+                }
+            );
+            assert_eq!(overflow_outcome.gas_used, 20_000.into());
+            assert!(overflow_outcome.raw_mutations.is_empty());
+            assert!(overflow_outcome.logs.is_empty());
+
+            let wrong_owner = request(3, WRONG_OWNER, 400, 20_000);
+            let wrong_owner_quote = session.prepare(&wrong_owner, &state).unwrap();
+            let wrong_owner_outcome = completed(
+                session
+                    .invoke(&wrong_owner, wrong_owner_quote, &state)
+                    .unwrap(),
+            );
+            assert_eq!(
+                wrong_owner_outcome.status,
+                FinalChainNativeStatus::ContractFailure {
+                    error: "This account is not owner of specified validator".to_owned(),
+                }
+            );
+            assert!(wrong_owner_outcome.raw_mutations.is_empty());
+            assert!(wrong_owner_outcome.logs.is_empty());
+        });
+    }
+
+    #[test]
+    fn nonpayable_and_insufficient_gas_finish_before_erroring_raw_reader() {
+        with_chain(
+            "early-terminal",
+            FinalChainBlockNumber::GENESIS,
+            |final_chain| {
+                let state = RawState::erroring();
+                let mut session = final_chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+
+                let mut nonpayable = request(0, OWNER, 200, 0);
+                nonpayable.value = FinalChainNativeValue::new((BigUint::from(1u8) << 300) + 7u8);
+                assert!(nonpayable.value.value().bits() > 256);
+                let quote = session.prepare(&nonpayable, &state).unwrap();
+                assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+                let outcome = completed(session.invoke(&nonpayable, quote, &state).unwrap());
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Method is not payable".to_owned(),
+                    }
+                );
+                assert_eq!(outcome.gas_used, FinalChainGas::ZERO);
+                assert!(outcome.raw_mutations.is_empty());
+                assert!(outcome.logs.is_empty());
+                assert_eq!(state.reads.get(), 0);
+
+                let insufficient = request(1, OWNER, 200, 19_999);
+                let quote = session.prepare(&insufficient, &state).unwrap();
+                assert_eq!(quote.required_gas, 20_000.into());
+                assert_eq!(
+                    session.invoke(&insufficient, quote, &state).unwrap(),
+                    FinalChainNativeInvocationResult::InsufficientGas {
+                        required_gas: 20_000.into(),
+                    }
+                );
+                assert_eq!(state.reads.get(), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn quote_mismatch_is_retryable_but_stale_raw_aborts_the_session() {
+        with_chain("stale", FinalChainBlockNumber::GENESIS, |final_chain| {
+            let state = RawState::fixture();
+            let mut session = final_chain
+                .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                .unwrap();
+            let original = request(0, OWNER, 200, 20_000);
+            let quote = session.prepare(&original, &state).unwrap();
+
+            let mut changed_request = original.clone();
+            changed_request.depth = 2;
+            assert_eq!(
+                session.invoke(&changed_request, quote, &state).unwrap_err(),
+                FinalChainNativeSessionError::QuoteMismatch
+            );
+            let stale_quote = FinalChainNativeGasQuote {
+                required_gas: 19_999.into(),
+                ..quote
+            };
+            assert_eq!(
+                session.invoke(&original, stale_quote, &state).unwrap_err(),
+                FinalChainNativeSessionError::QuoteMismatch
+            );
+
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                VALIDATOR_KEY,
+                ConcreteRead::Present(vec![0x80]),
+            );
+            assert!(matches!(
+                session.invoke(&original, quote, &state),
+                Err(FinalChainNativeSessionError::RawIntegrity(_))
+            ));
+
+            // Raw-integrity failure aborts the pending period and cannot retry.
+            assert_eq!(
+                session.invoke(&original, quote, &state).unwrap_err(),
+                FinalChainNativeSessionError::Aborted
+            );
+            assert_eq!(
+                session.prepare(&original, &state).unwrap_err(),
+                FinalChainNativeSessionError::Aborted
+            );
+        });
+    }
+
+    #[test]
+    fn pre_fix_nested_rejection_is_quoted_and_precedes_raw_reads_and_nonpayability() {
+        with_chain("pre-fix", FinalChainBlockNumber::new(2), |final_chain| {
+            let state = RawState::erroring();
+            let mut session = final_chain
+                .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                .unwrap();
+
+            let underfunded_nested = request(0, OWNER, 200, 19_999);
+            let quote = session.prepare(&underfunded_nested, &state).unwrap();
+            assert_eq!(quote.required_gas, 20_000.into());
+            assert_eq!(
+                session.invoke(&underfunded_nested, quote, &state).unwrap(),
+                FinalChainNativeInvocationResult::InsufficientGas {
+                    required_gas: 20_000.into(),
+                }
+            );
+            assert_eq!(state.reads.get(), 0);
+
+            let nested = request(1, OWNER, 200, 20_000);
+            let quote = session.prepare(&nested, &state).unwrap();
+            assert_eq!(quote.required_gas, 20_000.into());
+            let outcome = completed(session.invoke(&nested, quote, &state).unwrap());
+            assert_eq!(
+                outcome.status,
+                FinalChainNativeStatus::ContractFailure {
+                    error: "only top-level calls are allowed".to_owned(),
+                }
+            );
+            assert_eq!(outcome.gas_used, 20_000.into());
+            assert!(outcome.raw_mutations.is_empty());
+            assert!(outcome.logs.is_empty());
+            assert_eq!(state.reads.get(), 0);
+
+            let mut nonpayable_nested = request(2, OWNER, 200, 0);
+            nonpayable_nested.value = FinalChainNativeValue::new((BigUint::from(1u8) << 300) + 7u8);
+            let quote = session.prepare(&nonpayable_nested, &state).unwrap();
+            assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+            let outcome = completed(session.invoke(&nonpayable_nested, quote, &state).unwrap());
+            assert_eq!(
+                outcome.status,
+                FinalChainNativeStatus::ContractFailure {
+                    error: "only top-level calls are allowed".to_owned(),
+                }
+            );
+            assert_eq!(outcome.gas_used, FinalChainGas::ZERO);
+            assert_eq!(state.reads.get(), 0);
+        });
+
+        with_chain(
+            "at-fix-boundary",
+            FinalChainBlockNumber::new(1),
+            |final_chain| {
+                let state = RawState::fixture();
+                let mut session = final_chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let nested = request(0, OWNER, 200, 20_000);
+                let quote = session.prepare(&nested, &state).unwrap();
+                let outcome = completed(session.invoke(&nested, quote, &state).unwrap());
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    outcome.raw_mutations[0].operation,
+                    FinalChainNativeRawOperation::Put(
+                        FinalChainNativeRawValue::new(EXTENDED_VALIDATOR_200.to_vec()).unwrap()
+                    )
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn pre_magnolia_uses_legacy_rows_and_rejects_extended_input() {
+        with_chain_config(
+            "pre-magnolia",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::new(2),
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            |final_chain| {
+                let state = RawState::fixture();
+                let mut session = final_chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let invocation = request(0, OWNER, 200, 20_000);
+                let quote = session.prepare(&invocation, &state).unwrap();
+                let outcome = completed(session.invoke(&invocation, quote, &state).unwrap());
+                assert_eq!(
+                    outcome.raw_mutations[0].operation,
+                    FinalChainNativeRawOperation::Put(
+                        FinalChainNativeRawValue::new(LEGACY_VALIDATOR_200.to_vec()).unwrap()
+                    )
+                );
+
+                let extended_state = RawState::fixture();
+                extended_state.set(
+                    DPOS_CONTRACT_ADDRESS,
+                    VALIDATOR_KEY,
+                    ConcreteRead::Present(vec![
+                        0xc8, 0xc6, 0x82, 0x27, 0x10, 0x64, 0x80, 0x80, 0x80,
+                    ]),
+                );
+                let mut extended_session = final_chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                assert!(matches!(
+                    extended_session.prepare(&invocation, &extended_state),
+                    Err(FinalChainNativeSessionError::RawIntegrity(_))
+                ));
+                assert_eq!(
+                    extended_session
+                        .prepare(&invocation, &extended_state)
+                        .unwrap_err(),
+                    FinalChainNativeSessionError::Aborted
+                );
+            },
+        );
+    }
+
+    fn replay_invocation(
+        chain: &FinalChain,
+        invocation: &FinalChainConcreteInvocation,
+    ) -> Result<()> {
+        let mut snapshot =
+            chain.dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)?;
+        chain.advance_reward_reference_graph_block(&mut snapshot, 1.into())?;
+        let mut gas_snapshot = snapshot.clone();
+        let mut accounts = chain.account_snapshot_map_at_block(FinalChainBlockNumber::GENESIS)?;
+        chain.replay_concrete_precompile_invocation(
+            1.into(),
+            invocation,
+            ConcreteNativeReplayState {
+                dpos_snapshot: &mut snapshot,
+                dpos_gas_snapshot: &mut gas_snapshot,
+                accounts: &mut accounts,
+                head_block_number: FinalChainBlockNumber::GENESIS,
+                dpos_eligibility_read_snapshot: &mut None,
+                slashing_validator_snapshot: None,
+                slashing_read_snapshot: &mut None,
+            },
+        )
+    }
+
+    #[test]
+    fn concrete_replay_shares_full_width_admission_and_exact_failure_text() {
+        with_chain("concrete-admission", 2.into(), |chain| {
+            let mut invocation = FinalChainConcreteInvocation {
+                transaction_index: 0,
+                sequence: 0,
+                depth: 1,
+                call_type: 0,
+                caller: OWNER,
+                contract: DPOS_CONTRACT_ADDRESS,
+                value: (BigUint::from(1_u8) << 264_usize).to_bytes_be(),
+                input: commission_input(VALIDATOR, 200),
+                output: Vec::new(),
+                supplied_gas: 0,
+                required_gas: 0,
+                gas_used: 0,
+                error: "only top-level calls are allowed".to_owned(),
+                logs: Vec::new(),
+                disposition: FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+            };
+            replay_invocation(chain, &invocation).unwrap();
+            invocation.error = "Method is not payable".to_owned();
+            assert!(
+                replay_invocation(chain, &invocation)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ERROR_MISMATCH")
+            );
+            invocation.depth = 0;
+            replay_invocation(chain, &invocation).unwrap();
+            invocation.value.clear();
+            invocation.depth = 1;
+            invocation.required_gas = DPOS_SET_COMMISSION_GAS;
+            invocation.supplied_gas = DPOS_SET_COMMISSION_GAS - 1;
+            invocation.error = "out of gas".to_owned();
+            replay_invocation(chain, &invocation).unwrap();
+            invocation.error = "only top-level calls are allowed".to_owned();
+            assert!(replay_invocation(chain, &invocation).is_err());
+            invocation.supplied_gas = DPOS_SET_COMMISSION_GAS;
+            invocation.gas_used = DPOS_SET_COMMISSION_GAS;
+            replay_invocation(chain, &invocation).unwrap();
+        });
+        with_chain("concrete-kernel-error", 0.into(), |chain| {
+            let mut invocation = FinalChainConcreteInvocation {
+                transaction_index: 0,
+                sequence: 0,
+                depth: 1,
+                call_type: 0,
+                caller: [0xab; 20],
+                contract: DPOS_CONTRACT_ADDRESS,
+                value: Vec::new(),
+                input: commission_input(VALIDATOR, 200),
+                output: Vec::new(),
+                supplied_gas: DPOS_SET_COMMISSION_GAS,
+                required_gas: DPOS_SET_COMMISSION_GAS,
+                gas_used: DPOS_SET_COMMISSION_GAS,
+                error: "This account is not owner of specified validator".to_owned(),
+                logs: Vec::new(),
+                disposition: FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+            };
+            replay_invocation(chain, &invocation).unwrap();
+            invocation.error = "some other failure".to_owned();
+            assert!(
+                replay_invocation(chain, &invocation)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ERROR_MISMATCH")
+            );
+        });
+    }
+
+    #[test]
+    fn concrete_replay_classifies_wide_delegate_without_low_word_aliasing() {
+        with_chain("concrete-wide-delegate", 0.into(), |chain| {
+            let mut input = DPOS_DELEGATE_SELECTOR.to_vec();
+            input.extend_from_slice(&[0; 12]);
+            input.extend_from_slice(&VALIDATOR);
+            let invocation = FinalChainConcreteInvocation {
+                transaction_index: 0,
+                sequence: 0,
+                depth: 0,
+                call_type: 0,
+                caller: OWNER,
+                contract: DPOS_CONTRACT_ADDRESS,
+                value: ((BigUint::from(1_u8) << 256_usize) + BigUint::from(7_u8)).to_bytes_be(),
+                input,
+                output: Vec::new(),
+                supplied_gas: DPOS_DELEGATE_GAS,
+                required_gas: DPOS_DELEGATE_GAS,
+                gas_used: DPOS_DELEGATE_GAS,
+                error: "Validator's max stake exceeded".to_owned(),
+                logs: Vec::new(),
+                disposition: FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+            };
+            replay_invocation(chain, &invocation).unwrap();
+        });
+    }
+
+    #[test]
+    fn concrete_replay_normalizes_leading_zero_delegate_value() {
+        with_chain("concrete-leading-zero-delegate", 0.into(), |chain| {
+            let mut input = DPOS_DELEGATE_SELECTOR.to_vec();
+            input.extend_from_slice(&[0; 12]);
+            input.extend_from_slice(&VALIDATOR);
+            // Bind expected ordinary kernel output for amount seven, then
+            // replay the same numeric value with oversized leading-zero bytes.
+            let mut snapshot = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+            chain
+                .advance_reward_reference_graph_block(&mut snapshot, 1.into())
+                .unwrap();
+            let mut accounts = chain.account_snapshot_map_at_block(0.into()).unwrap();
+            let outcome = chain
+                .apply_dpos_delegate(&mut snapshot, &mut accounts, VALIDATOR, VALIDATOR, vec![7])
+                .unwrap();
+            assert_eq!(outcome.status_code, 1);
+            let mut value = vec![0; 40];
+            value.push(7);
+            let invocation = FinalChainConcreteInvocation {
+                transaction_index: 0,
+                sequence: 0,
+                depth: 0,
+                call_type: 0,
+                caller: VALIDATOR,
+                contract: DPOS_CONTRACT_ADDRESS,
+                value,
+                input,
+                output: outcome.code_retval,
+                supplied_gas: DPOS_DELEGATE_GAS,
+                required_gas: DPOS_DELEGATE_GAS,
+                gas_used: DPOS_DELEGATE_GAS,
+                error: String::new(),
+                logs: outcome
+                    .logs
+                    .into_iter()
+                    .map(|log| crate::final_chain_execution::FinalChainEvmLog {
+                        address: log.address,
+                        topics: log
+                            .topics
+                            .into_iter()
+                            .map(
+                                |topic| crate::final_chain_execution::FinalChainEvmLogTopic {
+                                    topic,
+                                },
+                            )
+                            .collect(),
+                        data: log.data,
+                    })
+                    .collect(),
+                disposition: FINAL_CHAIN_CONCRETE_INVOCATION_NORMAL,
+            };
+            replay_invocation(chain, &invocation).unwrap();
+        });
+    }
+
+    #[test]
+    fn selected_custody_reuses_kernels_and_preserves_raw_operation_order() {
+        const DELEGATOR: [u8; 20] = [0x50; 20];
+        with_chain_ficus(
+            "selected-custody",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let wide = (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64);
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([
+                        (
+                            DPOS_CONTRACT_ADDRESS,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: wide.clone(),
+                            },
+                        ),
+                        (
+                            DELEGATOR,
+                            FinalChainNativeAccount {
+                                exists: false,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::default(),
+                            },
+                        ),
+                    ]),
+                );
+                // Untouched Magnolia-era validators may still retain the legacy
+                // four-field row until this custody mutation rewrites them.
+                state.set(
+                    DPOS_CONTRACT_ADDRESS,
+                    concrete_storage_key(&[&[0, 0], &VALIDATOR]),
+                    ConcreteRead::Present(LEGACY_VALIDATOR_100.to_vec()),
+                );
+
+                let delegate = custody_request(
+                    0,
+                    DELEGATOR,
+                    500,
+                    address_word_input(DPOS_DELEGATE_SELECTOR, VALIDATOR),
+                    40_000,
+                );
+                let quote = session.prepare(&delegate, &state).unwrap();
+                assert_eq!(quote.required_gas, 40_000.into());
+                let delegated = completed(session.invoke(&delegate, quote, &state).unwrap());
+                assert_eq!(delegated.status, FinalChainNativeStatus::Success);
+                assert!(delegated.account_mutations.is_empty());
+                assert_eq!(state.account_reads.get(), 0);
+                assert_eq!(delegated.raw_mutations.len(), 8);
+                let delegate_keys = delegated
+                    .raw_mutations
+                    .iter()
+                    .map(|mutation| mutation.key)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    delegate_keys,
+                    vec![
+                        ConcreteStorageKey(concrete_storage_key(&[&[1], &VALIDATOR, &[]])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &[2, 0],
+                            &VALIDATOR,
+                            &DELEGATOR,
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &[2, 1],
+                            &DELEGATOR,
+                            &[2],
+                            &1_u32.to_le_bytes(),
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &[2, 1],
+                            &DELEGATOR,
+                            &[2],
+                            &VALIDATOR,
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[&[2, 1], &DELEGATOR, &[1]])),
+                        ConcreteStorageKey(concrete_storage_key(&[&[1], &VALIDATOR, &[1]])),
+                        ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &VALIDATOR])),
+                        ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &VALIDATOR])),
+                    ]
+                );
+                for mutation in &delegated.raw_mutations {
+                    state.apply(mutation);
+                }
+
+                let undelegate = custody_request(
+                    1,
+                    DELEGATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_V2_SELECTOR, VALIDATOR, U256::from(500)),
+                    60_000,
+                );
+                let quote = session.prepare(&undelegate, &state).unwrap();
+                let undelegated = completed(session.invoke(&undelegate, quote, &state).unwrap());
+                assert_eq!(undelegated.status, FinalChainNativeStatus::Success);
+                assert_eq!(undelegated.output, abi_word_from_u64(1));
+                assert!(undelegated.account_mutations.is_empty());
+                assert_eq!(state.account_reads.get(), 0);
+                assert_eq!(undelegated.raw_mutations.len(), 16);
+                assert_eq!(
+                    undelegated.raw_mutations[0].key,
+                    undelegated.raw_mutations[5].key
+                );
+                let object = undelegated
+                    .raw_mutations
+                    .iter()
+                    .find(|mutation| {
+                        mutation.key
+                            == ConcreteStorageKey(concrete_storage_key(&[
+                                &[3, 0],
+                                &DELEGATOR,
+                                &VALIDATOR,
+                                &1_u64.to_le_bytes(),
+                            ]))
+                    })
+                    .expect("V2 object write is present");
+                assert_eq!(
+                    object.operation,
+                    FinalChainNativeRawOperation::Put(
+                        FinalChainNativeRawValue::new(vec![
+                            0xc6, 0xc4, 0x82, 0x01, 0xf4, 0x01, 0x01
+                        ])
+                        .unwrap()
+                    )
+                );
+                for mutation in &undelegated.raw_mutations {
+                    state.apply(mutation);
+                }
+
+                let confirm = custody_request(
+                    2,
+                    DELEGATOR,
+                    0,
+                    address_id_input(DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR, VALIDATOR, 1),
+                    20_000,
+                );
+                let quote = session.prepare(&confirm, &state).unwrap();
+                let confirmed = completed(session.invoke(&confirm, quote, &state).unwrap());
+                assert_eq!(confirmed.status, FinalChainNativeStatus::Success);
+                assert_eq!(confirmed.raw_mutations.len(), 8);
+                assert_eq!(state.account_reads.get(), 2);
+                assert_eq!(
+                    confirmed.account_mutations,
+                    vec![
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: DPOS_CONTRACT_ADDRESS,
+                            expected_exists: true,
+                            expected: wide.clone(),
+                            replacement: &wide - BigInt::from(500_u64),
+                        },
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: DELEGATOR,
+                            expected_exists: false,
+                            expected: BigInt::default(),
+                            replacement: BigInt::from(500_u64),
+                        },
+                    ]
+                );
+                assert!(
+                    confirmed.raw_mutations[..7]
+                        .iter()
+                        .all(
+                            |mutation| mutation.operation == FinalChainNativeRawOperation::Delete
+                                || matches!(
+                                    &mutation.operation,
+                                    FinalChainNativeRawOperation::Put(value)
+                                        if value.as_bytes() == [0, 0, 0, 0]
+                                )
+                        )
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_custody_preserves_queue_errors_and_full_width_accounts() {
+        with_chain_ficus(
+            "selected-v1-custody",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let wide_contract = (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64);
+                let wide_nonce = FinalChainNonce::from_bytes(&[0xff; 33]).unwrap();
+                let initial_delegator = -((BigInt::from(1_u8) << 280_usize) + BigInt::from(7_u8));
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([
+                        (
+                            DPOS_CONTRACT_ADDRESS,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: wide_contract.clone(),
+                            },
+                        ),
+                        (
+                            VALIDATOR,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: wide_nonce,
+                                balance: initial_delegator.clone(),
+                            },
+                        ),
+                    ]),
+                );
+
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &undelegate);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert!(outcome.output.is_empty());
+                assert!(outcome.account_mutations.is_empty());
+                let queue_key =
+                    ConcreteStorageKey(concrete_storage_key(&[&[3, 0], &VALIDATOR, &VALIDATOR]));
+                let queue = outcome
+                    .raw_mutations
+                    .iter()
+                    .find(|mutation| mutation.key == queue_key)
+                    .expect("V1 undelegation object write is present");
+                assert!(matches!(
+                    &queue.operation,
+                    FinalChainNativeRawOperation::Put(value)
+                        if value.as_bytes() == [0xc4, 0x82, 0x01, 0xf4, 0x01]
+                ));
+                assert_eq!(
+                    outcome.raw_mutations[outcome.raw_mutations.len() - 4..]
+                        .iter()
+                        .map(|mutation| mutation.key)
+                        .collect::<Vec<_>>(),
+                    vec![
+                        queue_key,
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &[3, 1],
+                            &VALIDATOR,
+                            &[2],
+                            &1_u32.to_le_bytes(),
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &[3, 1],
+                            &VALIDATOR,
+                            &[2],
+                            &VALIDATOR,
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[&[3, 1], &VALIDATOR, &[1],])),
+                    ]
+                );
+                apply_raw_mutations(&state, &outcome);
+
+                let duplicate = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(1)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let duplicate = invoke_custody(&mut session, &state, &duplicate);
+                assert_eq!(
+                    duplicate.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Undelegation already exist".to_owned(),
+                    }
+                );
+                assert!(duplicate.account_mutations.is_empty());
+                assert!(duplicate.raw_mutations.is_empty());
+                assert!(duplicate.logs.is_empty());
+
+                let confirm = custody_request(
+                    2,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let confirmed = invoke_custody(&mut session, &state, &confirm);
+                assert_eq!(confirmed.status, FinalChainNativeStatus::Success);
+                assert_eq!(confirmed.raw_mutations[0].key, queue_key);
+                assert_eq!(
+                    confirmed.account_mutations,
+                    vec![
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: DPOS_CONTRACT_ADDRESS,
+                            expected_exists: true,
+                            expected: wide_contract.clone(),
+                            replacement: &wide_contract - BigInt::from(500_u64),
+                        },
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: VALIDATOR,
+                            expected_exists: true,
+                            expected: initial_delegator.clone(),
+                            replacement: &initial_delegator + BigInt::from(500_u64),
+                        },
+                    ]
+                );
+                assert_eq!(confirmed.raw_mutations.len(), 5);
+                assert_eq!(confirmed.logs.len(), 1);
+
+                let missing = custody_request(
+                    3,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let missing = invoke_custody(&mut session, &state, &missing);
+                assert_eq!(
+                    missing.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Undelegation does not exist".to_owned(),
+                    }
+                );
+                assert!(missing.account_mutations.is_empty());
+                assert!(missing.raw_mutations.is_empty());
+                assert!(missing.logs.is_empty());
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_locked_confirmation_has_no_effects() {
+        with_chain_config_and_ficus(
+            "selected-v1-locked",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::GENESIS,
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                cornus_delegation_locking_period: 2,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &undelegate);
+                apply_raw_mutations(&state, &outcome);
+
+                let confirm = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let confirmed = invoke_custody(&mut session, &state, &confirm);
+                assert_eq!(
+                    confirmed.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Undelegation is not yet ready to be withdrawn".to_owned(),
+                    }
+                );
+                assert!(confirmed.account_mutations.is_empty());
+                assert!(confirmed.raw_mutations.is_empty());
+                assert!(confirmed.logs.is_empty());
+                assert_eq!(state.account_reads.get(), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_confirmation_preserves_recipient_state_read_error() {
+        with_chain_ficus(
+            "selected-v1-recipient-read-error",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let initial = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                assert_eq!(
+                    invoke_custody(&mut session, &initial, &undelegate).status,
+                    FinalChainNativeStatus::Success
+                );
+
+                let missing_recipient = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let confirm = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let quote = session.prepare(&confirm, &missing_recipient).unwrap();
+                assert_eq!(
+                    session
+                        .invoke(&confirm, quote, &missing_recipient)
+                        .unwrap_err(),
+                    FinalChainNativeSessionError::StateRead(
+                        FinalChainNativeStateReadError::Invariant(format!(
+                            "fixture account is unavailable: {VALIDATOR:?}"
+                        ))
+                    )
+                );
+                assert_eq!(missing_recipient.account_reads.get(), 2);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_cancellation_skips_zero_reward_account_reads() {
+        with_chain_ficus(
+            "selected-cancel-full-width",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let wide_balance = (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64);
+                let wide_nonce = FinalChainNonce::from_bytes(&[0xff; 33]).unwrap();
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: wide_nonce,
+                            balance: wide_balance,
+                        },
+                    )]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &undelegate);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                apply_raw_mutations(&state, &outcome);
+                let reads_before_cancel = state.account_reads.get();
+
+                let cancel = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CANCEL_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let canceled = invoke_custody(&mut session, &state, &cancel);
+                assert_eq!(canceled.status, FinalChainNativeStatus::Success);
+                assert!(canceled.account_mutations.is_empty());
+                assert_eq!(state.account_reads.get(), reads_before_cancel);
+            },
+        );
+
+        with_chain_ficus(
+            "selected-cancel-read-error",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let initial = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                assert_eq!(
+                    invoke_custody(&mut session, &initial, &undelegate).status,
+                    FinalChainNativeStatus::Success
+                );
+
+                let missing_account = RawState::from_snapshot(&session.dpos_state, BTreeMap::new());
+                let cancel = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CANCEL_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let canceled = invoke_custody(&mut session, &missing_account, &cancel);
+                assert_eq!(canceled.status, FinalChainNativeStatus::Success);
+                assert!(canceled.account_mutations.is_empty());
+                assert_eq!(missing_account.account_reads.get(), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_terminal_confirmation_deletes_validator_in_source_order() {
+        with_chain_ficus(
+            "selected-v1-terminal",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([
+                        (
+                            DPOS_CONTRACT_ADDRESS,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::from(10_000_u64),
+                            },
+                        ),
+                        (
+                            VALIDATOR,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::default(),
+                            },
+                        ),
+                    ]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(10_000)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &undelegate);
+                apply_raw_mutations(&state, &outcome);
+
+                let confirm = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let confirmed = invoke_custody(&mut session, &state, &confirm);
+                assert_eq!(confirmed.status, FinalChainNativeStatus::Success);
+                let expected_prefix = vec![
+                    ConcreteStorageKey(concrete_storage_key(&[&[3, 0], &VALIDATOR, &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[
+                        &[3, 1],
+                        &VALIDATOR,
+                        &[2],
+                        &1_u32.to_le_bytes(),
+                    ])),
+                    ConcreteStorageKey(concrete_storage_key(&[
+                        &[3, 1],
+                        &VALIDATOR,
+                        &[2],
+                        &VALIDATOR,
+                    ])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[3, 1], &VALIDATOR, &[1]])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 1], &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 3], &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 4], &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &VALIDATOR])),
+                ];
+                assert_eq!(
+                    confirmed.raw_mutations[..expected_prefix.len()]
+                        .iter()
+                        .map(|mutation| mutation.key)
+                        .collect::<Vec<_>>(),
+                    expected_prefix
+                );
+                assert_eq!(confirmed.raw_mutations.len(), 13);
+                assert!(
+                    confirmed
+                        .raw_mutations
+                        .iter()
+                        .enumerate()
+                        .all(|(index, mutation)| matches!(index, 3 | 11)
+                            || mutation.operation == FinalChainNativeRawOperation::Delete)
+                );
+                assert_eq!(confirmed.account_mutations.len(), 2);
+                assert_eq!(confirmed.logs.len(), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_confirmation_accepts_pre_magnolia_deleted_validator() {
+        with_chain_ficus(
+            "selected-v1-legacy-deleted-validator",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let mut legacy = session.dpos_state.clone();
+                let mut legacy_contract = empty_account();
+                legacy_contract
+                    .balance
+                    .replace_after_mutation(U256::from(10_000_u64));
+                let mut legacy_accounts = HashMap::from([(DPOS_CONTRACT_ADDRESS, legacy_contract)]);
+                let outcome = chain
+                    .apply_dpos_undelegate(
+                        &mut legacy,
+                        &mut legacy_accounts,
+                        VALIDATOR,
+                        VALIDATOR,
+                        U256::from(10_000_u64).to_big_endian().to_vec(),
+                        1.into(),
+                    )
+                    .unwrap();
+                assert_eq!(outcome.status_code, 1);
+                remove_dpos_validator(&mut legacy, VALIDATOR, true).unwrap();
+                assert!(!legacy.total_stakes.contains_key(&VALIDATOR));
+                assert!(find_undelegation(&legacy, VALIDATOR, VALIDATOR).is_some());
+                session.dpos_state = legacy.clone();
+
+                let state = RawState::from_snapshot(
+                    &legacy,
+                    BTreeMap::from([
+                        (
+                            DPOS_CONTRACT_ADDRESS,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::from(10_000_u64),
+                            },
+                        ),
+                        (
+                            VALIDATOR,
+                            FinalChainNativeAccount {
+                                exists: false,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::default(),
+                            },
+                        ),
+                    ]),
+                );
+                let confirm = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let confirmed = invoke_custody(&mut session, &state, &confirm);
+                assert_eq!(confirmed.status, FinalChainNativeStatus::Success);
+                assert_eq!(confirmed.raw_mutations.len(), 4);
+                assert!(confirmed.raw_mutations.iter().all(|mutation| {
+                    mutation.key != ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &VALIDATOR]))
+                }));
+                assert_eq!(confirmed.account_mutations.len(), 2);
+                assert_eq!(confirmed.logs.len(), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_custody_preserves_existing_partial_and_v2_swap_remove_order() {
+        const DELEGATOR: [u8; 20] = [0x51; 20];
+        with_chain_ficus(
+            "selected-custody-existing-partial",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([
+                        (
+                            DPOS_CONTRACT_ADDRESS,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::from(10_000_u64),
+                            },
+                        ),
+                        (
+                            DELEGATOR,
+                            FinalChainNativeAccount {
+                                exists: false,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::default(),
+                            },
+                        ),
+                    ]),
+                );
+
+                let first_delegate = custody_request(
+                    0,
+                    DELEGATOR,
+                    1_000,
+                    address_word_input(DPOS_DELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &first_delegate);
+                apply_raw_mutations(&state, &outcome);
+
+                let existing_delegate = custody_request(
+                    1,
+                    DELEGATOR,
+                    500,
+                    address_word_input(DPOS_DELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &existing_delegate);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert_eq!(outcome.raw_mutations.len(), 5);
+                let current_node = ConcreteStorageKey(concrete_storage_key(&[
+                    &[1],
+                    &VALIDATOR,
+                    &concrete_bigint_u64_bytes(1),
+                ]));
+                let delegation =
+                    ConcreteStorageKey(concrete_storage_key(&[&[2, 0], &VALIDATOR, &DELEGATOR]));
+                assert_eq!(
+                    outcome
+                        .raw_mutations
+                        .iter()
+                        .map(|mutation| mutation.key)
+                        .collect::<Vec<_>>(),
+                    vec![
+                        current_node,
+                        delegation,
+                        current_node,
+                        ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &VALIDATOR])),
+                        ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &VALIDATOR])),
+                    ]
+                );
+                apply_raw_mutations(&state, &outcome);
+
+                let first_undelegate = custody_request(
+                    2,
+                    DELEGATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_V2_SELECTOR, VALIDATOR, U256::from(300)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &first_undelegate);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert_eq!(outcome.raw_mutations.len(), 13);
+                assert_eq!(outcome.raw_mutations[0].key, current_node);
+                assert_eq!(outcome.raw_mutations[1].key, delegation);
+                assert_eq!(outcome.raw_mutations[2].key, current_node);
+                assert!(matches!(
+                    &outcome.raw_mutations[1].operation,
+                    FinalChainNativeRawOperation::Put(value)
+                        if value.as_bytes() == [0xc4, 0x82, 0x04, 0xb0, 0x01]
+                ));
+                apply_raw_mutations(&state, &outcome);
+
+                let second_undelegate = custody_request(
+                    3,
+                    DELEGATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_V2_SELECTOR, VALIDATOR, U256::from(200)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &second_undelegate);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert_eq!(outcome.raw_mutations.len(), 10);
+                apply_raw_mutations(&state, &outcome);
+
+                let confirm_first = custody_request(
+                    4,
+                    DELEGATOR,
+                    0,
+                    address_id_input(DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR, VALIDATOR, 1),
+                    DPOS_SET_COMMISSION_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &confirm_first);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert_eq!(outcome.raw_mutations.len(), 7);
+                let ids_prefix = [&[3, 3][..], &DELEGATOR, &VALIDATOR].concat();
+                assert_eq!(
+                    outcome
+                        .raw_mutations
+                        .iter()
+                        .map(|mutation| mutation.key)
+                        .collect::<Vec<_>>(),
+                    vec![
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &[3, 0],
+                            &DELEGATOR,
+                            &VALIDATOR,
+                            &1_u64.to_le_bytes(),
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &ids_prefix,
+                            &[2],
+                            &2_u64.to_le_bytes(),
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &ids_prefix,
+                            &[2],
+                            &1_u32.to_le_bytes(),
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &ids_prefix,
+                            &[2],
+                            &1_u64.to_le_bytes(),
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &ids_prefix,
+                            &[2],
+                            &2_u32.to_le_bytes(),
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[&ids_prefix, &[1]])),
+                        ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &VALIDATOR])),
+                    ]
+                );
+                assert!(matches!(
+                    &outcome.raw_mutations[1].operation,
+                    FinalChainNativeRawOperation::Put(value)
+                        if value.as_bytes() == 1_u32.to_le_bytes()
+                ));
+                assert!(matches!(
+                    &outcome.raw_mutations[2].operation,
+                    FinalChainNativeRawOperation::Put(value)
+                        if value.as_bytes() == 2_u64.to_le_bytes()
+                ));
+                assert_eq!(
+                    outcome.raw_mutations[3].operation,
+                    FinalChainNativeRawOperation::Delete
+                );
+                assert_eq!(
+                    outcome.raw_mutations[4].operation,
+                    FinalChainNativeRawOperation::Delete
+                );
+                assert!(matches!(
+                    &outcome.raw_mutations[5].operation,
+                    FinalChainNativeRawOperation::Put(value)
+                        if value.as_bytes() == 1_u32.to_le_bytes()
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn ficus_boundary_controls_surviving_validator_write() {
+        const DELEGATOR: [u8; 20] = [0x53; 20];
+        for (name, ficus_activation, expected_active) in [
+            ("selected-custody-ficus-h-minus-one", 2.into(), false),
+            ("selected-custody-ficus-h", 1.into(), true),
+        ] {
+            with_chain_config_and_ficus(
+                name,
+                FinalChainRewardsConfig {
+                    magnolia_period: FinalChainBlockNumber::GENESIS,
+                    cornus_period: FinalChainBlockNumber::GENESIS,
+                    fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                    aspen_part_two_period: FinalChainBlockNumber::MAX,
+                    cacti_period: FinalChainBlockNumber::MAX,
+                    ..Default::default()
+                },
+                ficus_activation,
+                |chain| {
+                    assert_eq!(chain.ficus_active_at(1.into()), expected_active);
+                    let mut session = chain
+                        .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                        .unwrap();
+                    let state = RawState::from_snapshot(
+                        &session.dpos_state,
+                        BTreeMap::from([
+                            (
+                                DPOS_CONTRACT_ADDRESS,
+                                FinalChainNativeAccount {
+                                    exists: true,
+                                    nonce: FinalChainNonce::zero(),
+                                    balance: BigInt::from(10_000_u64),
+                                },
+                            ),
+                            (
+                                DELEGATOR,
+                                FinalChainNativeAccount {
+                                    exists: false,
+                                    nonce: FinalChainNonce::zero(),
+                                    balance: BigInt::default(),
+                                },
+                            ),
+                        ]),
+                    );
+
+                    let delegate = custody_request(
+                        0,
+                        DELEGATOR,
+                        500,
+                        address_word_input(DPOS_DELEGATE_SELECTOR, VALIDATOR),
+                        DPOS_DELEGATE_GAS,
+                    );
+                    let outcome = invoke_custody(&mut session, &state, &delegate);
+                    apply_raw_mutations(&state, &outcome);
+                    let undelegate = custody_request(
+                        1,
+                        DELEGATOR,
+                        0,
+                        address_amount_input(
+                            DPOS_UNDELEGATE_V2_SELECTOR,
+                            VALIDATOR,
+                            U256::from(500),
+                        ),
+                        DPOS_UNDELEGATE_GAS,
+                    );
+                    let outcome = invoke_custody(&mut session, &state, &undelegate);
+                    apply_raw_mutations(&state, &outcome);
+
+                    let confirm = custody_request(
+                        2,
+                        DELEGATOR,
+                        0,
+                        address_id_input(DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR, VALIDATOR, 1),
+                        DPOS_SET_COMMISSION_GAS,
+                    );
+                    let outcome = invoke_custody(&mut session, &state, &confirm);
+                    assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                    let validator_key =
+                        ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &VALIDATOR]));
+                    let validator_writes = outcome
+                        .raw_mutations
+                        .iter()
+                        .filter(|mutation| mutation.key == validator_key)
+                        .count();
+                    assert_eq!(validator_writes, usize::from(expected_active));
+                    assert_eq!(outcome.raw_mutations.len(), 7 + validator_writes);
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn pre_magnolia_missing_claim_authenticates_raw_absence_and_isolates_failures() {
+        const MISSING: [u8; 20] = [0x50; 20];
+        with_chain_config(
+            "pre-magnolia-missing-claim",
+            FinalChainRewardsConfig {
+                magnolia_period: 2.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            |chain| {
+                let mut request = custody_request(
+                    0,
+                    MISSING,
+                    0,
+                    address_word_input(DPOS_CLAIM_REWARDS_SELECTOR, VALIDATOR),
+                    DPOS_CLAIM_REWARDS_GAS,
+                );
+                request.depth = 0;
+                let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let before = session.dpos_state.clone();
+                let state = RawState::from_snapshot(&before, BTreeMap::new());
+                let rows_before = state.rows.borrow().clone();
+                let quote = session.prepare(&request, &state).unwrap();
+                assert_eq!(quote.required_gas.as_u64(), DPOS_CLAIM_REWARDS_GAS);
+                let outcome = session.invoke(&request, quote, &state).unwrap();
+                let FinalChainNativeInvocationResult::Completed(outcome) = outcome else {
+                    panic!("missing claim must complete with contract failure");
+                };
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Delegation does not exist".to_owned(),
+                    }
+                );
+                assert_eq!(outcome.gas_used, quote.required_gas);
+                assert!(outcome.output.is_empty() && outcome.logs.is_empty());
+                assert!(outcome.raw_mutations.is_empty() && outcome.account_mutations.is_empty());
+                assert_eq!(state.account_reads.get(), 0);
+                assert_eq!(session.dpos_state, before);
+                assert_eq!(*state.rows.borrow(), rows_before);
+                assert!(
+                    state
+                        .read_keys
+                        .borrow()
+                        .contains(&custody::delegation_key(VALIDATOR, MISSING))
+                );
+
+                for empty in [
+                    ConcreteRead::Absent,
+                    ConcreteRead::Tombstone,
+                    ConcreteRead::Present(Vec::new()),
+                ] {
+                    let mut candidate = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                    let before = candidate.dpos_state.clone();
+                    let state = RawState::from_snapshot(&before, BTreeMap::new());
+                    state.set(
+                        DPOS_CONTRACT_ADDRESS,
+                        custody::delegation_key(VALIDATOR, MISSING).0,
+                        empty,
+                    );
+                    let rows_before = state.rows.borrow().clone();
+                    let quote = candidate.prepare(&request, &state).unwrap();
+                    let FinalChainNativeInvocationResult::Completed(outcome) =
+                        candidate.invoke(&request, quote, &state).unwrap()
+                    else {
+                        panic!("empty delegation must complete as a business failure");
+                    };
+                    assert_eq!(
+                        outcome.status,
+                        FinalChainNativeStatus::ContractFailure {
+                            error: "Delegation does not exist".to_owned(),
+                        }
+                    );
+                    assert_eq!(outcome.gas_used, quote.required_gas);
+                    assert!(outcome.output.is_empty() && outcome.logs.is_empty());
+                    assert!(
+                        outcome.raw_mutations.is_empty() && outcome.account_mutations.is_empty()
+                    );
+                    assert_eq!(candidate.dpos_state, before);
+                    assert_eq!(*state.rows.borrow(), rows_before);
+                }
+
+                let mut incomplete = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let state = RawState::from_snapshot(&incomplete.dpos_state, BTreeMap::new());
+                let quote = incomplete.prepare(&request, &state).unwrap();
+                incomplete.dpos_state.validator_row_authority =
+                    ValidatorRowAuthority::CompatibilityOnly;
+                let before = incomplete.dpos_state.clone();
+                let reads_before = state.reads.get();
+                assert!(matches!(
+                    incomplete.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::ClaimsScopeUnsupported)
+                ));
+                assert_eq!(incomplete.dpos_state, before);
+                assert_eq!(state.reads.get(), reads_before);
+
+                let mut inconsistent = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let state = RawState::from_snapshot(&inconsistent.dpos_state, BTreeMap::new());
+                state.set(
+                    DPOS_CONTRACT_ADDRESS,
+                    custody::delegation_key(VALIDATOR, MISSING).0,
+                    ConcreteRead::Present(vec![1]),
+                );
+                let before = inconsistent.dpos_state.clone();
+                let rows_before = state.rows.borrow().clone();
+                let quote = inconsistent.prepare(&request, &state).unwrap();
+                assert!(matches!(
+                    inconsistent.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::RawIntegrity(_))
+                ));
+                assert_eq!(inconsistent.dpos_state, before);
+                assert_eq!(*state.rows.borrow(), rows_before);
+                assert!(matches!(
+                    inconsistent.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                ));
+
+                let mut fault = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let state = RawState::erroring();
+                let before = fault.dpos_state.clone();
+                let quote = fault.prepare(&request, &state).unwrap();
+                assert_eq!(
+                    fault.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::StateRead(
+                        FinalChainNativeStateReadError::Invariant(
+                            "reader must not run on this path".to_owned()
+                        )
+                    ))
+                );
+                assert_eq!(fault.dpos_state, before);
+                assert!(matches!(
+                    fault.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn pre_magnolia_delegate_requires_exact_owned_legacy_rows_and_isolates_read_faults() {
+        const DELEGATOR: [u8; 20] = [0x50; 20];
+        with_chain_config(
+            "pre-magnolia-owned-delegate",
+            FinalChainRewardsConfig {
+                magnolia_period: 2.into(),
+                cornus_period: FinalChainBlockNumber::MAX,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            |chain| {
+                let accounts = BTreeMap::from([
+                    (
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::from_u64(1),
+                            balance: BigInt::from(1_000_500_u64),
+                        },
+                    ),
+                    (
+                        DELEGATOR,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(1_000_u64),
+                        },
+                    ),
+                ]);
+                let mut req = custody_request(
+                    0,
+                    DELEGATOR,
+                    500,
+                    address_word_input(DPOS_DELEGATE_SELECTOR, VALIDATOR),
+                    100_000,
+                );
+                // This signed warmup is top-level; the common helper models nesting.
+                req.depth = 0;
+                let parent_before = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+                let mut baseline = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                let before = baseline.dpos_state.clone();
+                assert!(before.has_complete_validator_shapes());
+                assert_eq!(
+                    checked_validator_row_shape(&before, VALIDATOR).unwrap(),
+                    Some(ValidatorRowShape::LegacyV1)
+                );
+                let raw = RawState::from_snapshot(&before, accounts.clone());
+                let outcome = invoke_custody(&mut baseline, &raw, &req);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    baseline.dpos_state.delegations[&VALIDATOR][&DELEGATOR].as_u256(),
+                    U256::from(500)
+                );
+                assert_eq!(
+                    checked_validator_row_shape(&baseline.dpos_state, VALIDATOR).unwrap(),
+                    Some(ValidatorRowShape::LegacyV1)
+                );
+                assert!(baseline.dpos_state.retained_undelegation_counts.is_empty());
+                let key = ConcreteStorageKey(VALIDATOR_KEY);
+                let rows = outcome
+                    .raw_mutations
+                    .iter()
+                    .filter(|row| row.key == key)
+                    .collect::<Vec<_>>();
+                assert_eq!(rows.len(), 1);
+                let FinalChainNativeRawOperation::Put(value) = &rows[0].operation else {
+                    panic!("delegate validator write")
+                };
+                assert_eq!(rlp::Rlp::new(value.as_bytes()).item_count().unwrap(), 4);
+                assert!(
+                    outcome.account_mutations.is_empty(),
+                    "frame owns payable value"
+                );
+                let expected = baseline.dpos_state.clone();
+                for mode in 0..4 {
+                    let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                    let mut raw = RawState::from_snapshot(&before, accounts.clone());
+                    match mode {
+                        0 => raw.set(DPOS_CONTRACT_ADDRESS, VALIDATOR_KEY, ConcreteRead::Absent),
+                        1 => raw.set(
+                            DPOS_CONTRACT_ADDRESS,
+                            VALIDATOR_KEY,
+                            ConcreteRead::Present(vec![0xff]),
+                        ),
+                        2 => {
+                            let mut wrong = rlp::RlpStream::new_list(2);
+                            wrong.append_raw(&LEGACY_VALIDATOR_100, 1).append(&0_u16);
+                            raw.set(
+                                DPOS_CONTRACT_ADDRESS,
+                                VALIDATOR_KEY,
+                                ConcreteRead::Present(wrong.out().to_vec()),
+                            );
+                        }
+                        _ => raw.fail_reads = true,
+                    }
+                    let rows = raw.rows.borrow().clone();
+                    let quote = session.prepare(&req, &raw).unwrap();
+                    let error = session.invoke(&req, quote, &raw).unwrap_err();
+                    assert!(
+                        if mode == 3 {
+                            matches!(error, FinalChainNativeSessionError::StateRead(_))
+                        } else {
+                            matches!(error, FinalChainNativeSessionError::RawIntegrity(_))
+                        },
+                        "{error:?}"
+                    );
+                    assert!(session.aborted);
+                    assert_eq!(session.dpos_state, before);
+                    assert_eq!(session.next_sequence, 0);
+                    assert_eq!(*raw.rows.borrow(), rows);
+                    assert_eq!(raw.accounts, accounts);
+                    let mut retry = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                    let fresh = RawState::from_snapshot(&before, accounts.clone());
+                    assert_eq!(invoke_custody(&mut retry, &fresh, &req), outcome);
+                    assert_eq!(retry.dpos_state, expected);
+                }
+                assert_eq!(
+                    chain.last_block_number_typed().unwrap(),
+                    FinalChainBlockNumber::GENESIS
+                );
+                assert_eq!(
+                    chain.dpos_snapshot_at_finalized_block(0.into()).unwrap(),
+                    parent_before
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn general_sessions_reject_pre_magnolia_without_shape_authority() {
+        with_chain_config(
+            "native-pre-magnolia-scope",
+            FinalChainRewardsConfig {
+                magnolia_period: 2.into(),
+                cornus_period: 3.into(),
+                ..Default::default()
+            },
+            |chain| {
+                // Model an existing old-schema snapshot with no row-shape authority.
+                chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&FinalChainBlockNumber::GENESIS)
+                    .unwrap()
+                    .validator_row_authority = ValidatorRowAuthority::CompatibilityOnly;
+                assert!(matches!(
+                    chain.begin_native_session(1.into(), FinalChainBlockNumber::GENESIS),
+                    Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                ));
+                assert!(matches!(
+                    chain.begin_native_simulation(FinalChainBlockNumber::GENESIS),
+                    Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                ));
+                assert!(matches!(
+                    chain.begin_native_trace(0.into(), 1.into()),
+                    Err(FinalChainNativeSessionError::PreMagnoliaUnsupported)
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn general_trace_preserves_legacy_scope_without_magnolia() {
+        with_chain_config(
+            "trace-legacy-scope-without-magnolia",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::MAX,
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                phalaenopsis_period: FinalChainBlockNumber::GENESIS,
+                cacti_period: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::GENESIS,
+                // The helper allocates 10,000 stake at genesis. Activating
+                // Aspen also requires a nonzero maximum covering that supply.
+                aspen_max_supply: U256::from(20_000).into(),
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                ..Default::default()
+            },
+            |chain| {
+                let mut trace = chain.begin_native_trace(0.into(), 1.into()).unwrap();
+                let before = trace.session.dpos_state.clone();
+                let state = RawState::from_snapshot(&before, BTreeMap::new());
+                let req = custody_request(
+                    0,
+                    VALIDATOR,
+                    7,
+                    DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.to_vec(),
+                    1000,
+                );
+                let quote = trace.prepare(&req, &state).unwrap();
+                assert_eq!(quote.required_gas.as_u64(), 1000);
+                let outcome = completed(trace.invoke(&req, quote, &state).unwrap());
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert!(outcome.raw_mutations.is_empty());
+                assert!(outcome.account_mutations.is_empty());
+                assert!(outcome.logs.is_empty());
+                assert_eq!(trace.session.dpos_state, before);
+            },
+        );
+    }
+
+    #[test]
+    fn phala_escrow_exact_selector_activation_and_trailing_byte_failures() {
+        for activation in [1_u64, 2] {
+            with_chain_config(
+                "native-phala-escrow-boundary",
+                FinalChainRewardsConfig {
+                    magnolia_period: FinalChainBlockNumber::GENESIS,
+                    phalaenopsis_period: activation.into(),
+                    cornus_period: 3.into(),
+                    fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                    ..Default::default()
+                },
+                |chain| {
+                    let mut session = chain.begin_native_session(1.into(), 0.into()).unwrap();
+                    let before = session.dpos_state.clone();
+                    let state = RawState::from_snapshot(&before, BTreeMap::new());
+                    for (sequence, trailing) in [false, true].into_iter().enumerate() {
+                        let mut input = DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.to_vec();
+                        if trailing {
+                            input.push(0);
+                        }
+                        let req = custody_request(sequence as u64, VALIDATOR, 7, input, 1000);
+                        let active = activation == 1 && !trailing;
+                        let quote = session.prepare(&req, &state).unwrap();
+                        assert_eq!(quote.required_gas.as_u64(), if active { 1000 } else { 0 });
+                        let outcome = completed(session.invoke(&req, quote, &state).unwrap());
+                        assert_eq!(
+                            outcome.status,
+                            if active {
+                                FinalChainNativeStatus::Success
+                            } else {
+                                FinalChainNativeStatus::ContractFailure {
+                                    error: "no method with id: 0x44df8e70".to_owned(),
+                                }
+                            }
+                        );
+                        assert_eq!(outcome.gas_used, quote.required_gas);
+                        assert!(outcome.raw_mutations.is_empty());
+                        assert!(outcome.account_mutations.is_empty());
+                        assert!(outcome.logs.is_empty());
+                        assert_eq!(session.dpos_state, before);
+                    }
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn cornus_boundary_rejects_v2_before_activation_and_runs_it_at_activation() {
+        with_chain_config(
+            "selected-custody-cornus-h-minus-one",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::GENESIS,
+                cornus_period: 2.into(),
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let before = session.dpos_state.clone();
+                let state = RawState::from_snapshot(&before, BTreeMap::new());
+                let request = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_V2_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let quote = session.prepare(&request, &state).unwrap();
+                assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+                let outcome = completed(session.invoke(&request, quote, &state).unwrap());
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Method not supported".to_owned(),
+                    }
+                );
+                assert_eq!(outcome.gas_used, FinalChainGas::ZERO);
+                assert!(outcome.raw_mutations.is_empty());
+                assert!(outcome.account_mutations.is_empty());
+                assert!(outcome.logs.is_empty());
+                assert_eq!(session.dpos_state, before);
+                let mut simulation = chain.begin_native_simulation(0.into()).unwrap();
+                let mut request = request;
+                request.period = 0.into();
+                let quote = simulation.prepare(&request, &state).unwrap();
+                assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+                let outcome = completed(simulation.invoke(&request, quote, &state).unwrap());
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Method not supported".to_owned(),
+                    }
+                );
+                assert!(outcome.raw_mutations.is_empty());
+                assert!(outcome.account_mutations.is_empty());
+                assert!(outcome.logs.is_empty());
+            },
+        );
+        with_chain_config_and_ficus(
+            "selected-custody-cornus-h",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::GENESIS,
+                cornus_period: 1.into(),
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            1.into(),
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let request = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_V2_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+
+                let outcome = invoke_custody(&mut session, &state, &request);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert_eq!(outcome.output, abi_word_from_u64(1));
+                assert!(!outcome.raw_mutations.is_empty());
+            },
+        );
+    }
+
+    #[test]
+    fn selected_custody_late_raw_corruption_aborts_without_advancing_state() {
+        const DELEGATOR: [u8; 20] = [0x52; 20];
+        with_chain(
+            "selected-custody-late-corruption",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let before = session.dpos_state.clone();
+                let state = RawState::from_snapshot(&before, BTreeMap::new());
+                state.set(
+                    DPOS_CONTRACT_ADDRESS,
+                    concrete_storage_key(&[&[0, 2], &VALIDATOR]),
+                    ConcreteRead::Present(vec![0xff]),
+                );
+                let request = custody_request(
+                    0,
+                    DELEGATOR,
+                    500,
+                    address_word_input(DPOS_DELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DELEGATE_GAS,
+                );
+                let quote = session.prepare(&request, &state).unwrap();
+
+                assert!(matches!(
+                    session.invoke(&request, quote, &state),
+                    Err(FinalChainNativeSessionError::RawIntegrity(message))
+                        if message == "validator rewards raw/domain facts disagree"
+                ));
+                assert_eq!(session.dpos_state, before);
+                assert_eq!(state.reads.get(), 8);
+                assert_eq!(
+                    session.prepare(&request, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn custody_business_preflight_precedes_lazy_account_and_raw_reads() {
+        with_chain(
+            "custody-preflight",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let state = RawState::erroring();
+                let request = custody_request(
+                    0,
+                    [0x44; 20],
+                    500,
+                    address_word_input(DPOS_DELEGATE_SELECTOR, [0x99; 20]),
+                    40_000,
+                );
+
+                let quote = session.prepare(&request, &state).unwrap();
+                let outcome = completed(session.invoke(&request, quote, &state).unwrap());
+
+                assert_eq!(
+                    outcome.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: DposContractError::NonExistentValidator
+                            .legacy_message()
+                            .to_owned(),
+                    }
+                );
+                assert!(outcome.account_mutations.is_empty());
+                assert!(outcome.raw_mutations.is_empty());
+                assert_eq!(state.account_reads.get(), 0);
+                assert_eq!(state.reads.get(), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn bound_rewards_reject_pre_magnolia_unknown_shape_scope_before_state_reads() {
+        with_chain_config(
+            "bound-rewards-pre-magnolia",
+            FinalChainRewardsConfig {
+                committee_size: 1,
+                magnolia_period: 2.into(),
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                aspen_part_one_period: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                max_block_author_reward_percent: 20,
+                dag_proposers_reward_percent: 50,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 1,
+                rewards_distribution_frequency: vec![(FinalChainBlockNumber::GENESIS, 1)],
+                ..Default::default()
+            },
+            |chain| {
+                let request_id = [0x57; 32];
+                let transaction_hash = H256::from([0x78; 32]);
+                let plan = chain
+                    .plan_external_evm_rewards_stats(
+                        request_id,
+                        FinalizedRewardsPeriodFact {
+                            period: 1,
+                            block_author: H160::from(VALIDATOR),
+                            blocks_per_year: 1,
+                            dpos_eligible_total_vote_count: 10,
+                            transactions: vec![RewardTransactionFact {
+                                hash: transaction_hash,
+                                gas_price: U256::one(),
+                                gas_used: 21_000_u64.into(),
+                            }],
+                            dag_blocks: vec![RewardDagBlockFact {
+                                author: H160::from(VALIDATOR),
+                                difficulty: 1,
+                                transaction_hashes: vec![transaction_hash],
+                            }],
+                            cert_votes: vec![RewardCertVoteFact {
+                                voter: H160::from(VALIDATOR),
+                                weight: 1,
+                                period: 1,
+                            }],
+                        },
+                    )
+                    .unwrap();
+                let mut session = chain
+                    .begin_native_session_bound(
+                        request_id,
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                // Old snapshots cannot acquire Complete authority from configuration.
+                session.dpos_state.validator_row_authority =
+                    ValidatorRowAuthority::CompatibilityOnly;
+                let state = RawState::erroring();
+
+                assert_eq!(
+                    session.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::RewardsScopeUnsupported)
+                );
+                assert_eq!(state.account_reads.get(), 0);
+                assert_eq!(state.reads.get(), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn bound_rewards_at_magnolia_activation_preserves_raw_order() {
+        with_chain_config(
+            "bound-rewards",
+            FinalChainRewardsConfig {
+                committee_size: 1,
+                magnolia_period: 1.into(),
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                aspen_part_one_period: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                max_block_author_reward_percent: 20,
+                dag_proposers_reward_percent: 50,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 1,
+                rewards_distribution_frequency: vec![(FinalChainBlockNumber::GENESIS, 1)],
+                ..Default::default()
+            },
+            |chain| {
+                let transaction_hash = H256::from([0x77; 32]);
+                let plan = chain
+                    .plan_external_evm_rewards_stats(
+                        [0x55; 32],
+                        FinalizedRewardsPeriodFact {
+                            period: 1,
+                            block_author: H160::from(VALIDATOR),
+                            blocks_per_year: 1,
+                            dpos_eligible_total_vote_count: 10,
+                            transactions: vec![RewardTransactionFact {
+                                hash: transaction_hash,
+                                gas_price: U256::one(),
+                                gas_used: 21_000_u64.into(),
+                            }],
+                            dag_blocks: vec![RewardDagBlockFact {
+                                author: H160::from(VALIDATOR),
+                                difficulty: 1,
+                                transaction_hashes: vec![transaction_hash],
+                            }],
+                            cert_votes: vec![RewardCertVoteFact {
+                                voter: H160::from(VALIDATOR),
+                                weight: 1,
+                                period: 1,
+                            }],
+                        },
+                    )
+                    .unwrap();
+                let state = RawState::reward_fixture(10, U256::from(10_000_u64));
+                let mut session = chain
+                    .begin_native_session_bound(
+                        [0x55; 32],
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+
+                let outcome = session.finish_rewards(&plan, &state).unwrap();
+
+                assert_eq!(outcome.total_reward.as_u256(), U256::from(2_000_u64));
+                let wide = (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64);
+                assert_eq!(
+                    outcome.account_mutations,
+                    vec![
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: DPOS_CONTRACT_ADDRESS,
+                            expected_exists: true,
+                            expected: wide.clone(),
+                            replacement: &wide + BigInt::from(21_000_u64),
+                        },
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: DPOS_CONTRACT_ADDRESS,
+                            expected_exists: true,
+                            expected: &wide + BigInt::from(21_000_u64),
+                            replacement: &wide + BigInt::from(23_000_u64),
+                        },
+                    ]
+                );
+                assert_eq!(outcome.raw_mutations.len(), 3);
+                let reward_key = ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &VALIDATOR]));
+                assert_eq!(outcome.raw_mutations[0].key, reward_key);
+                assert_eq!(
+                    outcome.raw_mutations[0].expected,
+                    ConcreteRead::Present(vec![0xc2, 0x80, 0x80])
+                );
+                assert_eq!(outcome.raw_mutations[1].key, reward_key);
+                let mut bonus_row = rlp::RlpStream::new_list(2);
+                bonus_row.append(&U256::from(396_u64));
+                bonus_row.append(&U256::from(4_u64));
+                assert_eq!(
+                    outcome.raw_mutations[1].expected,
+                    ConcreteRead::Present(bonus_row.out().to_vec())
+                );
+                let puts = outcome
+                    .raw_mutations
+                    .iter()
+                    .map(|mutation| match &mutation.operation {
+                        FinalChainNativeRawOperation::Put(value) => value.as_bytes().to_vec(),
+                        FinalChainNativeRawOperation::Delete => Vec::new(),
+                    })
+                    .collect::<Vec<_>>();
+                let mut final_reward_row = rlp::RlpStream::new_list(2);
+                final_reward_row.append(&U256::from(1_980_u64));
+                final_reward_row.append(&U256::from(21_020_u64));
+                assert_eq!(puts[1], final_reward_row.out().to_vec());
+                assert_eq!(puts[2], vec![0x07, 0xd0]);
+                assert_eq!(
+                    session.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                );
+                assert_eq!(
+                    session.prepare(&request(0, OWNER, 200, 20_000), &state),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                );
+                let post_finish_request = request(0, OWNER, 200, 20_000);
+                assert_eq!(
+                    session.invoke(
+                        &post_finish_request,
+                        FinalChainNativeGasQuote {
+                            invocation: post_finish_request.id,
+                            required_gas: 20_000.into(),
+                        },
+                        &state,
+                    ),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                );
+
+                let mismatch_state = RawState::reward_fixture(10, U256::from(10_000_u64));
+                let mut mismatched = chain
+                    .begin_native_session_bound(
+                        [0x56; 32],
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    mismatched.finish_rewards(&plan, &mismatch_state),
+                    Err(FinalChainNativeSessionError::RewardsPlanMismatch)
+                );
+                assert_eq!(mismatch_state.reads.get(), 0);
+
+                let set_commission_state = RawState::fixture();
+                let mut outstanding = chain
+                    .begin_native_session_bound(
+                        [0x55; 32],
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                let invocation = request(0, OWNER, 200, 20_000);
+                let outstanding_quote = outstanding
+                    .prepare(&invocation, &set_commission_state)
+                    .unwrap();
+                assert_eq!(
+                    outstanding.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::QuoteOutstanding)
+                );
+                assert_eq!(
+                    completed(
+                        outstanding
+                            .invoke(&invocation, outstanding_quote, &set_commission_state)
+                            .unwrap()
+                    )
+                    .status,
+                    FinalChainNativeStatus::Success
+                );
+
+                let mut unbound = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                assert_eq!(
+                    unbound.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::UnboundRewards)
+                );
+
+                let corrupt = RawState::reward_fixture(10, U256::from(10_000_u64));
+                corrupt.set(
+                    DPOS_CONTRACT_ADDRESS,
+                    concrete_storage_key(&[&[0, 2], &VALIDATOR]),
+                    ConcreteRead::Present(vec![0xff]),
+                );
+                let mut corrupt_session = chain
+                    .begin_native_session_bound(
+                        [0x55; 32],
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                assert!(matches!(
+                    corrupt_session.finish_rewards(&plan, &corrupt),
+                    Err(FinalChainNativeSessionError::RawIntegrity(_))
+                ));
+                assert_eq!(
+                    corrupt_session.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                );
+            },
+        );
+    }
+    include!("native_session/slashing_hard_error_tests.rs");
+}

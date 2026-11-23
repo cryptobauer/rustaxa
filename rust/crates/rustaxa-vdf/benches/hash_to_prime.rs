@@ -25,7 +25,7 @@ fn bench_hash_to_prime_different_inputs(c: &mut Criterion) {
     let h2p = HashToPrime::new(128);
 
     // Test different input sizes
-    let inputs = vec![
+    let inputs = [
         ("small", Integer::from(42u32)),
         ("medium", Integer::from(u64::MAX)),
         ("large", Integer::from(2u32).pow(128)),
@@ -91,7 +91,7 @@ fn bench_hash_to_prime_with_negative_inputs(c: &mut Criterion) {
 
     let h2p = HashToPrime::new(128);
 
-    let inputs = vec![
+    let inputs = [
         ("positive", Integer::from(12345)),
         ("negative", Integer::from(-12345)),
         ("zero", Integer::from(0)),
@@ -155,7 +155,7 @@ fn bench_precision_bound_computation(c: &mut Criterion) {
 fn bench_hash_to_prime_edge_cases(c: &mut Criterion) {
     let mut group = c.benchmark_group("hash_to_prime_edge_cases");
 
-    let test_cases = vec![
+    let test_cases = [
         ("lambda_1", 1u32, Integer::from(42)),
         ("lambda_max", 4096u32, Integer::from(42)),
         ("input_boundary_u64_max", 128u32, Integer::from(u64::MAX)),

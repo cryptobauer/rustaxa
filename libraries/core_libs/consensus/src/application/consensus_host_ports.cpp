@@ -26,7 +26,15 @@
 #include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
 
+#include "rustaxa-bridge/src/production_ffi.rs.h"
+
 namespace taraxa {
+
+rust::Box<rustaxa::BridgeConsensusApplication> openProductionConsensusApplication(
+    std::unique_ptr<rustaxa::NativeSelectedProductionConfig> selected, const fs::path& concrete_path) {
+  return rustaxa::create_production_application(std::move(selected), rust::String(concrete_path.string()));
+}
+
 
 rustaxa::HostFinalChainFinalizeReport ConsensusApplication::finalize(ExternalEvmPort& external_evm,
                                                                      rustaxa::HostFinalChainFinalizeTask task) const {
@@ -226,8 +234,9 @@ rustaxa::HostTransportReport ConsensusTransportPort::consensusGossipVoteBundle(
         std::vector<uint8_t>(request.votes_bundle_rlp.begin(), request.votes_bundle_rlp.end()), request.rebroadcast,
         request.effect_id.sequence);
     return successfulTransportReport(request.effect_id);
-  } catch (const std::exception&) {
-    return failedReport<rustaxa::HostTransportReport>(request.effect_id, "GOSSIP_VOTE_BUNDLE_FAILED");
+  } catch (const std::exception& error) {
+    const auto detail = std::string("GOSSIP_VOTE_BUNDLE_FAILED: ") + error.what();
+    return failedReport<rustaxa::HostTransportReport>(request.effect_id, detail.c_str());
   }
 }
 
@@ -435,8 +444,8 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmPort::consensusCommitFinalCh
 }
 
 rustaxa::HostFinalChainPreflightReport ExternalEvmPort::consensusDiscardFinalChainState(
-    const rustaxa::CanonicalBytes& concrete_marker) const {
-  return impl_->state->discardState(concrete_marker);
+    rust::Slice<const uint8_t> concrete_marker_rlp, uint64_t expected_state_api_epoch) const {
+  return impl_->state->discardState(concrete_marker_rlp, expected_state_api_epoch);
 }
 
 class ConsensusProcess::Impl final {
@@ -444,9 +453,12 @@ class ConsensusProcess::Impl final {
   enum class LifecycleState : uint8_t { kStopped, kRunning };
 
   Impl(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config)
-      : application(std::move(application)), process(this->application), signer(config), evm(this->application) {
+      : application(std::move(application)), process(this->application), signer(config) {
     if (!this->application) {
       throw std::invalid_argument("ConsensusProcess requires ConsensusApplication");
+    }
+    if (!this->application->usesRustExecution()) {
+      evm = std::make_unique<ExternalEvmPort>(this->application);
     }
   }
 
@@ -454,7 +466,7 @@ class ConsensusProcess::Impl final {
   ConsensusProcessPort process;
   ConsensusSignerPort signer;
   ConsensusTransportPort transport;
-  ExternalEvmPort evm;
+  std::unique_ptr<ExternalEvmPort> evm;
   // Serializes complete public start/stop transitions, including joins. The
   // worker never acquires this mutex, so stop may retain it while joining.
   std::mutex lifecycle_mutex;
@@ -463,6 +475,7 @@ class ConsensusProcess::Impl final {
   std::mutex state_mutex;
   std::thread worker;
   LifecycleState state{LifecycleState::kStopped};
+  bool completed = false;
 };
 
 ConsensusProcess::ConsensusProcess(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config)
@@ -492,24 +505,34 @@ void ConsensusProcess::start() {
 
   const std::scoped_lock state_lock(impl_->state_mutex);
   impl_->process.impl_->reset();
+  impl_->completed = false;
   impl_->state = Impl::LifecycleState::kRunning;
   try {
     impl_->worker = std::thread([impl = impl_.get()] {
+      bool completed = false;
       try {
-        static_cast<void>(rustaxa::consensus_application_run(impl->application->service(), impl->process, impl->signer,
-                                                             impl->transport, impl->evm));
+        const auto result = rustaxa::consensus_application_run(
+            impl->application->service(), impl->process, impl->signer, impl->transport, impl->evm);
+        constexpr uint8_t kRunCompleted = 1;
+        completed = !impl->evm && result.reason == kRunCompleted;
       } catch (const std::exception& error) {
         std::fprintf(stderr, "native consensus process terminated: %s\n", error.what());
       } catch (...) {
         std::fprintf(stderr, "native consensus process terminated with an unknown error\n");
       }
       const std::scoped_lock state_lock(impl->state_mutex);
+      impl->completed = completed;
       impl->state = Impl::LifecycleState::kStopped;
     });
   } catch (...) {
     impl_->state = Impl::LifecycleState::kStopped;
     throw;
   }
+}
+
+bool ConsensusProcess::completed() const {
+  const std::scoped_lock lock(impl_->state_mutex);
+  return impl_->completed;
 }
 
 void ConsensusProcess::stop() noexcept {

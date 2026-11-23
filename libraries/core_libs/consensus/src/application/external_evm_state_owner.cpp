@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -20,6 +22,16 @@
 
 namespace taraxa {
 namespace {
+
+uint64_t nextStateApiEpoch() {
+  static std::atomic<uint64_t> next_epoch{1};
+  auto epoch = next_epoch.load(std::memory_order_relaxed);
+  while (epoch) {
+    const auto successor = epoch == std::numeric_limits<uint64_t>::max() ? 0 : epoch + 1;
+    if (next_epoch.compare_exchange_weak(epoch, successor, std::memory_order_relaxed)) return epoch;
+  }
+  throw std::overflow_error("StateAPI runtime epoch exhausted");
+}
 
 constexpr uint8_t kFinalChainEvmLifecycleStatusCommitted = 0;
 constexpr uint8_t kFinalChainEvmLifecycleStatusRejected = 2;
@@ -73,105 +85,10 @@ h256 checkedHash(const bytes& value, const char* operation) {
 
 }  // namespace
 
-rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& config) {
-  auto effective_balances = config.initial_balances;
-  for (const auto& validator : config.dpos.initial_validators) {
-    for (const auto& [delegator, amount] : validator.delegations) effective_balances[delegator] -= amount;
-  }
-  rust::Vec<rustaxa::GenesisAccount> accounts;
-  accounts.reserve(effective_balances.size());
-  for (const auto& [address, balance] : effective_balances) {
-    rustaxa::GenesisAccount account;
-    account.address = toArray(address);
-    account.balance = toBigEndianBytes(balance);
-    accounts.push_back(std::move(account));
-  }
-  return accounts;
-}
-
-rust::Vec<rustaxa::GenesisValidator> makeGenesisValidators(const state_api::Config& config) {
-  rust::Vec<rustaxa::GenesisValidator> validators;
-  validators.reserve(config.dpos.initial_validators.size());
-  for (const auto& validator : config.dpos.initial_validators) {
-    rustaxa::GenesisValidator converted;
-    converted.address = toArray(validator.address);
-    converted.owner = toArray(validator.owner);
-    converted.vrf_key = toArray(validator.vrf_key);
-    converted.commission = validator.commission;
-    converted.description = rust::String(validator.description);
-    converted.endpoint = rust::String(validator.endpoint);
-    u256 total_stake = 0;
-    for (const auto& [_, amount] : validator.delegations) total_stake += amount;
-    converted.total_stake = toBigEndianBytes(total_stake);
-    converted.delegations.reserve(validator.delegations.size());
-    for (const auto& [delegator, amount] : validator.delegations) {
-      rustaxa::GenesisDelegation delegation;
-      delegation.delegator = toArray(delegator);
-      delegation.stake = toBigEndianBytes(amount);
-      converted.delegations.push_back(std::move(delegation));
-    }
-    validators.push_back(std::move(converted));
-  }
-  return validators;
-}
-
-rustaxa::GenesisDposConfig makeGenesisDposConfig(const state_api::DPOSConfig& config,
-                                                 uint64_t dag_vdf_sortition_total_vote_count_until_period) {
-  rustaxa::GenesisDposConfig result;
-  result.eligibility_balance_threshold = toBigEndianBytes(config.eligibility_balance_threshold);
-  result.vote_eligibility_balance_step = toBigEndianBytes(config.vote_eligibility_balance_step);
-  result.validator_maximum_stake = toBigEndianBytes(config.validator_maximum_stake);
-  result.minimum_deposit = toBigEndianBytes(config.minimum_deposit);
-  result.commission_change_delta = config.commission_change_delta;
-  result.commission_change_frequency = config.commission_change_frequency;
-  result.delegation_delay = config.delegation_delay;
-  result.dag_vdf_sortition_total_vote_count_until_period = dag_vdf_sortition_total_vote_count_until_period;
-  return result;
-}
-
-rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const FullNodeConfig& config) {
-  rustaxa::FinalChainRewardsConfig result;
-  result.committee_size = config.genesis.pbft.committee_size;
-  result.magnolia_period = config.genesis.state.hardforks.magnolia_hf.block_num;
-  result.aspen_part_one_period = config.genesis.state.hardforks.aspen_hf.block_num_part_one;
-  result.fix_claim_all_block_num = config.genesis.state.hardforks.fix_claim_all_block_num;
-  result.fix_redelegate_block_num = config.genesis.state.hardforks.fix_redelegate_block_num;
-  result.aspen_part_two_period = config.genesis.state.hardforks.aspen_hf.block_num_part_two;
-  result.max_block_author_reward_percent = config.genesis.state.dpos.max_block_author_reward;
-  result.dag_proposers_reward_percent = config.genesis.state.dpos.dag_proposers_reward;
-  result.yield_percentage = config.genesis.state.dpos.yield_percentage;
-  result.dpos_blocks_per_year = config.genesis.state.dpos.blocks_per_year;
-  result.dpos_delegation_locking_period = config.genesis.state.dpos.delegation_locking_period;
-  result.cornus_period = config.genesis.state.hardforks.cornus_hf.block_num;
-  result.cornus_delegation_locking_period = config.genesis.state.hardforks.cornus_hf.delegation_locking_period;
-  result.phalaenopsis_period = config.genesis.state.hardforks.phalaenopsis_hf_block_num;
-  u256 genesis_balance_sum = 0;
-  for (const auto& [_, balance] : config.genesis.state.initial_balances) genesis_balance_sum += balance;
-  result.genesis_balance_sum = toBigEndianBytes(genesis_balance_sum);
-  result.aspen_max_supply = toBigEndianBytes(config.genesis.state.hardforks.aspen_hf.max_supply);
-  result.aspen_generated_rewards = toBigEndianBytes(config.genesis.state.hardforks.aspen_hf.generated_rewards);
-  result.cacti_period = config.genesis.state.hardforks.cacti_hf.block_num;
-  result.cacti_delegation_locking_period = config.genesis.state.hardforks.cacti_hf.delegation_locking_period;
-  result.magnolia_jail_time = config.genesis.state.hardforks.magnolia_hf.jail_time;
-  result.cacti_jail_time = config.genesis.state.hardforks.cacti_hf.jail_time;
-  result.redelegations.reserve(config.genesis.state.hardforks.redelegations.size());
-  for (const auto& redelegation : config.genesis.state.hardforks.redelegations) {
-    rustaxa::RedelegationCorrection correction;
-    correction.validator = toArray(redelegation.validator);
-    correction.delegator = toArray(redelegation.delegator);
-    correction.amount = toBigEndianBytes(redelegation.amount);
-    result.redelegations.push_back(std::move(correction));
-  }
-  result.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
-  for (const auto& [from_period, frequency] : config.genesis.state.hardforks.rewards_distribution_frequency) {
-    result.frequency_rules.push_back(rustaxa::RewardsFrequencyRule{from_period, frequency});
-  }
-  return result;
-}
-
 ExternalEvmStateOwner::ExternalEvmStateOwner(const FullNodeConfig& config)
     : state_api_([this](EthBlockNumber block_number) { return blockHash(block_number); }, config.genesis.state,
                  config.opts_final_chain, {(config.db_path / "state_db").string()}),
+      state_api_epoch_(nextStateApiEpoch()),
       bridge_contract_address_(config.genesis.state.hardforks.ficus_hf.bridge_contract_address) {}
 
 ExternalEvmStateOwner::~ExternalEvmStateOwner() = default;
@@ -191,6 +108,7 @@ std::shared_ptr<ConsensusApplication> ExternalEvmStateOwner::application() const
 }
 
 void ExternalEvmStateOwner::ensureReadableLocked() const {
+  if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
   if (state_api_.get_pending_concrete_execution()) throw DbException("FINAL_CHAIN_CONCRETE_STATE_STAGED");
 }
 
@@ -205,6 +123,8 @@ rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::loadCommittedState
   report.request_id = request.request_id;
   try {
     const std::scoped_lock lock(mutex_);
+    if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
+    report.state_api_epoch = state_api_epoch_;
     report.concrete_provenance_rlp = toRustBytes(state_api_.activate_concrete_root_policy(
         h256(request.concrete_chain_identity.data(), h256::ConstructFromPointer)));
     if (const auto pending = state_api_.get_pending_concrete_execution()) {
@@ -269,6 +189,9 @@ rustaxa::HostFinalChainExecutionReport ExternalEvmStateOwner::executeTransaction
   h256 post_transaction_state_root;
   {
     const std::scoped_lock lock(mutex_);
+    if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
+      throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
+    }
     ensureReadableLocked();
     state_api_.stage_concrete_execution(fromRustBytes(request.concrete_marker_rlp));
     const auto& execution = state_api_.execute_transactions({toAddress(request.block_author), request.block_gas_limit,
@@ -282,6 +205,7 @@ rustaxa::HostFinalChainExecutionReport ExternalEvmStateOwner::executeTransaction
   }
 
   rustaxa::HostFinalChainExecutionReport report{};
+  report.state_api_epoch = request.expected_state_api_epoch;
   report.post_transaction_state_root = toArray(post_transaction_state_root);
   gas_t cumulative_gas_used = 0;
   report.results.reserve(execution_results.size());
@@ -326,6 +250,11 @@ rustaxa::HostFinalChainRewardsReport ExternalEvmStateOwner::distributeRewards(
     rewards_stats.push_back(util::rlp_dec<rewards::BlockStats>(dev::RLP(value)));
   }
   const std::scoped_lock lock(mutex_);
+  if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
+  if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
+    throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
+  }
+  report.state_api_epoch = state_api_epoch_;
   const auto pending_marker = state_api_.get_pending_concrete_execution();
   if (!pending_marker || *pending_marker != fromRustBytes(request.concrete_marker_rlp)) {
     throw DbException("FINAL_CHAIN_CONCRETE_REWARDS_MARKER_MISMATCH");
@@ -345,6 +274,11 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmStateOwner::commitState(
   report.status = kFinalChainEvmLifecycleStatusCommitted;
   try {
     const std::scoped_lock lock(mutex_);
+    if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
+    if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
+      throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
+    }
+    report.state_api_epoch = state_api_epoch_;
     const auto pending_marker = state_api_.get_pending_concrete_execution();
     if (!pending_marker || *pending_marker != fromRustBytes(request.concrete_marker_rlp) ||
         state_api_.get_concrete_state_projection() != fromRustBytes(request.concrete_projection_rlp)) {
@@ -365,11 +299,21 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmStateOwner::commitState(
 }
 
 rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::discardState(
-    const rustaxa::CanonicalBytes& concrete_marker) {
+    rust::Slice<const uint8_t> concrete_marker_rlp, uint64_t expected_state_api_epoch) {
   rustaxa::HostFinalChainPreflightReport report{};
+  const std::scoped_lock lock(mutex_);
   try {
-    const std::scoped_lock lock(mutex_);
-    state_api_.discard_concrete_execution(fromRustBytes(concrete_marker.data));
+    if (!state_api_epoch_valid_) throw DbException("FINAL_CHAIN_STATE_API_LIFECYCLE_POISONED");
+    if (!expected_state_api_epoch || expected_state_api_epoch != state_api_epoch_) {
+      throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
+    }
+    // From this point any exception is ambiguous: Go may already have closed
+    // and reconstructed its StateTransition. Keep the owner poisoned until
+    // every descriptor/provenance/pending check below succeeds.
+    state_api_epoch_valid_ = false;
+    state_api_.discard_concrete_execution(bytes(concrete_marker_rlp.begin(), concrete_marker_rlp.end()));
+    state_api_epoch_ = nextStateApiEpoch();
+    report.state_api_epoch = state_api_epoch_;
     const auto descriptor = state_api_.get_last_committed_state_descriptor();
     report.committed_period = descriptor.blk_num;
     report.committed_state_root = toArray(descriptor.state_root);
@@ -379,7 +323,9 @@ rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::discardState(
     }
     report.succeeded = report.pending_concrete_marker_rlp.empty();
     if (!report.succeeded) report.error_code = rust::String("FINAL_CHAIN_CONCRETE_DISCARD_REOPEN_MISMATCH");
+    state_api_epoch_valid_ = report.succeeded;
   } catch (const std::exception& error) {
+    report.state_api_epoch = 0;
     report.error_code = rust::String(std::string("FINAL_CHAIN_CONCRETE_DISCARD_FAILED: ") + error.what());
   }
   return report;
@@ -471,34 +417,7 @@ state_api::ExecutionResult ExternalEvmStateOwner::call(const state_api::EVMTrans
   const auto requested_block = block_number.value_or(lastBlockNumber());
   const auto dpos_contract_address = addr_t("0x00000000000000000000000000000000000000FE");
   if (transaction.to && *transaction.to == dpos_contract_address) {
-    rustaxa::FinalChainNativeCall request;
-    request.block_number = requested_block;
-    request.sender = toArray(transaction.from);
-    request.receiver_found = true;
-    request.receiver = toArray(*transaction.to);
-    request.value = toBigEndianBytes(transaction.value);
-    request.gas_price = toBigEndianBytes(transaction.gas_price);
-    request.gas_limit = transaction.gas;
-    request.input = toRustBytes(transaction.input);
-    const auto outcome = (*application()->queryClient())->consensus_query_final_chain_native_call(std::move(request));
-
-    state_api::ExecutionResult result;
-    result.code_retval = fromRustBytes(outcome.code_retval);
-    result.logs.reserve(outcome.logs.size());
-    for (const auto& log : outcome.logs) {
-      state_api::LogRecord converted;
-      converted.address = toAddress(log.address);
-      converted.topics.reserve(log.topics.size());
-      for (const auto& topic : log.topics) {
-        converted.topics.emplace_back(bytes(topic.topic.begin(), topic.topic.end()));
-      }
-      converted.data = fromRustBytes(log.data);
-      result.logs.push_back(std::move(converted));
-    }
-    result.gas_used = outcome.gas_used;
-    result.code_err = std::string(outcome.code_err);
-    result.consensus_err = std::string(outcome.consensus_err);
-    return result;
+    return application()->queryFinalizedCall(transaction, requested_block);
   }
   const auto evm_block = std::min(requested_block, descriptor.blk_num);
   const auto header = blockHeader(evm_block);
@@ -616,7 +535,7 @@ void ExternalEvmStateOwner::prune(EthBlockNumber block_number) {
   if (!first_header_to_keep) return;
   {
     const std::scoped_lock lock(mutex_);
-    if (state_api_.get_pending_concrete_execution()) throw DbException("FINAL_CHAIN_CONCRETE_STATE_STAGED");
+    ensureReadableLocked();
     const auto evm_head = state_api_.get_last_committed_state_descriptor().blk_num;
     if (evm_head >= first_header_to_keep->number) {
       std::vector<h256> roots_to_keep;

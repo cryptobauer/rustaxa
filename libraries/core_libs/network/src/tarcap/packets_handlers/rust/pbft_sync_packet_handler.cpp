@@ -73,10 +73,15 @@ void RustPbftSyncPacketHandler::process(const threadpool::PacketData& packet_dat
   const auto packet_rlp = packet_data.rlp_.data().toBytes();
   const auto ingress = consensus_network_api_->admitPbftSyncPacket(
       packet_rlp, packet_data.id_, peer->getId().asArray(), makeSlashingSubmitterFacts(kConf, consensus_application_),
-      network::PbftSyncIngressExecutor{[this](const auto& effect) { return executeSlashingTransaction(effect); }});
+      network::PbftSyncIngressExecutor{[this](const auto& effect) { return executeSlashingTransaction(effect); }},
+      generation);
   if (ingress.action == network::PbftSyncIngressAction::kMalicious) {
     LOG(log_er_) << "Native PBFT-sync ingress rejected packet: " << ingress.error_code;
     peers_state_->handleMaliciousSyncPeer(peer->getId());
+    return;
+  }
+  if (ingress.action == network::PbftSyncIngressAction::kDrop) {
+    LOG(log_dg_) << "Native PBFT-sync ingress dropped packet: " << ingress.error_code;
     return;
   }
   const auto pbft_block_hash = blk_hash_t(ingress.block_hash.data(), blk_hash_t::ConstructFromPointer);
@@ -90,10 +95,6 @@ void RustPbftSyncPacketHandler::process(const threadpool::PacketData& packet_dat
   LOG(log_dg_) << "PbftSyncPacket admitted by native consensus. Period: " << ingress.block_period
                << ", max DAG level: " << ingress.max_dag_level << " from " << peer->getId();
 
-  if (ingress.action == network::PbftSyncIngressAction::kDrop) {
-    LOG(log_er_) << "Native PBFT-sync ingress dropped block " << pbft_block_hash << ": " << ingress.error_code;
-    return;
-  }
   if (ingress.action == network::PbftSyncIngressAction::kSyncComplete) {
     pbftSyncComplete(generation, peer_id);
     return;

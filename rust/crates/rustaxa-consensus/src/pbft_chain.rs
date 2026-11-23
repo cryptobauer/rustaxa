@@ -72,12 +72,18 @@ pub fn load_persisted_pbft_chain_head_identity(
     let Some(bytes) = storage.pbft().head(H256::zero())? else {
         return Ok(None);
     };
-    let head = parse_legacy_head_json(&bytes).context("PBFT_CHAIN_PARSE_HEAD_IDENTITY")?;
+    Ok(Some(decode_persisted_pbft_chain_head_identity(&bytes)?))
+}
+
+pub(crate) fn decode_persisted_pbft_chain_head_identity(
+    bytes: &[u8],
+) -> Result<PbftChainPersistedHeadIdentity> {
+    let head = parse_legacy_head_json(bytes).context("PBFT_CHAIN_PARSE_HEAD_IDENTITY")?;
     validate_head(head).context("PBFT_CHAIN_VALIDATE_HEAD_IDENTITY")?;
-    Ok(Some(PbftChainPersistedHeadIdentity {
+    Ok(PbftChainPersistedHeadIdentity {
         size: head.size,
         last_pbft_block_hash: head.last_pbft_block_hash,
-    }))
+    })
 }
 
 /// Result of loading a PBFT block payload by hash from Rust storage.
@@ -629,7 +635,7 @@ fn hex_bytes(input: &str) -> Result<Vec<u8>> {
         return Err(anyhow!("hex input has odd length"));
     }
     let mut out = Vec::with_capacity(input.len() / 2);
-    for chunk in input.as_bytes().chunks_exact(2) {
+    for chunk in input.as_bytes().as_chunks::<2>().0 {
         let high = hex_value(chunk[0])?;
         let low = hex_value(chunk[1])?;
         out.push((high << 4) | low);
@@ -651,15 +657,11 @@ mod tests {
     use super::*;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn hash(v: u64) -> H256 {
         H256::from_low_u64_be(v)
     }
-
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn head(size: u64, non_empty_size: u64, last: u64, last_non_null: u64) -> PbftChainHead {
         PbftChainHead {
@@ -672,9 +674,7 @@ mod tests {
     }
 
     fn temp_storage(name: &str) -> Storage {
-        let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("{name}_{}_{}", std::process::id(), id));
-        let _ = fs::remove_dir_all(&path);
+        let path = crate::test_paths::new_path(name);
         Storage::new(Config::new(path)).unwrap()
     }
 

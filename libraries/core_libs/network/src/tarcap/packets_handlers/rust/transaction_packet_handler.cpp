@@ -46,6 +46,9 @@ void RustTransactionPacketHandler::process(const threadpool::PacketData& packet_
 }
 
 void RustTransactionPacketHandler::periodicSendTransactions() {
+  if (peers_state_->getPeersCount() == 0) {
+    return;
+  }
   network::ConsensusEgressRequest request{};
   request.family = kTransactionEgressFamily;
   request.transport_lane = transport_lane_;

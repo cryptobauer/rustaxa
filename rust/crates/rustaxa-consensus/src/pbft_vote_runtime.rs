@@ -760,7 +760,7 @@ pub struct PbftVerifiedVotesService {
 }
 
 /// Temporary task-neutral runtime guard returned by
-/// [`PbftVerifiedVotesService::lock`].
+/// `PbftVerifiedVotesService::lock`.
 ///
 /// This escape hatch supports adjacent PBFT workflows while their composition
 /// moves native. Dropping the guard releases the single verified-vote lock; it
@@ -2846,7 +2846,6 @@ mod tests {
     use rustaxa_storage::{Config, Storage};
     use rustaxa_vdf::vrf;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use tiny_keccak::{Hasher, Keccak};
 
     const NODE_SECRET: [u8; 32] = [0x35; 32];
@@ -3385,11 +3384,7 @@ mod tests {
 
     #[test]
     fn service_persists_vote_progress_from_native_payload_identities() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_vote_progress_identity_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_vote_progress_identity");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let mut runtime = PbftVoteAdmissionRuntime::new();
         let first = vote_rlp([2; 32], 3);
@@ -3575,11 +3570,7 @@ mod tests {
 
     #[test]
     fn runtime_restores_and_deduplicates_persisted_vote_families() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_votes_restore_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_verified_votes_restore");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let canonical = vote_rlp([8; 32], 3);
         let weighted = build_weighted_pbft_vote_payload(&canonical, 7).unwrap();
@@ -3656,13 +3647,7 @@ mod tests {
             PbftTwoTPlusOneVoteBundle, PbftVoteProgressPersistenceWrite, persist_pbft_vote_progress,
         };
 
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_finalized_reward_cursor_crash_window_{nonce}"
-        ));
+        let path = crate::test_paths::new_path("rustaxa_finalized_reward_cursor_crash_window");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let finalized_block = write_finalized_pbft_block(&storage, 12);
         let finalized_vote = build_weighted_pbft_vote_payload(
@@ -3757,12 +3742,7 @@ mod tests {
 
     #[test]
     fn legacy_reward_cursor_bootstrap_rejects_newer_unfinalized_cert_bundle() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_legacy_reward_cursor_newer_cert_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_legacy_reward_cursor_newer_cert");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let finalized_block = write_finalized_pbft_block(&storage, 12);
         write_legacy_pbft_head(&storage, 12, finalized_block);
@@ -3792,13 +3772,7 @@ mod tests {
 
     #[test]
     fn legacy_reward_cursor_bootstrap_rejects_embedded_pbft_period_mismatch() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_legacy_reward_cursor_embedded_period_{nonce}"
-        ));
+        let path = crate::test_paths::new_path("rustaxa_legacy_reward_cursor_embedded_period");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let block_hash = write_mapped_pbft_block(&storage, 11, 12);
         write_legacy_pbft_head(&storage, 12, block_hash);
@@ -3828,12 +3802,7 @@ mod tests {
 
     #[test]
     fn legacy_reward_cursor_bootstrap_rejects_nonempty_head_without_cert_bundle() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_legacy_reward_cursor_missing_cert_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_legacy_reward_cursor_missing_cert");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let finalized_block = write_finalized_pbft_block(&storage, 12);
         write_legacy_pbft_head(&storage, 12, finalized_block);
@@ -3849,13 +3818,7 @@ mod tests {
 
     #[test]
     fn legacy_reward_cursor_bootstrap_rejects_malformed_cert_bundle() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_legacy_reward_cursor_malformed_cert_{nonce}"
-        ));
+        let path = crate::test_paths::new_path("rustaxa_legacy_reward_cursor_malformed_cert");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let finalized_block = write_finalized_pbft_block(&storage, 12);
         write_legacy_pbft_head(&storage, 12, finalized_block);
@@ -3879,11 +3842,7 @@ mod tests {
 
     #[test]
     fn runtime_rejects_malformed_persisted_vote() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_votes_bad_restore_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_verified_votes_bad_restore");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         storage
             .pbft()
@@ -3898,13 +3857,7 @@ mod tests {
 
     #[test]
     fn runtime_rejects_own_vote_payload_whose_hash_does_not_match_key() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_verified_votes_hash_mismatch_restore_{nonce}"
-        ));
+        let path = crate::test_paths::new_path("rustaxa_verified_votes_hash_mismatch_restore");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let weighted = build_weighted_pbft_vote_payload(&vote_rlp([9; 32], 3), 7).unwrap();
         let wrong_hash = H256::from_low_u64_be(99);
@@ -3922,13 +3875,7 @@ mod tests {
 
     #[test]
     fn runtime_rejects_extra_reward_payload_whose_hash_does_not_match_key() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rustaxa_extra_reward_hash_mismatch_restore_{nonce}"
-        ));
+        let path = crate::test_paths::new_path("rustaxa_extra_reward_hash_mismatch_restore");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let weighted = build_weighted_pbft_vote_payload(&vote_rlp([10; 32], 3), 7).unwrap();
         let wrong_hash = H256::from_low_u64_be(100);
@@ -3946,11 +3893,7 @@ mod tests {
 
     #[test]
     fn reward_cursor_commit_is_generation_bound_idempotent_and_retryable() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_reward_cursor_commit_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_reward_cursor_commit");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let weighted = build_weighted_pbft_vote_payload(&vote_rlp([11; 32], 3), 7).unwrap();
         let bundle = build_weighted_pbft_vote_bundle(std::slice::from_ref(&weighted)).unwrap();
@@ -4264,11 +4207,7 @@ mod tests {
 
     #[test]
     fn reward_cursor_reset_generation_is_single_use_for_new_cursor() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_reward_cursor_single_use_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_reward_cursor_single_use");
         let storage = Storage::new(Config::new(path.clone())).unwrap();
         let first_weighted =
             build_weighted_pbft_vote_payload(&vote_rlp_for([21; 32], 12, 1, 3, NODE_SECRET), 7)
@@ -4413,11 +4352,7 @@ mod tests {
 
     #[test]
     fn verified_votes_service_owns_reward_reset_storage_and_live_publication() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_reward_reset_service_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_reward_reset_service");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let block_hash = [0x61; 32];
         let first = vote_rlp_from_secret(block_hash, 3, NODE_SECRET);
@@ -4638,12 +4573,7 @@ mod tests {
 
     #[test]
     fn verified_votes_service_restores_from_storage_and_survives_runtime_clones() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_restore_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_verified_votes_service_restore");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let canonical = vote_rlp([20; 32], 3);
         let weighted = build_weighted_pbft_vote_payload(&canonical, 7).unwrap();
@@ -4691,12 +4621,7 @@ mod tests {
 
     #[test]
     fn verified_votes_service_lock_shares_state_across_clones() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_lock_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_verified_votes_service_lock");
         let service = PbftVerifiedVotesService::from_runtime(
             Arc::new(Storage::new(Config::new(path.clone())).unwrap()),
             PbftVoteAdmissionRuntime::new(),
@@ -4744,12 +4669,7 @@ mod tests {
 
     #[test]
     fn verified_votes_service_rejects_malformed_durable_rows_before_publication() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_malformed_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_verified_votes_service_malformed");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         storage
             .pbft()
@@ -4766,11 +4686,7 @@ mod tests {
 
     #[test]
     fn verified_votes_service_owns_access_queries_bundles_and_cleanup() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_access_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_verified_access");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let block_hash = [0x71; 32];
         let first = vote_rlp_from_secret(block_hash, 3, NODE_SECRET);
@@ -4922,11 +4838,7 @@ mod tests {
         use std::sync::mpsc;
         use std::time::Duration;
 
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_persist_lock_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_verified_persist_lock");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let service = PbftVerifiedVotesService::from_runtime(
             storage.clone(),
@@ -4961,11 +4873,7 @@ mod tests {
 
     #[test]
     fn verified_votes_service_validates_saves_reads_and_clears_own_votes() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_verified_own_votes_{nonce}"));
+        let path = crate::test_paths::new_path("rustaxa_verified_own_votes");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let service = PbftVerifiedVotesService::from_runtime(
             storage.clone(),

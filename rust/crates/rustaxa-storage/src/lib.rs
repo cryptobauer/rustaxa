@@ -1,4 +1,7 @@
+pub mod application_control;
+mod concrete_state;
 mod config;
+mod coordination;
 mod dag;
 mod db;
 mod error;
@@ -11,12 +14,28 @@ mod transaction;
 
 pub(crate) const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 
+pub use concrete_state::{
+    BorrowedConcreteExecutionProbe, CertifiedConcreteCommit, ConcreteAccountMutation,
+    ConcreteCheckpointReaders, ConcreteCodeInsertion, ConcreteCommitApproval,
+    ConcreteExecutionProbe, ConcreteExecutionProbeView, ConcreteLifecycleObservation,
+    ConcreteObserverAccountChange, ConcreteObserverPhaseDelta, ConcreteObserverPhaseOutput,
+    ConcreteStateLifecycle, ConcreteStateMutationBatch, ConcreteStateReader, ConcreteStateWriter,
+    ConcreteStorageInventory, ConcreteStorageInventoryEntry, ConcreteStorageInventoryError,
+    ConcreteStorageInventoryLimits, ConcreteStorageInventoryResource, ConcreteStorageMutation,
+    ConcreteStoragePath, ConcreteTransitionBuilder, HistoricalConcreteAccountChange,
+    HistoricalConcretePreparation, HistoricalConcretePreparationSummary, PreparedConcreteState,
+    PreparedConcreteTransition, PreparedConcreteView, account_commitment_rlp,
+    account_version_prefix, decode_physical_account, storage_version_prefix, versioned_key,
+};
+#[cfg(feature = "synthetic-fixtures")]
+pub use concrete_state::{ConcreteCommittedPut, ConcreteCommittedReceipt};
 pub use config::Column;
 pub use config::Config;
 pub use config::StatusField;
 pub use dag::DagRepository;
 pub use db::ExtraRewardVotesGuard;
 pub use db::Storage;
+pub use db::StorageReadSnapshot;
 pub use db::StorageWriteBatch;
 pub use db::{LightHistoryPruneReport, LightHistoryPruneRequest};
 pub use error::StorageError;
@@ -42,3 +61,13 @@ pub use period::PeriodRepository;
 pub use pillar::PillarRepository;
 pub use rustaxa_types::{FINAL_CHAIN_LOG_BLOOM_BYTES, FinalChainLogBloom};
 pub use transaction::TransactionRepository;
+#[cfg(test)]
+mod test_paths;
+
+pub(crate) use coordination::{
+    ApplicationEffectReceipt, ApplicationOwnerKey, ApplicationReadScope, OwnedEffectScope,
+};
+pub use coordination::{StorageCoordinationError, StorageCoordinator, StorageMutationGuard};
+pub use db::{CoordinatedDatabase, OwnVerifiedVotesGuard};
+#[cfg(feature = "production_integration_test")]
+pub mod integration_inspection;

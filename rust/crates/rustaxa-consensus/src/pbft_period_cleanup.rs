@@ -256,14 +256,9 @@ mod tests {
     use std::convert::TryFrom;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_storage(name: &str) -> (Arc<Storage>, PathBuf) {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("{name}_{nonce}"));
+        let path = crate::test_paths::new_path(name);
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         (storage, path)
     }

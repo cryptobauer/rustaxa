@@ -1,6 +1,28 @@
 #!/bin/sh
 set -eu
 
+safe_scan_path() {
+  case "/$1/" in */AI.md/*|*/../*) echo "Excluded scan path" >&2; return 1 ;; esac
+  scan_rest="$1"
+  scan_cursor="."
+  case "$scan_rest" in /*) scan_cursor="/"; scan_rest="${scan_rest#/}" ;; esac
+  while [ -n "$scan_rest" ]; do
+    scan_part="${scan_rest%%/*}"
+    if [ -n "$scan_part" ]; then
+      scan_cursor="${scan_cursor%/}/$scan_part"
+      if [ -L "$scan_cursor" ]; then
+        echo "Symlink scan path is not supported" >&2
+        return 1
+      fi
+    fi
+    if [ "$scan_rest" = "$scan_part" ]; then break; fi
+    scan_rest="${scan_rest#*/}"
+  done
+}
+
+
+safe_scan_path "${TMPDIR:-/tmp}" || exit 1
+
 usage() {
   cat <<'EOF'
 Usage: scripts/rewrite_bridge_inventory_guard.sh [--self-test] [--base-ref REF]
@@ -42,8 +64,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 repo_root="$(git rev-parse --show-toplevel)"
+safe_scan_path "$repo_root" || exit 1
 cd "$repo_root"
 inventory_parser="$repo_root/scripts/rewrite_bridge_inventory.py"
+safe_scan_path "$inventory_parser" || exit 1
+safe_scan_path "$repo_root/doc/consensus_bridge_shim_audit.md" || exit 1
 
 extract_ffi_bridge_types() {
   python3 "$inventory_parser" ffi-handles "$1"
@@ -69,11 +94,10 @@ extract_audited_bridge_types() {
 
 extract_non_test_cpp_consumers() {
   consumer_root="$1"
-  {
-    rg -l '#include [<"]rustaxa-bridge/(ffi|application_host_ffi)\.rs\.h[>"]' \
-      "$consumer_root/libraries" "$consumer_root/programs" \
-      --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' || true
-  } | sed "s#^$consumer_root/##" | sort -u
+  safe_scan_path "$consumer_root/libraries" || return 1
+  safe_scan_path "$consumer_root/programs" || return 1
+  consumers="$(python3 "$inventory_parser" cpp-consumers "$consumer_root/libraries" "$consumer_root/programs")" || return 1
+  printf '%s\n' "$consumers" | sed "/^$/d; s#^$consumer_root/##" | sort -u
 }
 
 extract_audited_non_test_cpp_consumers() {
@@ -87,8 +111,12 @@ extract_audited_non_test_cpp_consumers() {
   ' "$1" | sort
 }
 
+collect_cxx_sources() {
+  python3 "$inventory_parser" cxx-sources "$1"
+}
+
 extract_bridge_modules() {
-  sed -En 's#^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+([a-z0-9_]+)[[:space:]]*;([[:space:]]*(//.*|/\*.*\*/))?$#rust/crates/rustaxa-bridge/src/\3.rs#p' "$1" | sort -u
+  python3 "$inventory_parser" rust-modules "$1"
 }
 
 extract_audited_bridge_modules() {
@@ -375,8 +403,15 @@ extract_surface_budget() {
 }
 
 count_shim_source_lines() {
-  find "$1" -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \) \
-    -exec wc -l {} + | awk '$2 != "total" { total += $1 } END { print total + 0 }'
+  safe_scan_path "$1" || return 1
+  if [ ! -e "$1" ]; then
+    printf '0\n'
+    return 0
+  fi
+  [ -d "$1" ] || return 1
+  lines="$(find "$1" -name 'AI.md' -prune -o -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \) \
+    -exec wc -l {} +)" || return 1
+  printf '%s\n' "$lines" | awk '$2 != "total" { total += $1 } END { print total + 0 }'
 }
 
 count_cxx_carriers() {
@@ -478,16 +513,22 @@ check_budget_history() {
 
 check_surface_budgets() {
   repo_root="$1"
+  safe_scan_path "$repo_root" || return 1
   audit_file="$2"
+  safe_scan_path "$audit_file" || return 1
+  safe_scan_path "$repo_root/CMakeLists.txt" || return 1
   ffi_file="$(mktemp)"
-  cat "$repo_root/rust/crates/rustaxa-bridge/src/ffi.rs" \
-    "$repo_root/rust/crates/rustaxa-bridge/src/application_host_ffi.rs" >"$ffi_file"
+  collect_cxx_sources "$repo_root/rust/crates/rustaxa-bridge/src/lib.rs" >"$ffi_file" || return 1
   bridge_root="$repo_root/rust/crates/rustaxa-bridge/src"
   shim_root="$repo_root/libraries/core_libs/consensus/shims"
+  safe_scan_path "$bridge_root" || return 1
+  safe_scan_path "$shim_root" || return 1
+  safe_scan_path "$repo_root/libraries" || return 1
+  safe_scan_path "$repo_root/programs" || return 1
 
-  bridge_lines="$(find "$bridge_root" -type f -name '*.rs' -exec wc -l {} + |
+  bridge_lines="$(find "$bridge_root" -name 'AI.md' -prune -o -type f -name '*.rs' -exec wc -l {} + |
     awk '$2 != "total" { total += $1 } END { print total + 0 }')"
-  shim_lines="$(count_shim_source_lines "$shim_root")"
+  shim_lines="$(count_shim_source_lines "$shim_root")" || return 1
   cxx_functions="$(count_cxx_function_declarations "$ffi_file")"
   cxx_carriers="$(count_cxx_carriers "$ffi_file")"
   cxx_handles="$(count_cxx_opaque_handles "$ffi_file")"
@@ -499,13 +540,8 @@ check_surface_budgets() {
   compatibility_constructor_calls="$(
     count_compatibility_constructor_calls "$ffi_file" "$audit_file" "$repo_root/libraries" "$repo_root/programs"
   )"
-  non_test_cpp_consumers="$(
-    {
-      rg -l '#include [<"]rustaxa-bridge/(ffi|application_host_ffi)\.rs\.h[>"]' \
-        "$repo_root/libraries" "$repo_root/programs" \
-        --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' || true
-    } | wc -l
-  )"
+  consumer_inventory="$(extract_non_test_cpp_consumers "$repo_root")" || return 1
+  non_test_cpp_consumers="$(printf '%s\n' "$consumer_inventory" | sed '/^$/d' | wc -l)"
 
   check_surface_metric bridge_lines "$bridge_lines" "$audit_file"
   check_surface_metric shim_lines "$shim_lines" "$audit_file"
@@ -572,7 +608,10 @@ check_documented_inventory() {
   missing_values="$temp_dir/${inventory_name}_missing"
   stale_values="$temp_dir/${inventory_name}_stale"
   duplicate_values="$temp_dir/${inventory_name}_duplicates"
-  "$live_extractor" "$live_file" >"$live_values"
+  if ! "$live_extractor" "$live_file" >"$live_values"; then
+    echo "Rust bridge inventory guard failed: cannot extract $inventory_name inventory." >&2
+    return 1
+  fi
   "$audit_extractor" "$audit_file" >"$audit_values"
   uniq -d "$audit_values" >"$duplicate_values"
   if [ -s "$duplicate_values" ]; then
@@ -654,6 +693,9 @@ check_bridge_names_do_not_leak_from_other_sections() {
 }
 
 if [ "$self_test" -eq 1 ]; then
+  # The fixture repositories need their own Git directory and index.
+  git_local_env="$(git rev-parse --local-env-vars)"
+  unset $git_local_env
   temp_dir="$(mktemp -d)"
   trap 'rm -rf "$temp_dir"' EXIT
 
@@ -718,6 +760,9 @@ mod documented_block; /* retained block comment */
   pub mod documented_public;
 pub(crate) mod documented_crate; // visible inside the crate
 EOF
+  for module_fixture_name in documented documented_block documented_public documented_crate; do
+    : >"$temp_dir/$module_fixture_name.rs"
+  done
   mkdir -p "$temp_dir/shims/documented_shim"
   mkdir -p "$temp_dir/consumer_root/libraries" "$temp_dir/consumer_root/programs"
   cat >"$temp_dir/consumer_root/libraries/documented.cpp" <<'EOF'
@@ -762,6 +807,7 @@ EOF
     exit 1
   fi
 
+  : >"$temp_dir/missing.rs"
   echo 'mod missing;' >>"$temp_dir/lib.rs"
   if check_documented_inventory module "$temp_dir/lib.rs" "$temp_dir/full_audit.md" \
     extract_bridge_modules extract_audited_bridge_modules "$temp_dir" 2>/dev/null; then
@@ -992,6 +1038,70 @@ EOF
     exit 1
   fi
 
+  mkdir -p "$temp_dir/module_fixture"
+  : >"$temp_dir/module_fixture/ordinary.rs"
+  : >"$temp_dir/module_fixture/actual.rs"
+  cat >"$temp_dir/module_fixture/lib.rs" <<'EOF'
+mod ordinary;
+#[path = "actual.rs"]
+mod renamed;
+EOF
+  cat >"$temp_dir/module_audit.md" <<'EOF'
+## Rust Bridge Modules
+| `rust/crates/rustaxa-bridge/src/ordinary.rs` | ordinary |
+| `rust/crates/rustaxa-bridge/src/actual.rs` | alias |
+EOF
+  check_documented_inventory module "$temp_dir/module_fixture/lib.rs" "$temp_dir/module_audit.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir"
+  sed '/actual.rs/d' "$temp_dir/module_audit.md" >"$temp_dir/module_missing.md"
+  if check_documented_inventory module "$temp_dir/module_fixture/lib.rs" "$temp_dir/module_missing.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: missing module audit was accepted" >&2
+    exit 1
+  fi
+  cp "$temp_dir/module_audit.md" "$temp_dir/module_stale.md"
+  echo '| `rust/crates/rustaxa-bridge/src/stale.rs` | stale |' >>"$temp_dir/module_stale.md"
+  if check_documented_inventory module "$temp_dir/module_fixture/lib.rs" "$temp_dir/module_stale.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: stale module audit was accepted" >&2
+    exit 1
+  fi
+  rm "$temp_dir/module_fixture/actual.rs"
+  if extract_bridge_modules "$temp_dir/module_fixture/lib.rs" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: missing module file was accepted" >&2
+    exit 1
+  fi
+  cat >"$temp_dir/module_fixture/lib.rs" <<'EOF'
+#[path = "../escape.rs"]
+mod renamed;
+EOF
+  if extract_bridge_modules "$temp_dir/module_fixture/lib.rs" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: escaping module path was accepted" >&2
+    exit 1
+  fi
+
+  : >"$temp_dir/outside.rs"
+  ln -s "$temp_dir/outside.rs" "$temp_dir/module_fixture/actual.rs"
+  cat >"$temp_dir/module_fixture/lib.rs" <<'EOF'
+#[path = "actual.rs"]
+mod renamed;
+EOF
+  if extract_bridge_modules "$temp_dir/module_fixture/lib.rs" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: symlink module file was accepted" >&2
+    exit 1
+  fi
+  rm "$temp_dir/module_fixture/actual.rs"
+  : >"$temp_dir/module_fixture/renamed.rs"
+  cat >"$temp_dir/module_fixture/lib.rs" <<'EOF'
+#[cfg_attr(feature = "conditional", path = "actual.rs")]
+mod renamed;
+EOF
+  if extract_bridge_modules "$temp_dir/module_fixture/lib.rs" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: conditional path attribute was accepted" >&2
+    exit 1
+  fi
+
+  python3 "$repo_root/scripts/test_rewrite_bridge_inventory.py"
   echo "Rust bridge inventory guard self-test passed."
   exit 0
 fi
@@ -999,8 +1109,7 @@ fi
 missing_file="$(mktemp)"
 stale_file="$(mktemp)"
 ffi_inventory_file="$(mktemp)"
-cat rust/crates/rustaxa-bridge/src/ffi.rs \
-  rust/crates/rustaxa-bridge/src/application_host_ffi.rs >"$ffi_inventory_file"
+collect_cxx_sources rust/crates/rustaxa-bridge/src/lib.rs >"$ffi_inventory_file" || exit 1
 trap 'rm -f "$missing_file" "$stale_file" "$ffi_inventory_file"' EXIT
 
 check_inventory \

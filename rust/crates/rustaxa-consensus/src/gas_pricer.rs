@@ -260,9 +260,7 @@ mod tests {
     use ethereum_types::H256;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn config(percentile: u64, minimum_price: u64, history_blocks: usize) -> GasPricerConfig {
         GasPricerConfig {
@@ -376,7 +374,7 @@ mod tests {
             assert_eq!(oracle.bid(), U256::from(5));
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -397,7 +395,7 @@ mod tests {
             assert_eq!(oracle.bid(), U256::from(7));
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -419,7 +417,7 @@ mod tests {
             assert!(err.contains("missing finalized transactions for block 3"));
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -451,11 +449,7 @@ mod tests {
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should be available")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::test_paths::new_path(name)
     }
 
     fn seed_last_finalized_block(storage: &Storage, block: u64) -> Result<()> {

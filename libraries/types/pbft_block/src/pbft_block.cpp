@@ -1,5 +1,7 @@
 #include "pbft/pbft_block.hpp"
 
+#include <algorithm>
+
 #include <libdevcore/CommonJS.h>
 
 #include <iostream>
@@ -71,11 +73,11 @@ void PbftBlock::calculateHash_() {
 void PbftBlock::checkUniqueRewardVotes() {
   std::unordered_set<vote_hash_t> set;
   set.reserve(reward_votes_.size());
-  for (const auto& hash : reward_votes_) {
-    if (!set.insert(hash).second) {
-      throw std::runtime_error(
-          fmt("Invalid PBFT Block %s proposed by %s has duplicated vote %s", block_hash_, beneficiary_, hash));
-    }
+  const auto duplicate = std::find_if(reward_votes_.begin(), reward_votes_.end(),
+                                      [&set](const auto& hash) { return !set.insert(hash).second; });
+  if (duplicate != reward_votes_.end()) {
+    throw std::runtime_error(
+        fmt("Invalid PBFT Block %s proposed by %s has duplicated vote %s", block_hash_, beneficiary_, *duplicate));
   }
 }
 

@@ -170,20 +170,19 @@ void RustConsensusTransportPacketHandler::requestPendingDagBlocks(std::shared_pt
 
   const auto outcome = rust_consensus_network_api_->requestPendingDagBlocks(
       kPendingDagTransportLane, consensus_status_().syncing_period, candidates,
-      network::PendingDagBlocksExecutor{[this](const auto& peer_id, const auto& payload, uint64_t /* period */) {
+      network::PendingDagBlocksExecutor{[this](const auto& peer_id, const auto& payload, uint64_t period) {
         const auto target =
             peers_state_->getPeer(dev::p2p::NodeID(peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
         if (!target) {
           return false;
         }
-        bool expected = false;
-        if (!target->peer_dag_syncing_.compare_exchange_strong(expected, true)) {
+        if (!target->reserveDagSyncRequest(period)) {
           return false;
         }
         const auto sent = sealAndSend(target->getId(), SubprotocolPacketType::kGetDagSyncPacket,
                                       dev::bytes(payload.begin(), payload.end()));
         if (!sent) {
-          target->peer_dag_syncing_ = false;
+          target->completeDagSyncRequest(period);
         }
         return sent;
       }});
@@ -319,9 +318,13 @@ std::vector<network::ConsensusEgressPeerSnapshot> RustConsensusTransportPacketHa
 
 network::ConsensusPacketOutcome RustConsensusTransportPacketHandler::routeConsensusEgress(
     network::ConsensusEgressRequest request) {
-  return rust_consensus_network_api_->routeConsensusEgress(
+  const auto outcome = rust_consensus_network_api_->routeConsensusEgress(
       request, [this](const auto& probes) { return consensusEgressPeerSnapshots(probes); },
       consensusTransportExecutor());
+  if (request.rebroadcast && outcome.status == 0 && outcome.queued_effect_count != 0) {
+    LOG(log_dg_) << "Native vote rebroadcast queued transport effects, family: " << unsigned(request.family);
+  }
+  return outcome;
 }
 
 network::ConsensusPacketRequest RustConsensusTransportPacketHandler::consensusPacketRequest(

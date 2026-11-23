@@ -1929,14 +1929,9 @@ mod tests {
     use rustaxa_types::CurrentPillarBlockDataDb;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_storage(name: &str) -> Arc<Storage> {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time available")
-            .as_nanos();
-        let path: PathBuf = std::env::temp_dir().join(format!("{name}_{nonce}"));
+        let path: PathBuf = crate::test_paths::new_path(name);
         Arc::new(Storage::new(Config::new(path)).expect("storage opens"))
     }
 
@@ -2082,10 +2077,8 @@ mod protocol_tests {
     use rlp::RlpStream;
     use rustaxa_storage::Config;
     use rustaxa_types::CurrentPillarBlockDataDb;
-    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestStorage(Arc<Storage>);
 
@@ -2385,11 +2378,7 @@ mod protocol_tests {
         )
     }
     fn unique_temp_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should be available")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::test_paths::new_path(name)
     }
 
     fn signature(seed: u8) -> [u8; 65] {
@@ -2693,7 +2682,7 @@ mod protocol_tests {
                 block_rlp,
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -2738,7 +2727,7 @@ mod protocol_tests {
                     .period_data_initialized(vote.period)
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -2786,7 +2775,7 @@ mod protocol_tests {
                 .unwrap();
             assert_eq!(rejected.status, PILLAR_VOTE_STATUS_STALE_ANCHOR);
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -2862,7 +2851,7 @@ mod protocol_tests {
                 .unwrap();
             assert_eq!(rejected.status, PILLAR_VOTE_STATUS_STALE_ANCHOR);
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -2922,7 +2911,7 @@ mod protocol_tests {
             assert_eq!(rejected.status, PILLAR_VOTE_STATUS_NOT_UNIQUE);
             assert!(!rejected.accepted);
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -2981,7 +2970,7 @@ mod protocol_tests {
             assert_eq!(rejected.status, 1);
             assert!(!rejected.accepted);
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3029,7 +3018,7 @@ mod protocol_tests {
                 .unwrap();
             assert_eq!(missing.status, PILLAR_VOTE_STATUS_MISSING_PREPARATION);
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3086,7 +3075,7 @@ mod protocol_tests {
                     .period_data_initialized(42)
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3112,7 +3101,7 @@ mod protocol_tests {
             assert!(!result.should_request_votes);
             assert!(!result.has_request_votes_period);
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3174,7 +3163,7 @@ mod protocol_tests {
             assert!(!replayed.should_emit);
             assert!(replayed.votes.is_empty());
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3235,7 +3224,7 @@ mod protocol_tests {
                 1
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3331,7 +3320,7 @@ mod protocol_tests {
                 Into::<[u8; 32]>::into(block.hash())
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3395,7 +3384,7 @@ mod protocol_tests {
                     .contains("PILLAR_BLOCK_FINALIZATION_ACK_TOKEN_REUSED")
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3448,7 +3437,7 @@ mod protocol_tests {
                     .contains("PILLAR_BLOCK_FINALIZATION_ACK_STALE_GENERATION")
             );
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -3810,7 +3799,7 @@ mod protocol_tests {
                 .to_string()
                 .contains("stored pillar vote bundle does not match")
         );
-        fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -3851,7 +3840,7 @@ mod protocol_tests {
         assert_eq!(lookup.block_weight, 2);
         assert_eq!(lookup.selected_weight, 0);
         assert!(lookup.votes.is_empty());
-        fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -3980,6 +3969,6 @@ mod protocol_tests {
 
         assert!(!plan.is_relevant);
         assert_eq!(plan.status, 1);
-        let _ = fs::remove_dir_all(storage_dir);
+        let _ = std::fs::remove_dir_all(storage_dir);
     }
 }

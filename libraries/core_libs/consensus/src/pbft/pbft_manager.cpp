@@ -1,5 +1,9 @@
 #include "pbft/pbft_manager.hpp"
 
+#include <iterator>
+
+#include <algorithm>
+
 #include <libdevcore/SHA3.h>
 
 #include <chrono>
@@ -927,7 +931,7 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
                    << ", validator " << wallet.second.node_addr;
     } else {
       valid_votes_weight += *vote->getWeight();
-      valid_votes.push_back(std::move(vote));
+      valid_votes.push_back(vote);
 
       LOG(log_nf_) << "Placed " << vote->getHash() << " vote for block " << block_hash << ", vote weight "
                    << *vote->getWeight() << ", period " << period << ", round " << round << ", step " << step
@@ -1860,11 +1864,9 @@ bool PbftManager::pushCertVotedPbftBlockIntoChain_(const std::shared_ptr<PbftBlo
     std::vector<trx_hash_t> transactions_to_query;
     period_data.dag_blocks.reserve(dag_order_it->second.size());
     for (const auto &dag_blk : dag_order_it->second) {
-      for (const auto &trx_hash : dag_blk->getTrxs()) {
-        if (trx_set.insert(trx_hash).second) {
-          transactions_to_query.emplace_back(trx_hash);
-        }
-      }
+      const auto& hashes = dag_blk->getTrxs();
+      std::copy_if(hashes.begin(), hashes.end(), std::back_inserter(transactions_to_query),
+                   [&trx_set](const auto& hash) { return trx_set.insert(hash).second; });
       period_data.dag_blocks.emplace_back(dag_blk);
     }
     period_data.transactions = trx_mgr_->getNonfinalizedTrx(transactions_to_query);
@@ -2252,11 +2254,11 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   std::unordered_set<trx_hash_t> trx_set;
   std::vector<trx_hash_t> finalized_transactions_to_check;
   for (auto const &dag_block : period_data.dag_blocks) {
-    for (auto const &trx_hash : dag_block->getTrxs()) {
-      if (trx_set.insert(trx_hash).second && !trx_set_period_data.contains(trx_hash)) {
-        finalized_transactions_to_check.emplace_back(trx_hash);
-      }
-    }
+    const auto& hashes = dag_block->getTrxs();
+    std::copy_if(hashes.begin(), hashes.end(), std::back_inserter(finalized_transactions_to_check),
+                 [&trx_set, &trx_set_period_data](const auto& hash) {
+                   return trx_set.insert(hash).second && !trx_set_period_data.contains(hash);
+                 });
   }
 
   // Verify period data is not missing any transaction

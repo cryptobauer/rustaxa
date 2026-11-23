@@ -1706,6 +1706,21 @@ pub fn collect_expired_transaction_cleanup_from_storage(
     expired_hashes: &[H256],
     remaining_hashes: &[H256],
 ) -> Result<DagExpiredTransactionCleanupStoragePayload> {
+    collect_expired_transaction_cleanup_for_finalization(
+        storage,
+        expired_hashes,
+        remaining_hashes,
+        &[],
+    )
+}
+
+fn collect_expired_transaction_cleanup_for_finalization(
+    storage: &Storage,
+    expired_hashes: &[H256],
+    remaining_hashes: &[H256],
+    finalized_here: &[H256],
+) -> Result<DagExpiredTransactionCleanupStoragePayload> {
+    let finalized_here = finalized_here.iter().copied().collect::<BTreeSet<_>>();
     let mut finalized_cache = BTreeMap::new();
     let mut expired_candidates = Vec::new();
     let mut retained_transaction_hashes = Vec::new();
@@ -1720,7 +1735,9 @@ pub fn collect_expired_transaction_cleanup_from_storage(
         for trx_hash in dag_block_transaction_hashes(&block_rlp)
             .context("DAG_STORAGE_EXPIRED_BLOCK_TRANSACTIONS")?
         {
-            let finalized = if let Some(finalized) = finalized_cache.get(&trx_hash) {
+            let finalized = if finalized_here.contains(&trx_hash) {
+                true
+            } else if let Some(finalized) = finalized_cache.get(&trx_hash) {
                 *finalized
             } else {
                 let finalized = storage
@@ -1787,25 +1804,51 @@ pub fn collect_finalization_cleanup_from_storage(
     expired_hashes: &[H256],
     remaining_hashes: &[H256],
 ) -> Result<DagManagerFinalizationCleanupStoragePayload> {
+    collect_finalization_cleanup_for_batch(
+        storage,
+        counter_update_hashes,
+        expired_hashes,
+        remaining_hashes,
+        &[],
+        |hash| {
+            let block = storage
+                .dag()
+                .by_hash(hash)
+                .with_context(|| format!("DAG_STORAGE_FINALIZATION_COUNTER_BLOCK: {hash:?}"))?;
+            Ok((block.level, block.tips.len() as u64))
+        },
+    )
+}
+
+pub(crate) fn collect_finalization_cleanup_for_batch(
+    storage: &Storage,
+    counter_update_hashes: &[H256],
+    expired_hashes: &[H256],
+    remaining_hashes: &[H256],
+    finalized_here: &[H256],
+    counter_metadata: impl Fn(H256) -> Result<(u64, u64)>,
+) -> Result<DagManagerFinalizationCleanupStoragePayload> {
     let mut counter_updates = Vec::with_capacity(counter_update_hashes.len());
     for hash in counter_update_hashes {
-        let block = storage
-            .dag()
-            .by_hash(*hash)
-            .with_context(|| format!("DAG_STORAGE_FINALIZATION_COUNTER_BLOCK: {hash:?}"))?;
+        let (level, tips_count) = counter_metadata(*hash)?;
         counter_updates.push(DagFinalizedCounterUpdate {
             hash: *hash,
-            level: block.level,
-            tips_count: block.tips.len() as u64,
+            level,
+            tips_count,
         });
     }
 
     let remove_transaction_hashes = if expired_hashes.is_empty() {
         Vec::new()
     } else {
-        collect_expired_transaction_cleanup_from_storage(storage, expired_hashes, remaining_hashes)
-            .context("DAG_STORAGE_FINALIZATION_TRANSACTION_CLEANUP")?
-            .remove_hashes
+        collect_expired_transaction_cleanup_for_finalization(
+            storage,
+            expired_hashes,
+            remaining_hashes,
+            finalized_here,
+        )
+        .context("DAG_STORAGE_FINALIZATION_TRANSACTION_CLEANUP")?
+        .remove_hashes
     };
 
     Ok(DagManagerFinalizationCleanupStoragePayload {
@@ -4114,14 +4157,7 @@ mod tests {
     }
 
     fn temp_storage(name: &str) -> Storage {
-        let dir = std::env::temp_dir().join(format!(
-            "{name}_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::test_paths::new_path(name);
         Storage::new(Config::new(dir)).unwrap()
     }
 

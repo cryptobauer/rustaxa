@@ -6,11 +6,11 @@
 ///   - Revert to period (also consider stand alone tool for this)
 ///   - Remove temporary files
 ///   - Make configurable via toml
-///   - Snapshots
 ///
 use anyhow::Result;
 use rocksdb::{
-    DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options, WriteBatch, WriteOptions,
+    DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options, SnapshotWithThreadMode, WriteBatch,
+    WriteOptions,
 };
 use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
 use std::sync::Arc;
@@ -132,12 +132,13 @@ pub type DbIterator<'a> = Box<dyn Iterator<Item = IteratorItem> + Send + Sync + 
 /// a successful RocksDB commit.
 pub struct ExtraRewardVotesGuard<'a> {
     _guard: MutexGuard<'a, ()>,
+    _owner: crate::coordination::StorageObservationGuard<'a>,
     storage: &'a Storage,
     reset_generation: &'a AtomicU64,
 }
 
 impl ExtraRewardVotesGuard<'_> {
-    fn record_committed_reset(&self) -> u64 {
+    pub(crate) fn record_committed_reset(&self) -> u64 {
         let previous = self
             .reset_generation
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
@@ -362,16 +363,190 @@ impl DbWriter for DBWithThreadMode<MultiThreaded> {
     }
 }
 
+/// Persistent backend shared by all repositories returned by `Storage`.
+/// The raw writable handle cannot leave this module.
+pub struct CoordinatedDatabase {
+    raw: DBWithThreadMode<MultiThreaded>,
+    coordinator: crate::StorageCoordinator,
+}
+
+impl CoordinatedDatabase {
+    fn new(raw: DBWithThreadMode<MultiThreaded>) -> Self {
+        Self {
+            raw,
+            coordinator: crate::StorageCoordinator::new(),
+        }
+    }
+}
+
+impl DbReader for CoordinatedDatabase {
+    type Slice<'a> = DBPinnableSlice<'a>;
+
+    fn exist(&self, col: Column, key: &[u8]) -> Result<bool> {
+        DbReader::exist(&self.raw, col, key)
+    }
+
+    fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
+        DbReader::get(&self.raw, col, key)
+    }
+
+    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>> {
+        DbReader::get_at_or_before(&self.raw, col, key)
+    }
+
+    fn get_at_or_after(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>> {
+        DbReader::get_at_or_after(&self.raw, col, key)
+    }
+
+    fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
+        DbReader::iter(&self.raw, col)
+    }
+
+    fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a> {
+        DbReader::iter_rev(&self.raw, col)
+    }
+}
+
+impl DbWriter for CoordinatedDatabase {
+    type Batch = WriteBatch;
+
+    fn create_batch(&self) -> Self::Batch {
+        DbWriter::create_batch(&self.raw)
+    }
+
+    fn batch_put(
+        &self,
+        batch: &mut Self::Batch,
+        col: Column,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<()> {
+        DbWriter::batch_put(&self.raw, batch, col, key, value)
+    }
+
+    fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+        DbWriter::batch_delete(&self.raw, batch, col, key)
+    }
+
+    fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+        let _mutation = self.coordinator.begin_mutation()?;
+        DbWriter::commit_batch(&self.raw, batch)
+    }
+
+    fn commit_batch_with_sync(&self, batch: Self::Batch, sync: bool) -> Result<()> {
+        let _mutation = self.coordinator.begin_mutation()?;
+        DbWriter::commit_batch_with_sync(&self.raw, batch, sync)
+    }
+
+    fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+        let _mutation = self.coordinator.begin_mutation()?;
+        DbWriter::put(&self.raw, col, key, value)
+    }
+
+    fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+        let _mutation = self.coordinator.begin_mutation()?;
+        DbWriter::delete(&self.raw, col, key)
+    }
+}
+
+/// Retains the common owner before the own-vote serialization mutex.
+pub struct OwnVerifiedVotesGuard<'a> {
+    _guard: MutexGuard<'a, ()>,
+    _owner: crate::coordination::StorageObservationGuard<'a>,
+}
+
+/// Read-only point reads from one database sequence.
+///
+/// All columns use the same RocksDB snapshot. Later writes through the same
+/// storage handle do not change its values. Reads copy their result, preserve
+/// missing and empty values, and return column or database errors.
+///
+/// The snapshot cannot outlive its storage owner.
+///
+/// ```compile_fail
+/// use rustaxa_storage::{Storage, StorageReadSnapshot};
+/// fn escape(storage: Storage) -> StorageReadSnapshot<'static> {
+///     storage.read_snapshot()
+/// }
+/// ```
+///
+/// The snapshot does not expose write operations.
+///
+/// ```compile_fail
+/// use rustaxa_storage::{Column, StorageReadSnapshot};
+/// fn write(snapshot: &StorageReadSnapshot<'_>) {
+///     snapshot.put(Column::Status, b"key", b"value");
+/// }
+/// ```
+///
+/// Its database handle is private.
+///
+/// ```compile_fail
+/// use rustaxa_storage::StorageReadSnapshot;
+/// fn database(snapshot: &StorageReadSnapshot<'_>) {
+///     let _ = snapshot.db;
+/// }
+/// ```
+pub struct StorageReadSnapshot<'a> {
+    snapshot: SnapshotWithThreadMode<'a, DBWithThreadMode<MultiThreaded>>,
+    db: &'a DBWithThreadMode<MultiThreaded>,
+}
+
+impl StorageReadSnapshot<'_> {
+    /// Returns the owned value at this snapshot's sequence, or a read error.
+    pub fn get(&self, column: Column, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let handle = self.db.cf_handle(column.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", column.name()))
+        })?;
+        self.snapshot
+            .get_cf(&handle, key)
+            .map_err(|error| StorageError::Database(error).into())
+    }
+
+    /// Reads the exact rule schedule at this sequence without enrollment.
+    /// Missing and empty values stay distinct. Read errors propagate.
+    pub fn pbft_execution_schedule_raw(&self) -> Result<Option<Vec<u8>>> {
+        self.get(Column::Status, crate::metadata::PBFT_EXECUTION_SCHEDULE_KEY)
+    }
+
+    /// Reads the opaque pending-publication marker at this snapshot's sequence.
+    /// Missing and empty values remain distinct. Read errors propagate.
+    pub fn external_evm_pending_publication_raw(&self) -> Result<Option<Vec<u8>>> {
+        self.get(
+            Column::FinalChainMeta,
+            crate::final_chain::EXTERNAL_EVM_PENDING_PUBLICATION_KEY,
+        )
+    }
+
+    /// Reads the exact native snapshot at this sequence. Missing and empty
+    /// values remain distinct, and backend errors propagate.
+    pub fn dpos_snapshot_raw(&self, number: u64) -> Result<Option<Vec<u8>>> {
+        self.get(
+            Column::FinalChainMeta,
+            &FinalChainRepository::<DBWithThreadMode<MultiThreaded>>::dpos_snapshot_key(number),
+        )
+    }
+
+    /// Reads the recorded application pairing at this sequence without
+    /// initializing it. Missing and empty values remain distinct.
+    pub fn concrete_state_pairing_raw(&self) -> Result<Option<Vec<u8>>> {
+        self.get(
+            Column::FinalChainMeta,
+            FinalChainRepository::<DBWithThreadMode<MultiThreaded>>::CONCRETE_STATE_PAIRING_KEY,
+        )
+    }
+}
+
 pub struct Storage {
-    db: Arc<DBWithThreadMode<MultiThreaded>>,
+    db: Arc<CoordinatedDatabase>,
     // Individual repositories splitting query/apply into domains.
-    dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
-    pbft: PbftRepository<DBWithThreadMode<MultiThreaded>>,
-    pillar: PillarRepository<DBWithThreadMode<MultiThreaded>>,
-    period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
-    transaction: TransactionRepository<DBWithThreadMode<MultiThreaded>>,
-    metadata: MetadataRepository<DBWithThreadMode<MultiThreaded>>,
-    final_chain: FinalChainRepository<DBWithThreadMode<MultiThreaded>>,
+    dag: DagRepository<CoordinatedDatabase>,
+    pbft: PbftRepository<CoordinatedDatabase>,
+    pillar: PillarRepository<CoordinatedDatabase>,
+    period: PeriodRepository<CoordinatedDatabase>,
+    transaction: TransactionRepository<CoordinatedDatabase>,
+    metadata: MetadataRepository<CoordinatedDatabase>,
+    final_chain: FinalChainRepository<CoordinatedDatabase>,
     own_verified_votes_lock: Mutex<()>,
     extra_reward_votes_lock: Mutex<()>,
     light_history_prune_lock: Mutex<()>,
@@ -379,9 +554,57 @@ pub struct Storage {
 }
 
 impl Storage {
+    #[cfg(feature = "production_integration_test")]
+    pub fn integration_database_image(
+        &self,
+    ) -> Result<crate::integration_inspection::DatabaseImage> {
+        let db = &self.db.raw;
+        crate::integration_inspection::capture(db.path(), |name, remaining, maximum_rows| {
+            let cf = db
+                .cf_handle(name)
+                .ok_or_else(|| anyhow::anyhow!("integration column missing"))?;
+            crate::integration_inspection::collect_rows(
+                db.iterator_cf(&cf, rocksdb::IteratorMode::Start),
+                remaining,
+                maximum_rows,
+            )
+        })
+    }
+    /// Shared mutation boundary for this storage owner. It grants no vote authority.
+    pub fn mutation_coordinator(&self) -> &crate::StorageCoordinator {
+        &self.db.coordinator
+    }
+
+    /// Captures one read sequence from this storage handle without blocking writes.
+    /// The returned snapshot borrows this owner and exposes only point reads.
+    pub fn read_snapshot(&self) -> StorageReadSnapshot<'_> {
+        StorageReadSnapshot {
+            snapshot: self.db.raw.snapshot(),
+            db: &self.db.raw,
+        }
+    }
+
     pub fn new(config: Config) -> Result<Self> {
         std::fs::create_dir_all(&config.db_path).map_err(StorageError::Io)?;
+        Self::open_database(config)
+    }
 
+    /// Opens an existing database with database and column creation disabled.
+    pub fn open_existing(mut config: Config) -> Result<Self> {
+        let metadata = std::fs::metadata(&config.db_path).map_err(StorageError::Io)?;
+        if !metadata.is_dir() {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "existing database path is not a directory",
+            ))
+            .into());
+        }
+        config.create_if_missing = false;
+        config.create_missing_column_families = false;
+        Self::open_database(config)
+    }
+
+    fn open_database(config: Config) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(config.create_if_missing);
         opts.create_missing_column_families(config.create_missing_column_families);
@@ -405,7 +628,7 @@ impl Storage {
         )
         .map_err(StorageError::Database)?;
 
-        let db = Arc::new(db);
+        let db = Arc::new(CoordinatedDatabase::new(db));
         let dag = DagRepository::new(db.clone());
         let metadata = MetadataRepository::new(db.clone());
         let period = PeriodRepository::new(db.clone());
@@ -437,9 +660,14 @@ impl Storage {
     /// `Arc<Storage>` therefore cannot interleave enumeration with a save or
     /// clear commit. Poisoning is reported as a storage error instead of
     /// silently permitting an unserialized operation.
-    pub fn lock_own_verified_votes(&self) -> Result<MutexGuard<'_, ()>> {
-        self.own_verified_votes_lock.lock().map_err(|_| {
-            StorageError::Read("own verified votes serialization lock poisoned".into()).into()
+    pub fn lock_own_verified_votes(&self) -> Result<OwnVerifiedVotesGuard<'_>> {
+        let owner = self.mutation_coordinator().observe();
+        let guard = self.own_verified_votes_lock.lock().map_err(|_| {
+            StorageError::Read("own verified votes serialization lock poisoned".into())
+        })?;
+        Ok(OwnVerifiedVotesGuard {
+            _guard: guard,
+            _owner: owner,
         })
     }
 
@@ -450,11 +678,13 @@ impl Storage {
     /// `Arc<Storage>` therefore cannot insert a stale reward vote between reset
     /// enumeration and commit. Lock poisoning is returned as a storage error.
     pub fn lock_extra_reward_votes(&self) -> Result<ExtraRewardVotesGuard<'_>> {
+        let owner = self.mutation_coordinator().observe();
         let guard = self.extra_reward_votes_lock.lock().map_err(|_| {
             StorageError::Read("extra reward votes serialization lock poisoned".into())
         })?;
         Ok(ExtraRewardVotesGuard {
             _guard: guard,
+            _owner: owner,
             storage: self,
             reset_generation: &self.extra_reward_votes_reset_generation,
         })
@@ -476,31 +706,31 @@ impl Storage {
             .load(Ordering::Acquire)
     }
 
-    pub fn dag(&self) -> &DagRepository<DBWithThreadMode<MultiThreaded>> {
+    pub fn dag(&self) -> &DagRepository<CoordinatedDatabase> {
         &self.dag
     }
 
-    pub fn period(&self) -> &PeriodRepository<DBWithThreadMode<MultiThreaded>> {
+    pub fn period(&self) -> &PeriodRepository<CoordinatedDatabase> {
         &self.period
     }
 
-    pub fn metadata(&self) -> &MetadataRepository<DBWithThreadMode<MultiThreaded>> {
+    pub fn metadata(&self) -> &MetadataRepository<CoordinatedDatabase> {
         &self.metadata
     }
 
-    pub fn pbft(&self) -> &PbftRepository<DBWithThreadMode<MultiThreaded>> {
+    pub fn pbft(&self) -> &PbftRepository<CoordinatedDatabase> {
         &self.pbft
     }
 
-    pub fn pillar(&self) -> &PillarRepository<DBWithThreadMode<MultiThreaded>> {
+    pub fn pillar(&self) -> &PillarRepository<CoordinatedDatabase> {
         &self.pillar
     }
 
-    pub fn transaction(&self) -> &TransactionRepository<DBWithThreadMode<MultiThreaded>> {
+    pub fn transaction(&self) -> &TransactionRepository<CoordinatedDatabase> {
         &self.transaction
     }
 
-    pub fn final_chain(&self) -> &FinalChainRepository<DBWithThreadMode<MultiThreaded>> {
+    pub fn final_chain(&self) -> &FinalChainRepository<CoordinatedDatabase> {
         &self.final_chain
     }
 
@@ -547,7 +777,7 @@ impl Storage {
         from: &[u8],
         to: &[u8],
     ) -> Result<()> {
-        let handle = self.db.cf_handle(col.name()).ok_or_else(|| {
+        let handle = self.db.raw.cf_handle(col.name()).ok_or_else(|| {
             StorageError::Config(format!("Missing column family: {}", col.name()))
         })?;
         batch.delete_range_cf(&handle, from, to);
@@ -555,11 +785,30 @@ impl Storage {
     }
 
     pub fn commit_write_batch_with_sync(&self, batch: StorageWriteBatch, sync: bool) -> Result<()> {
-        let mut opts = WriteOptions::default();
-        opts.set_sync(sync);
+        DbWriter::commit_batch_with_sync(self.db.as_ref(), batch, sync)
+    }
+
+    pub(crate) fn commit_owned_effect_batch(
+        &self,
+        scope: &mut crate::OwnedEffectScope<'_>,
+        batch: StorageWriteBatch,
+        sync: bool,
+    ) -> Result<()> {
+        scope.validate_for(self.mutation_coordinator())?;
+        scope.note_write_attempt();
+        let result = DbWriter::commit_batch_with_sync(&self.db.raw, batch, sync);
+        if result.is_err() {
+            scope.poison();
+        }
+        result
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drop_column_for_application_scope_test(&self, column: Column) -> Result<()> {
         self.db
-            .write_opt(batch, &opts)
-            .map_err(|e| StorageError::Database(e).into())
+            .raw
+            .drop_cf(column.name())
+            .map_err(|error| anyhow::Error::from(error))
     }
 
     /// Atomically removes finalized light-node history below explicit period and DAG-level cutoffs.
@@ -571,6 +820,7 @@ impl Storage {
         &self,
         request: LightHistoryPruneRequest,
     ) -> Result<LightHistoryPruneReport> {
+        let _mutation = self.mutation_coordinator().begin_mutation()?;
         let _guard = self
             .light_history_prune_lock
             .lock()
@@ -701,6 +951,189 @@ impl Storage {
     }
 }
 
+#[cfg(test)]
+mod native_predecessor_snapshot_tests {
+    use super::*;
+
+    fn config() -> Config {
+        let path = crate::test_paths::new_path("native_snapshot");
+        let mut config = Config::new(path);
+        config.db_write_buffer_size = 2 * 1024 * 1024;
+        config.max_total_wal_size = 32 * 1024 * 1024;
+        config.max_open_files = 32;
+        config
+    }
+
+    #[test]
+    fn pbft_execution_schedule_storage_preserves_namespace_snapshots_and_reopen() {
+        fn contents(
+            storage: &Storage,
+            columns: &[Column],
+        ) -> std::collections::BTreeMap<String, Vec<(Vec<u8>, Vec<u8>)>> {
+            columns
+                .iter()
+                .map(|column| {
+                    let rows = storage
+                        .iter(*column)
+                        .map(|row| {
+                            let (key, value) = row.unwrap();
+                            (key.into_vec(), value.into_vec())
+                        })
+                        .collect();
+                    (column.name().to_string(), rows)
+                })
+                .collect()
+        }
+        let config = config();
+        let columns = config.column_families.clone();
+        let storage = Storage::new(config.clone()).unwrap();
+        let mut batch = storage.create_write_batch();
+        for field in 0..=u8::MAX {
+            storage
+                .metadata()
+                .write_status_field_in_batch(&mut batch, field, u64::from(field))
+                .unwrap();
+        }
+        storage.commit_write_batch_with_sync(batch, true).unwrap();
+        let original = contents(&storage, &columns);
+        assert_eq!(
+            storage.metadata().pbft_execution_schedule_raw().unwrap(),
+            None
+        );
+        let mut dropped = storage.create_write_batch();
+        storage
+            .metadata()
+            .write_pbft_execution_schedule_in_batch(&mut dropped, &[0xc0])
+            .unwrap();
+        drop(dropped);
+        assert_eq!(contents(&storage, &columns), original);
+        let missing = storage.read_snapshot();
+        let mut batch = storage.create_write_batch();
+        storage
+            .metadata()
+            .write_pbft_execution_schedule_in_batch(&mut batch, &[])
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        let empty = storage.read_snapshot();
+        let record = vec![0xc1, 1];
+        let mut batch = storage.create_write_batch();
+        storage
+            .metadata()
+            .write_pbft_execution_schedule_in_batch(&mut batch, &record)
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        assert_eq!(missing.pbft_execution_schedule_raw().unwrap(), None);
+        assert_eq!(empty.pbft_execution_schedule_raw().unwrap(), Some(vec![]));
+        assert_eq!(
+            storage
+                .read_snapshot()
+                .pbft_execution_schedule_raw()
+                .unwrap(),
+            Some(record.clone())
+        );
+        let mut expected = original;
+        let status = expected.get_mut(Column::Status.name()).unwrap();
+        status.push((
+            crate::metadata::PBFT_EXECUTION_SCHEDULE_KEY.to_vec(),
+            record.clone(),
+        ));
+        status.sort();
+        assert_eq!(contents(&storage, &columns), expected);
+        drop(empty);
+        drop(missing);
+        drop(storage);
+        let reopened = Storage::open_existing(config).unwrap();
+        assert_eq!(
+            reopened.metadata().pbft_execution_schedule_raw().unwrap(),
+            Some(record)
+        );
+        assert_eq!(contents(&reopened, &columns), expected);
+    }
+
+    #[test]
+    fn pbft_execution_schedule_snapshot_propagates_missing_column() {
+        let mut config = config();
+        config
+            .column_families
+            .retain(|column| *column != Column::Status);
+        let storage = Storage::new(config).unwrap();
+        let error = storage
+            .read_snapshot()
+            .pbft_execution_schedule_raw()
+            .unwrap_err();
+        assert!(error.downcast_ref::<StorageError>().is_some());
+        assert!(error.to_string().contains("Missing column family"));
+    }
+
+    #[test]
+    fn native_predecessor_snapshot_raw_methods_preserve_values() {
+        let config = config();
+        let storage = Storage::new(config).unwrap();
+        let number = 0x0102_0304_0506_0708_u64;
+        let native_key = [b"rustaxa:dpos_snapshot:".as_slice(), &number.to_le_bytes()].concat();
+        let pairing_key = b"rustaxa:concrete_state_pairing:v1";
+        let missing = storage.read_snapshot();
+        assert_eq!(missing.dpos_snapshot_raw(number).unwrap(), None);
+        assert_eq!(missing.concrete_state_pairing_raw().unwrap(), None);
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(&mut batch, Column::FinalChainMeta, &native_key, &[])
+            .unwrap();
+        storage
+            .batch_put_raw(&mut batch, Column::FinalChainMeta, pairing_key, &[])
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        let empty = storage.read_snapshot();
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(&mut batch, Column::FinalChainMeta, &native_key, &[1, 2, 3])
+            .unwrap();
+        storage
+            .batch_put_raw(&mut batch, Column::FinalChainMeta, pairing_key, &[4, 5, 6])
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        assert_eq!(missing.dpos_snapshot_raw(number).unwrap(), None);
+        assert_eq!(missing.concrete_state_pairing_raw().unwrap(), None);
+        assert_eq!(empty.dpos_snapshot_raw(number).unwrap(), Some(vec![]));
+        assert_eq!(empty.concrete_state_pairing_raw().unwrap(), Some(vec![]));
+        let fresh = storage.read_snapshot();
+        assert_eq!(
+            fresh.dpos_snapshot_raw(number).unwrap(),
+            Some(vec![1, 2, 3])
+        );
+        assert_eq!(
+            fresh.concrete_state_pairing_raw().unwrap(),
+            Some(vec![4, 5, 6])
+        );
+        assert_eq!(
+            storage.final_chain().dpos_snapshot_raw(number).unwrap(),
+            fresh.dpos_snapshot_raw(number).unwrap()
+        );
+        assert_eq!(
+            storage.final_chain().concrete_state_pairing_raw().unwrap(),
+            fresh.concrete_state_pairing_raw().unwrap()
+        );
+    }
+
+    #[test]
+    fn native_predecessor_snapshot_raw_methods_propagate_backend_errors() {
+        let mut config = config();
+        config
+            .column_families
+            .retain(|column| *column != Column::FinalChainMeta);
+        let storage = Storage::new(config).unwrap();
+        let snapshot = storage.read_snapshot();
+        for result in [
+            snapshot.dpos_snapshot_raw(1),
+            snapshot.concrete_state_pairing_raw(),
+        ] {
+            let error = result.unwrap_err();
+            assert!(error.downcast_ref::<StorageError>().is_some());
+            assert!(error.to_string().contains("Missing column family"));
+        }
+    }
+}
+
 impl DbReader for Storage {
     type Slice<'a> = DBPinnableSlice<'a>;
 
@@ -754,6 +1187,10 @@ impl DbWriter for Storage {
         DbWriter::commit_batch(&*self.db, batch)
     }
 
+    fn commit_batch_with_sync(&self, batch: Self::Batch, sync: bool) -> Result<()> {
+        DbWriter::commit_batch_with_sync(&*self.db, batch, sync)
+    }
+
     fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
         DbWriter::put(&*self.db, col, key, value)
     }
@@ -767,23 +1204,13 @@ impl DbWriter for Storage {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after UNIX_EPOCH")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "rustaxa_storage_db_{name}_{}_{}",
-            std::process::id(),
-            unique
-        ))
+        crate::test_paths::new_path("storage-db").with_extension(name)
     }
 
     fn storage_at(name: &str) -> (std::path::PathBuf, Storage) {
         let path = unique_temp_dir(name);
-        let _ = fs::remove_dir_all(&path);
         let storage = Storage::new(Config::new(path.clone())).expect("storage should initialize");
         (path, storage)
     }
@@ -816,6 +1243,107 @@ mod tests {
         period_data.append_raw(&empty_dag_bundle.out(), 1);
         period_data.append_raw(&transaction_list.out(), 1);
         period_data.out().to_vec()
+    }
+
+    #[test]
+    fn storage_read_snapshot_keeps_cross_column_batch() {
+        let (path, storage) = storage_at("snapshot_cross_column_batch");
+        let columns = [Column::Status, Column::FinalChainMeta];
+        let key = b"snapshot_sequence";
+        let mut batch = storage.create_write_batch();
+        for column in columns {
+            storage
+                .batch_put_raw(&mut batch, column, key, b"old")
+                .unwrap();
+        }
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        let old = storage.read_snapshot();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let mut batch = storage.create_write_batch();
+                    for column in columns {
+                        storage
+                            .batch_put_raw(&mut batch, column, key, b"new")
+                            .unwrap();
+                    }
+                    storage.commit_write_batch_with_sync(batch, false).unwrap();
+                })
+                .join()
+                .unwrap();
+        });
+        let fresh = storage.read_snapshot();
+        for column in columns {
+            assert_eq!(old.get(column, key).unwrap(), Some(b"old".to_vec()));
+            assert_eq!(fresh.get(column, key).unwrap(), Some(b"new".to_vec()));
+        }
+        drop(fresh);
+        drop(old);
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn storage_read_snapshot_distinguishes_missing_empty_and_error() {
+        let (path, storage) = storage_at("snapshot_read_results");
+        let key = crate::final_chain::EXTERNAL_EVM_PENDING_PUBLICATION_KEY;
+        let missing = storage.read_snapshot();
+        assert_eq!(missing.get(Column::FinalChainMeta, key).unwrap(), None);
+        assert_eq!(
+            missing.external_evm_pending_publication_raw().unwrap(),
+            None
+        );
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(&mut batch, Column::FinalChainMeta, key, b"")
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        let empty = storage.read_snapshot();
+        assert_eq!(
+            empty.get(Column::FinalChainMeta, key).unwrap(),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            empty.external_evm_pending_publication_raw().unwrap(),
+            Some(Vec::new())
+        );
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(&mut batch, Column::FinalChainMeta, key, b"pending")
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        let present = storage.read_snapshot();
+        assert_eq!(
+            missing.external_evm_pending_publication_raw().unwrap(),
+            None
+        );
+        assert_eq!(
+            empty.external_evm_pending_publication_raw().unwrap(),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            present.get(Column::FinalChainMeta, key).unwrap(),
+            Some(b"pending".to_vec())
+        );
+        assert_eq!(
+            present.external_evm_pending_publication_raw().unwrap(),
+            Some(b"pending".to_vec())
+        );
+
+        storage
+            .db
+            .raw
+            .drop_cf(Column::FinalChainMeta.name())
+            .unwrap();
+        assert!(present.get(Column::FinalChainMeta, key).is_err());
+        assert!(present.external_evm_pending_publication_raw().is_err());
+        drop(present);
+        drop(empty);
+        drop(missing);
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]

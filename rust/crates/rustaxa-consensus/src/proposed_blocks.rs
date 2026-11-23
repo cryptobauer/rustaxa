@@ -621,14 +621,7 @@ mod tests {
     }
 
     fn temp_storage(name: &str) -> Storage {
-        let dir = std::env::temp_dir().join(format!(
-            "{name}_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::test_paths::new_path(name);
         Storage::new(Config::new(dir)).unwrap()
     }
 

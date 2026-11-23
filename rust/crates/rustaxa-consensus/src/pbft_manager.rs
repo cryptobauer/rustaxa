@@ -41,7 +41,7 @@ use tiny_keccak::{Hasher, Keccak};
 const PBFT_MGR_FIELD_ROUND: u8 = 0;
 const PBFT_MGR_FIELD_STEP: u8 = 1;
 const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
-const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
+pub(crate) const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
 const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
 
@@ -113,7 +113,7 @@ impl PbftRewardVoteResetStagePort for crate::pbft_vote_runtime::PbftVerifiedVote
 /// Native port for applying the finalized transaction set retained by PBFT finalization.
 ///
 /// The production implementation is
-/// [`crate::dag_transaction_service::DagTransactionService`]. The port accepts
+/// `crate::dag_transaction_service::DagTransactionService`. The port accepts
 /// only canonical period bytes plus narrow external account-nonce facts; it
 /// returns native mutation facts and never exposes queue/sidecar effects to C++.
 pub trait PbftFinalizedTransactionStatusPort {
@@ -431,6 +431,7 @@ pub struct PbftManagerRuntimeState {
     pub(crate) state_action_effect_session: Option<PbftManagerStateActionEffectSession>,
     /// Optional daemon-tick planning cursor.
     pub(crate) runtime_session: Option<PbftManagerRuntimeSession>,
+    pub(crate) runtime_session_identity: Option<std::sync::Arc<()>>,
     /// Optional PBFT block-proposal planning cursor.
     pub(crate) proposal_session: Option<PbftManagerProposalSession>,
     /// Monotonic identity of the currently published proposal cursor.
@@ -1843,6 +1844,7 @@ impl PbftManagerService {
                 pbft_sync_admission_generation: 0,
                 state_action_effect_session: None,
                 runtime_session: None,
+                runtime_session_identity: None,
                 proposal_session: None,
                 proposal_session_generation: 0,
                 finalization_runtime_session: None,
@@ -4917,6 +4919,8 @@ pub struct PbftManagerStateActionFact {
     pub step: u64,
     /// Elapsed milliseconds in the current round.
     pub elapsed_round_ms: u64,
+    /// Elapsed milliseconds in the current second finish step.
+    pub elapsed_finish_poll_ms: u64,
     /// PBFT deadline for the current round in milliseconds.
     pub deadline_ms: u64,
     /// Current round lambda in milliseconds.
@@ -5680,6 +5684,14 @@ pub struct PbftManagerRuntime {
         BTreeMap<H256, crate::dag_service::DagRuntimeNonFinalizedSyncPayload>,
     policy: PbftManagerLifecyclePolicy,
     last_committed_reset: Option<PbftManagerCommittedReset>,
+    startup_step: Option<PbftManagerStartupStep>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct PbftManagerStartupStep {
+    stored_round: Option<u32>,
+    stored_step: Option<u32>,
+    step: u32,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
@@ -5895,6 +5907,16 @@ pub struct PbftManagerAdvancePeriodActionReportResult {
 }
 
 impl PbftManagerRuntime {
+    pub(crate) fn prepare_owner_period_successor(&self) -> Self {
+        Self {
+            snapshot: self.snapshot.clone(),
+            cached_candidate_dag_payloads: BTreeMap::new(),
+            policy: self.policy,
+            last_committed_reset: self.last_committed_reset,
+            startup_step: self.startup_step,
+        }
+    }
+
     /// Creates a runtime from an already accepted startup snapshot.
     pub fn new(snapshot: PbftManagerRuntimeSnapshot) -> Self {
         Self {
@@ -5902,12 +5924,29 @@ impl PbftManagerRuntime {
             cached_candidate_dag_payloads: BTreeMap::new(),
             policy: PbftManagerLifecyclePolicy::default(),
             last_committed_reset: None,
+            startup_step: None,
         }
     }
 
     /// Returns the current Rust-owned scalar snapshot.
     pub fn snapshot(&self) -> PbftManagerRuntimeSnapshot {
         self.snapshot.clone()
+    }
+
+    pub(crate) fn persist_prepared_startup_step(&mut self, storage: &Storage) -> Result<()> {
+        let Some(step) = self.startup_step else {
+            return Ok(());
+        };
+        let pbft = storage.pbft();
+        anyhow::ensure!(
+            pbft.manager_field(PBFT_MGR_FIELD_ROUND)? == step.stored_round
+                && pbft.manager_field(PBFT_MGR_FIELD_STEP)? == step.stored_step,
+            "PBFT_MANAGER_STARTUP_CURSOR_CHANGED"
+        );
+        pbft.write_manager_field(PBFT_MGR_FIELD_STEP, step.step)?;
+        self.startup_step = None;
+        self.snapshot.persist_normalized_step = false;
+        Ok(())
     }
 
     /// Returns the native deadline policy used by state-action composition.
@@ -6377,6 +6416,26 @@ impl PbftManagerRuntime {
     }
 }
 
+pub(crate) fn check_owner_period_reset_storage(
+    storage: &Storage,
+    reset: &PbftManagerTransitionPlan,
+) -> Result<()> {
+    let pbft = storage.pbft();
+    anyhow::ensure!(
+        (!reset.persist_round
+            || pbft.manager_field(PBFT_MGR_FIELD_ROUND)?.map(u64::from) == Some(reset.new_round))
+            && (!reset.persist_step
+                || pbft.manager_field(PBFT_MGR_FIELD_STEP)?.map(u64::from) == Some(reset.new_step))
+            && (!reset.reset_next_voted_statuses
+                || (pbft.manager_status(PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE)? == Some(false)
+                    && pbft.manager_status(PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH)?
+                        == Some(false)))
+            && pbft.manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)? == Some(false),
+        "PRODUCTION_PERIOD_RESET_STORAGE_MISMATCH"
+    );
+    Ok(())
+}
+
 fn reject_startup_restore(error_code: &str) -> PbftManagerRuntimeSnapshot {
     PbftManagerRuntimeSnapshot {
         status: PbftManagerStartupRestoreStatus::InvalidFact,
@@ -6455,7 +6514,7 @@ pub fn restore_pbft_manager_runtime(
             (PbftManagerRuntimeStateCode::ValueProposal, 1, false, false)
         } else if fact.persisted_step < 4 {
             (PbftManagerRuntimeStateCode::Finish, 4, true, false)
-        } else if fact.persisted_step % 2 == 0 {
+        } else if fact.persisted_step.is_multiple_of(2) {
             (
                 PbftManagerRuntimeStateCode::Finish,
                 fact.persisted_step,
@@ -6529,11 +6588,22 @@ pub fn create_pbft_manager_runtime_from_storage(
     storage: &Storage,
     fact: PbftManagerStorageStartupFact,
 ) -> Result<PbftManagerRuntime> {
+    let mut runtime = prepare_pbft_manager_runtime_from_storage(storage, fact)?;
+    runtime.persist_prepared_startup_step(storage)?;
+    Ok(runtime)
+}
+
+pub(crate) fn prepare_pbft_manager_runtime_from_storage(
+    storage: &Storage,
+    fact: PbftManagerStorageStartupFact,
+) -> Result<PbftManagerRuntime> {
     let pbft = storage.pbft();
-    let mut snapshot = restore_pbft_manager_runtime(PbftManagerStartupRestoreFact {
+    let stored_round = pbft.manager_field(PBFT_MGR_FIELD_ROUND)?;
+    let stored_step = pbft.manager_field(PBFT_MGR_FIELD_STEP)?;
+    let snapshot = restore_pbft_manager_runtime(PbftManagerStartupRestoreFact {
         current_period: fact.current_period,
-        persisted_round: u64::from(pbft.manager_field(PBFT_MGR_FIELD_ROUND)?.unwrap_or(1)),
-        persisted_step: u64::from(pbft.manager_field(PBFT_MGR_FIELD_STEP)?.unwrap_or(1)),
+        persisted_round: u64::from(stored_round.unwrap_or(1)),
+        persisted_step: u64::from(stored_step.unwrap_or(1)),
         cacti_active_at_chain_size: fact.cacti_active_at_chain_size,
         rounds_count_dynamic_lambda: storage.metadata().rounds_count_dynamic_lambda()?,
         persisted_dynamic_lambda_ms: pbft.manager_field(PBFT_MGR_FIELD_LAMBDA)?.unwrap_or(1),
@@ -6554,16 +6624,15 @@ pub fn create_pbft_manager_runtime_from_storage(
     if snapshot.status != PbftManagerStartupRestoreStatus::Ready {
         return Err(anyhow!(snapshot.error_code.clone()));
     }
-    if snapshot.persist_normalized_step {
-        pbft.write_manager_field(
-            PBFT_MGR_FIELD_STEP,
-            u32::try_from(snapshot.step)
-                .map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_NORMALIZED_STEP_OVERFLOW"))?,
-        )?;
-        snapshot.persist_normalized_step = false;
-    }
-
     let mut runtime = PbftManagerRuntime::new(snapshot);
+    if runtime.snapshot.persist_normalized_step {
+        runtime.startup_step = Some(PbftManagerStartupStep {
+            stored_round,
+            stored_step,
+            step: u32::try_from(runtime.snapshot.step)
+                .map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_NORMALIZED_STEP_OVERFLOW"))?,
+        });
+    }
     runtime.policy = PbftManagerLifecyclePolicy {
         cacti_block: fact.cacti_block,
         genesis_lambda_ms: u64::from(fact.genesis_lambda_ms),
@@ -6960,7 +7029,7 @@ fn to_manager_u32(
     u32::try_from(value).map_err(|_| transition_storage_rejected(error_code))
 }
 
-fn append_transition_storage_to_batch(
+pub(crate) fn append_transition_storage_to_batch(
     storage: &Storage,
     batch: &mut StorageWriteBatch,
     plan: &PbftManagerTransitionPlan,
@@ -7930,7 +7999,7 @@ fn plan_second_finish_state_action(
         PbftManagerStateActionIntent::Noop
     };
 
-    let loop_back_finish_state = fact.elapsed_round_ms
+    let loop_back_finish_state = fact.elapsed_finish_poll_ms
         > fact
             .current_round_lambda_ms
             .saturating_sub(fact.polling_interval_ms)
@@ -8419,10 +8488,8 @@ mod tests {
     use crate::transaction_service::TransactionServiceConfig;
     use ethereum_types::U256;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct RewardVoteCursorCommitStub {
         result: crate::pbft_vote_runtime::RewardVoteCursorCommitResult,
@@ -8559,11 +8626,7 @@ mod tests {
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should be available")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::test_paths::new_path(name)
     }
 
     fn finalization_sortition_services(
@@ -8962,7 +9025,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9016,7 +9079,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9068,7 +9131,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9136,7 +9199,7 @@ mod tests {
         drop(manager);
         drop(dag);
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9204,7 +9267,7 @@ mod tests {
 
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9245,7 +9308,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9288,7 +9351,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9365,7 +9428,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9436,7 +9499,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9497,7 +9560,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9556,7 +9619,7 @@ mod tests {
         drop(restarted);
         drop(restarted_manager);
         drop(restarted_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9612,7 +9675,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9717,7 +9780,7 @@ mod tests {
 
         drop(runtime);
         drop(manager);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9756,7 +9819,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -9817,7 +9880,7 @@ mod tests {
 
             drop(runtime);
             drop(manager);
-            let _ = fs::remove_dir_all(path);
+            let _ = std::fs::remove_dir_all(path);
         }
     }
 
@@ -9884,7 +9947,7 @@ mod tests {
 
             drop(runtime);
             drop(manager);
-            let _ = fs::remove_dir_all(path);
+            let _ = std::fs::remove_dir_all(path);
         }
     }
 
@@ -9945,7 +10008,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10030,7 +10093,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10079,7 +10142,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10164,7 +10227,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10202,7 +10265,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10242,7 +10305,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10294,7 +10357,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(_dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10335,7 +10398,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10398,7 +10461,7 @@ mod tests {
             drop(runtime);
             drop(manager);
             drop(dag);
-            let _ = fs::remove_dir_all(path);
+            let _ = std::fs::remove_dir_all(path);
         }
     }
 
@@ -10433,7 +10496,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10468,7 +10531,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10509,7 +10572,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10547,7 +10610,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10588,7 +10651,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10636,7 +10699,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10677,7 +10740,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10725,7 +10788,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10764,7 +10827,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -10806,7 +10869,7 @@ mod tests {
         drop(runtime);
         drop(manager);
         drop(dag);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     fn fact(state: PbftManagerRuntimeStateCode) -> PbftManagerRuntimeTickFact {
@@ -10845,6 +10908,7 @@ mod tests {
             round: 2,
             step: 3,
             elapsed_round_ms: 250,
+            elapsed_finish_poll_ms: 0,
             deadline_ms: 1_000,
             current_round_lambda_ms: 100,
             polling_interval_ms: 100,
@@ -11285,7 +11349,7 @@ mod tests {
         compact_block.append(&7u64);
         compact_block.append(&123u64);
         compact_block.append(&vec![0x44, 0x55]);
-        compact_block.append_list(&vec![H256::from_low_u64_be(2)]);
+        compact_block.append_list(&[H256::from_low_u64_be(2)]);
         compact_block.append(&vec![0x66; 65]);
         compact_block.append(&99u64);
 
@@ -11294,7 +11358,7 @@ mod tests {
         canonical_block.append(&7u64);
         canonical_block.append(&123u64);
         canonical_block.append(&vec![0x44, 0x55]);
-        canonical_block.append_list(&vec![H256::from_low_u64_be(2)]);
+        canonical_block.append_list(&[H256::from_low_u64_be(2)]);
         let empty_transactions: Vec<H256> = Vec::new();
         canonical_block.append_list(&empty_transactions);
         canonical_block.append(&vec![0x66; 65]);
@@ -11790,7 +11854,8 @@ mod tests {
         fact.current_round_lambda_ms = 1_000;
         fact.has_current_round_soft_value = true;
         fact.has_previous_round_next_null = true;
-        fact.elapsed_round_ms = 50;
+        fact.elapsed_round_ms = 2_000;
+        fact.elapsed_finish_poll_ms = 50;
         let plan = plan_pbft_manager_state_action(fact.clone());
         assert_eq!(
             plan.primary_intent,
@@ -11802,7 +11867,7 @@ mod tests {
         );
         assert!(!plan.loop_back_finish_state);
 
-        fact.elapsed_round_ms = 2_000;
+        fact.elapsed_finish_poll_ms = 2_000;
         fact.already_next_voted_value = true;
         fact.already_next_voted_null = true;
         let plan = plan_pbft_manager_state_action(fact);
@@ -11864,7 +11929,7 @@ mod tests {
         fact.current_round_lambda_ms = 1_000;
         fact.already_next_voted_value = true;
         fact.already_next_voted_null = true;
-        fact.elapsed_round_ms = 2_000;
+        fact.elapsed_finish_poll_ms = 2_000;
 
         let plan = plan_pbft_manager_state_action_effects(fact);
 
@@ -11927,7 +11992,7 @@ mod tests {
         fact.current_round_lambda_ms = 1_000;
         fact.already_next_voted_value = true;
         fact.already_next_voted_null = true;
-        fact.elapsed_round_ms = 2_000;
+        fact.elapsed_finish_poll_ms = 2_000;
         let mut session = create_pbft_manager_state_action_effect_session(fact);
 
         let step = next_pbft_manager_state_action_effect_session(&mut session);
@@ -12296,6 +12361,28 @@ mod tests {
                 .write_manager_status(PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE, true)
                 .expect("next-voted status should persist");
 
+            let mut deferred =
+                prepare_pbft_manager_runtime_from_storage(&storage, storage_startup_fact())
+                    .expect("manager step should prepare");
+            assert!(deferred.snapshot().persist_normalized_step);
+            assert_eq!(
+                storage.pbft().manager_field(PBFT_MGR_FIELD_STEP).unwrap(),
+                Some(2)
+            );
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_STEP, 3)
+                .unwrap();
+            let stale = deferred
+                .persist_prepared_startup_step(&storage)
+                .unwrap_err();
+            assert_eq!(stale.to_string(), "PBFT_MANAGER_STARTUP_CURSOR_CHANGED");
+            assert!(deferred.snapshot().persist_normalized_step);
+            assert_eq!(
+                storage.pbft().manager_field(PBFT_MGR_FIELD_STEP).unwrap(),
+                Some(3)
+            );
+
             let runtime =
                 create_pbft_manager_runtime_from_storage(&storage, storage_startup_fact())
                     .expect("runtime should restore from Rust storage");
@@ -12319,7 +12406,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12349,7 +12436,7 @@ mod tests {
             assert!(state.runtime_session.is_some());
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12406,7 +12493,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12436,7 +12523,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12465,7 +12552,7 @@ mod tests {
             assert_eq!(replay.period_lambda, Some(1_234));
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12484,7 +12571,7 @@ mod tests {
             assert_eq!(replay.period_lambda, None);
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12505,7 +12592,7 @@ mod tests {
             assert!(replay.found);
             assert!(replay.finalized_dag_hashes.is_empty());
         }
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12524,7 +12611,7 @@ mod tests {
             assert_eq!(err.to_string(), "PBFT_MANAGER_STARTUP_INVALID_CURSOR");
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12561,7 +12648,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12649,7 +12736,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12688,7 +12775,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12733,7 +12820,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -12765,7 +12852,7 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_dir_all(temp_dir);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]

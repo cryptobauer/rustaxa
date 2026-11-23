@@ -4,6 +4,8 @@
 
 #include <atomic>
 #include <boost/noncopyable.hpp>
+#include <mutex>
+#include <optional>
 
 #include "common/types.hpp"
 #include "common/util.hpp"
@@ -111,6 +113,24 @@ class TaraxaPeer : public boost::noncopyable {
    */
   void resetKnownCaches();
 
+  bool reserveDagSyncRequest(PbftPeriod period) {
+    const std::scoped_lock lock(dag_sync_request_mutex_);
+    bool expected = false;
+    if (!peer_dag_syncing_.compare_exchange_strong(expected, true)) {
+      return false;
+    }
+    dag_sync_request_period_ = period;
+    return true;
+  }
+
+  void completeDagSyncRequest(PbftPeriod period) {
+    const std::scoped_lock lock(dag_sync_request_mutex_);
+    if (dag_sync_request_period_ == period) {
+      dag_sync_request_period_.reset();
+      peer_dag_syncing_ = false;
+    }
+  }
+
  public:
   std::atomic<bool> syncing_ = false;
   std::atomic<uint64_t> dag_level_ = 0;
@@ -132,6 +152,8 @@ class TaraxaPeer : public boost::noncopyable {
 
  private:
   dev::p2p::NodeID id_;
+  std::mutex dag_sync_request_mutex_;
+  std::optional<PbftPeriod> dag_sync_request_period_;
 
   ExpirationBlockNumberCache<blk_hash_t> known_dag_blocks_;
   ExpirationBlockNumberCache<trx_hash_t> known_transactions_;

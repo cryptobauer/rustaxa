@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -49,7 +50,7 @@ struct TemporaryStorageDirectory {
   TemporaryStorageDirectory() {
     static std::atomic<uint64_t> sequence{0};
     path = std::filesystem::temp_directory_path() /
-           ("rustaxa_network_api_bridge_" + std::to_string(sequence.fetch_add(1)));
+           ("rustaxa_network_api_bridge_" + std::to_string(::getpid()) + "_" + std::to_string(sequence.fetch_add(1)));
     std::error_code ignored;
     std::filesystem::remove_all(path, ignored);
   }

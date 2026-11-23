@@ -688,8 +688,57 @@ impl DagServiceState {
         new_period: u64,
         finalized_order: Vec<H256>,
     ) -> Result<DagFinalizationCommit> {
+        let anchor_level = if new_anchor.is_zero() {
+            None
+        } else {
+            Some(
+                self.storage
+                    .dag()
+                    .by_hash(new_anchor)
+                    .with_context(|| {
+                        format!("DAG_RUNTIME_FINALIZATION_ANCHOR_BLOCK: {new_anchor:?}")
+                    })?
+                    .level,
+            )
+        };
+        let (candidate_state, plan) = self.prepare_finalized_order_state(
+            new_anchor,
+            new_period,
+            &finalized_order,
+            anchor_level,
+        )?;
+        let cleanup = apply_finalization_cleanup_from_storage(
+            self.storage.as_ref(),
+            &plan.counter_update_hashes,
+            &plan.expired_hashes,
+            &plan.remaining_hashes,
+        )
+        .context("DAG_RUNTIME_FINALIZATION_STORAGE_APPLY")?;
+        self.state = candidate_state;
+        Ok(DagFinalizationCommit {
+            finalized_count: plan.finalized_count,
+            expired_hashes: cleanup.expired_hashes,
+            remove_transaction_hashes: cleanup.remove_transaction_hashes,
+        })
+    }
+
+    pub(crate) fn prepare_finalized_order_state(
+        &self,
+        new_anchor: H256,
+        new_period: u64,
+        finalized_order: &[H256],
+        anchor_level: Option<u64>,
+    ) -> Result<(DagManagerState, DagManagerFinalizationPlan)> {
         let mut candidate_state = self.state.clone();
-        let plan = if new_anchor == H256::zero() {
+        ensure!(
+            new_anchor.is_zero() == anchor_level.is_none(),
+            "DAG_RUNTIME_FINALIZATION_ANCHOR_MISMATCH"
+        );
+        let plan = if let Some(anchor_level) = anchor_level {
+            candidate_state
+                .set_finalized_order(new_anchor, new_period, finalized_order, anchor_level)
+                .context("DAG_RUNTIME_SET_FINALIZED_ORDER")?
+        } else {
             candidate_state
                 .advance_empty_period(new_period)
                 .context("DAG_RUNTIME_ADVANCE_EMPTY_PERIOD")?;
@@ -709,30 +758,8 @@ impl DagServiceState {
                     .copied()
                     .collect(),
             }
-        } else {
-            let anchor_level = self
-                .storage
-                .dag()
-                .by_hash(new_anchor)
-                .with_context(|| format!("DAG_RUNTIME_FINALIZATION_ANCHOR_BLOCK: {new_anchor:?}"))?
-                .level;
-            candidate_state
-                .set_finalized_order(new_anchor, new_period, &finalized_order, anchor_level)
-                .context("DAG_RUNTIME_SET_FINALIZED_ORDER")?
         };
-        let cleanup = apply_finalization_cleanup_from_storage(
-            self.storage.as_ref(),
-            &plan.counter_update_hashes,
-            &plan.expired_hashes,
-            &plan.remaining_hashes,
-        )
-        .context("DAG_RUNTIME_FINALIZATION_STORAGE_APPLY")?;
-        self.state = candidate_state;
-        Ok(DagFinalizationCommit {
-            finalized_count: plan.finalized_count,
-            expired_hashes: cleanup.expired_hashes,
-            remove_transaction_hashes: cleanup.remove_transaction_hashes,
-        })
+        Ok((candidate_state, plan))
     }
 
     /// Applies period-selected gas policy to an active proposer session.
@@ -1839,6 +1866,12 @@ impl DagServiceState {
             .collect()
     }
 
+    pub(crate) fn active_proposer_pack_period(&self, session_id: u64) -> Option<u64> {
+        let session = self.proposer_sessions.get(&session_id)?;
+        (session.action == DagProposerSessionAction::PackTransactions)
+            .then_some(session.attempt.proposal_period)
+    }
+
     /// Returns the active proposer instruction without advancing its cursor.
     pub(crate) fn proposer_session_step(&self, session_id: u64) -> Result<DagProposerSessionStep> {
         let session = self
@@ -2473,14 +2506,9 @@ mod tests {
     use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
     use rustaxa_types::pbft::PbftBlockLink;
     use rustaxa_vdf::vrf::public_key_from_secret;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should be available")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::test_paths::new_path(name)
     }
 
     fn signed_pbft_block(period: u64, pivot: H256) -> Vec<u8> {
@@ -2759,7 +2787,7 @@ mod tests {
         tx_hash: H256,
     ) -> Result<u64> {
         let vrf_key = proposer_vrf_key();
-        ensure_period_mapping_for_frontier(&runtime);
+        ensure_period_mapping_for_frontier(runtime);
         let session_id = runtime.begin_proposer_session(
             proposer_begin_input(vrf_key),
             proposer_transaction_observation(),
@@ -3652,8 +3680,7 @@ mod tests {
                         signature: vec![0; 65],
                     },
                 )
-                .err()
-                .expect("malformed signature should fail");
+                .expect_err("malformed signature should fail");
             assert!(
                 malformed
                     .to_string()
@@ -3680,8 +3707,7 @@ mod tests {
                         signature: sign_dag_hash(0x45, signing.signing_hash.into()),
                     },
                 )
-                .err()
-                .expect("wrong-key signature should be rejected");
+                .expect_err("wrong-key signature should be rejected");
             assert!(
                 wrong_key
                     .to_string()

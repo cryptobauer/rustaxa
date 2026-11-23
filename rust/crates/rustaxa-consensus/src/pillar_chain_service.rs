@@ -180,6 +180,23 @@ impl PillarChainState {
         data_rlp: Vec<u8>,
         expected_anchor_generation: u64,
     ) -> Result<()> {
+        self.publish_current_block_data(data_rlp, expected_anchor_generation, false)
+    }
+
+    pub(crate) fn install_committed_current_block_data(
+        &self,
+        data_rlp: Vec<u8>,
+        expected_anchor_generation: u64,
+    ) -> Result<()> {
+        self.publish_current_block_data(data_rlp, expected_anchor_generation, true)
+    }
+
+    fn publish_current_block_data(
+        &self,
+        data_rlp: Vec<u8>,
+        expected_anchor_generation: u64,
+        already_committed: bool,
+    ) -> Result<()> {
         ensure!(
             !data_rlp.is_empty(),
             "PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"
@@ -208,7 +225,14 @@ impl PillarChainState {
             .checked_add(1)
             .ok_or_else(|| anyhow!("current pillar anchor generation overflow"))?;
 
-        save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)?;
+        if already_committed {
+            ensure!(
+                self.storage.pillar().current_data_rlp()?.as_deref() == Some(data_rlp.as_slice()),
+                "PRODUCTION_PILLAR_ANCHOR_DURABLE_ROW_MISMATCH"
+            );
+        } else {
+            save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)?;
+        }
         *snapshot = PillarChainStateSnapshot {
             anchor: Some(anchor),
             current_data_rlp: data_rlp,
@@ -339,6 +363,15 @@ impl PillarChainService {
     ) -> Result<()> {
         self.lock(true)?
             .apply_current_block_data(data_rlp, expected_anchor_generation)
+    }
+
+    pub(crate) fn install_committed_current_block_data(
+        &self,
+        data_rlp: Vec<u8>,
+        expected_anchor_generation: u64,
+    ) -> Result<()> {
+        self.lock(true)?
+            .install_committed_current_block_data(data_rlp, expected_anchor_generation)
     }
 
     /// Persists this node's canonical own-vote bytes for restart recovery.
@@ -690,14 +723,9 @@ mod tests {
     use rustaxa_storage::{Config, Storage};
     use rustaxa_types::pillar::CurrentPillarBlockDataDb;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_storage(name: &str) -> Arc<Storage> {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time is available")
-            .as_nanos();
-        let path: PathBuf = std::env::temp_dir().join(format!("{name}_{nonce}"));
+        let path: PathBuf = crate::test_paths::new_path(name);
         Arc::new(Storage::new(Config::new(path)).expect("storage opens"))
     }
 

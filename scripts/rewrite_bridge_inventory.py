@@ -11,12 +11,14 @@ functions do not establish a production bridge caller.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from pathlib import Path
 from typing import Iterable
 
 
 CPP_SUFFIXES = frozenset({".cc", ".cpp", ".h", ".hpp"})
+CXX_ATTRIBUTE = re.compile(r"#\s*\[\s*cxx\s*::\s*bridge\b")
 
 
 def strip_inactive_if_zero(source: str) -> str:
@@ -48,9 +50,9 @@ def strip_inactive_if_zero(source: str) -> str:
             elif kind == "endif" and frames:
                 parent_active, _ = frames.pop()
                 active = parent_active
-            output.append("\n" if line.endswith("\n") else "")
+            output.append("".join("\n" if c == "\n" else " " for c in line))
             continue
-        output.append(line if active else ("\n" if line.endswith("\n") else ""))
+        output.append(line if active else "".join("\n" if c == "\n" else " " for c in line))
     return "".join(output)
 
 
@@ -69,6 +71,7 @@ def strip_comments_and_literals(source: str) -> str:
     block_depth = 0
     quote: str | None = None
     escaped = False
+    raw_pattern = re.compile(r'(?:u8|u|U|L)?R"([^\s()\\]{0,16})\(')
     while index < len(source):
         current = source[index]
         following = source[index + 1] if index + 1 < len(source) else ""
@@ -112,6 +115,13 @@ def strip_comments_and_literals(source: str) -> str:
             output.extend((" ", " "))
             index += 2
             continue
+        if raw := raw_pattern.match(source, index):
+            closing = ")" + raw.group(1) + '"'
+            end = source.find(closing, raw.end())
+            end = len(source) if end < 0 else end + len(closing)
+            output.extend("\n" if c == "\n" else " " for c in source[index:end])
+            index = end
+            continue
         if current in {'"', "'", "`"}:
             quote = current
             output.append(" ")
@@ -120,6 +130,82 @@ def strip_comments_and_literals(source: str) -> str:
         output.append(current)
         index += 1
     return "".join(output)
+
+
+def rust_code(source: str, *, preserve_abi: bool = False) -> str:
+    """Mask Rust literals and comments without changing source positions."""
+    output = list(source)
+    literals: list[tuple[int, int]] = []
+    raw_pattern = re.compile(r'(?:br|r)(#*)"')
+    char_pattern = re.compile(r"'(?:[^'\\\n]|\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.))'")
+    index = 0
+    while index < len(source):
+        start = index
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            index = len(source) if end < 0 else end
+        elif source.startswith("/*", index):
+            index += 2
+            depth = 1
+            while index < len(source) and depth:
+                if source.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif source.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            if depth:
+                raise ValueError("unclosed Rust block comment")
+        elif raw := raw_pattern.match(source, index):
+            closing = '"' + raw.group(1)
+            end = source.find(closing, raw.end())
+            if end < 0:
+                raise ValueError("unclosed Rust raw string")
+            index = end + len(closing)
+            literals.append((start, index))
+        elif source[index] == '"':
+            index += 1
+            while index < len(source):
+                if source[index] == "\\":
+                    index += 2
+                elif source[index] == '"':
+                    index += 1
+                    break
+                else:
+                    index += 1
+            else:
+                raise ValueError("unclosed Rust string")
+            literals.append((start, index))
+        elif source[index] == "'" and (char := char_pattern.match(source, index)):
+            index = char.end()
+        else:
+            index += 1
+            continue
+        output[start:index] = ["\n" if c == "\n" else " " for c in source[start:index]]
+    if preserve_abi:
+        masked = "".join(output)
+        for start, end in literals:
+            if re.search(r"\bextern\s*$", masked[:start]):
+                literal = source[start:end]
+                if literal in {'"Rust"', '"C++"'}:
+                    output[start:end] = literal
+                else:
+                    output[start] = "?"
+    return "".join(output)
+
+
+def block_end(source: str, opening: int) -> int:
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise ValueError("CXX block braces are unbalanced")
 
 
 def cxx_module(source: str) -> str:
@@ -131,11 +217,11 @@ def cxx_module(source: str) -> str:
     translation units without hiding later declarations.
     """
 
-    stripped = strip_comments_and_literals(source)
+    stripped = rust_code(source, preserve_abi=True)
     bodies: list[str] = []
     cursor = 0
-    while (marker := stripped.find("#[cxx::bridge", cursor)) >= 0:
-        opening = stripped.find("{", marker)
+    while marker := CXX_ATTRIBUTE.search(stripped, cursor):
+        opening = stripped.find("{", marker.end())
         if opening < 0:
             raise ValueError("CXX bridge module opening brace is missing")
         depth = 0
@@ -163,33 +249,67 @@ def ffi_functions(module: str) -> list[tuple[str, str]]:
     """
 
     records: list[tuple[str, str]] = []
-    pattern = re.compile(r"(?m)^\s*pub\s+(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)\s*\(")
-    for match in pattern.finditer(module):
-        round_depth = 0
-        square_depth = 0
-        curly_depth = 0
-        terminating = -1
-        for index in range(match.end() - 1, len(module)):
-            character = module[index]
-            if character == "(":
-                round_depth += 1
-            elif character == ")":
-                round_depth -= 1
-            elif character == "[":
-                square_depth += 1
-            elif character == "]":
-                square_depth -= 1
-            elif character == "{":
-                curly_depth += 1
-            elif character == "}":
-                curly_depth -= 1
-            elif character == ";" and round_depth == square_depth == curly_depth == 0:
-                terminating = index
-                break
-        if terminating < 0:
-            raise ValueError(f"CXX function {match.group(1)} has no terminating semicolon")
-        records.append((match.group(1), module[match.start() : terminating + 1]))
+    cursor = 0
+    for extern in re.finditer(r"\bextern\b", module):
+        if extern.start() < cursor:
+            continue
+        abi = re.match(r'extern\s+"(Rust|C\+\+)"\s*\{', module[extern.start():])
+        if abi is None:
+            raise ValueError("unsupported or malformed CXX extern ABI")
+        opening = extern.start() + abi.end() - 1
+        closing = block_end(module, opening)
+        cursor = closing + 1
+        if abi.group(1) != "Rust":
+            continue
+        body = module[opening + 1:closing]
+        pattern = re.compile(
+            r"\b(?:pub\s+)?(?:unsafe\s+)?(?P<keyword>fn)\s+([A-Za-z_]\w*)"
+            r"\s*(?:<[^{};()]*>)?\s*\("
+        )
+        position = 0
+        recognized = set()
+        for match in pattern.finditer(body):
+            if match.start() < position:
+                continue
+            if body[:match.start()].count("{") != body[:match.start()].count("}"):
+                raise ValueError("nested CXX Rust function declaration")
+            recognized.add(match.start("keyword"))
+            round_depth = square_depth = 0
+            for index in range(match.end() - 1, len(body)):
+                if index > match.end() and re.compile(r"\bfn\b").match(body, index):
+                    raise ValueError("CXX function has no terminating semicolon")
+                character = body[index]
+                if character == "(":
+                    round_depth += 1
+                elif character == ")":
+                    round_depth -= 1
+                elif character == "[":
+                    square_depth += 1
+                elif character == "]":
+                    square_depth -= 1
+                elif character in "{}" or round_depth < 0 or square_depth < 0:
+                    raise ValueError("invalid CXX Rust function declaration")
+                elif character == ";" and round_depth == square_depth == 0:
+                    records.append((match.group(2), body[match.start():index + 1]))
+                    position = index + 1
+                    break
+            else:
+                raise ValueError(f"CXX function {match.group(2)} has no terminating semicolon")
+        if recognized != {token.start() for token in re.finditer(r"\bfn\b", body)}:
+            raise ValueError("unsupported CXX Rust function declaration")
     return records
+
+
+def safe_scan_path(path: Path) -> None:
+    if "AI.md" in path.parts or ".." in path.parts:
+        raise ValueError("excluded scan path")
+    current = Path(path.anchor) if path.is_absolute() else Path(".")
+    for part in path.parts:
+        if part in (path.anchor, "."):
+            continue
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"symlink scan path is not supported: {current}")
 
 
 def cpp_files(roots: Iterable[Path]) -> Iterable[Path]:
@@ -197,12 +317,21 @@ def cpp_files(roots: Iterable[Path]) -> Iterable[Path]:
 
     files: set[Path] = set()
     for root in roots:
+        if "AI.md" in root.parts:
+            continue
+        safe_scan_path(root)
         if not root.exists():
             continue
         if root.is_file() and root.suffix in CPP_SUFFIXES:
             files.add(root)
         elif root.is_dir():
-            files.update(path for path in root.rglob("*") if path.suffix in CPP_SUFFIXES)
+            for directory, subdirs, names in os.walk(root, followlinks=False):
+                subdirs[:] = [name for name in subdirs if name != "AI.md"]
+                for name in (*subdirs, *names):
+                    if name != "AI.md" and Path(name).suffix in CPP_SUFFIXES:
+                        candidate = Path(directory) / name
+                        safe_scan_path(candidate)
+                        files.add(candidate)
     yield from sorted(files)
 
 
@@ -270,6 +399,95 @@ def include_context(
     return "\n".join(context)
 
 
+
+def rust_modules(path: Path) -> list[str]:
+    """Inventory top-level external modules, including explicit path attributes.
+
+    Only simple local .rs filenames are supported by this audit. Unsupported
+    paths fail closed instead of escaping the audited source directory.
+    """
+    source = path.read_text(encoding="utf-8")
+    stripped = rust_code(source)
+    pattern = re.compile(
+        r"(?m)^[ \t]*(?P<attrs>(?:\#\s*\[[^\]]*\]\s*)*)"
+        r"(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?P<name>[a-z0-9_]+)\s*;"
+    )
+    depths = [0] * (len(stripped) + 1)
+    depth = 0
+    for i, char in enumerate(stripped):
+        depths[i] = depth
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("unbalanced Rust module braces")
+    if depth:
+        raise ValueError("unbalanced Rust module braces")
+    records = set()
+    for match in pattern.finditer(stripped):
+        if depths[match.start()] != 0:
+            continue
+        attrs_start, attrs_end = match.span("attrs")
+        attrs_stripped = stripped[attrs_start:attrs_end]
+        attrs_source = source[attrs_start:attrs_end]
+        path_attributes = list(re.finditer(r"#\s*\[\s*path\b[^\]]*\]", attrs_stripped))
+        if len(path_attributes) > 1:
+            raise ValueError("duplicate Rust path attributes")
+        # A path nested inside cfg_attr or another unsupported attribute must
+        # not silently fall back to the module-name filename.
+        path_tokens = list(re.finditer(r"\bpath\s*=", attrs_stripped))
+        if len(path_tokens) != len(path_attributes):
+            raise ValueError("unsupported conditional Rust path attribute")
+        filename = match.group("name") + ".rs"
+        if path_attributes:
+            attribute = path_attributes[0]
+            raw = attrs_source[attribute.start():attribute.end()]
+            parsed = re.fullmatch(r'#\s*\[\s*path\s*=\s*"([a-z0-9_]+\.rs)"\s*\]', raw)
+            if not parsed:
+                raise ValueError("unsupported Rust path attribute")
+            filename = parsed.group(1)
+        module_file = path.parent / filename
+        if module_file.is_symlink():
+            raise ValueError(f"Rust module file is a symlink: {filename}")
+        if not module_file.is_file():
+            raise ValueError(f"Rust module file missing: {filename}")
+        record = f"rust/crates/rustaxa-bridge/src/{filename}"
+        if record in records:
+            raise ValueError(f"duplicate Rust module file: {filename}")
+        records.add(record)
+    return sorted(records)
+
+
+def cxx_sources(path: Path) -> str:
+    """Collect validated bridge modules from the crate module declarations."""
+    paths = [path, *(path.parent / Path(record).name for record in rust_modules(path))]
+    sources = []
+    for module_path in paths:
+        safe_scan_path(module_path)
+        source = module_path.read_text(encoding="utf-8")
+        if CXX_ATTRIBUTE.search(rust_code(source)):
+            ffi_functions(cxx_module(source))
+            sources.append(source)
+    if not sources:
+        raise ValueError("CXX bridge marker is missing")
+    return "\n".join(sources)
+
+
+def cpp_consumers(roots: Iterable[Path]) -> list[str]:
+    """Find active generated bridge header includes, once per source file."""
+    records = []
+    header = re.compile(r'\s*[<"]rustaxa-bridge/(?:src/)?[a-zA-Z_][a-zA-Z0-9_]*\.rs\.h[>"]')
+    for path in cpp_files(roots):
+        source = path.read_text(encoding="utf-8")
+        masked = strip_comments_and_literals(source)
+        for directive in re.finditer(r"(?m)^[ \t]*#[ \t]*include\b", masked):
+            if header.match(source, directive.end()):
+                records.append(path.as_posix())
+                break
+    return sorted(records)
+
+
 def main() -> None:
     """Parse CLI arguments and emit the requested deterministic inventory."""
 
@@ -277,6 +495,9 @@ def main() -> None:
     parser.add_argument(
         "mode",
         choices=(
+            "rust-modules",
+            "cxx-sources",
+            "cpp-consumers",
             "ffi-functions",
             "ffi-function-count",
             "ffi-carriers",
@@ -289,6 +510,29 @@ def main() -> None:
     parser.add_argument("--ffi", type=Path)
     parser.add_argument("paths", nargs="+", type=Path)
     args = parser.parse_args()
+    if any("AI.md" in path.parts for path in args.paths) or (
+        args.ffi is not None and "AI.md" in args.ffi.parts
+    ):
+        parser.error("excluded path component")
+    for path in (*args.paths, *((args.ffi,) if args.ffi is not None else ())):
+        safe_scan_path(path)
+
+    if args.mode == "cpp-consumers":
+        for record in cpp_consumers(args.paths):
+            print(record)
+        return
+
+    if args.mode == "cxx-sources":
+        if len(args.paths) != 1:
+            parser.error("cxx-sources accepts exactly one crate root")
+        print(cxx_sources(args.paths[0]))
+        return
+
+    if args.mode == "rust-modules":
+        if len(args.paths) != 1:
+            parser.error("rust-modules accepts exactly one Rust source")
+        print("\n".join(rust_modules(args.paths[0])))
+        return
 
     if args.mode.startswith("ffi-"):
         if len(args.paths) != 1:

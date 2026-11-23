@@ -38,10 +38,10 @@ include a generated bridge header.
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 4621 |
+| `bridge_lines` | 4607 |
 | `shim_lines` | 0 |
 | `cxx_functions` | 74 |
-| `cxx_carriers` | 124 |
+| `cxx_carriers` | 122 |
 | `cxx_handles` | 7 |
 | `shim_directories` | 0 |
 | `granular_flags` | 0 |
@@ -49,11 +49,28 @@ include a generated bridge header.
 | `compatibility_constructor_calls` | 0 |
 | `non_test_cpp_consumers` | 16 |
 
+Consensus bootstrap facts cross CXX in one owned configuration. Queue capacity
+uses a scalar instead of a separate one-field carrier, so the carrier count stays
+at 124. Direct field conversion preserves native validation order and reduces
+the Rust bridge footprint from 4,618 to 4,612 lines. All three C++ bootstrap
+callers use the same configuration carrier.
+
 The final concrete-state lifetime cut deleted the complete Rust-mode `FinalChain` overlay and the last shim directory.
 One private `ExternalEvmStateOwner` holds StateAPI behind exact operations. Rust retains request identity, ordered native
 and EVM execution validation, rewards planning, commit approval, crash recovery, and publication. Public transaction
 submission derives account and finalized-location facts from one native head. No CXX StateAPI handle, execution session,
 action loop, range executor, service locator, general storage handle, or C++ publication authority remains.
+
+StateAPI epochs cross the existing leaf operations as plain scalars; discard
+borrows marker bytes without a new carrier or owned clone. Native execution
+acceptance owns epoch and committed-descriptor validation, while the bridge keeps
+the result-count check required before its positional conversion. Finalized-period
+RLP assembly belongs to the native types codec, and certificate bytes/weights are
+moved together without cloning. This keeps the epoch integration below the prior
+bridge-line budget with unchanged carrier/function/handle counts. System-fact
+request identity is validated by the native owner before planning, which also
+binds pillar/address/gas policy; the bridge carries StateAPI observations and
+transport failure only.
 
 ## CXX Box Factory Inventory
 
@@ -62,6 +79,8 @@ action loop, range executor, service locator, general storage handle, or C++ pub
 | `create_consensus_network_api` | Supported boundary | Tarcap transport | Delete when no C++ transport client remains. |
 | `create_consensus_query_api` | Supported boundary | RPC, GraphQL, debug/Test RPC, stats, light plugin | Delete when public formatting no longer crosses CXX. |
 | `create_consensus_application` | Supported boundary | `App` and Rust-mode fixture bootstrap | Delete when application bootstrap itself moves native. |
+
+| `create_production_application` | Supported boundary | Qualified native application factory | Consolidate with the application root after complete node adoption. |
 
 ## Partial-Service Factory Inventory
 
@@ -74,6 +93,9 @@ action loop, range executor, service locator, general storage handle, or C++ pub
 | --- | --- | --- |
 | `consensus_application_run_storage_conformance_v1` | `tests/storage_conformance/storage_conformance_runner.cpp`, `tests/rust/storage/test_storage.cpp` | Delete when the differential no longer requires a production-root transcript. |
 
+| `production_fixture_disk_step` | `tests/rust/production_owner_test.cpp` | Delete with the offline fixture and restart test. |
+| `production_fixture_live_step` | `tests/rust/production_owner_test.cpp` | Delete with the offline App and scheduler test. |
+
 ## Rust Bridge Modules
 
 | Module | Surface | Named consumers | Classification | Removal or narrowing condition |
@@ -82,8 +104,8 @@ action loop, range executor, service locator, general storage handle, or C++ pub
 | `rust/crates/rustaxa-bridge/src/consensus_host_ports.rs` | Plain conversion for exact application host requests/reports | App process, transport, executor, and public-event adapters | External boundary | Keep conversion/error mapping only. |
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Application bootstrap and public transaction submission | App, RPC, GraphQL, fixtures | Bootstrap/application boundary | Delete when bootstrap/submission no longer crosses CXX. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and plain carriers | All C++ bridge clients | External boundary | Delete each declaration with its exact last caller. |
-| `rust/crates/rustaxa-bridge/src/final_chain.rs` | Plain bootstrap conversion for genesis/rewards/FinalChain configuration | Application construction | Bootstrap/application boundary | Delete when bootstrap accepts native configuration directly; no runtime state may enter this module. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | Canonical packet operations and typed transport effects/reports | Network/tarcap | External boundary | Keep canonical payloads, immutable peer facts, exact effects, and reports only. |
+| `rust/crates/rustaxa-bridge/src/production_ffi.rs` | Closed qualified application construction | Qualified native factory and offline runtime fixtures | Bootstrap/application boundary | Merge with the application root after complete node adoption; retain no service locator or caller-supplied state facts. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | Bounded consensus query DTOs | Public-read clients | Public-client boundary | Delete a DTO with its last formatter; never expose private runtime state. |
 | `rust/crates/rustaxa-bridge/src/storage_admin.rs` | Light prune and conformance root tasks | Light plugin and conformance fixtures | External boundary | Keep exact tasks only; never expose storage authority. |
 
@@ -98,6 +120,7 @@ action loop, range executor, service locator, general storage handle, or C++ pub
 | `ConsensusSignerPort` | `application_host_ffi.rs` | App-owned wallet adapter | Physical executor | Delete when key custody/signing moves native. |
 | `ConsensusTransportPort` | `application_host_ffi.rs` | App/tarcap transport adapter | Physical executor | Delete when packet transport moves native. |
 | `ExternalEvmPort` | `application_host_ffi.rs` | Application-owned `ExternalEvmStateOwner` | Physical executor | Delete when concrete EVM/StateAPI moves native. |
+
 
 ## Non-Test C++ Bridge Consumers
 
@@ -119,6 +142,7 @@ action loop, range executor, service locator, general storage handle, or C++ pub
 | `libraries/core_libs/network/rpc/eth/Eth.h` | Public reads/submission | Delete include when Ethereum RPC formatting/mutation moves native. |
 | `libraries/core_libs/network/src/consensus_network_api.cpp` | Tarcap transport | Delete include when physical transport no longer crosses CXX. |
 | `libraries/plugin/rpc/src/rpc.cpp` | Public reads/submission | Delete include when RPC plugin wiring moves native. |
+
 
 ## Consensus Shim Directories
 

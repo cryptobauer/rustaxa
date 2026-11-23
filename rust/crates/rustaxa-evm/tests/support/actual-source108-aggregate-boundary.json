@@ -1,0 +1,1938 @@
+{
+  "initial_go_effect_line_sha256": "38a944709b3fa3cdcfc4a6ddc535dced8d64aa0b884042ba22e4e1c42eaf6986",
+  "initial_go_effect_period": 5730002,
+  "initial_slashing_raw_writes": [
+    {
+      "address": "00000000000000000000000000000000000000ee",
+      "key": "0000000000000000000000000000000000000000000000000000000000000002",
+      "value": "d59458da990a8f4a3a6ca7cb6315d68a140105917352",
+      "value_nil": false
+    },
+    {
+      "address": "00000000000000000000000000000000000000ee",
+      "key": "e932daf5c76baf666702fc46ac446e9146eba213e750933c2029c8bac499f2c0",
+      "value": "8359ed55",
+      "value_nil": false
+    },
+    {
+      "address": "00000000000000000000000000000000000000ee",
+      "key": "0000000000000000000000000000000000000000000000000000000000000002",
+      "value": "d59458da990a8f4a3a6ca7cb6315d68a140105917352",
+      "value_nil": false
+    },
+    {
+      "address": "00000000000000000000000000000000000000ee",
+      "key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+      "value": "01",
+      "value_nil": false
+    }
+  ],
+  "jail_scalar_slot": {
+    "key": "e932daf5c76baf666702fc46ac446e9146eba213e750933c2029c8bac499f2c0",
+    "period": 5893461,
+    "value": "8359ed55"
+  },
+  "list_slot": {
+    "cleaned": "c0",
+    "key": "0000000000000000000000000000000000000000000000000000000000000002",
+    "nonempty": "d59458da990a8f4a3a6ca7cb6315d68a140105917352"
+  },
+  "owner_result_sha256": "222adef63cd8407219af57d13a455ba6587101edc4d15cda6dd4bff8c3af3d36",
+  "owner_sha256": "4a380868a82a574881b32b1da1ac294787eb963a2de5897a4c4e63bfbe36dabe",
+  "proof_marker_slot": {
+    "key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+    "value": "01"
+  },
+  "reader_facts": [
+    {
+      "delayed_coordinate": 5893455,
+      "delayed_is_jailed": true,
+      "delayed_list": [
+        "0x58da990a8f4a3a6ca7cb6315d68a140105917352"
+      ],
+      "direct_factory_actual": 5893460,
+      "direct_factory_requested": [
+        5893455,
+        5893455,
+        5893455
+      ],
+      "direct_is_jailed": true,
+      "direct_list": [
+        "0x58da990a8f4a3a6ca7cb6315d68a140105917352"
+      ],
+      "factory_periods": [
+        5893455,
+        5893455,
+        5893455,
+        5893455,
+        5893455
+      ],
+      "head": 5893460,
+      "individual_votes": [
+        1003,
+        1000,
+        1000
+      ],
+      "jail_block": 5893461,
+      "jail_present": true,
+      "jail_value": "8359ed55",
+      "origin": {
+        "complete": true,
+        "events": [
+          {
+            "kind": "factory",
+            "ordinal": 0,
+            "phase": "setup",
+            "requested": 5893455,
+            "returned_kind": "historical",
+            "returned_period": 5893455,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 570
+          },
+          {
+            "kind": "factory",
+            "ordinal": 1,
+            "phase": "setup",
+            "requested": 5893455,
+            "returned_kind": "historical",
+            "returned_period": 5893455,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 570
+          },
+          {
+            "kind": "factory",
+            "ordinal": 2,
+            "phase": "setup",
+            "requested": 5893455,
+            "returned_kind": "historical",
+            "returned_period": 5893455,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 570
+          },
+          {
+            "kind": "factory",
+            "ordinal": 3,
+            "phase": "setup",
+            "requested": 5893455,
+            "returned_kind": "historical",
+            "returned_period": 5893455,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 570
+          },
+          {
+            "kind": "factory",
+            "ordinal": 4,
+            "phase": "setup",
+            "requested": 5893455,
+            "returned_kind": "historical",
+            "returned_period": 5893455,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 570
+          },
+          {
+            "kind": "factory",
+            "ordinal": 5,
+            "phase": "setup",
+            "requested": 5893455,
+            "returned_kind": "historical",
+            "returned_period": 5893460,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 570
+          },
+          {
+            "kind": "factory",
+            "ordinal": 6,
+            "phase": "setup",
+            "requested": 5893455,
+            "returned_kind": "historical",
+            "returned_period": 5893460,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 570
+          },
+          {
+            "kind": "factory",
+            "ordinal": 7,
+            "phase": "setup",
+            "requested": 5893455,
+            "returned_kind": "historical",
+            "returned_period": 5893460,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 570
+          }
+        ],
+        "token": 570
+      },
+      "proof_key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+      "proof_present": true,
+      "proof_value": "01",
+      "root": "4512acf292d9c5474d73b3125790a099584c558d9969fc8ccec1e3061afc0e58",
+      "total_votes": 2000
+    },
+    {
+      "delayed_coordinate": 5893456,
+      "delayed_is_jailed": true,
+      "delayed_list": [
+        "0x58da990a8f4a3a6ca7cb6315d68a140105917352"
+      ],
+      "direct_factory_actual": 5893461,
+      "direct_factory_requested": [
+        5893456,
+        5893456,
+        5893456
+      ],
+      "direct_is_jailed": true,
+      "direct_list": [],
+      "factory_periods": [
+        5893456,
+        5893456,
+        5893456,
+        5893456,
+        5893456
+      ],
+      "head": 5893461,
+      "individual_votes": [
+        1003,
+        1000,
+        1000
+      ],
+      "jail_block": 5893461,
+      "jail_present": true,
+      "jail_value": "8359ed55",
+      "origin": {
+        "complete": true,
+        "events": [
+          {
+            "kind": "factory",
+            "ordinal": 0,
+            "phase": "setup",
+            "requested": 5893456,
+            "returned_kind": "historical",
+            "returned_period": 5893456,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 571
+          },
+          {
+            "kind": "factory",
+            "ordinal": 1,
+            "phase": "setup",
+            "requested": 5893456,
+            "returned_kind": "historical",
+            "returned_period": 5893456,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 571
+          },
+          {
+            "kind": "factory",
+            "ordinal": 2,
+            "phase": "setup",
+            "requested": 5893456,
+            "returned_kind": "historical",
+            "returned_period": 5893456,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 571
+          },
+          {
+            "kind": "factory",
+            "ordinal": 3,
+            "phase": "setup",
+            "requested": 5893456,
+            "returned_kind": "historical",
+            "returned_period": 5893456,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 571
+          },
+          {
+            "kind": "factory",
+            "ordinal": 4,
+            "phase": "setup",
+            "requested": 5893456,
+            "returned_kind": "historical",
+            "returned_period": 5893456,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 571
+          },
+          {
+            "kind": "factory",
+            "ordinal": 5,
+            "phase": "setup",
+            "requested": 5893456,
+            "returned_kind": "historical",
+            "returned_period": 5893461,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 571
+          },
+          {
+            "kind": "factory",
+            "ordinal": 6,
+            "phase": "setup",
+            "requested": 5893456,
+            "returned_kind": "historical",
+            "returned_period": 5893461,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 571
+          },
+          {
+            "kind": "factory",
+            "ordinal": 7,
+            "phase": "setup",
+            "requested": 5893456,
+            "returned_kind": "historical",
+            "returned_period": 5893461,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 571
+          }
+        ],
+        "token": 571
+      },
+      "proof_key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+      "proof_present": true,
+      "proof_value": "01",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "total_votes": 2000
+    },
+    {
+      "delayed_coordinate": 5893457,
+      "delayed_is_jailed": false,
+      "delayed_list": [
+        "0x58da990a8f4a3a6ca7cb6315d68a140105917352"
+      ],
+      "direct_factory_actual": 5893462,
+      "direct_factory_requested": [
+        5893457,
+        5893457,
+        5893457
+      ],
+      "direct_is_jailed": false,
+      "direct_list": [],
+      "factory_periods": [
+        5893457,
+        5893457,
+        5893457,
+        5893457,
+        5893457
+      ],
+      "head": 5893462,
+      "individual_votes": [
+        1003,
+        1000,
+        1000
+      ],
+      "jail_block": 5893461,
+      "jail_present": true,
+      "jail_value": "8359ed55",
+      "origin": {
+        "complete": true,
+        "events": [
+          {
+            "kind": "factory",
+            "ordinal": 0,
+            "phase": "setup",
+            "requested": 5893457,
+            "returned_kind": "historical",
+            "returned_period": 5893457,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 572
+          },
+          {
+            "kind": "factory",
+            "ordinal": 1,
+            "phase": "setup",
+            "requested": 5893457,
+            "returned_kind": "historical",
+            "returned_period": 5893457,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 572
+          },
+          {
+            "kind": "factory",
+            "ordinal": 2,
+            "phase": "setup",
+            "requested": 5893457,
+            "returned_kind": "historical",
+            "returned_period": 5893457,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 572
+          },
+          {
+            "kind": "factory",
+            "ordinal": 3,
+            "phase": "setup",
+            "requested": 5893457,
+            "returned_kind": "historical",
+            "returned_period": 5893457,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 572
+          },
+          {
+            "kind": "factory",
+            "ordinal": 4,
+            "phase": "setup",
+            "requested": 5893457,
+            "returned_kind": "historical",
+            "returned_period": 5893457,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 572
+          },
+          {
+            "kind": "factory",
+            "ordinal": 5,
+            "phase": "setup",
+            "requested": 5893457,
+            "returned_kind": "historical",
+            "returned_period": 5893462,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 572
+          },
+          {
+            "kind": "factory",
+            "ordinal": 6,
+            "phase": "setup",
+            "requested": 5893457,
+            "returned_kind": "historical",
+            "returned_period": 5893462,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 572
+          },
+          {
+            "kind": "factory",
+            "ordinal": 7,
+            "phase": "setup",
+            "requested": 5893457,
+            "returned_kind": "historical",
+            "returned_period": 5893462,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 572
+          }
+        ],
+        "token": 572
+      },
+      "proof_key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+      "proof_present": true,
+      "proof_value": "01",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "total_votes": 2000
+    },
+    {
+      "delayed_coordinate": 5893460,
+      "delayed_is_jailed": false,
+      "delayed_list": [
+        "0x58da990a8f4a3a6ca7cb6315d68a140105917352"
+      ],
+      "direct_factory_actual": 5893465,
+      "direct_factory_requested": [
+        5893460,
+        5893460,
+        5893460
+      ],
+      "direct_is_jailed": false,
+      "direct_list": [],
+      "factory_periods": [
+        5893460,
+        5893460,
+        5893460,
+        5893460,
+        5893460
+      ],
+      "head": 5893465,
+      "individual_votes": [
+        1003,
+        1000,
+        1000
+      ],
+      "jail_block": 5893461,
+      "jail_present": true,
+      "jail_value": "8359ed55",
+      "origin": {
+        "complete": true,
+        "events": [
+          {
+            "kind": "factory",
+            "ordinal": 0,
+            "phase": "setup",
+            "requested": 5893460,
+            "returned_kind": "historical",
+            "returned_period": 5893460,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 573
+          },
+          {
+            "kind": "factory",
+            "ordinal": 1,
+            "phase": "setup",
+            "requested": 5893460,
+            "returned_kind": "historical",
+            "returned_period": 5893460,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 573
+          },
+          {
+            "kind": "factory",
+            "ordinal": 2,
+            "phase": "setup",
+            "requested": 5893460,
+            "returned_kind": "historical",
+            "returned_period": 5893460,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 573
+          },
+          {
+            "kind": "factory",
+            "ordinal": 3,
+            "phase": "setup",
+            "requested": 5893460,
+            "returned_kind": "historical",
+            "returned_period": 5893460,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 573
+          },
+          {
+            "kind": "factory",
+            "ordinal": 4,
+            "phase": "setup",
+            "requested": 5893460,
+            "returned_kind": "historical",
+            "returned_period": 5893460,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 573
+          },
+          {
+            "kind": "factory",
+            "ordinal": 5,
+            "phase": "setup",
+            "requested": 5893460,
+            "returned_kind": "historical",
+            "returned_period": 5893465,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 573
+          },
+          {
+            "kind": "factory",
+            "ordinal": 6,
+            "phase": "setup",
+            "requested": 5893460,
+            "returned_kind": "historical",
+            "returned_period": 5893465,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 573
+          },
+          {
+            "kind": "factory",
+            "ordinal": 7,
+            "phase": "setup",
+            "requested": 5893460,
+            "returned_kind": "historical",
+            "returned_period": 5893465,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 573
+          }
+        ],
+        "token": 573
+      },
+      "proof_key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+      "proof_present": true,
+      "proof_value": "01",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "total_votes": 2000
+    },
+    {
+      "delayed_coordinate": 5893461,
+      "delayed_is_jailed": false,
+      "delayed_list": [],
+      "direct_factory_actual": 5893466,
+      "direct_factory_requested": [
+        5893461,
+        5893461,
+        5893461
+      ],
+      "direct_is_jailed": false,
+      "direct_list": [],
+      "factory_periods": [
+        5893461,
+        5893461,
+        5893461,
+        5893461,
+        5893461
+      ],
+      "head": 5893466,
+      "individual_votes": [
+        1003,
+        1000,
+        1000
+      ],
+      "jail_block": 5893461,
+      "jail_present": true,
+      "jail_value": "8359ed55",
+      "origin": {
+        "complete": true,
+        "events": [
+          {
+            "kind": "factory",
+            "ordinal": 0,
+            "phase": "setup",
+            "requested": 5893461,
+            "returned_kind": "historical",
+            "returned_period": 5893461,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 574
+          },
+          {
+            "kind": "factory",
+            "ordinal": 1,
+            "phase": "setup",
+            "requested": 5893461,
+            "returned_kind": "historical",
+            "returned_period": 5893461,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 574
+          },
+          {
+            "kind": "factory",
+            "ordinal": 2,
+            "phase": "setup",
+            "requested": 5893461,
+            "returned_kind": "historical",
+            "returned_period": 5893461,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 574
+          },
+          {
+            "kind": "factory",
+            "ordinal": 3,
+            "phase": "setup",
+            "requested": 5893461,
+            "returned_kind": "historical",
+            "returned_period": 5893461,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 574
+          },
+          {
+            "kind": "factory",
+            "ordinal": 4,
+            "phase": "setup",
+            "requested": 5893461,
+            "returned_kind": "historical",
+            "returned_period": 5893461,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 574
+          },
+          {
+            "kind": "factory",
+            "ordinal": 5,
+            "phase": "setup",
+            "requested": 5893461,
+            "returned_kind": "historical",
+            "returned_period": 5893466,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 574
+          },
+          {
+            "kind": "factory",
+            "ordinal": 6,
+            "phase": "setup",
+            "requested": 5893461,
+            "returned_kind": "historical",
+            "returned_period": 5893466,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 574
+          },
+          {
+            "kind": "factory",
+            "ordinal": 7,
+            "phase": "setup",
+            "requested": 5893461,
+            "returned_kind": "historical",
+            "returned_period": 5893466,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 574
+          }
+        ],
+        "token": 574
+      },
+      "proof_key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+      "proof_present": true,
+      "proof_value": "01",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "total_votes": 3003
+    },
+    {
+      "delayed_coordinate": 5893462,
+      "delayed_is_jailed": false,
+      "delayed_list": [],
+      "direct_factory_actual": 5893467,
+      "direct_factory_requested": [
+        5893462,
+        5893462,
+        5893462
+      ],
+      "direct_is_jailed": false,
+      "direct_list": [],
+      "factory_periods": [
+        5893462,
+        5893462,
+        5893462,
+        5893462,
+        5893462
+      ],
+      "head": 5893467,
+      "individual_votes": [
+        1003,
+        1000,
+        1000
+      ],
+      "jail_block": 5893461,
+      "jail_present": true,
+      "jail_value": "8359ed55",
+      "origin": {
+        "complete": true,
+        "events": [
+          {
+            "kind": "factory",
+            "ordinal": 0,
+            "phase": "setup",
+            "requested": 5893462,
+            "returned_kind": "historical",
+            "returned_period": 5893462,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 575
+          },
+          {
+            "kind": "factory",
+            "ordinal": 1,
+            "phase": "setup",
+            "requested": 5893462,
+            "returned_kind": "historical",
+            "returned_period": 5893462,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 575
+          },
+          {
+            "kind": "factory",
+            "ordinal": 2,
+            "phase": "setup",
+            "requested": 5893462,
+            "returned_kind": "historical",
+            "returned_period": 5893462,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 575
+          },
+          {
+            "kind": "factory",
+            "ordinal": 3,
+            "phase": "setup",
+            "requested": 5893462,
+            "returned_kind": "historical",
+            "returned_period": 5893462,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 575
+          },
+          {
+            "kind": "factory",
+            "ordinal": 4,
+            "phase": "setup",
+            "requested": 5893462,
+            "returned_kind": "historical",
+            "returned_period": 5893462,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 575
+          },
+          {
+            "kind": "factory",
+            "ordinal": 5,
+            "phase": "setup",
+            "requested": 5893462,
+            "returned_kind": "historical",
+            "returned_period": 5893467,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 575
+          },
+          {
+            "kind": "factory",
+            "ordinal": 6,
+            "phase": "setup",
+            "requested": 5893462,
+            "returned_kind": "historical",
+            "returned_period": 5893467,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 575
+          },
+          {
+            "kind": "factory",
+            "ordinal": 7,
+            "phase": "setup",
+            "requested": 5893462,
+            "returned_kind": "historical",
+            "returned_period": 5893467,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 575
+          }
+        ],
+        "token": 575
+      },
+      "proof_key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+      "proof_present": true,
+      "proof_value": "01",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "total_votes": 3003
+    },
+    {
+      "delayed_coordinate": 5893463,
+      "delayed_is_jailed": false,
+      "delayed_list": [],
+      "direct_factory_actual": 5893468,
+      "direct_factory_requested": [
+        5893463,
+        5893463,
+        5893463
+      ],
+      "direct_is_jailed": false,
+      "direct_list": [],
+      "factory_periods": [
+        5893463,
+        5893463,
+        5893463,
+        5893463,
+        5893463
+      ],
+      "head": 5893468,
+      "individual_votes": [
+        1003,
+        1000,
+        1000
+      ],
+      "jail_block": 5893461,
+      "jail_present": true,
+      "jail_value": "8359ed55",
+      "origin": {
+        "complete": true,
+        "events": [
+          {
+            "kind": "factory",
+            "ordinal": 0,
+            "phase": "setup",
+            "requested": 5893463,
+            "returned_kind": "historical",
+            "returned_period": 5893463,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 576
+          },
+          {
+            "kind": "factory",
+            "ordinal": 1,
+            "phase": "setup",
+            "requested": 5893463,
+            "returned_kind": "historical",
+            "returned_period": 5893463,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 576
+          },
+          {
+            "kind": "factory",
+            "ordinal": 2,
+            "phase": "setup",
+            "requested": 5893463,
+            "returned_kind": "historical",
+            "returned_period": 5893463,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 576
+          },
+          {
+            "kind": "factory",
+            "ordinal": 3,
+            "phase": "setup",
+            "requested": 5893463,
+            "returned_kind": "historical",
+            "returned_period": 5893463,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 576
+          },
+          {
+            "kind": "factory",
+            "ordinal": 4,
+            "phase": "setup",
+            "requested": 5893463,
+            "returned_kind": "historical",
+            "returned_period": 5893463,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 576
+          },
+          {
+            "kind": "factory",
+            "ordinal": 5,
+            "phase": "setup",
+            "requested": 5893463,
+            "returned_kind": "historical",
+            "returned_period": 5893468,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 576
+          },
+          {
+            "kind": "factory",
+            "ordinal": 6,
+            "phase": "setup",
+            "requested": 5893463,
+            "returned_kind": "historical",
+            "returned_period": 5893468,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 576
+          },
+          {
+            "kind": "factory",
+            "ordinal": 7,
+            "phase": "setup",
+            "requested": 5893463,
+            "returned_kind": "historical",
+            "returned_period": 5893468,
+            "stage": "",
+            "stage_ordinal": 0,
+            "token": 576
+          }
+        ],
+        "token": 576
+      },
+      "proof_key": "f16245ad6112afb1706af00cdf7523afb32841f5ed3b8cb6e7bbf3a72c3e871f",
+      "proof_present": true,
+      "proof_value": "01",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "total_votes": 3003
+    }
+  ],
+  "rows": [
+    {
+      "comparison_line_sha256": "44e5e2987af1b261f1d76bf770be79c38c92a81724dc5382d48ab96e34cb78ad",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893460,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893460,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893460,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893460,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893460,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893460,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893460,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893460,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893460,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893454,
+            5893454
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893459,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 2000,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "4512acf292d9c5474d73b3125790a099584c558d9969fc8ccec1e3061afc0e58",
+      "root": "4512acf292d9c5474d73b3125790a099584c558d9969fc8ccec1e3061afc0e58"
+    },
+    {
+      "comparison_line_sha256": "1733c2a4a62479f8a3db4fca4280ceb0fdeabb74a4bc5423e4a5599ba4f25f0c",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893461,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893461,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893461,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893461,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893461,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893461,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893461,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893461,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893461,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893455,
+            5893455
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893460,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 2000,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "4512acf292d9c5474d73b3125790a099584c558d9969fc8ccec1e3061afc0e58",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be"
+    },
+    {
+      "comparison_line_sha256": "bdf2794b657b379fba0c7b51cf682f3e29f7f7258cf814e2d420fe6e76396ac5",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893462,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893462,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893462,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893462,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893462,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893462,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893462,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893462,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893462,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893456,
+            5893456
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893461,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 2000,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be"
+    },
+    {
+      "comparison_line_sha256": "b54ab6b8d98c2b6737c26c8db6a0918010a5761f2eeb3ba7c41ca20223922ebb",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893463,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893463,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893463,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893463,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893463,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893463,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893463,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893463,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893463,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893457,
+            5893457
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893462,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 2000,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be"
+    },
+    {
+      "comparison_line_sha256": "c0eb08575706dd59936f6cc2e7275161d7131b22005aafc7166d17a8799f48ba",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893464,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893464,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893464,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893464,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893464,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893464,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893464,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893464,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893464,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893458,
+            5893458
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893463,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 2000,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be"
+    },
+    {
+      "comparison_line_sha256": "ad69ce585a433aabc8c6bb559d1f1bd24b898dfc27ff45e53183778a33c81b83",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893465,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893465,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893465,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893465,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893465,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893465,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893465,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893465,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893465,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893459,
+            5893459
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893464,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 2000,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be"
+    },
+    {
+      "comparison_line_sha256": "0a1adc3a78953ecefa63fd69c08ef155cfd51c61805b908874c52349083b467c",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893466,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893466,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893466,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893466,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893466,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893466,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893466,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893466,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893466,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893460,
+            5893460
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893465,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 2000,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be"
+    },
+    {
+      "comparison_line_sha256": "808fc2c2156a258e68a5ea7d47f7947de690784c4c14a0401db250a2c8e36f6c",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893467,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893467,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893467,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893467,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893467,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893467,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893467,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893467,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893467,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893461,
+            5893461
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893466,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 3003,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be"
+    },
+    {
+      "comparison_line_sha256": "7c09bf4d3c38fbd654fd3c6fe0b2a01308b6ed2482041cc23d84c94b734390ef",
+      "input": {
+        "block": {
+          "Author": "0xc171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+          "Difficulty": 0,
+          "GasLimit": 315000000,
+          "Number": 5893468,
+          "Time": 0
+        },
+        "distribution_order": [],
+        "period": 5893468,
+        "planner_source_inputs": {
+          "certificate_candidates": [
+            {
+              "period": 5893468,
+              "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "weight": 334
+            },
+            {
+              "period": 5893468,
+              "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "weight": 333
+            },
+            {
+              "period": 5893468,
+              "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "weight": 333
+            }
+          ],
+          "dag_candidates": [
+            {
+              "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+              "difficulty": 1,
+              "transaction_hashes": []
+            },
+            {
+              "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+              "difficulty": 1,
+              "transaction_hashes": []
+            }
+          ]
+        },
+        "planner_source_inputs_missing": false,
+        "transactions": []
+      },
+      "period": 5893468,
+      "planner_facts": {
+        "certificate_votes": [
+          {
+            "period": 5893468,
+            "validator": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "weight": 334
+          },
+          {
+            "period": 5893468,
+            "validator": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "weight": 333
+          },
+          {
+            "period": 5893468,
+            "validator": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "weight": 333
+          }
+        ],
+        "committee_size": 1000,
+        "dag_blocks": [
+          {
+            "author": "58da990a8f4a3a6ca7cb6315d68a140105917352",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "c171033d5cbff7175f29dfd3a63dda3d6f8f385e",
+            "difficulty": 1,
+            "transaction_hashes": []
+          },
+          {
+            "author": "f288ecaf15790efcac528946963a6db8c3f8211d",
+            "difficulty": 1,
+            "transaction_hashes": []
+          }
+        ],
+        "eligibility_reader": {
+          "factory_periods": [
+            5893462,
+            5893462
+          ],
+          "kind": "actual_delayed_history",
+          "request_period": 5893467,
+          "source_chain": "Stats::getBlockStats -> FinalChain::dposEligibleTotalVoteCount -> state_api -> DPOSDelayedReader -> NewDelayedReader"
+        },
+        "eligible_votes_by_validator": [
+          1003,
+          1000,
+          1000
+        ],
+        "lambda_ms": 1000,
+        "total_eligible_vote_count": 3003,
+        "validator_eligible_vote_count": 1000
+      },
+      "prior_root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be",
+      "root": "2b4c1bae42f7f7ceb575e571e04e85c3c1b14d38a73f28b8b197c1ae09a347be"
+    }
+  ],
+  "scope": "Retained Go tail extract; full authenticated Go fold must independently compare all fields before use as source-bound component data. This is not a saved proof or Rust prefix."
+}

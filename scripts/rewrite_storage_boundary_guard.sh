@@ -1,6 +1,28 @@
 #!/bin/sh
 set -eu
 
+safe_scan_path() {
+  case "/$1/" in */AI.md/*|*/../*) echo "Excluded scan path" >&2; return 1 ;; esac
+  scan_rest="$1"
+  scan_cursor="."
+  case "$scan_rest" in /*) scan_cursor="/"; scan_rest="${scan_rest#/}" ;; esac
+  while [ -n "$scan_rest" ]; do
+    scan_part="${scan_rest%%/*}"
+    if [ -n "$scan_part" ]; then
+      scan_cursor="${scan_cursor%/}/$scan_part"
+      if [ -L "$scan_cursor" ]; then
+        echo "Symlink scan path is not supported" >&2
+        return 1
+      fi
+    fi
+    if [ "$scan_rest" = "$scan_part" ]; then break; fi
+    scan_rest="${scan_rest#*/}"
+  done
+}
+
+
+safe_scan_path "${TMPDIR:-/tmp}" || exit 1
+
 usage() {
   cat <<'EOF'
 Usage: scripts/rewrite_storage_boundary_guard.sh [--base REV] [--self-test]
@@ -143,9 +165,10 @@ scan_diff() {
 check_conformance_fixture_helper_scope() {
   root="${1:-.}"
   helper="consensus_application_run_storage_conformance_v1"
+  safe_scan_path "$root" || return 1
   violations="$(
     find "$root" \
-      \( -path "$root/.git" -o -path "$root/rust/target" -o -path "$root/build" -o -path "$root/.cache" \) -prune -o \
+      \( -name 'AI.md' -o -path "$root/.git" -o -path "$root/rust/target" -o -path "$root/build" -o -path "$root/.cache" \) -prune -o \
       -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o \
                  -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' -o \
                  -name '*.rs' -o -name '*.sh' \) \
@@ -371,13 +394,16 @@ trap 'rm -f "$violations_file"' EXIT
 if [ -n "$base" ]; then
   merge_base="$(git merge-base "$base" HEAD)"
   git diff --unified=0 "$merge_base"..HEAD -- \
-    "*.c" "*.cc" "*.cpp" "*.cxx" "*.h" "*.hh" "*.hpp" "*.hxx" | scan_diff >"$violations_file" || true
+    "*.c" "*.cc" "*.cpp" "*.cxx" "*.h" "*.hh" "*.hpp" "*.hxx" \
+    ':(exclude,glob)AI.md' ':(exclude,glob)**/AI.md' ':(exclude,glob)AI.md/**' ':(exclude,glob)**/AI.md/**' | scan_diff >"$violations_file" || true
 else
   {
     git diff --cached --unified=0 -- \
-      "*.c" "*.cc" "*.cpp" "*.cxx" "*.h" "*.hh" "*.hpp" "*.hxx"
+      "*.c" "*.cc" "*.cpp" "*.cxx" "*.h" "*.hh" "*.hpp" "*.hxx" \
+      ':(exclude,glob)AI.md' ':(exclude,glob)**/AI.md' ':(exclude,glob)AI.md/**' ':(exclude,glob)**/AI.md/**'
     git diff --unified=0 -- \
-      "*.c" "*.cc" "*.cpp" "*.cxx" "*.h" "*.hh" "*.hpp" "*.hxx"
+      "*.c" "*.cc" "*.cpp" "*.cxx" "*.h" "*.hh" "*.hpp" "*.hxx" \
+      ':(exclude,glob)AI.md' ':(exclude,glob)**/AI.md' ':(exclude,glob)AI.md/**' ':(exclude,glob)**/AI.md/**'
   } | scan_diff >"$violations_file" || true
 fi
 

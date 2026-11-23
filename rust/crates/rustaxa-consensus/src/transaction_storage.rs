@@ -305,6 +305,19 @@ pub fn load_stored_transactions(
 pub fn load_non_finalized_recovery_entries(
     storage: &Storage,
 ) -> Result<Vec<NonFinalizedTransactionRecoveryEntry>> {
+    non_finalized_recovery_entries(storage, true)
+}
+
+pub(crate) fn read_non_finalized_recovery_entries(
+    storage: &Storage,
+) -> Result<Vec<NonFinalizedTransactionRecoveryEntry>> {
+    non_finalized_recovery_entries(storage, false)
+}
+
+fn non_finalized_recovery_entries(
+    storage: &Storage,
+    clean_stale: bool,
+) -> Result<Vec<NonFinalizedTransactionRecoveryEntry>> {
     let transaction = storage.transaction();
     let non_finalized = transaction
         .all_nonfinalized_with_hash()
@@ -327,7 +340,7 @@ pub fn load_non_finalized_recovery_entries(
         });
     }
 
-    if !stale_hashes.is_empty() {
+    if clean_stale && !stale_hashes.is_empty() {
         let mut batch = storage.create_write_batch();
         for hash in stale_hashes {
             storage
@@ -349,14 +362,7 @@ mod tests {
     use rustaxa_storage::{Config, Storage};
 
     fn temp_storage(name: &str) -> Storage {
-        let dir = std::env::temp_dir().join(format!(
-            "{name}_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = crate::test_paths::new_path(name);
         Storage::new(Config::new(dir)).unwrap()
     }
 

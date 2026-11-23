@@ -102,6 +102,23 @@ impl<D: DbReader + DbWriter> PillarRepository<D> {
     }
 }
 
+impl crate::Storage {
+    /// Stages a new pillar anchor and removes the previous anchor's local vote.
+    pub fn stage_current_pillar_data(
+        &self,
+        batch: &mut crate::StorageWriteBatch,
+        data: &[u8],
+    ) -> Result<()> {
+        self.batch_put_raw(
+            batch,
+            Column::CurrentPillarBlockData,
+            &SINGLE_VALUE_KEY,
+            data,
+        )?;
+        self.batch_delete_raw(batch, Column::CurrentPillarBlockOwnVote, &SINGLE_VALUE_KEY)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,8 +126,10 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
 
+    type MemoryColumns = HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>;
+
     struct MockPillarStore {
-        data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+        data: RwLock<MemoryColumns>,
     }
 
     impl MockPillarStore {
@@ -122,9 +141,7 @@ mod tests {
 
         fn put(&self, col: Column, key: &[u8], value: &[u8]) {
             let mut data = self.data.write().unwrap();
-            let cf = data
-                .entry(col.name().to_string())
-                .or_insert_with(BTreeMap::new);
+            let cf = data.entry(col.name().to_string()).or_default();
             cf.insert(key.to_vec(), value.to_vec());
         }
     }

@@ -1,5 +1,9 @@
 #include "Test.h"
 
+#include <iterator>
+
+#include <algorithm>
+
 #include <jsonrpccpp/common/errors.h>
 #include <jsonrpccpp/common/exception.h>
 #include <libdevcore/CommonJS.h>
@@ -150,10 +154,10 @@ TestNetworkReader makeTestNetworkReader(std::weak_ptr<taraxa::AppBase> app) {
     }
     const auto nodes = node->getNetwork()->getAllNodes();
     result.reserve(nodes.size());
-    for (const auto &network_node : nodes) {
-      result.push_back(TestNetworkNodeView{network_node.id().toString(), network_node.endpoint().address().to_string(),
-                                           network_node.endpoint().tcpPort()});
-    }
+    std::transform(nodes.begin(), nodes.end(), std::back_inserter(result), [](const auto& node) {
+      return TestNetworkNodeView{node.id().toString(), node.endpoint().address().to_string(),
+                                 node.endpoint().tcpPort()};
+    });
     return result;
   };
   return reader;

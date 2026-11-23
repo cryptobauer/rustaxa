@@ -3,11 +3,21 @@ name = "rustaxa-storage"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Explicit synthetic fixture initialization; never enabled by production crates.
+synthetic-fixtures = []
+production_integration_test = []
+
 [dependencies]
 anyhow = "1.0.100"
 ethereum-types = { version = "0.16.0", features = ["rlp"] }
+getrandom = "0.3"
 k256 = { version = "0.13", features = ["ecdsa"] }
+librocksdb-sys = { version = "=0.17.3", default-features = false }
+num-bigint = "0.4"
+parking_lot = "=0.12.5"
 rlp = "0.6"
+sha2 = "0.10"
 rustaxa-types = { path = "../rustaxa-types" }
 thiserror = "2.0.17"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
@@ -16,3 +26,8 @@ tiny-keccak = { version = "2.0", features = ["keccak"] }
 version = "0.24.0"
 default-features = false
 features = ["lz4"]
+
+[dev-dependencies]
+tempfile = "3"
+hex = "0.4"
+serde_json = "1"

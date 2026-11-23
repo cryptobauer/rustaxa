@@ -5,9 +5,14 @@
 //! may invoke task-family operations through this root, but CXX never receives
 //! a separately constructible service or a service accessor.
 
+#[allow(dead_code)]
+mod execution_predecessor;
+pub(crate) mod production_application;
+
 use crate::consensus_application_runtime::{
     ConsensusApplicationRuntime, ConsensusExecutionPort, ConsensusProcessPort, ConsensusRunExit,
-    ConsensusSigningPort, ConsensusTransportPort, SigningIdentity,
+    ConsensusSigningPort, ConsensusTransportPort, OwnedDagGasOrigin, OwnedDagGasRequest,
+    SigningIdentity,
 };
 use crate::dag_service::{DagServiceConfig, DagVerifyBlockGasReport, DagVerifyBlockSessionInput};
 use crate::dag_transaction_service::{
@@ -173,9 +178,16 @@ impl ConsensusApplicationBootstrap {
             bail!("CONSENSUS_APPLICATION_SCHEMA_MAJOR_ZERO");
         }
         let storage = Arc::new(
-            Storage::new(Config::new(self.storage_path))
+            Storage::new(Config::new(self.storage_path.clone()))
                 .context("CONSENSUS_APPLICATION_STORAGE_OPEN_FAILED")?,
         );
+        self.restore_open_storage(storage)
+    }
+
+    fn restore_open_storage(self, storage: Arc<Storage>) -> Result<ConsensusApplication> {
+        if self.schema_major == 0 {
+            bail!("CONSENSUS_APPLICATION_SCHEMA_MAJOR_ZERO");
+        }
         initialize_schema_version(&storage, self.schema_major, self.schema_minor)?;
         initialize_and_verify_genesis(&storage, self.storage_genesis_hash)?;
         initialize_concrete_root_policy(&storage, self.storage_genesis_hash)?;
@@ -196,8 +208,10 @@ impl ConsensusApplicationBootstrap {
                 )
             }
         };
+        // Both siblings use the same immutable fork policy already carried by
+        // the native bootstrap; no duplicate bridge/config authority is needed.
         let final_chain = Arc::new(
-            FinalChain::new_with_genesis_state_root(
+            FinalChain::new_with_genesis_state_root_and_ficus_activation(
                 storage.clone(),
                 self.final_chain.block_gas_limit,
                 self.final_chain.genesis_timestamp,
@@ -207,15 +221,25 @@ impl ConsensusApplicationBootstrap {
                 self.final_chain.genesis_validators,
                 self.final_chain.genesis_dpos,
                 self.final_chain.rewards,
+                self.consensus.pbft.ficus_activation_period.into(),
             )
             .context("CONSENSUS_APPLICATION_FINAL_CHAIN_RESTORE_FAILED")?,
         );
 
+        let execution_configuration =
+            crate::execution_configuration::ExecutionConfiguration::capture(
+                storage.as_ref(),
+                self.storage_genesis_hash,
+                final_chain.as_ref(),
+                &self.consensus,
+                bridge_contract_address,
+            );
         ConsensusApplication::restore_with_final_chain(
             storage,
             final_chain,
             self.consensus,
             bridge_contract_address,
+            execution_configuration,
         )
     }
 }
@@ -377,6 +401,9 @@ fn initialize_and_verify_genesis(storage: &Storage, expected: H256) -> Result<()
 /// idempotent restoration defaults may already be durable; atomicity here is the
 /// publication of the live root, not transactional rollback of bootstrap rows.
 pub struct ConsensusApplication {
+    composition: production_application::ApplicationComposition,
+    execution_configuration:
+        std::result::Result<crate::ExecutionConfiguration, crate::ConfigurationUnavailable>,
     storage: Arc<Storage>,
     final_chain: Arc<FinalChain>,
     pbft: Arc<PbftService>,
@@ -393,6 +420,7 @@ pub struct ConsensusApplication {
 /// no transport state and exposes only canonical admission operations with an
 /// exact execution leaf borrowed for the duration of each call.
 pub(crate) struct ConsensusIngressService {
+    composition: production_application::ApplicationComposition,
     final_chain: Arc<FinalChain>,
     dag_transaction: Arc<DagTransactionService>,
     runtime: Arc<ConsensusApplicationRuntime>,
@@ -482,6 +510,15 @@ pub struct DagSyncIngressReport {
 }
 
 impl ConsensusApplication {
+    /// Reads the immutable identity captured from this application's actual
+    /// constructor inputs. Unavailable evidence does not invalidate a candidate
+    /// or change historical startup. This identity grants no voting authority.
+    pub fn execution_configuration(
+        &self,
+    ) -> std::result::Result<&crate::ExecutionConfiguration, &crate::ConfigurationUnavailable> {
+        self.execution_configuration.as_ref()
+    }
+
     /// Runs the closed v1 storage conformance scenario against this production-composed root.
     ///
     /// The operation requires a fresh fixture root and returns an ordered transcript. It intentionally exposes no
@@ -925,6 +962,7 @@ impl ConsensusIngressService {
         &self,
         request: TransactionPacketIngressRequest,
     ) -> Result<TransactionPacketIngressReport> {
+        let _operation = self.composition.mutation()?;
         let transaction_rlp = request.submission.transaction_rlp.clone();
         let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp)
             .context("DAG_SYNC_TRANSACTION_DECODE_FAILED")?;
@@ -952,9 +990,11 @@ impl ConsensusIngressService {
             submission: PublicTransactionSubmissionReport {
                 transaction_hash: envelope.hash,
                 accepted,
-                message: (!accepted)
-                    .then_some("DAG_SYNC_TRANSACTION_REJECTED".to_owned())
-                    .unwrap_or_default(),
+                message: if accepted {
+                    String::new()
+                } else {
+                    "DAG_SYNC_TRANSACTION_REJECTED".to_owned()
+                },
                 verification_status: verification,
                 queue_status: known.then_some(TransactionQueueInsertStatus::Known),
                 transaction_observed: false,
@@ -971,6 +1011,7 @@ impl ConsensusIngressService {
         &self,
         request: TransactionPacketIngressRequest,
     ) -> Result<TransactionPacketIngressReport> {
+        let _operation = self.composition.mutation()?;
         let transaction_rlp = request.submission.transaction_rlp.clone();
         let peer_id = request.peer_id;
         let submission = self.submit_public_transaction_from_native_state(request.submission)?;
@@ -994,6 +1035,7 @@ impl ConsensusIngressService {
         request: DagBlockIngressRequest,
         execution: &E,
     ) -> Result<DagBlockIngressReport> {
+        let operation = self.composition.mutation()?;
         let block = rustaxa_types::dag::DagBlock::try_from(
             rustaxa_types::codec::rlp::dag::DagBlockRlp::new(&request.block_rlp),
         )?;
@@ -1016,156 +1058,300 @@ impl ConsensusIngressService {
                 supplied_transaction_hashes: supplied.clone(),
                 block_rlp: request.block_rlp.clone(),
             })?;
-        let transaction_query = self.dag_transaction.prepare_verify_block_transactions()?;
-        let views = transaction_query.transactions.clone();
-        let native_payloads = views
-            .iter()
-            .filter(|view| view.found && !view.tx_rlp.is_empty())
-            .map(|view| (H256::from(view.hash), view.tx_rlp.clone()))
-            .collect::<std::collections::HashMap<_, _>>();
-        let resolved_transactions = resolve_dag_block_transaction_payloads(
-            &block.transactions,
-            &supplied_payloads,
-            &native_payloads,
-        );
-        let mut step = self.dag_transaction.complete_verify_block_transactions(
-            DagVerifyBlockTransactionCompletionReport {
-                cursor_id: transaction_query.cursor_id,
-                proposal_period: transaction_query.proposal_period,
-                account_nonce_facts: Vec::new(),
-            },
-        )?;
-        if !step.complete {
-            step = self
-                .dag_transaction
-                .report_verify_block_authorization_with_final_chain(&self.final_chain)?;
-        }
-        if !step.complete {
-            let period_hash = self
-                .dag_transaction
-                .dag_period_block_hash(step.proposal_period)?;
-            if !period_hash.found {
-                bail!("DAG_BLOCK_INGRESS_PROPOSAL_PERIOD_HASH_MISSING");
-            }
-            step = self
-                .dag_transaction
-                .verify_block_vdf(DagVerifyBlockVdfRequest {
-                    cursor_id: step.cursor_id,
-                    block_rlp: request.block_rlp.clone(),
-                    block_level: block.level,
-                    proposal_period_hash: period_hash.hash,
-                })?;
-        }
-        if !step.complete {
-            let (mut estimated_transactions_weight, estimate_requests) =
-                plan_dag_verification_gas(&resolved_transactions)?;
-            if !estimate_requests.is_empty() {
-                let effect_id = self.runtime.next_operation_effect()?;
-                let gas =
-                    execution.estimate_dag_transaction_gas(&crate::DagGasEstimateRequest {
-                        effect_id,
-                        proposal_period: step.proposal_period,
-                        transactions: estimate_requests,
-                    })?;
-                self.runtime
-                    .validate_operation_report(effect_id, gas.effect_id)?;
-                if !gas.succeeded {
-                    bail!("DAG_BLOCK_INGRESS_GAS_FAILED: {}", gas.error_code);
-                }
-                estimated_transactions_weight = gas
-                    .estimates
-                    .iter()
-                    .try_fold(estimated_transactions_weight, |sum, value| {
-                        sum.checked_add(value.gas_used)
-                    })
-                    .context("DAG_BLOCK_INGRESS_GAS_OVERFLOW")?;
-            }
-            step = self
-                .dag_transaction
-                .report_verify_block_gas(DagVerifyBlockGasReport {
-                    block_gas_estimation: block.gas_estimation,
-                    estimated_transactions_weight,
-                    dag_gas_limit: self.runtime.dag_gas_limit(step.proposal_period),
-                    pbft_gas_limit: self.runtime.pbft_gas_limit(step.proposal_period),
-                })?;
-        }
-        if step.reject_code != 0 {
+        let initial = self.dag_transaction.next_verify_block_session()?;
+        if initial.complete {
             return Ok(DagBlockIngressReport {
                 block_hash,
                 block_level: block.level,
                 accepted: false,
                 duplicate: false,
-                reject_code: step.reject_code,
+                reject_code: initial.reject_code,
                 observe_block: false,
                 gossip_block: false,
                 block_rlp: request.block_rlp,
             });
         }
-        let prepared = self
-            .dag_transaction
-            .prepare_add_block(DagAddBlockPrepareRequest {
-                expected_hash: block_hash,
-                block_rlp: request.block_rlp.clone(),
-                validate_hash: true,
-                save: true,
-                proposed: request.proposed,
-                transactions: resolved_transactions,
-            })?;
-        if prepared.cursor_id == 0 {
-            let reject_code = if prepared.expired {
-                crate::dag::DAG_VERIFY_REJECT_EXPIRED_BLOCK
-            } else if !prepared.accepted && !prepared.missing_references.is_empty() {
-                crate::dag::DAG_VERIFY_REJECT_MISSING_TIP
-            } else if !prepared.accepted {
-                crate::dag::DAG_VERIFY_REJECT_ADD_BLOCK_METADATA
-            } else {
-                0
+        let result = (|| {
+            let transaction_query = self.dag_transaction.prepare_verify_block_transactions()?;
+            let account_nonce_facts =
+                self.dag_verification_nonce_facts(&operation, &transaction_query)?;
+            let views = transaction_query.transactions;
+            let native_payloads = views
+                .iter()
+                .filter(|view| view.found && !view.tx_rlp.is_empty())
+                .map(|view| (H256::from(view.hash), view.tx_rlp.clone()))
+                .collect::<std::collections::HashMap<_, _>>();
+            let resolved_transactions = resolve_dag_block_transaction_payloads(
+                &block.transactions,
+                &supplied_payloads,
+                &native_payloads,
+            );
+            let mut step = self.dag_transaction.complete_verify_block_transactions(
+                DagVerifyBlockTransactionCompletionReport {
+                    cursor_id: transaction_query.cursor_id,
+                    proposal_period: transaction_query.proposal_period,
+                    account_nonce_facts,
+                },
+            )?;
+            if !step.complete {
+                step = self
+                    .dag_transaction
+                    .report_verify_block_authorization_with_final_chain(&self.final_chain)?;
+            }
+            if !step.complete {
+                let period_hash = self
+                    .dag_transaction
+                    .dag_period_block_hash(step.proposal_period)?;
+                if !period_hash.found {
+                    bail!("DAG_BLOCK_INGRESS_PROPOSAL_PERIOD_HASH_MISSING");
+                }
+                step = self
+                    .dag_transaction
+                    .verify_block_vdf(DagVerifyBlockVdfRequest {
+                        cursor_id: step.cursor_id,
+                        block_rlp: request.block_rlp.clone(),
+                        block_level: block.level,
+                        proposal_period_hash: period_hash.hash,
+                    })?;
+            }
+            if !step.complete {
+                let (mut estimated_transactions_weight, estimate_requests) =
+                    plan_dag_verification_gas(&resolved_transactions)?;
+                if !estimate_requests.is_empty() {
+                    let effect_id = self.runtime.next_operation_effect()?;
+                    let request = crate::DagGasEstimateRequest {
+                        effect_id,
+                        proposal_period: step.proposal_period,
+                        transactions: estimate_requests,
+                    };
+                    let (reported_id, estimates): (_, Vec<_>) = match &self.composition {
+                        production_application::ApplicationComposition::Production(source) => {
+                            let report = execution
+                                .estimate_owned_dag_transaction_gas(OwnedDagGasRequest {
+                                    source,
+                                    generation: operation
+                                        .generation()
+                                        .context("PRODUCTION_DAG_GAS_GENERATION_MISSING")?,
+                                    committed_period: self.final_chain.last_block_number()?,
+                                    origin: OwnedDagGasOrigin::Verify {
+                                        scope: &operation,
+                                        cursor_id: step.cursor_id,
+                                        block_hash,
+                                    },
+                                    request: &request,
+                                })?
+                                .context("PRODUCTION_DAG_GAS_VERIFICATION_UNAVAILABLE")?;
+                            (
+                                report.effect_id,
+                                report
+                                    .estimates
+                                    .into_iter()
+                                    .map(|v| (v.hash, v.gas_used))
+                                    .collect(),
+                            )
+                        }
+                        production_application::ApplicationComposition::Historical => {
+                            let report = execution.estimate_dag_transaction_gas(&request)?;
+                            self.runtime
+                                .validate_operation_report(effect_id, report.effect_id)?;
+                            ensure!(
+                                report.succeeded,
+                                "DAG_BLOCK_INGRESS_GAS_FAILED: {}",
+                                report.error_code
+                            );
+                            (
+                                report.effect_id,
+                                report
+                                    .estimates
+                                    .into_iter()
+                                    .map(|v| (v.hash, v.gas_used))
+                                    .collect(),
+                            )
+                        }
+                    };
+                    self.runtime
+                        .validate_operation_report(effect_id, reported_id)?;
+                    ensure!(
+                        estimates.len() == request.transactions.len()
+                            && estimates
+                                .iter()
+                                .zip(&request.transactions)
+                                .all(|((hash, _), input)| *hash == input.hash),
+                        "DAG_BLOCK_INGRESS_GAS_SEQUENCE_MISMATCH"
+                    );
+                    estimated_transactions_weight = estimates
+                        .into_iter()
+                        .try_fold(estimated_transactions_weight, |sum, (_, gas)| {
+                            sum.checked_add(gas)
+                        })
+                        .context("DAG_BLOCK_INGRESS_GAS_OVERFLOW")?;
+                }
+                step = self
+                    .dag_transaction
+                    .report_verify_block_gas(DagVerifyBlockGasReport {
+                        block_gas_estimation: block.gas_estimation,
+                        estimated_transactions_weight,
+                        dag_gas_limit: self.runtime.dag_gas_limit(step.proposal_period),
+                        pbft_gas_limit: self.runtime.pbft_gas_limit(step.proposal_period),
+                    })?;
+            }
+            if step.reject_code != 0 {
+                return Ok(DagBlockIngressReport {
+                    block_hash,
+                    block_level: block.level,
+                    accepted: false,
+                    duplicate: false,
+                    reject_code: step.reject_code,
+                    observe_block: false,
+                    gossip_block: false,
+                    block_rlp: request.block_rlp,
+                });
+            }
+            let prepared = self
+                .dag_transaction
+                .prepare_add_block(DagAddBlockPrepareRequest {
+                    expected_hash: block_hash,
+                    block_rlp: request.block_rlp.clone(),
+                    validate_hash: true,
+                    save: true,
+                    proposed: request.proposed,
+                    transactions: resolved_transactions,
+                })?;
+            if prepared.cursor_id == 0 {
+                let reject_code = if prepared.expired {
+                    crate::dag::DAG_VERIFY_REJECT_EXPIRED_BLOCK
+                } else if !prepared.accepted && !prepared.missing_references.is_empty() {
+                    crate::dag::DAG_VERIFY_REJECT_MISSING_TIP
+                } else if !prepared.accepted {
+                    crate::dag::DAG_VERIFY_REJECT_ADD_BLOCK_METADATA
+                } else {
+                    0
+                };
+                return Ok(DagBlockIngressReport {
+                    block_hash,
+                    block_level: block.level,
+                    accepted: prepared.accepted,
+                    duplicate: prepared.duplicate,
+                    reject_code,
+                    observe_block: false,
+                    gossip_block: false,
+                    block_rlp: request.block_rlp,
+                });
+            }
+            let commit = (|| {
+                let nonces = self.load_operation_account_nonces(
+                    prepared
+                        .account_requests
+                        .iter()
+                        .map(|value| value.sender.0)
+                        .collect(),
+                )?;
+                self.dag_transaction
+                    .complete_add_block(DagAddBlockCompletion {
+                        cursor_id: prepared.cursor_id,
+                        account_nonce_facts: nonces
+                            .into_iter()
+                            .enumerate()
+                            .map(|(input_index, account_nonce)| DagAddBlockAccountNonceFact {
+                                input_index: input_index as u64,
+                                account_nonce,
+                            })
+                            .collect(),
+                    })
+            })();
+            let commit = match commit {
+                Ok(commit) => commit,
+                Err(error) => {
+                    self.dag_transaction.abort_add_block(prepared.cursor_id)?;
+                    return Err(error);
+                }
             };
-            return Ok(DagBlockIngressReport {
+            Ok(DagBlockIngressReport {
                 block_hash,
                 block_level: block.level,
-                accepted: prepared.accepted,
-                duplicate: prepared.duplicate,
-                reject_code,
-                observe_block: false,
-                gossip_block: false,
+                accepted: commit.accepted,
+                duplicate: false,
+                reject_code: 0,
+                observe_block: commit.emit_verified,
+                gossip_block: commit.gossip,
                 block_rlp: request.block_rlp,
-            });
+            })
+        })();
+        if result.is_err() {
+            self.dag_transaction
+                .abort_block_verification(initial.cursor_id, block_hash)?;
         }
-        let nonces = self.load_operation_account_nonces(
-            prepared
-                .account_requests
-                .iter()
-                .map(|value| value.sender.0)
-                .collect(),
-        )?;
-        let commit = self
-            .dag_transaction
-            .complete_add_block(DagAddBlockCompletion {
-                cursor_id: prepared.cursor_id,
-                account_nonce_facts: nonces
-                    .into_iter()
-                    .enumerate()
-                    .map(|(input_index, account_nonce)| DagAddBlockAccountNonceFact {
-                        input_index: input_index as u64,
-                        account_nonce,
-                    })
-                    .collect(),
-            })?;
-        Ok(DagBlockIngressReport {
-            block_hash,
-            block_level: block.level,
-            accepted: commit.accepted,
-            duplicate: false,
-            reject_code: 0,
-            observe_block: commit.emit_verified,
-            gossip_block: commit.gossip,
-            block_rlp: request.block_rlp,
-        })
+        result
+    }
+
+    fn dag_verification_nonce_facts(
+        &self,
+        operation: &production_application::ApplicationOperationScope<'_>,
+        prepared: &crate::dag_transaction_service::DagVerifyBlockTransactionPreparation,
+    ) -> Result<Vec<crate::transaction_service::TransactionServiceAccountNonceFact>> {
+        use production_application::{ApplicationOperationScope, bounded_account_integer};
+        use rustaxa_types::concrete_state::ConcreteRead;
+        let ApplicationOperationScope::Mutation(source, mutation) = operation else {
+            return Ok(Vec::new());
+        };
+        let mut senders = std::collections::BTreeSet::new();
+        for view in &prepared.transactions {
+            if let Some(sender) = view.finalized_storage_sender()? {
+                senders.insert(sender);
+            }
+        }
+        if senders.is_empty() {
+            return Ok(Vec::new());
+        }
+        source
+            .with_finalized_state_in_mutation(
+                mutation,
+                Some(prepared.proposal_period),
+                |readers, identity| {
+                    senders
+                        .into_iter()
+                        .map(|sender| {
+                            let (account_found, account_nonce) = match readers
+                                .account_at(identity, sender)?
+                            {
+                                ConcreteRead::Present(row) => (
+                                    true,
+                                    bounded_account_integer(&row.account.nonce.to_bytes())?
+                                        .to_big_endian(),
+                                ),
+                                ConcreteRead::Absent | ConcreteRead::Tombstone => (false, [0; 32]),
+                            };
+                            Ok(
+                                crate::transaction_service::TransactionServiceAccountNonceFact {
+                                    sender,
+                                    account_found,
+                                    account_nonce,
+                                },
+                            )
+                        })
+                        .collect()
+                },
+            )?
+            .context("PRODUCTION_DAG_NONCE_CHECKPOINT_UNAVAILABLE")
     }
 
     fn load_operation_account_nonces(&self, addresses: Vec<[u8; 20]>) -> Result<Vec<U256>> {
+        let _operation = self.composition.mutation()?;
         let block = self.final_chain.last_block_number_typed()?;
+        if let production_application::ApplicationComposition::Production(source) =
+            &self.composition
+        {
+            return source
+                .account_records(block, &addresses)?
+                .into_iter()
+                .map(|record| {
+                    let nonce = record
+                        .map(|row| row.account.nonce.to_bytes())
+                        .unwrap_or_default();
+                    production_application::bounded_account_integer(&nonce)
+                })
+                .collect();
+        }
         addresses
             .into_iter()
             .map(|address| {
@@ -1189,6 +1375,7 @@ impl ConsensusIngressService {
         request: DagSyncIngressRequest,
         execution: &E,
     ) -> Result<DagSyncIngressReport> {
+        let _operation = self.composition.mutation()?;
         let mut transactions = Vec::with_capacity(request.transactions.len());
         let mut payloads = std::collections::HashMap::new();
         for transaction in request.transactions {
@@ -1238,6 +1425,7 @@ impl ConsensusIngressService {
         request: PublicTransactionSubmissionRequest,
         final_chain_facts: PublicTransactionFinalChainFacts,
     ) -> Result<PublicTransactionSubmissionReport> {
+        let _operation = self.composition.mutation()?;
         self.dag_transaction
             .submit_public_transaction(request, final_chain_facts)
     }
@@ -1247,6 +1435,7 @@ impl ConsensusIngressService {
         &self,
         request: PublicTransactionSubmissionRequest,
     ) -> Result<PublicTransactionSubmissionReport> {
+        let _operation = self.composition.mutation()?;
         let envelope = LegacyTransactionEnvelope::decode(&request.transaction_rlp)
             .context("PUBLIC_TRANSACTION_DECODE_FAILED")?;
         let sender = envelope
@@ -1257,6 +1446,36 @@ impl ConsensusIngressService {
             observed_block.as_u64() == request.last_block_number,
             "PUBLIC_TRANSACTION_ACCOUNT_FACTS_HEAD_MISMATCH"
         );
+        if let production_application::ApplicationComposition::Production(source) =
+            &self.composition
+        {
+            source.check_admission_request(&request, observed_block)?;
+            let records = source.account_records(observed_block, &[sender.0])?;
+            let account = records.into_iter().next().flatten();
+            let finalized_period = self
+                .final_chain
+                .transaction_location(envelope.hash.0)?
+                .map(|raw| Rlp::new(&raw).val_at::<u64>(0))
+                .transpose()?;
+            let nonce = account
+                .as_ref()
+                .map(|row| row.account.nonce.to_bytes())
+                .unwrap_or_default();
+            let balance = account
+                .as_ref()
+                .map(|row| row.account.balance.value().to_bytes_be())
+                .unwrap_or_default();
+            return self.submit_public_transaction(
+                request,
+                PublicTransactionFinalChainFacts {
+                    sender: sender.0,
+                    account_found: account.is_some(),
+                    account_nonce: production_application::bounded_account_integer(&nonce)?,
+                    account_balance: production_application::bounded_account_integer(&balance)?,
+                    finalized_period,
+                },
+            );
+        }
         let account = self
             .final_chain
             .account_at_block(observed_block, sender.0)?;
@@ -1331,11 +1550,12 @@ impl ConsensusApplication {
     /// so public clients never receive a network-service handle.
     #[doc(hidden)]
     pub fn consensus_query_api_for_bridge(&self) -> crate::ConsensusQueryApi {
-        crate::ConsensusQueryApi::new_live(
+        crate::ConsensusQueryApi::new_live_composed(
             Arc::clone(&self.storage),
             Arc::clone(&self.pbft),
             Arc::clone(&self.final_chain),
             Arc::clone(&self.dag_transaction),
+            self.composition.clone(),
         )
     }
 
@@ -1344,13 +1564,45 @@ impl ConsensusApplication {
         final_chain: Arc<FinalChain>,
         config: ConsensusApplicationConfig,
         bridge_contract_address: [u8; 20],
+        execution_configuration: std::result::Result<
+            crate::ExecutionConfiguration,
+            crate::ConfigurationUnavailable,
+        >,
+    ) -> Result<Self> {
+        Self::restore_composed(
+            storage,
+            final_chain,
+            config,
+            bridge_contract_address,
+            execution_configuration,
+            production_application::ApplicationComposition::Historical,
+        )
+    }
+
+    fn restore_composed(
+        storage: Arc<Storage>,
+        final_chain: Arc<FinalChain>,
+        config: ConsensusApplicationConfig,
+        bridge_contract_address: [u8; 20],
+        execution_configuration: std::result::Result<
+            crate::ExecutionConfiguration,
+            crate::ConfigurationUnavailable,
+        >,
+        composition: production_application::ApplicationComposition,
     ) -> Result<Self> {
         let (dag_transaction, max_levels_per_period) =
             DagTransactionService::restore_deferred_mapping(
                 storage.clone(),
                 config.dag_transaction,
             )?;
-        let pbft = PbftService::restore(storage.clone(), config.pbft)?;
+        let pbft = match &composition {
+            production_application::ApplicationComposition::Historical => {
+                PbftService::restore(storage.clone(), config.pbft)?
+            }
+            production_application::ApplicationComposition::Production(_) => {
+                PbftService::restore_with_deferred_manager_step(storage.clone(), config.pbft)?
+            }
+        };
         dag_transaction.complete_restore_mapping(max_levels_per_period)?;
         let dag_proposers = dag_proposer_inputs(&config.signing_identities, config.dag_proposer);
         let runtime = Arc::new(
@@ -1361,30 +1613,36 @@ impl ConsensusApplication {
                 config.dag_proposer,
                 bridge_contract_address,
                 max_levels_per_period,
-            )?,
+            )?
+            .in_composition(composition.clone()),
         );
         let pbft = Arc::new(pbft);
         let dag_transaction = Arc::new(dag_transaction);
-        let query = crate::ConsensusQueryApi::new_live(
+        let query = crate::ConsensusQueryApi::new_live_composed(
             Arc::clone(&storage),
             Arc::clone(&pbft),
             Arc::clone(&final_chain),
             Arc::clone(&dag_transaction),
+            composition.clone(),
         );
         let ingress = Arc::new(ConsensusIngressService {
+            composition: composition.clone(),
             final_chain: Arc::clone(&final_chain),
             dag_transaction: Arc::clone(&dag_transaction),
             runtime: Arc::clone(&runtime),
         });
-        let network_api = Arc::new(crate::ConsensusNetworkApi::new(
+        let network_api = Arc::new(crate::ConsensusNetworkApi::new_composed(
             pbft.network_service(),
             Arc::clone(&pbft),
             Arc::clone(&final_chain),
             Arc::clone(&dag_transaction),
             Arc::clone(&ingress),
             query,
+            composition.clone(),
         ));
         Ok(Self {
+            composition,
+            execution_configuration,
             storage,
             final_chain,
             pbft,
@@ -1412,9 +1670,11 @@ impl ConsensusApplication {
         O: crate::ConsensusObserverPort,
     {
         self.runtime.run(
-            self.pbft.as_ref(),
-            self.dag_transaction.as_ref(),
-            self.final_chain.as_ref(),
+            crate::ConsensusRuntimeServices {
+                pbft: self.pbft.as_ref(),
+                dag: self.dag_transaction.as_ref(),
+                final_chain: self.final_chain.as_ref(),
+            },
             process,
             signer,
             transport,
@@ -1709,8 +1969,7 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, StatusField};
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use rustaxa_types::FinalChainBlockNumber;
 
     #[test]
     fn dag_gas_policy_activates_cornus_at_proposal_period_and_preserves_cap() {
@@ -1763,12 +2022,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn restore_open_storage_uses_the_supplied_primary_handle() {
+        let path = temp_path("consensus_bound_restore_primary");
+        let unused_path = path.join("must_not_open");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).expect("storage"));
+        let root = bootstrap(unused_path.clone())
+            .restore_open_storage(storage.clone())
+            .expect("restore from supplied primary");
+        assert!(Arc::ptr_eq(&storage, &root.storage));
+        assert!(!unused_path.exists());
+        assert_eq!(
+            storage
+                .metadata()
+                .status_field(StatusField::DbMajorVersion as u8)
+                .expect("schema major"),
+            7
+        );
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn native_bootstrap_shares_pbft_ficus_activation_with_final_chain() {
+        for activation in [10, u64::MAX] {
+            let path = temp_path("consensus_bootstrap_ficus_source");
+            let mut config = bootstrap(path.clone());
+            config.consensus.pbft.ficus_activation_period = activation;
+            let root = config.bootstrap().expect("root bootstraps");
+            let chain = root.final_chain_for_bridge();
+            assert!(!chain.ficus_active_at(9_u64.into()));
+            assert_eq!(chain.ficus_active_at(10_u64.into()), activation == 10);
+            assert_eq!(
+                chain.ficus_active_at(FinalChainBlockNumber::MAX),
+                activation == 10
+            );
+            drop(root);
+            std::fs::remove_dir_all(path).expect("remove fixture");
+        }
+    }
+
     fn temp_path(name: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{name}_{nonce}"))
+        crate::test_paths::new_path(name)
     }
 
     fn signed_public_transaction_with_gas(gas: u64) -> (Vec<u8>, [u8; 20]) {
@@ -1923,7 +2219,7 @@ mod tests {
                 local_dag_level: 0,
             })
             .expect("bound network API retains the application siblings");
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -1943,7 +2239,7 @@ mod tests {
 
         drop(query);
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -1980,7 +2276,7 @@ mod tests {
         assert!(duplicate.message.contains("already in transactions pool"));
 
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2011,7 +2307,7 @@ mod tests {
         );
 
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2041,7 +2337,7 @@ mod tests {
         );
 
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2073,7 +2369,7 @@ mod tests {
         assert!(replay.transaction_observed);
 
         drop(restarted);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2104,7 +2400,7 @@ mod tests {
             3
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2132,7 +2428,7 @@ mod tests {
             Some(vec![1; 32])
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2159,7 +2455,7 @@ mod tests {
                 .to_string()
                 .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
         );
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2176,7 +2472,7 @@ mod tests {
                 .to_string()
                 .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
         );
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2214,7 +2510,7 @@ mod tests {
                 .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
         );
         drop(restarted);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2253,7 +2549,7 @@ mod tests {
                 .to_string()
                 .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
         );
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2284,7 +2580,7 @@ mod tests {
             7
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2305,7 +2601,7 @@ mod tests {
             Some(vec![1; 32])
         );
         drop(storage);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2369,7 +2665,7 @@ mod tests {
         assert!(!report.transactions[0].submission.accepted);
         assert_eq!(root.dag_transaction.transaction_queue_size().unwrap(), 0);
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -2395,6 +2691,377 @@ mod tests {
         assert!(report.transactions[0].submission.accepted);
         assert_eq!(root.dag_transaction.transaction_queue_size().unwrap(), 0);
         drop(root);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    pub(super) fn execution_configuration_bootstrap(
+        path: std::path::PathBuf,
+    ) -> ConsensusApplicationBootstrap {
+        let mut value = bootstrap(path);
+        value.consensus.pbft.network_identity.chain_id =
+            value.consensus.pbft.process_synced_policy.chain_id;
+        value.consensus.pbft.network_identity.genesis_hash = value.storage_genesis_hash.0;
+        value.consensus.dag_transaction.dag.genesis_hash = H256::repeat_byte(2);
+        value.final_chain.rewards.committee_size =
+            value.consensus.pbft.committee_size.try_into().unwrap();
+        value.final_chain.rewards.magnolia_period =
+            value.consensus.pbft.magnolia_activation_period.into();
+        value.final_chain.rewards.cacti_period = value.consensus.pbft.cacti_block.into();
+        value.final_chain.rewards.cornus_period =
+            value.consensus.pbft.cornus_activation_period.into();
+        value.final_chain.rewards.dpos_blocks_per_year = value
+            .consensus
+            .pbft
+            .process_synced_policy
+            .dpos_blocks_per_year;
+        value.final_chain.rewards.aspen_part_two_period = FinalChainBlockNumber::MAX;
+        value.final_chain.genesis_dpos.eligibility_balance_threshold = U256::one().into();
+        value.final_chain.genesis_dpos.vote_eligibility_balance_step = U256::one().into();
+        value.final_chain.genesis_dpos.validator_maximum_stake = U256::from(100).into();
+        value
+    }
+
+    type ConfigurationRows = Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>;
+    fn execution_configuration_rows(storage: &Storage) -> Result<ConfigurationRows> {
+        rustaxa_storage::Column::all()
+            .iter()
+            .copied()
+            .map(|column| {
+                let rows = storage
+                    .iter(column)
+                    .map(|row| {
+                        let (key, value) = row?;
+                        Ok((key.to_vec(), value.to_vec()))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((column.name().to_owned(), rows))
+            })
+            .collect()
+    }
+    fn execution_configuration_reopen_rows(path: &std::path::Path) -> Result<ConfigurationRows> {
+        let mut config = Config::new(path.to_path_buf());
+        config.create_if_missing = false;
+        config.create_missing_column_families = false;
+        let storage = Storage::new(config)?;
+        execution_configuration_rows(&storage)
+    }
+    fn execution_configuration_finish(
+        root: ConsensusApplication,
+        path: std::path::PathBuf,
+    ) -> Result<()> {
+        let rows = execution_configuration_rows(&root.storage)?;
+        drop(root);
+        assert_eq!(execution_configuration_reopen_rows(&path)?, rows);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn execution_configuration_retains_default_normalization() -> Result<()> {
+        for original in [None, Some(0_u64), Some(12)] {
+            let path = temp_path("execution-configuration-normalization");
+            let mut input = execution_configuration_bootstrap(path.clone());
+            input.final_chain.genesis_accounts = vec![GenesisAccount {
+                address: [0x11; 20],
+                balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(9)),
+            }];
+            input.final_chain.genesis_validators = vec![GenesisValidator {
+                address: [0x31; 20],
+                vrf_key: [0x22; 32],
+                total_stake: U256::from(3).to_big_endian().to_vec(),
+                delegations: vec![],
+                metadata: rustaxa_types::GenesisValidatorMetadata::default(),
+            }];
+            input.final_chain.rewards.genesis_balance_sum = original.map(|x| U256::from(x).into());
+            let root = input.bootstrap()?;
+            let native = root.final_chain.native_execution_configuration();
+            assert_eq!(
+                native.original_genesis_balance_sum().map(|x| x.into_u256()),
+                original.map(U256::from)
+            );
+            assert_eq!(
+                native.rewards().genesis_balance_sum.unwrap().into_u256(),
+                U256::from(original.unwrap_or(12))
+            );
+            assert_eq!(
+                U256::from_big_endian(&root.final_chain.dpos_total_amount_delegated(0.into())?),
+                U256::from(3)
+            );
+            let native_rlp = Rlp::new(native.canonical_bytes());
+            assert_eq!(native_rlp.at(7)?.item_count()?, 1);
+            assert_eq!(native_rlp.at(7)?.at(0)?.at(1)?.data()?, &[9]);
+            assert_eq!(native_rlp.at(8)?.at(0)?.at(3)?.item_count()?, 0);
+            assert_eq!(native_rlp.at(8)?.at(0)?.at(2)?.data()?.len(), 32);
+            assert!(root.execution_configuration().is_ok());
+            execution_configuration_finish(root, path)?;
+        }
+        let path = temp_path("execution-configuration-disabled-aspen-overflow");
+        let mut input = execution_configuration_bootstrap(path.clone());
+        input.final_chain.genesis_accounts = vec![
+            GenesisAccount {
+                address: [0x11; 20],
+                balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::MAX),
+            },
+            GenesisAccount {
+                address: [0x12; 20],
+                balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::one()),
+            },
+        ];
+        let root = input.bootstrap()?;
+        let native = root.final_chain.native_execution_configuration();
+        assert_eq!(native.original_genesis_balance_sum(), None);
+        assert_eq!(native.rewards().genesis_balance_sum, None);
+        let encoded = Rlp::new(native.canonical_bytes());
+        assert_eq!(encoded.at(10)?.at(15)?.item_count()?, 0);
+        assert_eq!(encoded.at(11)?.item_count()?, 0);
+        assert!(root.execution_configuration().is_ok());
+        execution_configuration_finish(root, path)?;
+
+        let path = temp_path("execution-configuration-disabled-ficus");
+        let mut input = execution_configuration_bootstrap(path.clone());
+        input.consensus.pbft.ficus_activation_period = u64::MAX;
+        input.consensus.pbft.pillar_blocks_interval = 0;
+        let root = input.bootstrap()?;
+        let bytes = root.execution_configuration().unwrap().canonical_bytes();
+        assert_eq!(Rlp::new(bytes).at(7)?.at(1)?.data()?, &0_u64.to_be_bytes());
+        assert_eq!(
+            root.final_chain
+                .native_execution_configuration()
+                .ficus_period(),
+            FinalChainBlockNumber::MAX
+        );
+        execution_configuration_finish(root, path)
+    }
+
+    #[test]
+    fn execution_configuration_uses_actual_bootstrap_inputs() -> Result<()> {
+        let path = temp_path("execution-configuration-actual-root");
+        let mut input = execution_configuration_bootstrap(path.clone());
+        input.final_chain.block_gas_limit = 900_000.into();
+        input.final_chain.bridge_contract_address = [0x42; 20];
+        let chain_id = input.consensus.pbft.network_identity.chain_id;
+        let root = input.bootstrap()?;
+        let before = execution_configuration_rows(&root.storage)?;
+        let record = root.execution_configuration().unwrap();
+        let encoded = record.canonical_bytes().to_vec();
+        let parsed = Rlp::new(&encoded);
+        assert_eq!(parsed.item_count()?, 10);
+        assert_eq!(parsed.at(0)?.data()?, b"rustaxa-execution-configuration");
+        assert_eq!(parsed.at(2)?.data()?, &chain_id.to_be_bytes());
+        assert_eq!(
+            parsed.at(3)?.data()?,
+            root.storage.metadata().genesis_hash()?.unwrap()
+        );
+        assert_eq!(parsed.at(4)?.data()?, &[2; 32]);
+        let native = root.final_chain.native_execution_configuration();
+        assert_eq!(parsed.at(6)?.as_raw(), native.canonical_bytes());
+        assert_eq!(
+            parsed.at(6)?.at(2)?.data()?,
+            &root
+                .final_chain
+                .pbft_execution_block_gas_limit()
+                .as_u64()
+                .to_be_bytes()
+        );
+        assert_eq!(parsed.at(7)?.at(0)?.data()?, &[0x42; 20]);
+        assert_eq!(parsed.at(7)?.at(2)?.data()?, &10_000_000_u64.to_be_bytes());
+        let actual_digest = record.digest();
+        let mut caller_copy = record.canonical_bytes().to_vec();
+        caller_copy[0] ^= 1;
+        let mut caller_digest = actual_digest;
+        caller_digest[0] ^= 1;
+        assert_ne!(caller_copy, record.canonical_bytes());
+        assert_ne!(
+            caller_digest,
+            root.execution_configuration().unwrap().digest()
+        );
+        assert_eq!(
+            root.execution_configuration().unwrap().canonical_bytes(),
+            encoded
+        );
+        assert_eq!(execution_configuration_rows(&root.storage)?, before);
+        execution_configuration_finish(root, path)
+    }
+
+    #[test]
+    fn execution_configuration_refuses_conflicting_siblings() -> Result<()> {
+        use crate::ConfigurationUnavailable::Conflict;
+        type Change = fn(&mut ConsensusApplicationBootstrap);
+        let cases: [(&str, Change); 10] = [
+            ("chain_id", |v| {
+                v.consensus.pbft.network_identity.chain_id ^= 1
+            }),
+            ("full_genesis", |v| {
+                v.consensus.pbft.network_identity.genesis_hash[0] ^= 1
+            }),
+            ("magnolia_period", |v| {
+                v.final_chain.rewards.magnolia_period = 1.into()
+            }),
+            ("cacti_period", |v| v.consensus.pbft.cacti_block += 1),
+            ("cornus_period", |v| {
+                v.final_chain.rewards.cornus_period = 1.into()
+            }),
+            ("committee_size", |v| v.consensus.pbft.committee_size += 1),
+            ("dpos_blocks_per_year", |v| {
+                v.consensus.pbft.process_synced_policy.dpos_blocks_per_year += 1
+            }),
+            ("proposer_default_pbft_gas_limit", |v| {
+                v.consensus.dag_proposer.default_pbft_gas_limit += 1
+            }),
+            ("proposer_cornus_period", |v| {
+                v.consensus.dag_proposer.cornus_activation_period -= 1
+            }),
+            ("proposer_cornus_pbft_gas_limit", |v| {
+                v.consensus.dag_proposer.cornus_pbft_gas_limit += 1
+            }),
+        ];
+        for (field, change) in cases {
+            let path = temp_path("execution-configuration-conflict");
+            let mut input = execution_configuration_bootstrap(path.clone());
+            change(&mut input);
+            let root = input.bootstrap()?;
+            assert!(
+                matches!(root.execution_configuration(), Err(Conflict(found)) if *found == field),
+                "{field}"
+            );
+            assert_eq!(root.final_chain.last_block_number_typed()?.as_u64(), 0);
+            assert_eq!(root.dag_transaction.transaction_count()?, 0);
+            execution_configuration_finish(root, path)?;
+        }
+        let path = temp_path("execution-configuration-extra-conflicts");
+        let input = execution_configuration_bootstrap(path.clone());
+        let mut config = input.consensus.clone();
+        let root = input.bootstrap()?;
+        let rows = execution_configuration_rows(&root.storage)?;
+        config.pbft.ficus_activation_period = 1;
+        assert!(matches!(
+            crate::ExecutionConfiguration::capture(
+                &root.storage,
+                H256::repeat_byte(1),
+                &root.final_chain,
+                &config,
+                [0; 20]
+            ),
+            Err(Conflict("ficus_period"))
+        ));
+        config.pbft.ficus_activation_period = 0;
+        config.pbft.committee_size = u64::from(u32::MAX) + 1;
+        assert!(matches!(
+            crate::ExecutionConfiguration::capture(
+                &root.storage,
+                H256::repeat_byte(1),
+                &root.final_chain,
+                &config,
+                [0; 20]
+            ),
+            Err(Conflict("committee_size"))
+        ));
+        config.pbft.committee_size = 1;
+        assert!(matches!(
+            crate::ExecutionConfiguration::capture(
+                &root.storage,
+                H256::repeat_byte(2),
+                &root.final_chain,
+                &config,
+                [0; 20]
+            ),
+            Err(Conflict("full_genesis"))
+        ));
+        assert_eq!(execution_configuration_rows(&root.storage)?, rows);
+        execution_configuration_finish(root, path)
+    }
+
+    #[test]
+    fn execution_configuration_policy_is_immutable_and_current() -> Result<()> {
+        use rustaxa_types::evm_correction::CorrectionStage as Stage;
+        let path = temp_path("execution-configuration-policy");
+        let input = execution_configuration_bootstrap(path.clone());
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let mut chain = FinalChain::new_with_rewards_config_and_ficus_activation(
+            storage.clone(),
+            input.final_chain.block_gas_limit,
+            input.final_chain.genesis_timestamp,
+            crate::FinalChainGenesisAllocation {
+                accounts: input.final_chain.genesis_accounts,
+                validators: input.final_chain.genesis_validators,
+            },
+            input.final_chain.genesis_dpos,
+            input.final_chain.rewards,
+            input.consensus.pbft.ficus_activation_period.into(),
+        )?;
+        let before = execution_configuration_rows(&storage)?;
+        for (tag, stage) in [
+            (0_u8, Stage::Historical),
+            (1, Stage::TransientRollback),
+            (2, Stage::SingleSelfDestructRefund),
+            (3, Stage::CheckedReturnDataCopy),
+            (4, Stage::BoundedFalconAbi),
+            (5, Stage::SlashingHardError),
+        ] {
+            chain = chain.with_correction_stage(stage);
+            let native = chain.native_execution_configuration();
+            let policy = Rlp::new(native.canonical_bytes()).at(12)?;
+            assert_eq!(policy.at(0)?.data()?, &[0]);
+            assert_eq!(policy.at(1)?.data()?, &[tag]);
+        }
+        let old_record = chain.native_execution_configuration();
+        let old_bytes = old_record.canonical_bytes().to_vec();
+        for boundary in [None, Some(0), Some(1), Some(u64::MAX)] {
+            chain = chain.with_correction_activation(boundary.map(FinalChainBlockNumber::new));
+            let native = chain.native_execution_configuration();
+            let policy = Rlp::new(native.canonical_bytes()).at(12)?;
+            assert_eq!(policy.at(0)?.data()?, &[1]);
+            assert_eq!(policy.at(1)?.item_count()?, usize::from(boundary.is_some()));
+            if let Some(boundary) = boundary {
+                assert_eq!(policy.at(1)?.at(0)?.data()?, &boundary.to_be_bytes());
+            }
+            assert_ne!(native.canonical_bytes(), old_bytes);
+            assert_eq!(old_record.canonical_bytes(), old_bytes);
+        }
+        assert_eq!(execution_configuration_rows(&storage)?, before);
+        drop(chain);
+        drop(storage);
+        assert_eq!(execution_configuration_reopen_rows(&path)?, before);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn execution_configuration_restart_is_stable_without_state_authority() -> Result<()> {
+        let path = temp_path("execution-configuration-restart");
+        let root = execution_configuration_bootstrap(path.clone()).bootstrap()?;
+        let bytes = root
+            .execution_configuration()
+            .unwrap()
+            .canonical_bytes()
+            .to_vec();
+        let digest = root.execution_configuration().unwrap().digest();
+        let rows = execution_configuration_rows(&root.storage)?;
+        drop(root);
+        assert_eq!(execution_configuration_reopen_rows(&path)?, rows);
+        let mut input = execution_configuration_bootstrap(path.clone());
+        input.final_chain.state_api_committed_period = 1;
+        input.final_chain.state_api_committed_root = H256::repeat_byte(9);
+        input.consensus.polling_interval_ms += 1;
+        let root = input.bootstrap()?;
+        assert_eq!(
+            root.execution_configuration().unwrap().canonical_bytes(),
+            bytes
+        );
+        assert_eq!(root.execution_configuration().unwrap().digest(), digest);
+        assert_eq!(root.final_chain.last_block_number_typed()?.as_u64(), 0);
+        assert_eq!(execution_configuration_rows(&root.storage)?, rows);
+        drop(root);
+        assert_eq!(execution_configuration_reopen_rows(&path)?, rows);
+        let mut input = execution_configuration_bootstrap(path.clone());
+        input.final_chain.bridge_contract_address = [0x51; 20];
+        let root = input.bootstrap()?;
+        assert_ne!(
+            root.execution_configuration().unwrap().canonical_bytes(),
+            bytes
+        );
+        assert_ne!(root.execution_configuration().unwrap().digest(), digest);
+        assert_eq!(execution_configuration_rows(&root.storage)?, rows);
+        execution_configuration_finish(root, path)
     }
 }

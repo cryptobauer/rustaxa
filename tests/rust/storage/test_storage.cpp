@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -13,7 +14,7 @@ PbftServiceConfig makePbftServiceConfig();
 class StorageTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    test_dir = std::filesystem::temp_directory_path() / "rustaxa_storage_test";
+    test_dir = std::filesystem::temp_directory_path() / ("rustaxa_storage_test_" + std::to_string(::getpid()));
     if (std::filesystem::exists(test_dir)) {
       std::filesystem::remove_all(test_dir);
     }

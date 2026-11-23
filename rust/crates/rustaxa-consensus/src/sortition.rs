@@ -898,11 +898,8 @@ mod tests {
     use super::*;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
-    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn runtime_values_constructor_preserves_complete_flat_config() {
@@ -927,13 +924,7 @@ mod tests {
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let now_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after UNIX_EPOCH")
-            .as_nanos();
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("{prefix}_{now_ns}_{id}"))
+        crate::test_paths::new_path(prefix)
     }
 
     fn default_cfg() -> SortitionTuningConfig {
@@ -991,7 +982,7 @@ mod tests {
 
         drop(clone);
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -1016,7 +1007,7 @@ mod tests {
         );
 
         drop(service);
-        let _ = fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     fn pbft_block_rlp(period: u64, pivot: H256) -> Vec<u8> {
@@ -1285,7 +1276,7 @@ mod tests {
             assert_eq!(change.period, 0);
             assert_eq!(change.threshold_upper, 10_000);
         }
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -1310,7 +1301,7 @@ mod tests {
                 .expect("storage lookup should succeed");
             assert_eq!(params.vrf.threshold_upper, 1_234);
         }
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -1335,7 +1326,7 @@ mod tests {
                 5_000
             );
         }
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -1364,6 +1355,6 @@ mod tests {
                 change.threshold_upper
             );
         }
-        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

@@ -31,6 +31,7 @@
 #include "metrics/transaction_queue_metrics.hpp"
 #include "network/network.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "app/production_consensus_application.hpp"
 #include "consensus/consensus_application.hpp"
 #include "consensus/consensus_host_ports.hpp"
 #include "network/consensus_network_api.hpp"
@@ -96,7 +97,11 @@ bool App::isPluginEnabled(const std::string &name) const { return active_plugins
 void App::init(const cli::Config &cli_conf) {
   conf_ = cli_conf.getNodeConfiguration();
 
+#ifdef RUSTAXA_ENABLE
+  consensus_application_ = std::make_shared<ConsensusApplication>(createQualifiedProductionApplication(cli_conf));
+#else
   fs::create_directories(conf_.db_path);
+#endif
   fs::create_directories(conf_.log_path);
 
   // Initialize logging
@@ -124,31 +129,6 @@ void App::init(const cli::Config &cli_conf) {
     LOG(log_er_) << "Genesis block is invalid";
     assert(false);
   }
-#ifdef RUSTAXA_ENABLE
-  if (conf_.db_config.migrate_only || conf_.db_config.migrate_receipts_by_period ||
-      conf_.db_config.db_revert_to_period != 0 || conf_.db_config.rebuild_db_period != 0) {
-    throw std::runtime_error("Rust consensus mode does not support revert or legacy migration startup modes");
-  }
-  if (conf_.db_config.rebuild_db) {
-    const auto rebuild_id = std::chrono::system_clock::now().time_since_epoch().count();
-    const auto backup_path = conf_.db_path.string() + ".concrete-root-rebuild-backup-" + std::to_string(rebuild_id);
-    std::error_code rebuild_error;
-    if (std::filesystem::exists(conf_.db_path)) {
-      std::filesystem::rename(conf_.db_path, backup_path, rebuild_error);
-      if (rebuild_error) {
-        throw std::runtime_error("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_BACKUP_FAILED: " + rebuild_error.message());
-      }
-      LOG(log_si_) << "Moved the incompatible Rust consensus/state database to " << backup_path;
-    }
-    std::filesystem::create_directories(conf_.db_path, rebuild_error);
-    if (rebuild_error) {
-      throw std::runtime_error("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_CREATE_FAILED: " + rebuild_error.message());
-    }
-    // Rust rebuild is a clean full resynchronization, not legacy in-place replay.
-    conf_.db_config.rebuild_db = false;
-  }
-  consensus_application_ = createConsensusApplication(conf_);
-#endif
   {
 #ifndef RUSTAXA_ENABLE
     if (conf_.db_config.rebuild_db) {
@@ -354,9 +334,7 @@ void App::start() {
 #ifndef RUSTAXA_ENABLE
   vote_mgr_->setNetwork(network_);
 #endif
-#ifdef RUSTAXA_ENABLE
-  consensus_process_->attachNetwork(network_);
-#else
+#ifndef RUSTAXA_ENABLE
   pbft_mgr_->setNetwork(network_);
 #endif
 #ifndef RUSTAXA_ENABLE
@@ -490,7 +468,7 @@ void App::setupMetricsUpdaters() {
         const auto header = final_chain::BlockHeader::fromRLP(dev::RLP(header_bytes));
         pbft_metrics->setBlockNumber(observation.period);
         pbft_metrics->setBlockTransactionsCount(
-            (*query)->consensus_query_transaction_count_by_block_number(observation.period));
+            (*query)->consensus_query_transaction_count_by_block({false, observation.period, {}}));
         pbft_metrics->setBlockTimestamp(header->timestamp);
       },
       subscription_pool_);
@@ -606,7 +584,12 @@ void App::startConsensus() {
   if (!consensus_process_) {
     throw std::logic_error("CONSENSUS_PROCESS_UNINITIALIZED");
   }
+  consensus_process_->attachNetwork(network_);
   consensus_process_->start();
+}
+
+bool App::consensusRunCompleted() const {
+  return consensus_process_ && consensus_process_->completed();
 }
 
 void App::stopConsensus() {

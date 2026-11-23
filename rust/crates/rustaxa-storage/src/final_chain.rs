@@ -8,6 +8,9 @@ use std::sync::Arc;
 use crate::db::{DbReader, DbWriter};
 use crate::{Column, StatusField};
 
+pub(crate) const EXTERNAL_EVM_PENDING_PUBLICATION_KEY: &[u8] =
+    b"rustaxa:external_evm_pending_publication";
+
 /// Final-chain execution counters persisted with finalized block visibility.
 ///
 /// The fields mirror C++ `StatusDbField::ExecutedBlkCount` and
@@ -189,16 +192,17 @@ pub struct FinalChainRepository<D: DbReader> {
 }
 
 impl<D: DbReader> FinalChainRepository<D> {
-    const DPOS_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:dpos_snapshot:";
-    const ACCOUNT_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:account_snapshot:";
-    const EXTERNAL_EVM_PENDING_PUBLICATION_KEY: &'static [u8] =
-        b"rustaxa:external_evm_pending_publication";
-    const CONCRETE_STATE_PAIRING_KEY: &'static [u8] = b"rustaxa:concrete_state_pairing:v1";
-
     /// Creates a final-chain repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         FinalChainRepository { db }
     }
+
+    const DPOS_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:dpos_snapshot:";
+    const ACCOUNT_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:account_snapshot:";
+    const EXTERNAL_EVM_PENDING_PUBLICATION_KEY: &'static [u8] =
+        EXTERNAL_EVM_PENDING_PUBLICATION_KEY;
+    pub(crate) const CONCRETE_STATE_PAIRING_KEY: &'static [u8] =
+        b"rustaxa:concrete_state_pairing:v1";
 
     /// Returns raw final-chain metadata payload by metadata key.
     /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_meta)`.
@@ -303,7 +307,7 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    fn dpos_snapshot_key(number: u64) -> Vec<u8> {
+    pub(crate) fn dpos_snapshot_key(number: u64) -> Vec<u8> {
         let mut key = Vec::with_capacity(Self::DPOS_SNAPSHOT_KEY_PREFIX.len() + 8);
         key.extend_from_slice(Self::DPOS_SNAPSHOT_KEY_PREFIX);
         key.extend_from_slice(&number.to_le_bytes());
@@ -315,6 +319,40 @@ impl<D: DbReader> FinalChainRepository<D> {
         key.extend_from_slice(Self::ACCOUNT_SNAPSHOT_KEY_PREFIX);
         key.extend_from_slice(&number.to_le_bytes());
         key
+    }
+}
+
+impl<D: DbReader> FinalChainRepository<D> {
+    /// Enumerates existing non-genesis DPoS sidecars through the committed head.
+    /// Missing periods stay missing. Numeric ordering is independent of the
+    /// little-endian physical key order; malformed matching keys are errors.
+    pub fn retained_dpos_snapshots_through(&self, head: u64) -> Result<Vec<(u64, Vec<u8>)>> {
+        self.retained_snapshots_through(Self::DPOS_SNAPSHOT_KEY_PREFIX, head)
+    }
+
+    /// Enumerates existing non-genesis account sidecars through the committed
+    /// head, with the same strict key decoding as the DPoS enumeration.
+    pub fn retained_account_snapshots_through(&self, head: u64) -> Result<Vec<(u64, Vec<u8>)>> {
+        self.retained_snapshots_through(Self::ACCOUNT_SNAPSHOT_KEY_PREFIX, head)
+    }
+
+    fn retained_snapshots_through(&self, prefix: &[u8], head: u64) -> Result<Vec<(u64, Vec<u8>)>> {
+        let mut rows = Vec::new();
+        for item in self.db.iter(Column::FinalChainMeta) {
+            let (key, value) = item?;
+            let Some(period) = key.strip_prefix(prefix) else {
+                continue;
+            };
+            let period: [u8; 8] = period
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid final-chain snapshot period key"))?;
+            let period = u64::from_le_bytes(period);
+            if period != 0 && period <= head {
+                rows.push((period, value.into_vec()));
+            }
+        }
+        rows.sort_unstable_by_key(|(period, _)| *period);
+        Ok(rows)
     }
 }
 
@@ -480,6 +518,42 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         proposal_period_dag_level_update: Option<FinalChainProposalPeriodDagLevelUpdate>,
         external_evm_pending_publication_clear: bool,
     ) -> Result<()> {
+        let batch = self.prepare_block_header_with_snapshots_execution_status_and_rewards_stats(
+            number,
+            hash,
+            stored_header_rlp,
+            receipts_rlp,
+            dpos_snapshot_rlp,
+            account_snapshot_rlp,
+            execution_status,
+            rewards_stats_update,
+            log_bloom_index_update,
+            transaction_index_updates,
+            period_system_transactions_update,
+            proposal_period_dag_level_update,
+            external_evm_pending_publication_clear,
+        )?;
+        self.db.commit_batch(batch)
+    }
+
+    /// Prepares the existing complete publication batch without writing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_block_header_with_snapshots_execution_status_and_rewards_stats(
+        &self,
+        number: u64,
+        hash: H256,
+        stored_header_rlp: &[u8],
+        receipts_rlp: &[u8],
+        dpos_snapshot_rlp: Option<&[u8]>,
+        account_snapshot_rlp: Option<&[u8]>,
+        execution_status: Option<FinalChainExecutionStatus>,
+        rewards_stats_update: Option<FinalChainRewardsStatsUpdate<'_>>,
+        log_bloom_index_update: Option<FinalChainLogBloomIndexUpdate<'_>>,
+        transaction_index_updates: &[FinalChainTransactionIndexUpdate<'_>],
+        period_system_transactions_update: Option<FinalChainPeriodSystemTransactionsUpdate<'_>>,
+        proposal_period_dag_level_update: Option<FinalChainProposalPeriodDagLevelUpdate>,
+        external_evm_pending_publication_clear: bool,
+    ) -> Result<D::Batch> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
         let mut batch = self.db.create_batch();
@@ -606,7 +680,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             &DB_META_LAST_NUMBER.to_le_bytes(),
             &number.to_le_bytes(),
         )?;
-        self.db.commit_batch(batch)
+        Ok(batch)
     }
 
     /// Persists the external-EVM pending publication marker.
@@ -813,8 +887,10 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
 
+    type MemoryColumns = HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>;
+
     struct MockFinalChainStore {
-        data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+        data: RwLock<MemoryColumns>,
     }
 
     enum BatchOp {
@@ -831,9 +907,7 @@ mod tests {
 
         fn put(&self, col: Column, key: &[u8], value: &[u8]) {
             let mut data = self.data.write().unwrap();
-            let cf = data
-                .entry(col.name().to_string())
-                .or_insert_with(BTreeMap::new);
+            let cf = data.entry(col.name().to_string()).or_default();
             cf.insert(key.to_vec(), value.to_vec());
         }
 
@@ -984,6 +1058,50 @@ mod tests {
 
         let result = repo.meta_value(1).unwrap();
         assert_eq!(result, Some(77u64.to_le_bytes().to_vec()));
+    }
+
+    #[test]
+    fn retained_snapshot_scan_preserves_sparse_numeric_history_and_rejects_corrupt_keys() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+        for period in [25_706_894, 1, 256, 255, 25_707_000, 0] {
+            db.put(
+                Column::FinalChainMeta,
+                &FinalChainRepository::<MockFinalChainStore>::dpos_snapshot_key(period),
+                &period.to_le_bytes(),
+            );
+            db.put(
+                Column::FinalChainMeta,
+                &FinalChainRepository::<MockFinalChainStore>::account_snapshot_key(period),
+                &period.to_le_bytes(),
+            );
+        }
+        db.put(Column::FinalChainMeta, b"unrelated", b"metadata");
+        let expected = vec![1, 255, 256, 25_706_894];
+        assert_eq!(
+            repo.retained_dpos_snapshots_through(25_706_894)
+                .unwrap()
+                .iter()
+                .map(|(period, _)| *period)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            repo.retained_account_snapshots_through(25_706_894)
+                .unwrap()
+                .iter()
+                .map(|(period, _)| *period)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let malformed = [
+            FinalChainRepository::<MockFinalChainStore>::DPOS_SNAPSHOT_KEY_PREFIX,
+            &[1, 2],
+        ]
+        .concat();
+        db.put(Column::FinalChainMeta, &malformed, b"corrupt");
+        assert!(repo.retained_dpos_snapshots_through(25_706_894).is_err());
+        assert!(repo.retained_account_snapshots_through(25_706_894).is_ok());
     }
 
     #[test]

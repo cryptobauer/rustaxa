@@ -1,5 +1,9 @@
 #include "Debug.h"
 
+#include <iterator>
+
+#include <algorithm>
+
 #include <libdevcore/CommonData.h>
 #include <libdevcore/CommonJS.h>
 
@@ -72,12 +76,12 @@ DebugDposReader makeDebugDposReader(std::weak_ptr<taraxa::AppBase> app
         (*consensus_query_api)->consensus_query_final_chain_dpos_validators_total_stakes(block_number);
     std::vector<state_api::ValidatorStake> stakes;
     stakes.reserve(rust_stakes.size());
-    for (const auto& stake : rust_stakes) {
-      stakes.push_back(state_api::ValidatorStake{
+    std::transform(rust_stakes.begin(), rust_stakes.end(), std::back_inserter(stakes), [](const auto& stake) {
+      return state_api::ValidatorStake{
           addr_t(stake.address.data(), addr_t::ConstructFromPointer),
           dev::fromBigEndian<dev::u256>(dev::bytes(stake.stake.begin(), stake.stake.end())),
-      });
-    }
+      };
+    });
     return stakes;
 #else
     return node->getFinalChain()->dposValidatorsTotalStakes(block_number);
@@ -98,7 +102,7 @@ DebugDposReader makeDebugDposReader(std::weak_ptr<taraxa::AppBase> app
       throw std::runtime_error("DEBUG_DPOS_QUERY_UNAVAILABLE");
     }
     const auto delegated =
-        (*consensus_query_api)->consensus_query_final_chain_dpos_total_amount_delegated(block_number);
+        (*consensus_query_api)->consensus_query_final_chain_dpos_period_value(block_number, rustaxa::DposPeriodMetric::Delegated).amount;
     return dev::fromBigEndian<dev::u256>(dev::bytes(delegated.begin(), delegated.end()));
 #else
     return node->getFinalChain()->dposTotalAmountDelegated(block_number);
@@ -427,11 +431,11 @@ std::shared_ptr<Transaction> materializeTransactionView(const rustaxa::Transacti
 template <typename QueryApi>
 SharedTransactions materializeBlockTransactionsFromQuery(uint64_t block_number, const QueryApi& query_api) {
   SharedTransactions transactions;
-  const auto transaction_count = query_api->consensus_query_transaction_count_by_block_number(block_number);
+  const auto transaction_count = query_api->consensus_query_transaction_count_by_block({false, block_number, {}});
   transactions.reserve(transaction_count);
   for (uint64_t transaction_index = 0; transaction_index < transaction_count; ++transaction_index) {
     auto transaction = materializeTransactionView(
-        query_api->consensus_query_transaction_by_block_number_and_index(block_number, transaction_index));
+        query_api->consensus_query_transaction_by_block_and_index({false, block_number, {}}, transaction_index));
     if (!transaction) {
       throw std::runtime_error("CONSENSUS_QUERY_DEBUG_BLOCK_TRANSACTION_MISSING");
     }

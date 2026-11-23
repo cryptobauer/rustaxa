@@ -5,7 +5,7 @@
 //! `ConsensusQueryApi` calls without handing public layers manager pointers,
 //! storage iterators, or mutable compatibility sidecars.
 
-use crate::ffi::{rustaxa_ffi, BridgeApp, BridgeConsensusQueryApi};
+use crate::ffi::{rustaxa_ffi, BridgeConsensusApplication, BridgeConsensusQueryApi};
 
 fn query_hash_lookup_to_ffi(lookup: rustaxa_consensus::QueryHashLookup) -> rustaxa_ffi::HashLookup {
     rustaxa_ffi::HashLookup {
@@ -370,10 +370,17 @@ fn transaction_receipt_view_to_ffi(
 }
 
 /// Creates a stateless public consensus query facade over application-owned storage.
-pub fn create_consensus_query_api(runtime: &BridgeApp) -> Box<BridgeConsensusQueryApi> {
-    Box::new(BridgeConsensusQueryApi(
-        runtime.0.consensus_query_api_for_bridge(),
-    ))
+pub fn create_consensus_query_api(
+    runtime: &BridgeConsensusApplication,
+) -> Box<BridgeConsensusQueryApi> {
+    Box::new(BridgeConsensusQueryApi(match &runtime.0 {
+        crate::dag_transaction_service::ApplicationBackend::Historical(owner) => {
+            crate::ffi::QueryBackend::Historical(owner.consensus_query_api_for_bridge())
+        }
+        crate::dag_transaction_service::ApplicationBackend::Production(owner) => {
+            crate::ffi::QueryBackend::Production(owner.query_client())
+        }
+    }))
 }
 
 impl BridgeConsensusQueryApi {
@@ -381,16 +388,20 @@ impl BridgeConsensusQueryApi {
     pub fn consensus_query_live_dag_status(
         &self,
     ) -> Result<rustaxa_ffi::LiveDagStatusView, anyhow::Error> {
-        Ok(live_dag_status_view_to_ffi(self.0.dag_live_status()?))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(live_dag_status_view_to_ffi(api.dag_live_status()?))
+        })
     }
 
     /// Returns compact live transaction queue and pressure facts.
     pub fn consensus_query_live_transaction_status(
         &self,
     ) -> Result<rustaxa_ffi::LiveTransactionStatusView, anyhow::Error> {
-        Ok(live_transaction_status_view_to_ffi(
-            self.0.transaction_pool_status()?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(live_transaction_status_view_to_ffi(
+                api.transaction_pool_status()?,
+            ))
+        })
     }
 
     /// Returns application-owned sync state; time derives elapsed fields only,
@@ -399,14 +410,14 @@ impl BridgeConsensusQueryApi {
         &self,
         now_ms: u64,
     ) -> anyhow::Result<rustaxa_ffi::PbftSyncStatusView> {
-        Ok(pbft_sync_status_view_to_ffi(
-            self.0.pbft_sync_status(now_ms)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(pbft_sync_status_view_to_ffi(api.pbft_sync_status(now_ms)?))
+        })
     }
 
     /// Returns the live application-owned verified-vote count for public clients.
     pub fn consensus_query_verified_vote_count(&self) -> Result<u64, anyhow::Error> {
-        self.0.verified_vote_count()
+        crate::ffi::dispatch_client!(self, QueryBackend, api, { api.verified_vote_count() })
     }
 
     /// Resolves one public PBFT quorum through the application-owned PBFT and FinalChain siblings.
@@ -419,15 +430,17 @@ impl BridgeConsensusQueryApi {
         period: u64,
         vote_type: u8,
     ) -> Result<rustaxa_ffi::PbftTwoTPlusOneThresholdPlan, anyhow::Error> {
-        let plan = self.0.pbft_vote_threshold(
-            period,
-            rustaxa_consensus::verified_votes::PbftVoteType::try_from(vote_type)?,
-        )?;
-        Ok(rustaxa_ffi::PbftTwoTPlusOneThresholdPlan {
-            status: plan.status.as_u8(),
-            error_code: plan.error_code.to_owned(),
-            has_threshold: plan.has_threshold,
-            threshold: plan.threshold,
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            let plan = api.pbft_vote_threshold(
+                period,
+                rustaxa_consensus::verified_votes::PbftVoteType::try_from(vote_type)?,
+            )?;
+            Ok(rustaxa_ffi::PbftTwoTPlusOneThresholdPlan {
+                status: plan.status.as_u8(),
+                error_code: plan.error_code.to_owned(),
+                has_threshold: plan.has_threshold,
+                threshold: plan.threshold,
+            })
         })
     }
 
@@ -436,7 +449,9 @@ impl BridgeConsensusQueryApi {
         &self,
         block_hash: &[u8; 32],
     ) -> Result<bool, anyhow::Error> {
-        self.0.pbft_sync_block_exists(*block_hash)
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            api.pbft_sync_block_exists(*block_hash)
+        })
     }
 
     /// Returns the canonical PBFT block hash for a finalized period.
@@ -444,9 +459,59 @@ impl BridgeConsensusQueryApi {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::HashLookup, anyhow::Error> {
-        Ok(query_hash_lookup_to_ffi(
-            self.0.pbft_block_hash_by_period(period)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(query_hash_lookup_to_ffi(
+                api.pbft_block_hash_by_period(period)?,
+            ))
+        })
+    }
+
+    /// Reads one field at an authenticated Rust-owned account checkpoint.
+    pub fn consensus_query_finalized_account(
+        &self,
+        field: rustaxa_ffi::FinalizedAccountField,
+        latest: bool,
+        period: u64,
+        address: &[u8; 20],
+        storage_key: &[u8; 32],
+    ) -> anyhow::Result<rustaxa_ffi::FinalizedAccountView> {
+        use rustaxa_ffi::FinalizedAccountField;
+        let crate::ffi::QueryBackend::Production(api) = &self.0 else {
+            anyhow::bail!("PRODUCTION_QUERY_CLIENT_REQUIRED");
+        };
+        let period = (!latest).then_some(period);
+        let mut view = rustaxa_ffi::FinalizedAccountView {
+            found: false,
+            nonce: Vec::new(),
+            balance: Vec::new(),
+            storage_root: [0; 32],
+            code_hash: [0; 32],
+            code_size: 0,
+            storage_word: [0; 32],
+            code: Vec::new(),
+        };
+        match field {
+            FinalizedAccountField::Account => {
+                if let Some(account) = api.finalized_account(period, *address)? {
+                    view.found = true;
+                    view.nonce = account.nonce.to_bytes();
+                    view.balance = account.balance.value().to_bytes_be();
+                    anyhow::ensure!(
+                        view.nonce.len() <= 32 && view.balance.len() <= 32,
+                        "PRODUCTION_QUERY_ACCOUNT_EXCEEDS_U256"
+                    );
+                    view.storage_root = account.storage_root.unwrap_or_default();
+                    view.code_hash = account.code_hash.unwrap_or_default();
+                    view.code_size = account.code_size;
+                }
+            }
+            FinalizedAccountField::Storage => {
+                view.storage_word = api.finalized_storage(period, *address, *storage_key)?;
+            }
+            FinalizedAccountField::Code => view.code = api.finalized_code(period, *address)?,
+            _ => anyhow::bail!("PRODUCTION_QUERY_ACCOUNT_FIELD_INVALID"),
+        }
+        Ok(view)
     }
 
     /// Returns a stable FinalChain public block view by finalized block number.
@@ -454,9 +519,11 @@ impl BridgeConsensusQueryApi {
         &self,
         number: u64,
     ) -> Result<rustaxa_ffi::FinalChainBlockView, anyhow::Error> {
-        Ok(final_chain_block_view_to_ffi(
-            self.0.final_chain_block_by_number(number)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(final_chain_block_view_to_ffi(
+                api.final_chain_block_by_number(number)?,
+            ))
+        })
     }
 
     /// Returns the finalized FinalChain block number for a block hash.
@@ -464,14 +531,18 @@ impl BridgeConsensusQueryApi {
         &self,
         block_hash: &[u8; 32],
     ) -> Result<rustaxa_ffi::FinalChainBlockNumberLookup, anyhow::Error> {
-        Ok(query_number_lookup_to_ffi(
-            self.0.final_chain_block_number_by_hash(*block_hash)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(query_number_lookup_to_ffi(
+                api.final_chain_block_number_by_hash(*block_hash)?,
+            ))
+        })
     }
 
     /// Returns the latest finalized FinalChain block number.
     pub fn consensus_query_final_chain_last_block_number(&self) -> Result<u64, anyhow::Error> {
-        self.0.final_chain_last_block_number()
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            api.final_chain_last_block_number()
+        })
     }
 
     /// Returns one validator's eligible vote count from native FinalChain state.
@@ -480,8 +551,9 @@ impl BridgeConsensusQueryApi {
         block_number: u64,
         address: &[u8; 20],
     ) -> Result<u64, anyhow::Error> {
-        self.0
-            .final_chain_dpos_eligible_vote_count(block_number, *address)
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            api.final_chain_dpos_eligible_vote_count(block_number, *address)
+        })
     }
 
     /// Returns the total eligible vote count from native FinalChain state.
@@ -489,8 +561,9 @@ impl BridgeConsensusQueryApi {
         &self,
         block_number: u64,
     ) -> Result<u64, anyhow::Error> {
-        self.0
-            .final_chain_dpos_eligible_total_vote_count(block_number)
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            api.final_chain_dpos_eligible_total_vote_count(block_number)
+        })
     }
 
     /// Returns validator stakes in canonical address order.
@@ -498,49 +571,70 @@ impl BridgeConsensusQueryApi {
         &self,
         block_number: u64,
     ) -> Result<Vec<rustaxa_ffi::DposValidatorStake>, anyhow::Error> {
-        Ok(self
-            .0
-            .final_chain_dpos_validators_total_stakes(block_number)?
-            .into_iter()
-            .map(|stake| rustaxa_ffi::DposValidatorStake {
-                address: stake.address,
-                stake: stake.stake,
-            })
-            .collect())
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(api
+                .final_chain_dpos_validators_total_stakes(block_number)?
+                .into_iter()
+                .map(|stake| rustaxa_ffi::DposValidatorStake {
+                    address: stake.address,
+                    stake: stake.stake,
+                })
+                .collect())
+        })
     }
 
-    /// Returns total delegated stake as canonical unsigned big-endian bytes.
-    pub fn consensus_query_final_chain_dpos_total_amount_delegated(
+    /// Reads one DPoS metric at an exact finalized period.
+    pub fn consensus_query_final_chain_dpos_period_value(
         &self,
         block_number: u64,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.final_chain_dpos_total_amount_delegated(block_number)
+        metric: rustaxa_ffi::DposPeriodMetric,
+    ) -> anyhow::Result<rustaxa_ffi::DposPeriodValue> {
+        use rustaxa_ffi::DposPeriodMetric;
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            let mut value = rustaxa_ffi::DposPeriodValue {
+                number: 0,
+                amount: Vec::new(),
+            };
+            match metric {
+                DposPeriodMetric::Delegated => {
+                    value.amount = api.final_chain_dpos_total_amount_delegated(block_number)?
+                }
+                DposPeriodMetric::Yield => {
+                    value.number = api.final_chain_dpos_yield(block_number)?
+                }
+                DposPeriodMetric::Supply => {
+                    value.amount = api.final_chain_dpos_total_supply(block_number)?
+                }
+                _ => anyhow::bail!("DPOS_PERIOD_METRIC_INVALID"),
+            }
+            Ok(value)
+        })
     }
 
-    /// Returns the DPoS yield active at the requested finalized block.
-    pub fn consensus_query_final_chain_dpos_yield(
-        &self,
-        block_number: u64,
-    ) -> Result<u64, anyhow::Error> {
-        self.0.final_chain_dpos_yield(block_number)
-    }
-
-    /// Returns total supply as canonical unsigned big-endian bytes.
-    pub fn consensus_query_final_chain_dpos_total_supply(
-        &self,
-        block_number: u64,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.final_chain_dpos_total_supply(block_number)
-    }
-
-    /// Executes only the native DPoS/slashing read-only semantics.
+    /// Executes a finalized call or a disposable structured trace.
+    /// A trace uses the committed checkpoint before the requested block.
     pub fn consensus_query_final_chain_native_call(
         &self,
         request: rustaxa_ffi::FinalChainNativeCall,
+        trace_request_rlp: &[u8],
     ) -> Result<rustaxa_ffi::FinalChainNativeCallOutcome, anyhow::Error> {
-        Ok(native_call_outcome_to_ffi(self.0.final_chain_native_call(
-            native_call_request_from_ffi(request)?,
-        )?))
+        if !trace_request_rlp.is_empty() {
+            let crate::ffi::QueryBackend::Production(api) = &self.0 else {
+                anyhow::bail!("PRODUCTION_TRACE_OWNER_REQUIRED");
+            };
+            return Ok(native_call_outcome_to_ffi(
+                rustaxa_types::FinalChainCallOutcome {
+                    code_retval: api
+                        .final_chain_structured_trace(request.block_number, trace_request_rlp)?,
+                    ..Default::default()
+                },
+            ));
+        }
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(native_call_outcome_to_ffi(api.final_chain_native_call(
+                native_call_request_from_ffi(request)?,
+            )?))
+        })
     }
 
     /// Returns the exact persisted dynamic lambda for a finalized period.
@@ -548,9 +642,9 @@ impl BridgeConsensusQueryApi {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::PeriodLambda, anyhow::Error> {
-        Ok(period_lambda_to_ffi(
-            self.0.period_lambda_by_period(period)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(period_lambda_to_ffi(api.period_lambda_by_period(period)?))
+        })
     }
 
     /// Returns the finalized proposal period mapped to a DAG level.
@@ -558,23 +652,29 @@ impl BridgeConsensusQueryApi {
         &self,
         level: u64,
     ) -> Result<rustaxa_ffi::FinalChainBlockNumberLookup, anyhow::Error> {
-        Ok(query_number_lookup_to_ffi(
-            self.0.proposal_period_for_dag_level(level)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(query_number_lookup_to_ffi(
+                api.proposal_period_for_dag_level(level)?,
+            ))
+        })
     }
 
     /// Returns live PBFT progress with persisted public chain statistics.
     pub fn consensus_query_chain_stats(
         &self,
     ) -> Result<rustaxa_ffi::ChainStatsView, anyhow::Error> {
-        Ok(chain_stats_view_to_ffi(self.0.chain_stats()?))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(chain_stats_view_to_ffi(api.chain_stats()?))
+        })
     }
 
     /// Returns storage-backed finalized head and DAG index status facts.
     pub fn consensus_query_status(
         &self,
     ) -> Result<rustaxa_ffi::ConsensusStatusView, anyhow::Error> {
-        Ok(consensus_status_view_to_ffi(self.0.consensus_status()?))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(consensus_status_view_to_ffi(api.consensus_status()?))
+        })
     }
 
     /// Returns the sortition params change active at or before a period.
@@ -582,9 +682,11 @@ impl BridgeConsensusQueryApi {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::SortitionParamsChangeView, anyhow::Error> {
-        Ok(sortition_params_change_view_to_ffi(
-            self.0.sortition_params_change_by_period(period)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(sortition_params_change_view_to_ffi(
+                api.sortition_params_change_by_period(period)?,
+            ))
+        })
     }
 
     /// Returns finalized block numbers whose Rust FinalChain bloom index contains the query bloom.
@@ -594,7 +696,9 @@ impl BridgeConsensusQueryApi {
         from: u64,
         to: u64,
     ) -> Result<Vec<u64>, anyhow::Error> {
-        self.0.final_chain_blocks_with_bloom(*bloom, from, to)
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            api.final_chain_blocks_with_bloom(*bloom, from, to)
+        })
     }
 
     /// Returns a stable PBFT schedule-block public view by finalized period.
@@ -602,9 +706,11 @@ impl BridgeConsensusQueryApi {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::PbftScheduleBlockView, anyhow::Error> {
-        Ok(pbft_schedule_block_view_to_ffi(
-            self.0.pbft_schedule_block_by_period(period)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(pbft_schedule_block_view_to_ffi(
+                api.pbft_schedule_block_by_period(period)?,
+            ))
+        })
     }
 
     /// Returns PBFT author and semantic-version facts by finalized period.
@@ -612,9 +718,11 @@ impl BridgeConsensusQueryApi {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::PbftNodeVersionView, anyhow::Error> {
-        Ok(pbft_node_version_view_to_ffi(
-            self.0.pbft_node_version_by_period(period)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(pbft_node_version_view_to_ffi(
+                api.pbft_node_version_by_period(period)?,
+            ))
+        })
     }
 
     /// Returns previous-block PBFT cert-vote bytes by finalized period.
@@ -622,9 +730,11 @@ impl BridgeConsensusQueryApi {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::PbftPeriodCertVotesView, anyhow::Error> {
-        Ok(pbft_period_cert_votes_view_to_ffi(
-            self.0.pbft_previous_block_cert_votes_by_period(period)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(pbft_period_cert_votes_view_to_ffi(
+                api.pbft_previous_block_cert_votes_by_period(period)?,
+            ))
+        })
     }
 
     /// Returns a stable pillar block-data public view by finalized pillar period.
@@ -632,9 +742,11 @@ impl BridgeConsensusQueryApi {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::PillarBlockDataView, anyhow::Error> {
-        Ok(pillar_block_data_view_to_ffi(
-            self.0.pillar_block_data_by_period(period)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(pillar_block_data_view_to_ffi(
+                api.pillar_block_data_by_period(period)?,
+            ))
+        })
     }
 
     /// Returns a stable DAG public block view by block hash.
@@ -642,7 +754,9 @@ impl BridgeConsensusQueryApi {
         &self,
         hash: &[u8; 32],
     ) -> Result<rustaxa_ffi::DagBlockPublicView, anyhow::Error> {
-        Ok(dag_block_view_to_ffi(self.0.dag_block_by_hash(*hash)?))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(dag_block_view_to_ffi(api.dag_block_by_hash(*hash)?))
+        })
     }
 
     /// Returns stable DAG public block views for a contiguous level window.
@@ -651,12 +765,13 @@ impl BridgeConsensusQueryApi {
         level: u64,
         number_of_levels: u32,
     ) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
-        Ok(self
-            .0
-            .dag_blocks_by_level(level, number_of_levels)?
-            .into_iter()
-            .map(dag_block_view_to_ffi)
-            .collect())
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(api
+                .dag_blocks_by_level(level, number_of_levels)?
+                .into_iter()
+                .map(dag_block_view_to_ffi)
+                .collect())
+        })
     }
 
     /// Returns stable finalized DAG block views for one PBFT period.
@@ -664,12 +779,13 @@ impl BridgeConsensusQueryApi {
         &self,
         period: u64,
     ) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
-        Ok(self
-            .0
-            .finalized_dag_blocks_by_period(period)?
-            .into_iter()
-            .map(dag_block_view_to_ffi)
-            .collect())
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(api
+                .finalized_dag_blocks_by_period(period)?
+                .into_iter()
+                .map(dag_block_view_to_ffi)
+                .collect())
+        })
     }
 
     /// Returns a stable public transaction payload view by transaction hash.
@@ -677,47 +793,39 @@ impl BridgeConsensusQueryApi {
         &self,
         hash: &[u8; 32],
     ) -> Result<rustaxa_ffi::TransactionPublicView, anyhow::Error> {
-        Ok(transaction_view_to_ffi(self.0.transaction_by_hash(*hash)?))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(transaction_view_to_ffi(api.transaction_by_hash(*hash)?))
+        })
     }
 
-    /// Returns a stable public transaction payload view by finalized block number and index.
-    pub fn consensus_query_transaction_by_block_number_and_index(
+    /// Returns the transaction at an index in the selected finalized block.
+    pub fn consensus_query_transaction_by_block_and_index(
         &self,
-        block_number: u64,
+        block: rustaxa_ffi::FinalizedBlockTarget,
         transaction_index: u64,
-    ) -> Result<rustaxa_ffi::TransactionPublicView, anyhow::Error> {
-        Ok(transaction_view_to_ffi(
-            self.0
-                .transaction_by_block_number_and_index(block_number, transaction_index)?,
-        ))
+    ) -> anyhow::Result<rustaxa_ffi::TransactionPublicView> {
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            let view = if block.by_hash {
+                api.transaction_by_block_hash_and_index(block.hash, transaction_index)?
+            } else {
+                api.transaction_by_block_number_and_index(block.number, transaction_index)?
+            };
+            Ok(transaction_view_to_ffi(view))
+        })
     }
 
-    /// Returns a stable public transaction payload view by finalized block hash and index.
-    pub fn consensus_query_transaction_by_block_hash_and_index(
+    /// Returns the transaction count in the selected finalized block.
+    pub fn consensus_query_transaction_count_by_block(
         &self,
-        block_hash: &[u8; 32],
-        transaction_index: u64,
-    ) -> Result<rustaxa_ffi::TransactionPublicView, anyhow::Error> {
-        Ok(transaction_view_to_ffi(
-            self.0
-                .transaction_by_block_hash_and_index(*block_hash, transaction_index)?,
-        ))
-    }
-
-    /// Returns the finalized transaction count for a public block-number query.
-    pub fn consensus_query_transaction_count_by_block_number(
-        &self,
-        block_number: u64,
-    ) -> Result<u64, anyhow::Error> {
-        self.0.transaction_count_by_block_number(block_number)
-    }
-
-    /// Returns the finalized transaction count for a public block-hash query.
-    pub fn consensus_query_transaction_count_by_block_hash(
-        &self,
-        block_hash: &[u8; 32],
-    ) -> Result<u64, anyhow::Error> {
-        self.0.transaction_count_by_block_hash(*block_hash)
+        block: rustaxa_ffi::FinalizedBlockTarget,
+    ) -> anyhow::Result<u64> {
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            if block.by_hash {
+                api.transaction_count_by_block_hash(block.hash)
+            } else {
+                api.transaction_count_by_block_number(block.number)
+            }
+        })
     }
 
     /// Returns a stable public transaction receipt payload view by transaction hash.
@@ -725,9 +833,11 @@ impl BridgeConsensusQueryApi {
         &self,
         hash: &[u8; 32],
     ) -> Result<rustaxa_ffi::TransactionReceiptPublicView, anyhow::Error> {
-        Ok(transaction_receipt_view_to_ffi(
-            self.0.transaction_receipt_by_hash(*hash)?,
-        ))
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(transaction_receipt_view_to_ffi(
+                api.transaction_receipt_by_hash(*hash)?,
+            ))
+        })
     }
 
     /// Returns stable public transaction receipt views for one finalized block number.
@@ -735,11 +845,12 @@ impl BridgeConsensusQueryApi {
         &self,
         block_number: u64,
     ) -> Result<Vec<rustaxa_ffi::TransactionReceiptPublicView>, anyhow::Error> {
-        Ok(self
-            .0
-            .transaction_receipts_by_block_number(block_number)?
-            .into_iter()
-            .map(transaction_receipt_view_to_ffi)
-            .collect())
+        crate::ffi::dispatch_client!(self, QueryBackend, api, {
+            Ok(api
+                .transaction_receipts_by_block_number(block_number)?
+                .into_iter()
+                .map(transaction_receipt_view_to_ffi)
+                .collect())
+        })
     }
 }

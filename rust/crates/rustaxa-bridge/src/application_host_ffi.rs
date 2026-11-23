@@ -6,14 +6,11 @@
 use crate::consensus_host_ports::{
     consensus_application_finalize, consensus_application_recover_final_chain,
     consensus_application_run, consensus_network_ingest_dag_block_packet,
-    consensus_network_ingest_dag_sync_packet, consensus_network_ingest_transaction_packet,
-    consensus_network_submit_transaction, consensus_network_transaction_gas_price_bid,
+    consensus_network_ingest_dag_sync_packet,
 };
 use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::ffi::BridgeConsensusNetworkApi;
 
-// Bind the aggregate bridge's generated C++ opaque application type to its
-// existing Rust owner instead of declaring a duplicate Rust type.
 unsafe impl cxx::ExternType for BridgeConsensusApplication {
     type Id = cxx::type_id!("rustaxa::BridgeConsensusApplication");
     type Kind = cxx::kind::Opaque;
@@ -146,6 +143,7 @@ pub mod application_host_ffi {
     }
     struct HostFinalChainPreflightReport {
         request_id: [u8; 32],
+        state_api_epoch: u64,
         committed_period: u64,
         committed_state_root: [u8; 32],
         concrete_provenance_rlp: Vec<u8>,
@@ -174,6 +172,7 @@ pub mod application_host_ffi {
         data: Vec<u8>,
     }
     struct HostFinalChainExecutionRequest {
+        expected_state_api_epoch: u64,
         concrete_marker_rlp: Vec<u8>,
         block_author: [u8; 20],
         timestamp: u64,
@@ -201,11 +200,13 @@ pub mod application_host_ffi {
         consensus_error: String,
     }
     struct HostFinalChainExecutionReport {
+        state_api_epoch: u64,
         post_transaction_state_root: [u8; 32],
         cumulative_gas_used: u64,
         results: Vec<HostFinalChainTransactionResult>,
     }
     struct HostFinalChainRewardsRequest {
+        expected_state_api_epoch: u64,
         concrete_marker_rlp: Vec<u8>,
         distribution_stats: Vec<HostRewardsStatsPeriod>,
     }
@@ -214,18 +215,21 @@ pub mod application_host_ffi {
         data: Vec<u8>,
     }
     struct HostFinalChainRewardsReport {
+        state_api_epoch: u64,
         post_rewards_state_root: [u8; 32],
         concrete_projection_rlp: Vec<u8>,
         concrete_projection_hash: [u8; 32],
         total_reward: Vec<u8>,
     }
     struct HostFinalChainStateCommitRequest {
+        expected_state_api_epoch: u64,
         concrete_marker_rlp: Vec<u8>,
         concrete_projection_rlp: Vec<u8>,
         concrete_projection_hash: [u8; 32],
         concrete_provenance_rlp: Vec<u8>,
     }
     struct HostFinalChainStateCommitReport {
+        state_api_epoch: u64,
         concrete_provenance_rlp: Vec<u8>,
         committed_state_found: bool,
         status: u8,
@@ -402,7 +406,8 @@ pub mod application_host_ffi {
         #[cxx_name = "consensusDiscardFinalChainState"]
         fn consensus_discard_final_chain_state(
             self: &ExternalEvmPort,
-            concrete_marker: &CanonicalBytes,
+            concrete_marker_rlp: &[u8],
+            expected_state_api_epoch: u64,
         ) -> Result<HostFinalChainPreflightReport>;
         #[cxx_name = "consensusLoadPillarAnchorState"]
         fn consensus_load_pillar_anchor_state(
@@ -426,7 +431,7 @@ pub mod application_host_ffi {
             process: &ConsensusProcessPort,
             signer: &ConsensusSignerPort,
             transport: &ConsensusTransportPort,
-            external_evm: &ExternalEvmPort,
+            external_evm: &UniquePtr<ExternalEvmPort>,
         ) -> Result<ConsensusRunExit>;
         /// Executes one FinalChain task through the native application root.
         pub fn consensus_application_finalize(
@@ -440,30 +445,17 @@ pub mod application_host_ffi {
             application: &BridgeConsensusApplication,
             external_evm: &ExternalEvmPort,
         ) -> Result<HostFinalChainFinalizeReport>;
-        /// Routes one canonical transaction packet through native network and
-        /// application owners while borrowing only the external-EVM leaf.
-        pub fn consensus_network_ingest_transaction_packet(
-            network: &BridgeConsensusNetworkApi,
-            request: NetworkTransactionPacketRequest,
-        ) -> Result<NetworkTransactionPacketReport>;
+
         pub fn consensus_network_ingest_dag_block_packet(
             network: &BridgeConsensusNetworkApi,
             request: NetworkDagPacketRequest,
-            external_evm: &ExternalEvmPort,
+            external_evm: &UniquePtr<ExternalEvmPort>,
         ) -> Result<NetworkDagBlockIngressReport>;
         pub fn consensus_network_ingest_dag_sync_packet(
             network: &BridgeConsensusNetworkApi,
             request: NetworkDagPacketRequest,
-            external_evm: &ExternalEvmPort,
+            external_evm: &UniquePtr<ExternalEvmPort>,
         ) -> Result<NetworkDagSyncIngressReport>;
-        /// Returns the native bid for one host-signed network transaction.
-        pub fn consensus_network_transaction_gas_price_bid(
-            network: &BridgeConsensusNetworkApi,
-        ) -> Result<[u8; 32]>;
-        /// Submits one host-signed network transaction through the bound native API.
-        pub fn consensus_network_submit_transaction(
-            network: &BridgeConsensusNetworkApi,
-            request: PublicTransactionSubmissionRequest,
-        ) -> Result<PublicTransactionSubmissionReport>;
+
     }
 }

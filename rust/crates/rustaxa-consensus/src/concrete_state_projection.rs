@@ -9,12 +9,26 @@
 
 use anyhow::ensure;
 use rlp::{Rlp, RlpStream};
-use tiny_keccak::{Hasher, Keccak};
 
-use crate::{FinalChainEvmLog, FinalChainEvmLogTopic};
+use rustaxa_types::codec::rlp::concrete_lifecycle::{
+    append_identity, append_state, decode_identity, decode_state,
+};
+pub use rustaxa_types::codec::rlp::concrete_lifecycle::{
+    concrete_state_bytes_digest, decode_concrete_execution_marker,
+    decode_concrete_state_provenance, encode_concrete_execution_marker,
+    encode_concrete_state_provenance,
+};
+pub use rustaxa_types::concrete_lifecycle::{
+    FINAL_CHAIN_CONCRETE_PROJECTION_VERSION, FinalChainConcreteExecutionMarker,
+    FinalChainConcreteIdentity, FinalChainConcreteState, FinalChainConcreteStateProvenance,
+};
 
-/// Concrete-root policy and projection codec version accepted by Rust.
-pub const FINAL_CHAIN_CONCRETE_PROJECTION_VERSION: u64 = 1;
+use crate::rewards_stats::RewardsStatsPeriodRlp;
+use crate::{
+    FinalChainEvmLog, FinalChainEvmLogTopic, FinalChainEvmTransactionInput,
+    FinalChainEvmTransactionResult,
+};
+
 /// Invocation completed without a reverted containing frame.
 pub const FINAL_CHAIN_CONCRETE_INVOCATION_NORMAL: u8 = 0;
 /// Invocation's own frame reverted, while legacy precompile writes survived.
@@ -22,38 +36,13 @@ pub const FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED: u8 = 1;
 /// An enclosing frame reverted, while legacy precompile writes survived.
 pub const FINAL_CHAIN_CONCRETE_INVOCATION_PARENT_FRAME_REVERTED: u8 = 2;
 
-/// Stable identity of the concrete state database paired with one chain.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FinalChainConcreteIdentity {
-    pub policy_version: u64,
-    pub database_id: [u8; 32],
-    pub chain_id: [u8; 32],
-}
-
-/// Concrete committed or staged state descriptor encoded in StateAPI bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FinalChainConcreteState {
-    pub period: u64,
-    pub root: [u8; 32],
-}
-
-/// Durable exact staged-execution marker owned by StateAPI.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FinalChainConcreteExecutionMarker {
-    pub identity: FinalChainConcreteIdentity,
-    pub generation: u64,
-    pub plan_hash: [u8; 32],
-    pub period: u64,
-    pub prior_state: FinalChainConcreteState,
-    pub transactions_hash: [u8; 32],
-    pub rewards_hash: [u8; 32],
-}
-
 /// One exact account value at the projection's post-rewards root.
 ///
 /// Rows are strictly address-ordered. An empty raw account RLP is a deletion
-/// tombstone; a non-empty payload must be the canonical six-field FinalChain
-/// account shape before it may update the native snapshot.
+/// tombstone; a non-empty payload uses the canonical five-field concrete
+/// main-trie account shape before it may update the native snapshot. This is
+/// the physical account RLP returned by StateAPI, not the separate FinalChain
+/// snapshot account encoding.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainConcreteAccountProjection {
     pub address: [u8; 20],
@@ -122,28 +111,6 @@ pub struct FinalChainConcreteStateProjection {
     pub catalog_hash: [u8; 32],
 }
 
-/// Concrete StateAPI provenance for one exact staged or committed plan.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FinalChainConcreteStateProvenance {
-    pub identity: FinalChainConcreteIdentity,
-    pub generation: u64,
-    pub plan_hash: [u8; 32],
-    pub committed_state: FinalChainConcreteState,
-    pub transactions_hash: [u8; 32],
-    pub rewards_hash: [u8; 32],
-    pub projection_hash: [u8; 32],
-    pub catalog_hash: [u8; 32],
-}
-
-/// Computes Keccak-256 over canonical projection, provenance, or marker bytes.
-pub fn concrete_state_bytes_digest(bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = Keccak::v256();
-    hasher.update(bytes);
-    let mut digest = [0; 32];
-    hasher.finalize(&mut digest);
-    digest
-}
-
 /// Decodes a canonical projection and rejects unknown versions, malformed
 /// fields, non-DPoS storage, duplicate/unordered rows or calls, invalid
 /// disposition, a mismatched catalog digest, and noncanonical RLP.
@@ -207,6 +174,13 @@ pub fn decode_concrete_state_projection(
             !transaction_effect.transaction_rlp.is_empty(),
             "concrete transaction effect payload is empty"
         );
+        ensure!(
+            transaction_effect
+                .invocations
+                .iter()
+                .all(|invocation| invocation.transaction_index == index),
+            "concrete invocation transaction index does not match containing effect"
+        );
         transaction_effects.push(transaction_effect);
     }
 
@@ -221,6 +195,12 @@ pub fn decode_concrete_state_projection(
         concatenated == invocations,
         "concrete invocation transcript does not match transaction effects"
     );
+    for (sequence, invocation) in invocations.iter().enumerate() {
+        ensure!(
+            invocation.sequence == sequence as u64,
+            "concrete invocation sequence is not contiguous from zero"
+        );
+    }
     let rewards_input = rlp.val_at(11)?;
     let catalog_hash = fixed::<32>(&rlp.at(12)?, "projection catalog hash")?;
     ensure!(
@@ -247,62 +227,6 @@ pub fn decode_concrete_state_projection(
         "concrete projection is not canonical RLP"
     );
     Ok(projection)
-}
-
-/// Decodes canonical StateAPI provenance and rejects an unknown policy version
-/// or noncanonical RLP.
-pub fn decode_concrete_state_provenance(
-    bytes: &[u8],
-) -> anyhow::Result<FinalChainConcreteStateProvenance> {
-    let rlp = Rlp::new(bytes);
-    ensure!(
-        rlp.item_count()? == 8,
-        "concrete provenance must contain eight fields"
-    );
-    let provenance = FinalChainConcreteStateProvenance {
-        identity: decode_identity(&rlp.at(0)?)?,
-        generation: rlp.val_at(1)?,
-        plan_hash: fixed::<32>(&rlp.at(2)?, "provenance plan hash")?,
-        committed_state: decode_state(&rlp.at(3)?)?,
-        transactions_hash: fixed::<32>(&rlp.at(4)?, "provenance transactions hash")?,
-        rewards_hash: fixed::<32>(&rlp.at(5)?, "provenance rewards hash")?,
-        projection_hash: fixed::<32>(&rlp.at(6)?, "provenance projection hash")?,
-        catalog_hash: fixed::<32>(&rlp.at(7)?, "provenance catalog hash")?,
-    };
-    ensure!(
-        encode_concrete_state_provenance(&provenance) == bytes,
-        "concrete provenance is not canonical RLP"
-    );
-    Ok(provenance)
-}
-
-/// Decodes an exact canonical StateAPI staged-execution marker.
-pub fn decode_concrete_execution_marker(
-    bytes: &[u8],
-) -> anyhow::Result<FinalChainConcreteExecutionMarker> {
-    let rlp = Rlp::new(bytes);
-    ensure!(
-        rlp.item_count()? == 7,
-        "concrete execution marker must contain seven fields"
-    );
-    let marker = FinalChainConcreteExecutionMarker {
-        identity: decode_identity(&rlp.at(0)?)?,
-        generation: rlp.val_at(1)?,
-        plan_hash: fixed::<32>(&rlp.at(2)?, "marker plan hash")?,
-        period: rlp.val_at(3)?,
-        prior_state: decode_state(&rlp.at(4)?)?,
-        transactions_hash: fixed::<32>(&rlp.at(5)?, "marker transactions hash")?,
-        rewards_hash: fixed::<32>(&rlp.at(6)?, "marker rewards hash")?,
-    };
-    ensure!(
-        marker.prior_state.period.checked_add(1) == Some(marker.period),
-        "concrete marker period lineage mismatch"
-    );
-    ensure!(
-        encode_concrete_execution_marker(&marker) == bytes,
-        "concrete execution marker is not canonical RLP"
-    );
-    Ok(marker)
 }
 
 /// Validates a projection/provenance pair against expected execution facts.
@@ -462,43 +386,17 @@ fn append_invocations(stream: &mut RlpStream, invocations: &[FinalChainConcreteI
     }
 }
 
-/// Canonically encodes StateAPI provenance for fake-port/differential tests.
-pub fn encode_concrete_state_provenance(provenance: &FinalChainConcreteStateProvenance) -> Vec<u8> {
-    let mut stream = RlpStream::new_list(8);
-    append_identity(&mut stream, provenance.identity);
-    stream.append(&provenance.generation);
-    stream.append(&provenance.plan_hash.as_slice());
-    append_state(&mut stream, provenance.committed_state);
-    stream.append(&provenance.transactions_hash.as_slice());
-    stream.append(&provenance.rewards_hash.as_slice());
-    stream.append(&provenance.projection_hash.as_slice());
-    stream.append(&provenance.catalog_hash.as_slice());
-    stream.out().to_vec()
-}
-
-/// Canonically encodes a StateAPI staged marker for lifecycle requests/tests.
-pub fn encode_concrete_execution_marker(marker: &FinalChainConcreteExecutionMarker) -> Vec<u8> {
-    let mut stream = RlpStream::new_list(7);
-    append_identity(&mut stream, marker.identity);
-    stream.append(&marker.generation);
-    stream.append(&marker.plan_hash.as_slice());
-    stream.append(&marker.period);
-    append_state(&mut stream, marker.prior_state);
-    stream.append(&marker.transactions_hash.as_slice());
-    stream.append(&marker.rewards_hash.as_slice());
-    stream.out().to_vec()
-}
-
 /// Derives the catalog hash from sorted `(address,key)` identities exactly as
 /// StateAPI does; values are intentionally excluded from this inventory hash.
 pub fn concrete_storage_catalog_hash(storage: &[FinalChainConcreteStorageProjection]) -> [u8; 32] {
-    let mut stream = RlpStream::new_list(storage.len());
-    for row in storage {
-        stream.begin_list(2);
-        stream.append(&row.contract.as_slice());
-        stream.append(&row.key.as_slice());
-    }
-    concrete_state_bytes_digest(&stream.out())
+    rustaxa_types::codec::rlp::concrete_lifecycle::concrete_storage_slot_catalog_hash(
+        storage.iter().map(
+            |row| rustaxa_types::concrete_lifecycle::ConcreteStorageSlot {
+                address: row.contract,
+                key: row.key,
+            },
+        ),
+    )
 }
 
 fn decode_accounts(rlp: &Rlp<'_>) -> anyhow::Result<Vec<FinalChainConcreteAccountProjection>> {
@@ -618,52 +516,6 @@ fn decode_invocations(rlp: &Rlp<'_>) -> anyhow::Result<Vec<FinalChainConcreteInv
     Ok(invocations)
 }
 
-fn decode_identity(rlp: &Rlp<'_>) -> anyhow::Result<FinalChainConcreteIdentity> {
-    ensure!(
-        rlp.item_count()? == 3,
-        "concrete identity must contain three fields"
-    );
-    let identity = FinalChainConcreteIdentity {
-        policy_version: rlp.val_at(0)?,
-        database_id: fixed::<32>(&rlp.at(1)?, "concrete database identity")?,
-        chain_id: fixed::<32>(&rlp.at(2)?, "concrete chain identity")?,
-    };
-    ensure!(
-        identity.policy_version == FINAL_CHAIN_CONCRETE_PROJECTION_VERSION,
-        "unsupported concrete policy version {}",
-        identity.policy_version
-    );
-    ensure!(
-        identity.database_id != [0; 32] && identity.chain_id != [0; 32],
-        "concrete identity is missing"
-    );
-    Ok(identity)
-}
-
-fn decode_state(rlp: &Rlp<'_>) -> anyhow::Result<FinalChainConcreteState> {
-    ensure!(
-        rlp.item_count()? == 2,
-        "concrete state must contain two fields"
-    );
-    Ok(FinalChainConcreteState {
-        period: rlp.val_at(0)?,
-        root: fixed::<32>(&rlp.at(1)?, "concrete state root")?,
-    })
-}
-
-fn append_identity(stream: &mut RlpStream, identity: FinalChainConcreteIdentity) {
-    stream.begin_list(3);
-    stream.append(&identity.policy_version);
-    stream.append(&identity.database_id.as_slice());
-    stream.append(&identity.chain_id.as_slice());
-}
-
-fn append_state(stream: &mut RlpStream, state: FinalChainConcreteState) {
-    stream.begin_list(2);
-    stream.append(&state.period);
-    stream.append(&state.root.as_slice());
-}
-
 fn fixed<const N: usize>(rlp: &Rlp<'_>, field: &str) -> anyhow::Result<[u8; N]> {
     let bytes = rlp.data()?;
     ensure!(bytes.len() == N, "{field} must contain {N} bytes");
@@ -672,9 +524,163 @@ fn fixed<const N: usize>(rlp: &Rlp<'_>, field: &str) -> anyhow::Result<[u8; N]> 
     Ok(result)
 }
 
+/// Encodes the StateAPI `vm.Transaction` value independently from the signed
+/// canonical transaction envelope. StateAPI records this seven-field execution
+/// input in each concrete per-transaction effect. The caller supplies an already
+/// selected transaction; this codec performs no admission or execution checks.
+/// The full nonce is preserved. An absent receiver is empty RLP data. Hash,
+/// signature, position and system classification are not StateAPI fields.
+pub fn encode_concrete_evm_transaction(transaction: &FinalChainEvmTransactionInput) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(7);
+    stream.append(&transaction.sender.as_slice());
+    stream.append(&transaction.gas_price.as_u256());
+    if let Some(receiver) = transaction.receiver {
+        stream.append(&receiver.as_slice());
+    } else {
+        stream.append_empty_data();
+    }
+    stream.append(&transaction.nonce.to_bytes());
+    stream.append(&transaction.value.as_u256());
+    stream.append(&transaction.gas_limit.as_u64());
+    stream.append(&transaction.data);
+    stream.out().to_vec()
+}
+
+/// Encodes the exact six-field StateAPI execution result, independently of the receipt.
+///
+/// Preserves output, attempted creation address, ordered logs/topics, gas used and
+/// both error payloads. No creation address encodes as twenty zero bytes. The
+/// caller remains responsible for validating status, cumulative gas and receipt
+/// consistency; none of those derived fields participates in this encoding.
+pub fn encode_concrete_execution_result(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(6);
+    stream.append(&result.output);
+    stream.append(&result.new_contract_address.unwrap_or_default().as_slice());
+    stream.begin_list(result.logs.len());
+    for log in &result.logs {
+        stream.begin_list(3);
+        stream.append(&log.address.as_slice());
+        stream.begin_list(log.topics.len());
+        for topic in &log.topics {
+            stream.append(&topic.topic.as_slice());
+        }
+        stream.append(&log.data);
+    }
+    stream.append(&result.gas_used.as_u64());
+    stream.append(&result.code_error);
+    stream.append(&result.consensus_error);
+    stream.out().to_vec()
+}
+
+/// Encodes the ordered StateAPI rewards input as a list of canonical period-stat RLPs.
+///
+/// Inputs must already be validated `RewardsStatsPeriodRlp` values from the Rust
+/// rewards planner. This encoding preserves each inner value verbatim, including
+/// order; it does not decode, authorize, sort or recompute the supplied facts.
+/// Empty input yields the empty RLP list, with no C API wrapper structure.
+pub fn encode_concrete_rewards_input(stats: &[RewardsStatsPeriodRlp]) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(stats.len());
+    for stat in stats {
+        stream.append_raw(&stat.data, 1);
+    }
+    stream.out().to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ordering_projection() -> FinalChainConcreteStateProjection {
+        let state = |period, root| FinalChainConcreteState {
+            period,
+            root: [root; 32],
+        };
+        let invocation = |transaction_index, sequence| FinalChainConcreteInvocation {
+            transaction_index,
+            sequence,
+            contract: crate::final_chain::DPOS_CONTRACT_ADDRESS,
+            ..Default::default()
+        };
+        let effects = vec![
+            FinalChainConcreteTransactionEffect {
+                index: 0,
+                transaction_rlp: vec![1],
+                execution_result_rlp: vec![2],
+                intermediate_state: state(2, 4),
+                invocations: vec![invocation(0, 0)],
+                ..Default::default()
+            },
+            FinalChainConcreteTransactionEffect {
+                index: 1,
+                transaction_rlp: vec![3],
+                execution_result_rlp: vec![4],
+                intermediate_state: state(2, 5),
+                invocations: Vec::new(),
+                ..Default::default()
+            },
+            FinalChainConcreteTransactionEffect {
+                index: 2,
+                transaction_rlp: vec![5],
+                execution_result_rlp: vec![6],
+                intermediate_state: state(2, 6),
+                invocations: vec![invocation(2, 1)],
+                ..Default::default()
+            },
+        ];
+        FinalChainConcreteStateProjection {
+            identity: FinalChainConcreteIdentity {
+                policy_version: FINAL_CHAIN_CONCRETE_PROJECTION_VERSION,
+                database_id: [1; 32],
+                chain_id: [2; 32],
+            },
+            prior_state: state(1, 3),
+            post_transaction_state: state(2, 7),
+            post_rewards_state: state(2, 8),
+            transaction_effects: effects.clone(),
+            invocations: effects
+                .into_iter()
+                .flat_map(|effect| effect.invocations)
+                .collect(),
+            catalog_hash: concrete_storage_catalog_hash(&[]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn concrete_invocation_ordering_binds_effect_and_global_sequence() {
+        let projection = ordering_projection();
+        let encoded = encode_concrete_state_projection(&projection);
+        assert_eq!(
+            decode_concrete_state_projection(&encoded).unwrap(),
+            projection
+        );
+        let mut wrong_effect = projection.clone();
+        wrong_effect.transaction_effects[0].invocations[0].transaction_index = 1;
+        wrong_effect.invocations[0].transaction_index = 1;
+        let error =
+            decode_concrete_state_projection(&encode_concrete_state_projection(&wrong_effect))
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("transaction index does not match containing effect")
+        );
+        for sequence in [1, 2] {
+            let mut invalid = projection.clone();
+            invalid.transaction_effects[0].invocations[0].sequence = sequence;
+            invalid.invocations[0].sequence = sequence;
+            assert!(
+                decode_concrete_state_projection(&encode_concrete_state_projection(&invalid))
+                    .is_err()
+            );
+        }
+        let mut reset = projection.clone();
+        reset.transaction_effects[2].invocations[0].sequence = 0;
+        reset.invocations[1].sequence = 0;
+        assert!(
+            decode_concrete_state_projection(&encode_concrete_state_projection(&reset)).is_err()
+        );
+    }
 
     #[test]
     fn concrete_pair_rejects_unrelated_committed_descriptor() {

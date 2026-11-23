@@ -46,7 +46,8 @@ class ExternalEvmStateOwner final {
   rustaxa::HostFinalChainExecutionReport executeTransactions(const rustaxa::HostFinalChainExecutionRequest& request);
   rustaxa::HostFinalChainRewardsReport distributeRewards(const rustaxa::HostFinalChainRewardsRequest& request);
   rustaxa::HostFinalChainStateCommitReport commitState(const rustaxa::HostFinalChainStateCommitRequest& request);
-  rustaxa::HostFinalChainPreflightReport discardState(const rustaxa::CanonicalBytes& concrete_marker);
+  rustaxa::HostFinalChainPreflightReport discardState(rust::Slice<const uint8_t> concrete_marker_rlp,
+                                                      uint64_t expected_state_api_epoch);
   rustaxa::HostPillarAnchorStateReport loadPillarAnchorState(
       const rustaxa::HostPillarAnchorStateRequest& request) const;
   rustaxa::HostDagGasBatch estimateDagTransactionGas(const rustaxa::HostDagGasBatch& request) const;
@@ -75,6 +76,10 @@ class ExternalEvmStateOwner final {
   mutable std::mutex application_mutex_;
   std::weak_ptr<ConsensusApplication> application_;
   StateAPI state_api_;
+  /** Opaque process-local identity of the current StateAPI transition instance. */
+  uint64_t state_api_epoch_;
+  /** False after an ambiguous discard error until process-level reconstruction. */
+  bool state_api_epoch_valid_{true};
   addr_t bridge_contract_address_;
 };
 
